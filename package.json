@@ -1,0 +1,27 @@
+{
+  "name": "gcd-social",
+  "version": "0.1.0",
+  "private": true,
+  "description": "GCD-SOCIAL — autonomous multi-agent social posting system (harness skeleton).",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start:api": "node dist/api/server.js",
+    "start:worker": "node dist/worker/index.js",
+    "migrate": "node dist/state/migrate.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.186",
+    "pg": "^8.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/pg": "^8.11.0",
+    "typescript": "^6.0.3"
+  }
+}
