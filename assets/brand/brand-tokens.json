@@ -1,0 +1,26 @@
+{
+  "$comment": "GCD-SOCIAL canonical brand tokens. Hex values anchored to the real artwork in assets/brand/ (GCD LOGO 2026.svg vector fills + sampled embedded rasters), 2026-06-23. Source of truth for brand-voice, image-brief, and any rendering code.",
+  "colors": {
+    "primary": { "name": "Royal Blue", "hex": "#18479F", "rgb": [24, 71, 159], "use": "Wordmark, headlines, primary text on light backgrounds, key UI/links." },
+    "secondary": { "name": "Lemondrop Yellow", "hex": "#F8E000", "rgb": [248, 224, 0], "use": "Brand disc, highlights, accents on navy/blue. The signature GCD yellow." },
+    "secondaryTint": { "name": "Pale Lemon", "hex": "#FFF6C5", "rgb": [255, 246, 197], "use": "Soft backgrounds / fills; the logo disc interior. Not for text." },
+    "tertiary": { "name": "Navy Blue", "hex": "#182848", "rgb": [24, 40, 72], "use": "Dark backgrounds, depth, footer/contrast blocks." },
+    "accent": { "name": "Red", "hex": "#FF0000", "rgb": [255, 0, 0], "use": "Sparing emphasis / alerts only. Never a large fill." },
+    "neutralShadow": { "name": "Shadow Gray", "hex": "#BABABA", "rgb": [186, 186, 186], "use": "Subtle wordmark drop-shadow only." },
+    "white": { "name": "White", "hex": "#FFFFFF", "rgb": [255, 255, 255], "use": "Negative space, text on navy." }
+  },
+  "pairings": {
+    "navyOnYellow": { "fg": "#18479F", "bg": "#F8E000", "note": "Signature lockup (the logo). Use for large text/headlines; verify >=3:1 for large, prefer navy #182848 for small text." },
+    "yellowOnNavy": { "fg": "#F8E000", "bg": "#182848", "note": "High contrast; good for headlines and CTAs on dark." },
+    "blueOnWhite": { "fg": "#18479F", "bg": "#FFFFFF", "note": "Primary body/text pairing; high contrast." },
+    "whiteOnNavy": { "fg": "#FFFFFF", "bg": "#182848", "note": "Body text on dark; high contrast." }
+  },
+  "accessibility": {
+    "note": "Yellow #F8E000 is a poor text color on white (fails WCAG). Use navy/royal for text; reserve yellow for fills, large display type, and accents. Always verify the specific fg/bg pair meets WCAG AA (4.5:1 body, 3:1 large)."
+  },
+  "assets": {
+    "logo": "assets/brand/GCD LOGO 2026.svg",
+    "pomgBadge": "assets/brand/GCD POMG Badge.svg",
+    "note": "Both SVGs wrap high-res embedded rasters (logo 2540px, POMG 2976px). Treat as raster for scaling; do not upscale beyond native. Request true vector reissue if crisp small-size rendering is needed."
+  }
+}
