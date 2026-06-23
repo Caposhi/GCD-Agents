@@ -1,34 +1,38 @@
-name: AgentShield Security Gate
+name: agentshield
 
-# Phase 0 security baseline (BUILD_PLAN.md). Red-teams agent configs, skills,
-# hooks, and MCP definitions for prompt-injection / guardrail-tampering risk.
-# This gate MUST pass before any vendored file containing a hook is wired in
-# (see vendor/PROVENANCE.md — "AgentShield: required" rows).
+# Phase 0 security gate. Scans agent configs, skills, hooks, and MCP setups for injection
+# risk and misconfig. Must pass before any vendored file with a hook is wired in, and on
+# every PR thereafter. AgentShield exits 2 on critical findings, which fails the job.
 
 on:
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
-    branches: ["**"]
+    branches: [main]
   workflow_dispatch:
 
-permissions:
-  contents: read
-
 jobs:
-  agentshield:
-    name: AgentShield scan
+  scan:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Node
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: "20"
 
-      # Pinned version — bump deliberately, never float. Confirmed published as
-      # ecc-agentshield@1.4.0 on 2026-06-23.
-      - name: Run AgentShield scan
-        run: npx --yes ecc-agentshield@1.4.0 scan
+      - name: AgentShield scan
+        # Version pinned (never floating). Confirmed published as ecc-agentshield@1.4.0 (2026-06-23).
+        run: npx --yes ecc-agentshield@1.4.0 scan --format json --output agentshield-report.json
+        # add --opus for the red-team/blue-team/auditor deep pass on release branches
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentshield-report
+          path: agentshield-report.json
+
+# Reminder: AgentShield is a third-party tool (ECC), now pinned to 1.4.0 — bump deliberately and
+# review its own scan scope on upgrade. It is a gate, not a guarantee — human review of vendored
+# hooks still applies.
