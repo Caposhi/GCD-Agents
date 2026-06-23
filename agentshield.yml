@@ -1,0 +1,36 @@
+name: agentshield
+
+# Phase 0 security gate. Scans agent configs, skills, hooks, and MCP setups for injection
+# risk and misconfig. Must pass before any vendored file with a hook is wired in, and on
+# every PR thereafter. AgentShield exits 2 on critical findings, which fails the job.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: AgentShield scan
+        run: npx ecc-agentshield scan --format json --output agentshield-report.json
+        # add --opus for the red-team/blue-team/auditor deep pass on release branches
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentshield-report
+          path: agentshield-report.json
+
+# Reminder: AgentShield is a third-party tool (ECC). Pin its version once chosen, and review
+# its own scan scope. It is a gate, not a guarantee — human review of vendored hooks still applies.

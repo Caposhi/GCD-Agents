@@ -1,0 +1,63 @@
+# GCD-SOCIAL — Render Blueprint
+# Web service (trigger/webhook receiver) + background worker (long-running orchestration) + Postgres.
+# Runtime shown as Node; swap `runtime: node` → `python` and the commands if you build the harness in Python.
+# NOTE: set all real secrets in the Render dashboard or as a secret group, NOT here. This file is committed.
+
+databases:
+  - name: gcd-social-db
+    databaseName: gcd_social
+    plan: starter            # bump as state grows
+    # stores: agent state, approval queue, brand scorecard, self-improvement proposal lineage
+
+services:
+  # 1) Trigger receiver — accepts scheduled triggers / manual kickoffs / approval callbacks.
+  - type: web
+    name: gcd-social-api
+    runtime: node
+    plan: starter
+    buildCommand: npm ci && npm run build
+    startCommand: npm run start:api
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: gcd-social-db
+          property: connectionString
+      - key: ANTHROPIC_API_KEY
+        sync: false          # set in dashboard
+      - key: AYRSHARE_API_KEY
+        sync: false
+      - key: APPROVAL_CHANNEL_WEBHOOK   # ‹ASSUMPTION #6› Slack incoming webhook; swap if email/other
+        sync: false
+      - key: AUTONOMY_PHASE
+        value: A             # A = approval gate (all posts). B = shadow/canary. C = full autonomy.
+
+  # 2) Orchestration worker — runs the manager + subagents. Long-running; persistent, not serverless.
+  - type: worker
+    name: gcd-social-worker
+    runtime: node
+    plan: starter            # the agent loop can run for many minutes; this is why Render, not Vercel
+    buildCommand: npm ci && npm run build
+    startCommand: npm run start:worker
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: gcd-social-db
+          property: connectionString
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: AYRSHARE_API_KEY
+        sync: false
+      - key: IMAGEGEN_API_KEY
+        sync: false
+      - key: APPROVAL_CHANNEL_WEBHOOK
+        sync: false
+      - key: AUTONOMY_PHASE
+        value: A
+
+# Posting cadence: drive scheduled briefs via a Render Cron Job that POSTs to gcd-social-api,
+# or via the SDK's scheduled-tasks pattern. Add here once cadence (open question #2) is set.
