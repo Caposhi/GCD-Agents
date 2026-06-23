@@ -23,8 +23,10 @@ jobs:
 
       - name: AgentShield scan
         # Version pinned (never floating). Confirmed published as ecc-agentshield@1.4.0 (2026-06-23).
-        run: npx --yes ecc-agentshield@1.4.0 scan --format json --output agentshield-report.json
-        # add --opus for the red-team/blue-team/auditor deep pass on release branches
+        # v1.4.0 `scan` has no --output flag; emit JSON to stdout and redirect. The step
+        # fails (gate) on a non-zero exit, which AgentShield returns on critical findings.
+        run: npx --yes ecc-agentshield@1.4.0 scan --path . --format json > agentshield-report.json
+        # add --deep (injection + sandbox + taint + opus) for the deep pass on release branches
 
       - name: Upload report
         if: always()

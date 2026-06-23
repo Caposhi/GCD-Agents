@@ -1,0 +1,17 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+
+# env / secrets — real values live in Render dashboard, never committed
+.env
+.env.local
+*.local
+
+# logs / OS
+*.log
+.DS_Store
+
+# AgentShield reports
+agentshield-report.json
