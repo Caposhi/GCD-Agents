@@ -22,7 +22,8 @@ jobs:
           node-version: "20"
 
       - name: AgentShield scan
-        run: npx ecc-agentshield scan --format json --output agentshield-report.json
+        # Version pinned (never floating). Confirmed published as ecc-agentshield@1.4.0 (2026-06-23).
+        run: npx --yes ecc-agentshield@1.4.0 scan --format json --output agentshield-report.json
         # add --opus for the red-team/blue-team/auditor deep pass on release branches
 
       - name: Upload report
@@ -32,5 +33,6 @@ jobs:
           name: agentshield-report
           path: agentshield-report.json
 
-# Reminder: AgentShield is a third-party tool (ECC). Pin its version once chosen, and review
-# its own scan scope. It is a gate, not a guarantee — human review of vendored hooks still applies.
+# Reminder: AgentShield is a third-party tool (ECC), now pinned to 1.4.0 — bump deliberately and
+# review its own scan scope on upgrade. It is a gate, not a guarantee — human review of vendored
+# hooks still applies.

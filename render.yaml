@@ -29,7 +29,7 @@ services:
         sync: false          # set in dashboard
       - key: AYRSHARE_API_KEY
         sync: false
-      - key: APPROVAL_CHANNEL_WEBHOOK   # ‹ASSUMPTION #6› Slack incoming webhook; swap if email/other
+      - key: APPROVAL_CHANNEL_WEBHOOK   # Slack incoming webhook (locked decision: Slack primary, email fallback)
         sync: false
       - key: AUTONOMY_PHASE
         value: A             # A = approval gate (all posts). B = shadow/canary. C = full autonomy.
