@@ -32,7 +32,6 @@ Mirror key terms in Spanish for the bilingual audience: *taller mecánico, repar
 - **GBP / website:** keywords, no hashtags.
 - **Instagram:** a focused hashtag set (mix of local + make + service; avoid 30 generic tags). See `platform-specs`.
 - **Facebook:** few or no hashtags; local language in copy.
-- **X:** 1–2 relevant tags max.
 
 ## Anti-stuffing
 No keyword stacking, no city lists, no repeating a make 5 times. If a human reader would notice the keywords, it's too many. Local relevance and a natural read always win.

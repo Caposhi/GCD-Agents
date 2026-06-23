@@ -38,7 +38,6 @@ Prefer real GCD photography when available over generated photoreal of the shop/
 | Instagram feed | 1080×1350 | 4:5 | portrait wins reach; 1080×1080 1:1 also fine. **JPEG.** |
 | Instagram Stories/Reels cover | 1080×1920 | 9:16 | keep text in safe center |
 | Facebook feed | 1080×1350 or 1200×630 | 4:5 / 1.91:1 | |
-| X (Twitter) | 1600×900 | 16:9 | note X link-cost in copy, not image |
 | Google Business Profile | 1200×900 | 4:3 | clean, literal, local; no heavy text overlay |
 
 ## Honesty & safety

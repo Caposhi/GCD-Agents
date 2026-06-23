@@ -52,7 +52,7 @@ GCD's motto is **"POMG — Peace of Mind Guaranteed."** The word "Guaranteed" is
 2. **Ban hollow hype words:** *unleash, elevate, supercharge, game-changer, revolutionary, seamless, cutting-edge, in today's fast-paced world, look no further, nestled, testament, dive in, unlock.*
 3. **No generic AI cadence.** Vary sentence length and openings. Avoid the "It's not just X, it's Y" and "Whether you're…or…" templates. Avoid rule-of-three list padding.
 4. **Show, don't boast.** Concrete specifics ("a coolant flush on your 5 Series") beat adjectives ("amazing service").
-5. **Emoji:** tasteful and sparing — fine on IG/FB, minimal on X, **none** on Google Business Profile. Never use emoji to replace words or stack them.
+5. **Emoji:** tasteful and sparing — fine on IG/FB, **none** on Google Business Profile. Never use emoji to replace words or stack them.
 6. **No clickbait, no false urgency** ("act now!!!", "you won't believe").
 7. **Punctuation:** at most one exclamation mark per post; no ALL-CAPS shouting (brand names/initialisms like BMW, POMG are fine).
 

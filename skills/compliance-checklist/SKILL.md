@@ -24,7 +24,6 @@ The independent gate every package must clear before it reaches the human approv
 ## 3. Platform fit (→ platform-formatter)
 - [ ] Within the platform's character/format limits (`platform-specs`).
 - [ ] Hashtag count/placement correct per platform; **no hashtags on GBP**.
-- [ ] X: link present? note the link/reach cost; keep within budget.
 - [ ] IG images are **JPEG**, correct aspect ratio.
 
 ## 4. Image (→ image)

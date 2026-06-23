@@ -7,7 +7,7 @@ description: How the posting subagent publishes an approved package, confirms su
 
 The **only** path to publishing. Executed solely by the `posting` agent, solely on a package that has cleared the human approval gate. No creative judgment here — publish exactly what was approved.
 
-> **DRAFT — gated on question #5 (existing Ayrshare account / X Developer App).** The aggregator (Ayrshare) endpoints, profile keys, and per-platform limits are filled in Phase 3 once the account is confirmed. The control flow and guardrails below are final.
+> **DRAFT — gated on question #5 (existing Ayrshare account).** The aggregator (Ayrshare) endpoints, profile keys, and per-platform limits (IG, FB, GBP) are filled in Phase 3 once the account is confirmed. The control flow and guardrails below are final.
 
 ## Absolute precondition (guardrail — do not weaken)
 1. The package must carry a **recorded human approval** (approval_queue status `approved`) for THIS exact package.

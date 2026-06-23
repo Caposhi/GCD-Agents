@@ -7,9 +7,7 @@ description: Per-platform limits, formats, and conventions for adapting a GCD po
 
 Per-platform rules the `platform-formatter` applies. Image sizes are summarized here and detailed in `image-brief`. Hashtag/keyword strategy lives in `local-seo` + `hashtag-seo-timing`.
 
-> **OPEN — 5th platform (BUILD_PLAN "five platforms"):** four are confirmed below (Instagram, Facebook, X, Google Business Profile). The **fifth is unconfirmed** — likely TikTok, YouTube, or LinkedIn. Specs for it are a TODO pending confirmation; do not invent one.
->
-> **OPEN — cadence (question #2):** posts/platform/week is unset. This skill governs *format*, not *frequency*; scheduling cadence is configured separately once #2 is answered.
+**Active platforms: Instagram, Facebook, Google Business Profile.** X/Twitter is not used. **Cadence: 1 post per platform per day.** This skill governs *format*; the daily cadence drives scheduling (`hashtag-seo-timing` sets the time-of-day).
 
 ## Instagram (Business/Creator — confirmed linked)
 - Caption: up to 2,200 chars; **first ~125 chars** show before "more" — front-load the hook.
@@ -24,12 +22,6 @@ Per-platform rules the `platform-formatter` applies. Image sizes are summarized 
 - Images: 1080×1350 (4:5) or link image 1200×630 (1.91:1).
 - Clickable links are fine (unlike IG).
 
-## X / Twitter
-- **280 characters** (free tier). Count everything.
-- **Link cost:** a URL consumes ~23 chars of the budget and tends to reduce reach; note the link's cost in the package and keep copy tight. Put the essential message before the link.
-- Hashtags: 1–2 max.
-- Image: 1600×900 (16:9). Alt text required.
-
 ## Google Business Profile (verified 60+ days — confirmed)
 - **No hashtags.** Plain, local, useful language (`local-seo`).
 - Length ~1,500 chars; front-load the offer/tip.
@@ -38,7 +30,8 @@ Per-platform rules the `platform-formatter` applies. Image sizes are summarized 
 - One clear topic per post; tie to a real service/event.
 
 ## Cross-platform assembly rules
-- One brief → tailored per platform; **don't** paste identical copy everywhere (tune length, links, hashtags, CTA).
-- **Bilingual (EN+ES):** per platform, decide one combined bilingual post vs separate EN/ES posts — default: IG/FB combined caption (EN then ES), GBP separate per language, X separate (space). Confirm with cadence once #2 is set.
+- One brief → tailored per platform; **don't** paste identical copy everywhere (tune length, hashtags, CTA).
+- **Cadence:** 1 post per platform per day (IG, FB, GBP). The daily brief may share a theme across platforms but each post is tailored.
+- **Bilingual (EN+ES):** default — IG/FB combined caption (EN then ES); GBP separate per language (a clean GBP post per language).
 - Keep the core message and any claim identical across platforms; only format changes.
 - Every image carries alt text; every package records the proposed post time (`hashtag-seo-timing`).
