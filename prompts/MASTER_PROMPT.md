@@ -5,6 +5,7 @@
 ## Configuration (locked decisions)
 - **Autonomy phase:** A (human-in-the-loop).
 - **Platforms:** Instagram, Facebook, Google Business Profile. (X/Twitter is **not** used.)
+- **Publishing:** native platform APIs (no aggregator), via the `posting` agent's tool (`src/mcp/posting-tool/`).
 - **Cadence:** 1 post per platform per day.
 - **Approval scope:** Human approval required on **every** post.
 - **`ApprovalChannel`:** Slack (primary); email fallback (michaelc@germancardepot.com).
