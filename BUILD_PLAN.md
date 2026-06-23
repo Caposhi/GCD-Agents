@@ -96,14 +96,14 @@ All four repos are MIT-licensed, so copying in is fine **if** we follow this dis
 ---
 
 ## Still open before Phase 1 (gates writing the master prompt)
-These don't block repo setup but do block the master prompt:
+These don't block repo setup but do block the master prompt. Items 1/3/4/6 are now **resolved** (locked in `prompts/manager-agent.md` v1.0, 2026-06-23):
 
-1. Approval-gate scope (every post vs risk-threshold).
+1. ~~Approval-gate scope (every post vs risk-threshold).~~ **Resolved:** human approval on every post (Phase A).
 2. Posts/platform/week target (drives token + X-link cost).
-3. Brand assets available to seed `brand-voice` / `image-brief`.
-4. IG = Business/Creator linked to a FB Page? GBP verified 60+ days?
+3. ~~Brand assets available to seed `brand-voice` / `image-brief`.~~ **Resolved:** none yet — voice seeded from known GCD facts; real assets remain a pending TODO.
+4. ~~IG = Business/Creator linked to a FB Page? GBP verified 60+ days?~~ **Resolved:** confirmed ready (IG↔FB linked; GBP verified 60+ days).
 5. Existing Ayrshare account / X Developer App?
-6. Human approver + channel (Slack/email/dashboard) for the HITL interrupt.
+6. ~~Human approver + channel (Slack/email/dashboard) for the HITL interrupt.~~ **Resolved:** `ApprovalChannel` = Slack (primary), email fallback.
 7. Self-improvement from day one (review-gated) or only after posting autonomy is stable?
 8. Timing agent autonomous, or fixed calendar you set?
 9. Opus-for-manager acceptable, or Sonnet manager + Opus only on escalation?
