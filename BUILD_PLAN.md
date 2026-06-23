@@ -96,7 +96,7 @@ All four repos are MIT-licensed, so copying in is fine **if** we follow this dis
 ---
 
 ## Still open before Phase 1 (gates writing the master prompt)
-These don't block repo setup but do block the master prompt. Items 1/3/4/6 are now **resolved** (locked in `prompts/manager-agent.md` v1.0, 2026-06-23):
+These don't block repo setup but do block the master prompt. Items 1/3/4/6 are now **resolved** (locked in `prompts/MASTER_PROMPT.md` v1.0, 2026-06-23):
 
 1. ~~Approval-gate scope (every post vs risk-threshold).~~ **Resolved:** human approval on every post (Phase A).
 2. Posts/platform/week target (drives token + X-link cost).

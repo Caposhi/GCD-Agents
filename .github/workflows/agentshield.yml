@@ -1,0 +1,34 @@
+name: AgentShield Security Gate
+
+# Phase 0 security baseline (BUILD_PLAN.md). Red-teams agent configs, skills,
+# hooks, and MCP definitions for prompt-injection / guardrail-tampering risk.
+# This gate MUST pass before any vendored file containing a hook is wired in
+# (see vendor/PROVENANCE.md — "AgentShield: required" rows).
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  agentshield:
+    name: AgentShield scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # Pinned version — bump deliberately, never float. Confirmed published as
+      # ecc-agentshield@1.4.0 on 2026-06-23.
+      - name: Run AgentShield scan
+        run: npx --yes ecc-agentshield@1.4.0 scan
