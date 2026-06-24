@@ -18,7 +18,6 @@ export interface Config {
   port: number;
   databaseUrl: string | undefined;
   anthropicApiKey: string | undefined;
-  ayrshareApiKey: string | undefined;
   imagegenApiKey: string | undefined;
   approvalChannelWebhook: string | undefined;
   autonomyPhase: AutonomyPhase;
@@ -36,7 +35,6 @@ export const config: Config = {
   port: num("PORT", 3000),
   databaseUrl: process.env.DATABASE_URL || undefined,
   anthropicApiKey: process.env.ANTHROPIC_API_KEY || undefined,
-  ayrshareApiKey: process.env.AYRSHARE_API_KEY || undefined,
   imagegenApiKey: process.env.IMAGEGEN_API_KEY || undefined,
   approvalChannelWebhook: process.env.APPROVAL_CHANNEL_WEBHOOK || undefined,
   autonomyPhase: parsePhase(process.env.AUTONOMY_PHASE),

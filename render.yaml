@@ -27,7 +27,22 @@ services:
           property: connectionString
       - key: ANTHROPIC_API_KEY
         sync: false          # set in dashboard
-      - key: AYRSHARE_API_KEY
+      # Native publishing credentials (no aggregator). All set in dashboard.
+      - key: IG_USER_ID                 # Instagram user id (graph.instagram.com)
+        sync: false
+      - key: IG_ACCESS_TOKEN            # Instagram user token (Instagram-Login path)
+        sync: false
+      - key: FB_PAGE_ID
+        sync: false
+      - key: FB_PAGE_ACCESS_TOKEN       # Facebook Page token (graph.facebook.com)
+        sync: false
+      - key: GOOGLE_ACCESS_TOKEN        # GBP OAuth (refreshed via GOOGLE_REFRESH_TOKEN)
+        sync: false
+      - key: GOOGLE_REFRESH_TOKEN
+        sync: false
+      - key: GBP_ACCOUNT_ID
+        sync: false
+      - key: GBP_LOCATION_ID
         sync: false
       - key: APPROVAL_CHANNEL_WEBHOOK   # Slack incoming webhook (locked decision: Slack primary, email fallback)
         sync: false
@@ -50,14 +65,27 @@ services:
           property: connectionString
       - key: ANTHROPIC_API_KEY
         sync: false
-      - key: AYRSHARE_API_KEY
-        sync: false
       - key: IMAGEGEN_API_KEY
+        sync: false
+      # Native publishing credentials (no aggregator).
+      - key: META_ACCESS_TOKEN
+        sync: false
+      - key: FB_PAGE_ID
+        sync: false
+      - key: IG_USER_ID
+        sync: false
+      - key: GOOGLE_ACCESS_TOKEN
+        sync: false
+      - key: GOOGLE_REFRESH_TOKEN
+        sync: false
+      - key: GBP_ACCOUNT_ID
+        sync: false
+      - key: GBP_LOCATION_ID
         sync: false
       - key: APPROVAL_CHANNEL_WEBHOOK
         sync: false
       - key: AUTONOMY_PHASE
         value: A
 
-# Posting cadence: drive scheduled briefs via a Render Cron Job that POSTs to gcd-social-api,
-# or via the SDK's scheduled-tasks pattern. Add here once cadence (open question #2) is set.
+# Posting cadence: 1 post/platform/day. Drive scheduled briefs via a Render Cron Job
+# that POSTs to gcd-social-api, or via the SDK's scheduled-tasks pattern.

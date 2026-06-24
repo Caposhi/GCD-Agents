@@ -44,7 +44,7 @@ gcd-social/
 │   └── strategic-compact/
 │
 ├── mcp/                               # MCP servers (Phase 3)
-│   ├── posting-tool/                  # wraps Ayrshare
+│   ├── posting-tool/                  # native APIs (GBP/IG/FB); impl in src/mcp/posting-tool
 │   └── image-tool/                    # wraps image-gen providers
 │
 ├── harness/                           # agent loop, state, retries, HITL interrupts, cost logging (Phase 1)
