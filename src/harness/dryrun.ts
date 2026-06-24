@@ -134,18 +134,10 @@ export function simulatedRunner(): AgentRunner {
 const isMain = process.argv[1]?.endsWith("dryrun.js");
 if (isMain) {
   const live = process.argv.includes("--live");
-  // Test fixture. Real posts pass approvedFacts via the /triggers payload —
-  // the critic only lets claims through that these facts support.
+  // Real posts pass approvedFacts via /triggers; the dry run relies on the
+  // stored defaults (config/approved-facts.json) merged by the orchestrator.
   const brief: Brief = {
     goal: "Promote routine European-car maintenance; encourage booking online",
-    approvedFacts: {
-      shop: "German Car Depot — independent European-vehicle repair, South Florida, since 1992",
-      positioning: "The Dealership Alternative — dealer-level expertise without dealer pricing",
-      services: ["oil change", "brake service", "brake fluid flush", "diagnostics", "AC service", "scheduled maintenance"],
-      makes: ["BMW", "Mercedes-Benz", "Audi", "VW", "Porsche", "Volvo", "MINI"],
-      location: "Doral, FL (greater Miami)",
-      bookingUrl: "https://germancardepot.com/book",
-    } as Record<string, unknown>,
   };
   // live: no runner → real SDK agents (needs ANTHROPIC_API_KEY + fal). Never posts.
   runDryRun(brief, live ? undefined : simulatedRunner())
