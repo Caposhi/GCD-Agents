@@ -18,8 +18,10 @@ The independent gate every package must clear before it reaches the human approv
 ## 2. Claims (→ copywriter; escalate if unsure)
 - [ ] No absolute/unverifiable claims: best, #1, always, never, cheapest, perfect.
 - [ ] **"Guaranteed" appears ONLY inside the exact POMG slogan** — nowhere else.
-- [ ] Every factual claim (price, offer, hours, capability, warranty, turnaround, opening date) traces to an **approved source**. If not → cut or escalate. Never invented.
+- [ ] Every **specific** factual claim (price, offer, hours, capability, warranty, turnaround, opening date, address/city, stat) traces to an **approved source**. If not → cut or escalate. Never invented.
 - [ ] No named-competitor disparagement (incl. dealers); contrast approach, not insults.
+
+**Not a failure** (don't block — note at most): common abbreviations / equivalent brand names (VW ↔ Volkswagen, MINI ↔ Mini Cooper); reasonable paraphrases of approved positioning that keep the meaning; optional omission of a perk; stylistic word choice. Block only when a claim's *substance* is wrong, unsupported, or contradicts approved facts.
 
 ## 3. Platform fit (→ platform-formatter)
 - [ ] Within the platform's character/format limits (`platform-specs`).
