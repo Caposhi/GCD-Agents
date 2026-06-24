@@ -25,6 +25,28 @@ import { generateImage } from "../mcp/image-tool/index.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const AGENTS_DIR = resolve(__dirname, "../../agents");
+const FACTS_PATH = resolve(__dirname, "../../config/approved-facts.json");
+
+let factsCache: Record<string, unknown> | null = null;
+/** Approved facts the copywriter may cite and the critic checks against. */
+export async function loadApprovedFacts(): Promise<Record<string, unknown>> {
+  if (factsCache) return factsCache;
+  try {
+    const raw = JSON.parse(await readFile(FACTS_PATH, "utf8")) as Record<string, unknown>;
+    // Drop blanks, empty arrays, and _meta so the critic only sees real facts.
+    factsCache = Object.fromEntries(
+      Object.entries(raw).filter(([k, v]) => {
+        if (k.startsWith("_")) return false;
+        if (v === "" || v == null) return false;
+        if (Array.isArray(v) && (v.length === 0 || String(v[0]).startsWith("TODO"))) return false;
+        return true;
+      }),
+    );
+  } catch {
+    factsCache = {};
+  }
+  return factsCache;
+}
 
 export type Platform = "instagram" | "facebook" | "gbp";
 export const PLATFORMS: Platform[] = ["instagram", "facebook", "gbp"];
@@ -173,6 +195,10 @@ export async function runBrief(brief: Brief, opts: RunOptions = {}): Promise<Run
   const maxCycles = opts.maxCritiqueCycles ?? 3;
   const sessionId = opts.sessionId ?? `brief-${brief.goal.slice(0, 40)}`;
 
+  // Merge stored approved facts as defaults (brief can override per-run).
+  const defaults = await loadApprovedFacts();
+  brief = { ...brief, approvedFacts: { ...defaults, ...(brief.approvedFacts || {}) } };
+
   // 1. Analytics readout (best-effort; never blocks).
   let analytics: any = null;
   try {
@@ -198,7 +224,9 @@ export async function runBrief(brief: Brief, opts: RunOptions = {}): Promise<Run
   for (let attempt = 1; attempt <= maxCycles; attempt++) {
     cycles = attempt;
     const candidate = assemble(copy, image, tags);
-    const critique = await runner("brand-compliance-critic", { candidate });
+    // The critic needs the brief's approved facts to verify claims (else every
+    // claim reads as unsubstantiated). Pass them in.
+    const critique = await runner("brand-compliance-critic", { candidate, brief });
     history.push(critique);
     verdict = critique?.verdict === "PASS" ? "PASS" : "FAIL";
     if (verdict === "PASS") break;

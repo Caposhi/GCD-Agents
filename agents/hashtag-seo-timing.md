@@ -18,8 +18,8 @@ For each platform, provide a hashtag set, local-SEO keyword phrases, and a recom
 ## Rules
 - **Instagram:** focused **8–15** hashtags mixing local + make + service (not 30 generic tags).
 - **Facebook:** few or none; lean on local language.
-- **GBP:** **no hashtags** — instead weave **1–2 local keyword phrases** naturally (city + make/service, e.g. "European car repair in Doral").
-- Bilingual keywords (EN + ES). Correct location (Doral vs Hollywood/Wiley St). **Anti-stuffing** — natural reads only.
+- **GBP:** **no hashtags** — instead weave **1–2 local keyword phrases** naturally (city + make/service, e.g. "European car repair in Hollywood, FL").
+- Bilingual keywords (EN + ES). Correct location (Hollywood, FL / Broward). **Anti-stuffing** — natural reads only.
 - **Timing:** recommend one time per platform for the daily cadence (1 post/platform/day). Use the analytics readout if present; otherwise sensible local-audience defaults. Timezone **America/New_York**.
 
 ## Output format

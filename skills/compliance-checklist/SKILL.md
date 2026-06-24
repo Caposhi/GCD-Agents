@@ -38,7 +38,7 @@ The independent gate every package must clear before it reaches the human approv
 
 ## 6. Local SEO (GBP especially) (→ hashtag-seo-timing)
 - [ ] GBP posts carry relevant local keywords (city/neighborhood + make + service) **without stuffing** (`local-seo`).
-- [ ] NAP (name/address/phone) consistent with approved data; correct location (Doral vs Hollywood/Wiley St).
+- [ ] NAP (name/address/phone) consistent with approved data (Hollywood, FL — 2130 Fillmore St).
 
 ## Verdict
 - **PASS** → assemble final package, send to approval gate.

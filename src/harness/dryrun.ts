@@ -35,7 +35,13 @@ export interface DryRunReport {
   postCount: number;
   builtRequests: { platform: string; method: string; url: string; valid: boolean }[];
   scorecard: { platform: string; compliancePass: boolean; critiqueCycles: number; reworked: boolean }[];
+  criticFindings?: any[];
   escalation?: string;
+}
+
+function lastFindings(outcome: any): any[] {
+  const h = outcome?.critique?.history ?? [];
+  return h.length ? (h[h.length - 1]?.findings ?? []) : [];
 }
 
 /** Build the platform request for one post (dry — validates shape only). */
@@ -64,6 +70,7 @@ export async function runDryRun(brief: Brief, runner?: AgentRunner): Promise<Dry
       postCount: 0,
       builtRequests: [],
       scorecard: [],
+      criticFindings: lastFindings(outcome),
       escalation: outcome.escalation,
     };
   }
@@ -127,17 +134,33 @@ export function simulatedRunner(): AgentRunner {
 const isMain = process.argv[1]?.endsWith("dryrun.js");
 if (isMain) {
   const live = process.argv.includes("--live");
-  const brief: Brief = { goal: "Promote routine European-car maintenance; book online" };
+  // Test fixture. Real posts pass approvedFacts via the /triggers payload —
+  // the critic only lets claims through that these facts support.
+  const brief: Brief = {
+    goal: "Promote routine European-car maintenance; encourage booking online",
+    approvedFacts: {
+      shop: "German Car Depot — independent European-vehicle repair, South Florida, since 1992",
+      positioning: "The Dealership Alternative — dealer-level expertise without dealer pricing",
+      services: ["oil change", "brake service", "brake fluid flush", "diagnostics", "AC service", "scheduled maintenance"],
+      makes: ["BMW", "Mercedes-Benz", "Audi", "VW", "Porsche", "Volvo", "MINI"],
+      location: "Doral, FL (greater Miami)",
+      bookingUrl: "https://germancardepot.com/book",
+    } as Record<string, unknown>,
+  };
   // live: no runner → real SDK agents (needs ANTHROPIC_API_KEY + fal). Never posts.
   runDryRun(brief, live ? undefined : simulatedRunner())
     .then((report) => {
       console.log(`=== GCD-SOCIAL dry run (${live ? "LIVE — real agents, no posting" : "simulated"}) ===`);
       console.log(JSON.stringify(report, null, 2));
+      if (report.status === "escalated" && report.criticFindings?.length) {
+        console.log("\nWhy the critic failed it:");
+        report.criticFindings.forEach((f) => console.log(`  • [${f.section}] ${f.issue} → ${f.exact_fix} (${f.owning_subagent})`));
+      }
       const allValid = report.builtRequests.every((r) => r.valid);
       console.log(
         allValid && report.status === "awaiting_approval"
           ? "\nDRY RUN OK ✅ (no posting performed)"
-          : "\nDRY RUN ISSUES ⚠️",
+          : "\nDRY RUN ISSUES ⚠️ — see above",
       );
       process.exit(allValid ? 0 : 1);
     })

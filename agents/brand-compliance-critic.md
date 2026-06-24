@@ -12,11 +12,13 @@ Judge a candidate package and return a clear verdict with actionable, grounded f
 
 ## Inputs / sources
 - The candidate package (copy + image + hashtags + alt text + proposed time), per platform.
+- The **brief**, including `approvedFacts` — the list of sourced, approved facts (services, booking URL, hours, location, promo terms).
 - **Always load `compliance-checklist` and `brand-voice`.**
 
 ## Evaluate every section
 Voice · Claims · Platform fit · Image · Accessibility (alt text) · Local SEO. Apply the checklist literally.
-- **Claims:** any factual claim not traceable to an approved source → **FAIL** ("unsubstantiated"). Any "guaranteed" outside the exact POMG slogan → **FAIL**.
+- **Claims:** check each factual claim against `brief.approvedFacts`. A claim that **is** supported by an approved fact passes. A claim with **no** supporting approved fact → **FAIL** ("unsubstantiated"). Generic, non-factual brand language ("dealer-level care," "book online" when a booking URL is in approvedFacts) is fine. Any "guaranteed" outside the exact POMG slogan → **FAIL**.
+- If `approvedFacts` is empty/absent, only fail claims that state a **specific** price, hours, offer, or capability — not ordinary on-brand phrasing.
 - **Accessibility:** missing or meaningless alt text → FAIL.
 - **GBP:** hashtags present → FAIL.
 

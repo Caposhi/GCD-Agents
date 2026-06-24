@@ -5,7 +5,7 @@ description: The voice, tone, language, and visual-identity rules for German Car
 
 # GCD Brand Voice
 
-German Car Depot (GCD) is an independent European-vehicle repair shop in South Florida, family-run since 1992, positioned as **"The Dealership Alternative."** Dealer-level expertise on BMW, Mercedes-Benz, Audi, VW, Porsche, Volvo, MINI and other European makes — without dealer pricing or pressure. Main shop serves greater Doral/South Florida; a second location is opening on **Wiley St, Hollywood, FL**.
+German Car Depot (GCD) is an independent European-vehicle repair shop in South Florida, family-run since 1992, positioned as **"The Dealership Alternative."** Dealer-level expertise on BMW, Mercedes-Benz, Audi, VW, Porsche, Volvo, MINI and other European makes — without dealer pricing or pressure. Located at **2130 Fillmore St, Hollywood, FL**, serving Hollywood, Broward County, and the greater South Florida area.
 
 This skill is the source of truth for how GCD sounds and looks. The `brand-compliance-critic` enforces it.
 
@@ -30,7 +30,7 @@ European-car owners who love their car and want it cared for by people who actua
 - **Service reminders** → helpful and matter-of-fact, never alarmist.
 
 ## Bilingual policy (English + Spanish)
-Doral/South Florida is heavily bilingual, so most posts ship in **English plus a parallel Spanish version**.
+Hollywood and South Florida (Broward) are heavily bilingual, so most posts ship in **English plus a parallel Spanish version**.
 - Spanish is **localized, not literally machine-translated** — natural, conversational South-Florida Spanish that carries the same warmth and reading level.
 - Keep model names, the GCD name, and "POMG" unchanged across languages.
 - The Spanish version follows the *same* voice and compliance rules.
@@ -63,7 +63,7 @@ GCD's motto is **"POMG — Peace of Mind Guaranteed."** The word "Guaranteed" is
 ## Calls to action (pick one, keep it light)
 - "Book online" / "Schedule a visit"
 - "Call us" / "Give us a call"
-- "Stop by" (name the location when relevant: Doral or Hollywood/Wiley St)
+- "Stop by" (the shop: 2130 Fillmore St, Hollywood, FL)
 Standardize contact details against approved sources only; never guess a phone number, hours, or the Hollywood opening date — escalate if unknown.
 
 ## Visual identity (full palette in `assets/brand/brand-tokens.json`)
