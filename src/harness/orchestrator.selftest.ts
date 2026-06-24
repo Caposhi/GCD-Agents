@@ -5,7 +5,7 @@
  * Run: npm run build && npm run test:orchestrator
  */
 
-import { runBrief } from "./orchestrator.js";
+import { runBrief, parseAgentJson } from "./orchestrator.js";
 
 let failures = 0;
 function check(name: string, cond: boolean): void {
@@ -45,6 +45,12 @@ function makeStub(critiqueVerdicts: Array<"PASS" | "FAIL">) {
 const brief = { goal: "Promote a brake fluid flush special" };
 
 async function run(): Promise<void> {
+  // parseAgentJson must handle arrays + fences (the copywriter/hashtag bug)
+  check("parse top-level array", Array.isArray(parseAgentJson('[{"platform":"instagram"}]')));
+  check("parse fenced array", parseAgentJson('```json\n[{"x":2}]\n```')[0]?.x === 2);
+  check("parse object", parseAgentJson('{"v":3}').v === 3);
+  check("parse array length", parseAgentJson('[{"a":1},{"a":2}]').length === 2);
+
   // T1: PASS on first critique
   {
     const { runner, calls } = makeStub(["PASS"]);

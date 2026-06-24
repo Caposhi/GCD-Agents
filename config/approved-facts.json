@@ -1,18 +1,29 @@
 {
-  "_note": "Approved facts = the ONLY source the copywriter may cite and the critic checks claims against. No invented prices/hours/offers. Empty fields are intentionally unstated. Public business info (incl. the public booking-widget link) — NO secrets/API tokens here.",
+  "_note": "Approved facts = the ONLY source the copywriter may cite and the critic checks claims against. No invented prices/hours/offers. Sourced from germancardepot.com. Public business info (incl. the public booking-widget link) — NO secrets/API tokens here.",
 
   "shop": "German Car Depot",
+  "legalName": "German Car Depot LLC",
   "since": 1992,
-  "positioning": "The Dealership Alternative — dealer-level expertise on European cars without dealer pricing or pressure",
-  "makes": ["BMW", "Mercedes-Benz", "Audi", "Volkswagen", "Porsche", "Volvo", "MINI"],
+  "ownership": "Family-owned and operated (the Gelfand family) since 1992",
+  "founder": "Alan \"Ollie\" Gelfand — founder; Bosch Certified & ASE Master Technician with 30+ years of German-auto expertise; oversees operations personally",
+  "funFact": "Founder Alan \"Ollie\" Gelfand is also widely known as the inventor of the skateboarding \"Ollie\"",
+  "positioning": "The Dealership Alternative — dealer-level expertise on European/German cars without dealer pricing or pressure",
+  "tagline": "POMG — Peace of Mind Guaranteed (the Gelfand family motto since the 1960s)",
+
+  "makes": ["BMW", "Mercedes-Benz", "Audi", "Porsche", "Volkswagen", "Mini Cooper", "Land Rover"],
+  "services": ["engine repair", "oil leak repair", "check-engine diagnostics", "brake service", "oil change", "cooling system service", "steering & suspension", "transmission service", "pre-purchase inspection"],
+  "diagnostics": "Factory-grade diagnostics — ISTA/D (BMW) and XENTRY (Mercedes); fault codes traced before repair (\"test first, fix once\")",
+  "parts": "Genuine OEM or OEM-quality parts, explained and approved upfront",
+  "warranty": "2-Year / 24,000-Mile warranty on qualifying parts & labor",
+  "perks": ["free rideshare on approved repairs", "loaner vehicles available (ask when booking)", "financing available — apply at the counter", "same-week appointments often available", "written estimate approved by you before any work begins"],
+  "experience": "30+ years in Hollywood, FL; 25,000+ German & European vehicles repaired",
+  "googleRating": "4.8-star average Google rating (verify current before citing a number)",
 
   "website": "https://www.germancardepot.com/",
   "bookingUrl": "https://widget.app.steercrm.com/book-appointment?token=2bueU-8rj0uJJ-l0oVCQjg",
   "phone": "(954) 921-1515",
   "hours": "Monday–Friday 8:00 AM – 6:00 PM; Saturday & Sunday closed",
   "address": "2130 Fillmore Street, Hollywood, FL 33020",
-  "serviceArea": "Hollywood, FL and the greater South Florida / Broward area",
-
-  "services": ["TODO — confirm the real service list, e.g. oil change, brake service, diagnostics, AC service, scheduled maintenance"],
+  "serviceArea": "Hollywood, FL and nearby Aventura, Hallandale, and the greater Broward / South Florida area",
   "currentPromos": []
 }

@@ -102,15 +102,32 @@ export async function loadAgent(name: string): Promise<AgentDef> {
   return def;
 }
 
-/** Best-effort JSON extraction from a model reply (handles ```json fences). */
+/** Best-effort JSON extraction from a model reply (handles ```fences``` and
+ *  top-level arrays OR objects). */
 export function parseAgentJson(text: string): any {
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-  const candidate = fenced ? fenced[1]! : text;
-  const start = candidate.indexOf("{");
-  const end = candidate.lastIndexOf("}");
-  if (start !== -1 && end > start) {
+  let s = text.trim();
+  const fenced = s.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (fenced) s = fenced[1]!.trim();
+  // Try the whole thing first.
+  try {
+    return JSON.parse(s);
+  } catch {
+    /* fall through to bracket extraction */
+  }
+  // Extract the outermost JSON value — array or object, whichever comes first.
+  const firstObj = s.indexOf("{");
+  const firstArr = s.indexOf("[");
+  let start: number, close: number;
+  if (firstArr !== -1 && (firstObj === -1 || firstArr < firstObj)) {
+    start = firstArr;
+    close = s.lastIndexOf("]");
+  } else {
+    start = firstObj;
+    close = s.lastIndexOf("}");
+  }
+  if (start !== -1 && close > start) {
     try {
-      return JSON.parse(candidate.slice(start, end + 1));
+      return JSON.parse(s.slice(start, close + 1));
     } catch {
       /* fall through */
     }
