@@ -40,9 +40,17 @@ services:
         sync: false
       - key: FB_PAGE_ACCESS_TOKEN       # Facebook Page token (graph.facebook.com)
         sync: false
+      - key: FB_APP_ID                  # GCD-Agent app id (FB token refresh) — not secret
+        sync: false
+      - key: FB_APP_SECRET              # GCD-Agent app secret (SECRET)
+        sync: false
       - key: GOOGLE_ACCESS_TOKEN        # GBP OAuth (refreshed via GOOGLE_REFRESH_TOKEN)
         sync: false
       - key: GOOGLE_REFRESH_TOKEN
+        sync: false
+      - key: GOOGLE_CLIENT_ID           # OAuth client id (for token refresh)
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET       # OAuth client secret (SECRET)
         sync: false
       - key: GBP_ACCOUNT_ID
         sync: false
@@ -84,9 +92,17 @@ services:
         sync: false
       - key: FB_PAGE_ACCESS_TOKEN
         sync: false
+      - key: FB_APP_ID
+        sync: false
+      - key: FB_APP_SECRET
+        sync: false
       - key: GOOGLE_ACCESS_TOKEN
         sync: false
       - key: GOOGLE_REFRESH_TOKEN
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
         sync: false
       - key: GBP_ACCOUNT_ID
         sync: false

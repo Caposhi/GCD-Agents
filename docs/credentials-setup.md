@@ -54,21 +54,28 @@ Posts go through `graph.facebook.com` with a **Page token**.
 3. Get a **long-lived Page access token** (Graph API Explorer → exchange for
    long-lived; renew ~every 60 days).
 4. Env:
-   - `FB_PAGE_ID` = the GCD Page id
-   - `FB_PAGE_ACCESS_TOKEN` = long-lived Page token (secret)
+   - `FB_PAGE_ID` = the GCD Page id (e.g. `213928365298843`)
+   - `FB_PAGE_ACCESS_TOKEN` = long-lived Page token (secret). Verify "Expires: Never" in the Access Token Debugger; a Page token derived from a long-lived user token does not expire.
+   - `FB_APP_ID` / `FB_APP_SECRET` = GCD-Agent app id/secret (id not secret; secret IS). For token refresh.
 
 ## 4. Google Business Profile
 
 Posts use the v4 `localPosts` API with OAuth.
 
 1. Google Cloud project → **submit the Business Profile API access request**
-   and wait for approval (the slow gate).
-2. OAuth consent screen + OAuth client; scope `https://www.googleapis.com/auth/business.manage`.
-3. Authorize once; capture **access + refresh tokens**.
-4. Find IDs: `accounts.list` → `GBP_ACCOUNT_ID`; `locations.list` →
+   and wait for approval (the slow gate). Until approved, calls return
+   PERMISSION_DENIED.
+2. Enable APIs: My Business Account Management API, My Business Business
+   Information API, and the Google My Business API (v4, has `localPosts`).
+3. OAuth consent screen + OAuth client (Web). Note **Client ID + Secret**.
+   Scope `https://www.googleapis.com/auth/business.manage`.
+4. Get tokens (easiest via the OAuth Playground with your own client creds):
+   capture **access + refresh tokens**.
+5. Find IDs: `accounts.list` → `GBP_ACCOUNT_ID`; `locations.list` →
    `GBP_LOCATION_ID` (the correct location: Doral vs Hollywood/Wiley St).
-5. Env: `GOOGLE_ACCESS_TOKEN`, `GOOGLE_REFRESH_TOKEN`, `GBP_ACCOUNT_ID`,
-   `GBP_LOCATION_ID`.
+6. Env: `GOOGLE_ACCESS_TOKEN`, `GOOGLE_REFRESH_TOKEN`, `GOOGLE_CLIENT_ID`,
+   `GOOGLE_CLIENT_SECRET`, `GBP_ACCOUNT_ID`, `GBP_LOCATION_ID`. The access token
+   is 1-hour; the refresh token + client id/secret renew it.
 
 ## 5. Other env vars
 
