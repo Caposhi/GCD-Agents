@@ -1,6 +1,6 @@
 ---
 name: local-seo
-description: Local-SEO and keyword guidance for GCD-SOCIAL, with emphasis on the Google Business Profile. Local terms for the Doral and Hollywood/Wiley St areas, European makes + services, bilingual keywords, NAP consistency, and anti-stuffing rules. Load for GBP posts and hashtag/keyword work.
+description: Local-SEO and keyword guidance for GCD-SOCIAL, with emphasis on the Google Business Profile. Local terms for Hollywood, FL and the greater Broward / South Florida area, European makes + services, bilingual keywords, NAP consistency, and anti-stuffing rules. Load for GBP posts and hashtag/keyword work.
 ---
 
 # Local SEO
@@ -8,15 +8,15 @@ description: Local-SEO and keyword guidance for GCD-SOCIAL, with emphasis on the
 GCD is a local business; discovery is local. The Google Business Profile (GBP) is the highest-leverage surface — treat its copy as local-SEO real estate, not just a caption.
 
 ## Keyword building blocks (combine naturally)
-- **Geography:** Doral, Miami, greater Miami, South Florida; and for the second shop: Hollywood FL, Wiley St, Broward; nearby terms as relevant (Kendall, Coral Gables, Pembroke Pines). Use the **correct location** for the post.
+- **Geography:** Hollywood FL, Broward County, South Florida; nearby terms as relevant (Hollywood, Hallandale Beach, Dania Beach, Pembroke Pines, Davie, Fort Lauderdale, Aventura). The shop is at 2130 Fillmore St, Hollywood, FL.
 - **Makes:** BMW, Mercedes-Benz, Audi, Volkswagen/VW, Porsche, Volvo, MINI (and "European cars/auto").
 - **Services:** auto repair, European car repair, foreign car service, oil change, brake service, brake fluid flush, check-engine/diagnostics, AC service, pre-purchase inspection, maintenance, timing chain, transmission service.
 - **Positioning:** "dealership alternative," "European specialists," "independent European auto repair."
 
-Compose into natural phrases: *"European car repair in Doral," "BMW service near Miami," "independent Mercedes specialists in Hollywood, FL."*
+Compose into natural phrases: *"European car repair in Hollywood, FL," "BMW service in Broward," "independent Mercedes specialists near Fort Lauderdale."*
 
 ## Bilingual keywords (EN + ES)
-Mirror key terms in Spanish for the bilingual audience: *taller mecánico, reparación de autos europeos, servicio de frenos, cambio de aceite, mecánico BMW/Mercedes en Doral/Miami.* Keep it natural, not a keyword list.
+Mirror key terms in Spanish for the bilingual audience: *taller mecánico, reparación de autos europeos, servicio de frenos, cambio de aceite, mecánico BMW/Mercedes en Hollywood / South Florida.* Keep it natural, not a keyword list.
 
 ## GBP post rules
 - **No hashtags on GBP.** Use plain local language instead.

@@ -72,7 +72,7 @@ Posts use the v4 `localPosts` API with OAuth.
 4. Get tokens (easiest via the OAuth Playground with your own client creds):
    capture **access + refresh tokens**.
 5. Find IDs: `accounts.list` → `GBP_ACCOUNT_ID`; `locations.list` →
-   `GBP_LOCATION_ID` (the correct location: Doral vs Hollywood/Wiley St).
+   `GBP_LOCATION_ID` (the GCD location: Hollywood, FL — 2130 Fillmore St).
 6. Env: `GOOGLE_ACCESS_TOKEN`, `GOOGLE_REFRESH_TOKEN`, `GOOGLE_CLIENT_ID`,
    `GOOGLE_CLIENT_SECRET`, `GBP_ACCOUNT_ID`, `GBP_LOCATION_ID`. The access token
    is 1-hour; the refresh token + client id/secret renew it.
