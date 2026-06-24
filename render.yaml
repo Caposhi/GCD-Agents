@@ -15,7 +15,7 @@ services:
     name: gcd-social-api
     runtime: node
     plan: starter
-    buildCommand: npm ci && npm run build
+    buildCommand: npm ci --include=dev && npm run build
     startCommand: npm run start:api
     healthCheckPath: /healthz
     envVars:
@@ -66,7 +66,7 @@ services:
     name: gcd-social-worker
     runtime: node
     plan: starter            # the agent loop can run for many minutes; this is why Render, not Vercel
-    buildCommand: npm ci && npm run build
+    buildCommand: npm ci --include=dev && npm run build
     startCommand: npm run start:worker
     envVars:
       - key: NODE_ENV
