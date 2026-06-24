@@ -22,6 +22,7 @@ export interface Config {
   approvalChannelWebhook: string | undefined;
   publicBaseUrl: string | undefined;
   autonomyPhase: AutonomyPhase;
+  activePlatforms: Array<"instagram" | "facebook" | "gbp">;
   compactContextThreshold: number;
   compactContextInterval: number;
   sessionStartMaxChars: number;
@@ -29,6 +30,17 @@ export interface Config {
 
 function parsePhase(raw: string | undefined): AutonomyPhase {
   return raw === "B" || raw === "C" ? raw : "A";
+}
+
+type ActivePlatform = "instagram" | "facebook" | "gbp";
+function parsePlatforms(raw: string | undefined): ActivePlatform[] {
+  const all: ActivePlatform[] = ["instagram", "facebook", "gbp"];
+  if (!raw) return all;
+  const picked = raw
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter((s): s is ActivePlatform => (all as string[]).includes(s));
+  return picked.length ? picked : all;
 }
 
 export const config: Config = {
@@ -41,6 +53,9 @@ export const config: Config = {
   // Public URL of the web service (for approval links in Slack). e.g. https://gcd-social-api.onrender.com
   publicBaseUrl: process.env.PUBLIC_BASE_URL || undefined,
   autonomyPhase: parsePhase(process.env.AUTONOMY_PHASE),
+  // Which platforms the loop produces/publishes. Set ACTIVE_PLATFORMS=instagram,facebook
+  // while GBP API access is pending; add gbp once approved.
+  activePlatforms: parsePlatforms(process.env.ACTIVE_PLATFORMS),
   compactContextThreshold: num("COMPACT_CONTEXT_THRESHOLD", 160_000),
   compactContextInterval: num("COMPACT_CONTEXT_INTERVAL", 60_000),
   sessionStartMaxChars: num("SESSION_START_MAX_CHARS", 20_000),

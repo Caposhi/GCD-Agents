@@ -15,6 +15,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { config } from "./config.js";
 import { CostTracker } from "./cost.js";
 import { runAgent } from "./sdk.js";
 import { withRetry } from "./retry.js";
@@ -115,7 +116,7 @@ function findingsFor(critique: any, owner: string): any[] {
 }
 
 function assemble(copy: any, image: any, tags: any): unknown {
-  return PLATFORMS.map((platform) => ({
+  return config.activePlatforms.map((platform) => ({
     platform,
     copy: Array.isArray(copy) ? copy.filter((c: any) => c?.platform === platform) : copy,
     image,
@@ -143,11 +144,12 @@ export async function runBrief(brief: Brief, opts: RunOptions = {}): Promise<Run
     analytics = { headline: "no data — proceed on brand judgment" };
   }
 
-  // 2. Fan out independent work in parallel.
+  // 2. Fan out independent work in parallel (scoped to active platforms).
+  const platforms = config.activePlatforms;
   let [copy, image, tags] = await Promise.all([
-    runner("copywriter", { brief, analytics }),
-    runner("image", { brief }),
-    runner("hashtag-seo-timing", { brief, analytics }),
+    runner("copywriter", { brief, analytics, platforms }),
+    runner("image", { brief, platforms }),
+    runner("hashtag-seo-timing", { brief, analytics, platforms }),
   ]);
 
   // 3–4. Critique loop (evaluator-optimizer), capped.
@@ -188,8 +190,10 @@ export async function runBrief(brief: Brief, opts: RunOptions = {}): Promise<Run
   // 5. Format to platform conventions, then build the CANONICAL package in code
   //    (don't trust one agent to carry everything), then stop at approval.
   const candidate = assemble(copy, image, tags);
-  const formatted = await runner("platform-formatter", { candidate });
+  const formatted = await runner("platform-formatter", { candidate, platforms });
   const pkg = buildFinalPackage(formatted, image, tags);
+  // Safety net: only ship posts for active platforms.
+  pkg.platforms = pkg.platforms.filter((p) => config.activePlatforms.includes(p.platform));
 
   const outcome: RunOutcome = {
     status: "awaiting_approval",

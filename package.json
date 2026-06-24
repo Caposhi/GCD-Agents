@@ -18,7 +18,8 @@
     "test:image": "node dist/mcp/image-tool/selftest.js",
     "test:orchestrator": "node dist/harness/orchestrator.selftest.js",
     "test:gate": "node dist/harness/gate.selftest.js",
-    "dryrun": "node dist/harness/dryrun.js"
+    "dryrun": "node dist/harness/dryrun.js",
+    "dryrun:live": "node dist/harness/dryrun.js --live"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.186",
