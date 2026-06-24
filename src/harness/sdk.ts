@@ -1,16 +1,38 @@
 /**
- * Thin adapter over the Claude Agent SDK. Loaded dynamically so the skeleton
- * compiles and boots without coupling tightly to the SDK's evolving type
- * surface; the dependency is still real (see package.json).
+ * Subagent execution via the Anthropic Messages API (single-shot prompt → text).
  *
- * No tools are wired here. In particular the posting tool is NOT registered —
- * publishing is added only in Phase 3 behind the approval gate.
+ * Our subagents are single-turn "produce JSON per your contract" calls, so we
+ * use the Messages API directly rather than the agentic Claude Agent SDK (which
+ * spawns the Claude Code CLI runtime — heavy, and hangs in a headless worker).
+ * No tools are registered here; tool use (image gen, posting) is orchestrated
+ * deterministically in code, not delegated to the model.
  */
+
+import Anthropic from "@anthropic-ai/sdk";
+import { config } from "./config.js";
+
+let client: Anthropic | undefined;
+function getClient(): Anthropic {
+  if (!config.anthropicApiKey) throw new Error("ANTHROPIC_API_KEY is not set");
+  if (!client) client = new Anthropic({ apiKey: config.anthropicApiKey });
+  return client;
+}
+
+// Rough USD per 1M tokens, for the cost meter (not billing-accurate).
+const PRICE: Record<string, { in: number; out: number }> = {
+  "claude-opus-4-8": { in: 15, out: 75 },
+  "claude-sonnet-4-6": { in: 3, out: 15 },
+  "claude-haiku-4-5-20251001": { in: 1, out: 5 },
+};
+function costUsd(model: string, usage: any): number | undefined {
+  const p = PRICE[model];
+  if (!p || !usage) return undefined;
+  return ((usage.input_tokens || 0) * p.in + (usage.output_tokens || 0) * p.out) / 1e6;
+}
 
 export interface AgentRunResult {
   text: string;
   totalCostUsd: number | undefined;
-  /** Last reported token usage, used to drive the compaction signal. */
   usage: Record<string, number> | undefined;
 }
 
@@ -18,42 +40,32 @@ export interface AgentRunOptions {
   systemPrompt: string;
   prompt: string;
   model?: string;
-  maxTurns?: number;
+  maxTokens?: number;
 }
 
-/**
- * Runs a single agent query and collects the final text + cost + usage.
- * Requires ANTHROPIC_API_KEY in the environment (asserted by the caller).
- */
 export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
-  // Dynamic import keeps compile-time decoupling from the SDK's exports.
-  const sdk: any = await import("@anthropic-ai/claude-agent-sdk");
-
-  let text = "";
-  let totalCostUsd: number | undefined;
-  let usage: Record<string, number> | undefined;
-
-  const stream = sdk.query({
-    prompt: opts.prompt,
-    options: {
-      systemPrompt: opts.systemPrompt,
-      model: opts.model,
-      maxTurns: opts.maxTurns ?? 8,
-      // No custom tools / MCP servers registered in the skeleton.
+  const model = opts.model || "claude-sonnet-4-6";
+  const res = await getClient().messages.create(
+    {
+      model,
+      max_tokens: opts.maxTokens ?? 3000,
+      system: opts.systemPrompt,
+      messages: [{ role: "user", content: opts.prompt }],
     },
-  });
-
-  for await (const message of stream) {
-    if (message?.type === "assistant") {
-      const blocks = message.message?.content ?? [];
-      for (const b of blocks) {
-        if (b?.type === "text" && typeof b.text === "string") text += b.text;
-      }
-    } else if (message?.type === "result") {
-      totalCostUsd = message.total_cost_usd;
-      usage = message.usage;
-    }
+    { timeout: 90_000 },
+  );
+  let text = "";
+  for (const block of res.content) {
+    if (block.type === "text") text += block.text;
   }
-
-  return { text, totalCostUsd, usage };
+  const u = res.usage;
+  const usage = u
+    ? {
+        input_tokens: u.input_tokens,
+        output_tokens: u.output_tokens,
+        cache_read_input_tokens: (u as any).cache_read_input_tokens ?? 0,
+        cache_creation_input_tokens: (u as any).cache_creation_input_tokens ?? 0,
+      }
+    : undefined;
+  return { text, totalCostUsd: costUsd(model, u), usage };
 }

@@ -16,13 +16,15 @@ Create a single coherent image (or a small coherent set when explicitly required
 
 ## Process
 1. Pick the **content type**: `text-graphic` (offer/tip cards with words), `photoreal` (shop, cars, service), or `graphic-vector` (flat branded graphics).
-2. Author a prompt that bakes in the brand: navy `#182848` / royal `#18479F` structure, lemondrop `#F8E000` accents, clean and professional. Spell any in-image text correctly. Pick width/height from the `image-brief` platform table.
-3. Call `mcp__image-tool__generate` **once** with `{contentType, prompt, width, height, aiGenerated: true}`. Prefer one strong image; only regenerate on a concrete critic finding.
-4. Write **meaningful alt text** (EN + ES) describing the image and any in-image text.
+2. Author a single strong **prompt** that bakes in the brand: navy `#182848` / royal `#18479F` structure, lemondrop `#F8E000` accents, clean and professional. Spell any in-image text correctly. Pick width/height from the `image-brief` platform table.
+3. Write **meaningful alt text** (EN + ES) describing the image and any in-image text.
+
+You author the image **specification**; the system generates the actual image
+from your prompt (deterministic tool use) and self-discloses AI generation.
 
 ## Output format
 ```
-{ url, model, contentType, width, height, alt_text_en, alt_text_es }
+{ contentType, prompt, width, height, alt_text_en, alt_text_es }
 ```
 
 ## Boundaries
