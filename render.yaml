@@ -6,7 +6,7 @@
 databases:
   - name: gcd-social-db
     databaseName: gcd_social
-    plan: starter            # bump as state grows
+    plan: basic-256mb        # smallest current (non-legacy) Postgres plan (~$6/mo). Use `free` for zero-cost testing (expires after 30 days).
     # stores: agent state, approval queue, brand scorecard, self-improvement proposal lineage
 
 services:
@@ -68,11 +68,13 @@ services:
       - key: IMAGEGEN_API_KEY
         sync: false
       # Native publishing credentials (no aggregator).
-      - key: META_ACCESS_TOKEN
+      - key: IG_USER_ID
+        sync: false
+      - key: IG_ACCESS_TOKEN
         sync: false
       - key: FB_PAGE_ID
         sync: false
-      - key: IG_USER_ID
+      - key: FB_PAGE_ACCESS_TOKEN
         sync: false
       - key: GOOGLE_ACCESS_TOKEN
         sync: false
