@@ -72,14 +72,14 @@ services:
   - type: worker
     name: gcd-social-worker
     runtime: node
-    plan: starter            # the agent loop can run for many minutes; this is why Render, not Vercel
+    plan: standard           # 2GB — the Claude Agent SDK + image gen exceeds Starter's 512MB
     buildCommand: npm ci --include=dev && npm run build
     startCommand: npm run start:worker
     envVars:
       - key: NODE_ENV
         value: production
-      - key: NODE_OPTIONS            # cap V8 heap under the 512MB instance limit (avoid OOM)
-        value: --max-old-space-size=400
+      - key: NODE_OPTIONS            # heap headroom for the SDK on the 2GB worker instance
+        value: --max-old-space-size=1536
       - key: DATABASE_URL
         fromDatabase:
           name: gcd-social-db
