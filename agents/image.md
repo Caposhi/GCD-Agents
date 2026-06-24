@@ -15,7 +15,11 @@ Create a single coherent image (or a small coherent set when explicitly required
 - **Always load the `image-brief` skill** and read `assets/brand/brand-tokens.json` for exact colors.
 
 ## Process
-1. Pick the **content type**: `text-graphic` (offer/tip cards with words), `photoreal` (shop, cars, service), or `graphic-vector` (flat branded graphics).
+1. Pick the **content type** — this routes to the right model, so choose carefully:
+   - **`text-graphic`** → Ideogram (renders legible in-image text). **Use this whenever the image contains ANY words** — offer/tip cards, a CTA like "Book online today," headlines, prices. Most GCD posts are this.
+   - **`photoreal`** → Flux. Use ONLY for realistic imagery with **no important text** (a clean car, the shop). Flux garbles text — never use it for word-bearing graphics.
+   - **`graphic-vector`** → Recraft (flat branded graphics, icons, logos).
+   If in doubt and the image has text, choose `text-graphic`.
 2. Author a single strong **prompt** that bakes in the brand: navy `#182848` / royal `#18479F` structure, lemondrop `#F8E000` accents, clean and professional. Spell any in-image text correctly. Pick width/height from the `image-brief` platform table.
 3. Write **meaningful alt text** (EN + ES) describing the image and any in-image text.
 

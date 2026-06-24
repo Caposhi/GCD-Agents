@@ -198,7 +198,9 @@ export async function runBrief(brief: Brief, opts: RunOptions = {}): Promise<Run
   for (let attempt = 1; attempt <= maxCycles; attempt++) {
     cycles = attempt;
     const candidate = assemble(copy, image, tags);
-    const critique = await runner("brand-compliance-critic", { candidate });
+    // The critic needs the brief's approved facts to verify claims (else every
+    // claim reads as unsubstantiated). Pass them in.
+    const critique = await runner("brand-compliance-critic", { candidate, brief });
     history.push(critique);
     verdict = critique?.verdict === "PASS" ? "PASS" : "FAIL";
     if (verdict === "PASS") break;
