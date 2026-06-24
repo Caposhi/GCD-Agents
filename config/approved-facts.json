@@ -1,21 +1,18 @@
 {
-  "_note": "Approved facts = the ONLY source the copywriter may cite and the critic checks claims against. No invented prices/hours/offers. Empty fields are intentionally unstated until filled (the system won't make a claim it can't source). Public business info, safe to commit — NO secrets/tokens here.",
+  "_note": "Approved facts = the ONLY source the copywriter may cite and the critic checks claims against. No invented prices/hours/offers. Empty fields are intentionally unstated. Public business info (incl. the public booking-widget link) — NO secrets/API tokens here.",
 
   "shop": "German Car Depot",
   "since": 1992,
   "positioning": "The Dealership Alternative — dealer-level expertise on European cars without dealer pricing or pressure",
   "makes": ["BMW", "Mercedes-Benz", "Audi", "Volkswagen", "Porsche", "Volvo", "MINI"],
-  "serviceArea": "Doral and the greater Miami / South Florida area",
-  "secondLocation": "A second location is opening on Wiley St, Hollywood, FL (opening — do not state as open yet)",
 
-  "services": ["TODO — list real services, e.g. oil change, brake service, brake fluid flush, diagnostics, AC service, scheduled maintenance"],
-  "bookingUrl": "",
-  "website": "",
-  "phone": "",
-  "hours": "",
-  "doralAddress": "",
-  "hollywoodAddress": "",
-  "hollywoodOpeningDate": "",
-  "email": "",
+  "website": "https://www.germancardepot.com/",
+  "bookingUrl": "https://widget.app.steercrm.com/book-appointment?token=2bueU-8rj0uJJ-l0oVCQjg",
+  "phone": "(954) 921-1515",
+  "hours": "Monday–Friday 8:00 AM – 6:00 PM; Saturday & Sunday closed",
+  "address": "2130 Fillmore Street, Hollywood, FL 33020",
+  "serviceArea": "Hollywood, FL and the greater South Florida / Broward area",
+
+  "services": ["TODO — confirm the real service list, e.g. oil change, brake service, diagnostics, AC service, scheduled maintenance"],
   "currentPromos": []
 }
