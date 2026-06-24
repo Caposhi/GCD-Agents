@@ -54,12 +54,17 @@ export interface PublishResult {
 
 /** Tokens are credential-bound; supplied at runtime, never committed. */
 export interface PlatformCredentials {
+  // Google Business Profile (OAuth)
   gbpAccountId?: string;
   gbpLocationId?: string;
   googleAccessToken?: string;
+  // Instagram — default Instagram-Login path: graph.instagram.com + IG user token.
   igUserId?: string;
+  igAccessToken?: string;
+  igGraphHost?: string; // default "graph.instagram.com"; use "graph.facebook.com" for the Facebook-Login path
+  // Facebook Page — Facebook-Login path: graph.facebook.com + Page token.
   fbPageId?: string;
-  metaAccessToken?: string; // page/user token per Meta docs
+  fbPageAccessToken?: string;
   graphVersion?: string; // e.g. "v25.0"
 }
 

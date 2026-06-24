@@ -51,12 +51,12 @@ const igPkg: PostPackage = {
   images: [{ url: "https://gcd.example/i.jpg", altText: "alt", aiGenerated: true }],
 };
 const igC = buildIgCreateContainer(igPkg, creds);
-check("ig container url", igC.url === "https://graph.facebook.com/v25.0/333/media");
+check("ig container url (graph.instagram.com)", igC.url === "https://graph.instagram.com/v25.0/333/media");
 check("ig image_url", igC.body?.image_url === "https://gcd.example/i.jpg");
 check("ig alt_text", igC.body?.alt_text === "alt");
 check("ig is_ai_generated", igC.body?.is_ai_generated === true);
 const igP = buildIgPublish("CONTAINER123", creds);
-check("ig publish url", igP.url === "https://graph.facebook.com/v25.0/333/media_publish");
+check("ig publish url (graph.instagram.com)", igP.url === "https://graph.instagram.com/v25.0/333/media_publish");
 check("ig creation_id", igP.body?.creation_id === "CONTAINER123");
 
 // --- Facebook feed vs photo ---

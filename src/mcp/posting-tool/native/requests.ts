@@ -8,6 +8,8 @@
 import { BuiltRequest, PostPackage, PlatformCredentials } from "../types.js";
 
 const DEFAULT_GRAPH = "v25.0";
+const DEFAULT_IG_HOST = "graph.instagram.com"; // Instagram-Login path
+const FB_HOST = "graph.facebook.com";
 
 function requireCred<T>(value: T | undefined, name: string): T {
   if (value === undefined || value === "") {
@@ -52,6 +54,7 @@ export function buildGbpLocalPost(pkg: PostPackage, creds: PlatformCredentials):
 export function buildIgCreateContainer(pkg: PostPackage, creds: PlatformCredentials): BuiltRequest {
   const ig = requireCred(creds.igUserId, "igUserId");
   const ver = creds.graphVersion ?? DEFAULT_GRAPH;
+  const host = creds.igGraphHost ?? DEFAULT_IG_HOST;
   const img = pkg.images?.[0];
   requireCred(img, "images[0] (Instagram requires a public JPEG image)");
 
@@ -63,7 +66,7 @@ export function buildIgCreateContainer(pkg: PostPackage, creds: PlatformCredenti
   if (img!.aiGenerated) body.is_ai_generated = true; // honesty disclosure
   return {
     method: "POST",
-    url: `https://graph.facebook.com/${ver}/${ig}/media`,
+    url: `https://${host}/${ver}/${ig}/media`,
     body,
     step: "ig:createContainer",
   };
@@ -73,9 +76,10 @@ export function buildIgCreateContainer(pkg: PostPackage, creds: PlatformCredenti
 export function buildIgPublish(containerId: string, creds: PlatformCredentials): BuiltRequest {
   const ig = requireCred(creds.igUserId, "igUserId");
   const ver = creds.graphVersion ?? DEFAULT_GRAPH;
+  const host = creds.igGraphHost ?? DEFAULT_IG_HOST;
   return {
     method: "POST",
-    url: `https://graph.facebook.com/${ver}/${ig}/media_publish`,
+    url: `https://${host}/${ver}/${ig}/media_publish`,
     body: { creation_id: requireCred(containerId, "containerId") },
     step: "ig:publish",
   };
@@ -103,7 +107,7 @@ export function buildFacebookPost(pkg: PostPackage, creds: PlatformCredentials):
   }
   return {
     method: "POST",
-    url: `https://graph.facebook.com/${ver}/${page}/${hasImage ? "photos" : "feed"}`,
+    url: `https://${FB_HOST}/${ver}/${page}/${hasImage ? "photos" : "feed"}`,
     body,
     step: hasImage ? "fb:photos" : "fb:feed",
   };

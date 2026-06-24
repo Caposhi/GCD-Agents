@@ -28,11 +28,13 @@ services:
       - key: ANTHROPIC_API_KEY
         sync: false          # set in dashboard
       # Native publishing credentials (no aggregator). All set in dashboard.
-      - key: META_ACCESS_TOKEN          # long-lived Page token (IG + FB)
+      - key: IG_USER_ID                 # Instagram user id (graph.instagram.com)
+        sync: false
+      - key: IG_ACCESS_TOKEN            # Instagram user token (Instagram-Login path)
         sync: false
       - key: FB_PAGE_ID
         sync: false
-      - key: IG_USER_ID
+      - key: FB_PAGE_ACCESS_TOKEN       # Facebook Page token (graph.facebook.com)
         sync: false
       - key: GOOGLE_ACCESS_TOKEN        # GBP OAuth (refreshed via GOOGLE_REFRESH_TOKEN)
         sync: false

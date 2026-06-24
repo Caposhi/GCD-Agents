@@ -80,7 +80,7 @@ export class NativePostingProvider implements PostingProvider {
   }
 
   private async publishInstagram(pkg: PostPackage, creds: PlatformCredentials): Promise<PublishResult> {
-    const token = need(creds.metaAccessToken, "metaAccessToken");
+    const token = need(creds.igAccessToken, "igAccessToken");
     const container = await withRetry(() => send(buildIgCreateContainer(pkg, creds), token), {
       shouldRetry: retryableStatus,
     });
@@ -93,7 +93,7 @@ export class NativePostingProvider implements PostingProvider {
   }
 
   private async publishFacebook(pkg: PostPackage, creds: PlatformCredentials): Promise<PublishResult> {
-    const token = need(creds.metaAccessToken, "metaAccessToken");
+    const token = need(creds.fbPageAccessToken, "fbPageAccessToken");
     const json = await withRetry(() => send(buildFacebookPost(pkg, creds), token), {
       shouldRetry: retryableStatus,
     });
