@@ -52,8 +52,9 @@ function buildRequestFor(pkg: any): { method: string; url: string } {
   }
 }
 
-export async function runDryRun(brief: Brief, runner: AgentRunner): Promise<DryRunReport> {
-  const outcome = await runBrief(brief, { runner });
+/** runner omitted => runBrief uses the default live SDK runner. */
+export async function runDryRun(brief: Brief, runner?: AgentRunner): Promise<DryRunReport> {
+  const outcome = await runBrief(brief, runner ? { runner } : {});
 
   if (outcome.status !== "awaiting_approval") {
     return {
@@ -125,13 +126,19 @@ export function simulatedRunner(): AgentRunner {
 // CLI: npm run dryrun
 const isMain = process.argv[1]?.endsWith("dryrun.js");
 if (isMain) {
+  const live = process.argv.includes("--live");
   const brief: Brief = { goal: "Promote routine European-car maintenance; book online" };
-  runDryRun(brief, simulatedRunner())
+  // live: no runner → real SDK agents (needs ANTHROPIC_API_KEY + fal). Never posts.
+  runDryRun(brief, live ? undefined : simulatedRunner())
     .then((report) => {
-      console.log("=== GCD-SOCIAL dry run (simulated) ===");
+      console.log(`=== GCD-SOCIAL dry run (${live ? "LIVE — real agents, no posting" : "simulated"}) ===`);
       console.log(JSON.stringify(report, null, 2));
       const allValid = report.builtRequests.every((r) => r.valid);
-      console.log(allValid && report.status === "awaiting_approval" ? "\nDRY RUN OK ✅ (no posting performed)" : "\nDRY RUN ISSUES ⚠️");
+      console.log(
+        allValid && report.status === "awaiting_approval"
+          ? "\nDRY RUN OK ✅ (no posting performed)"
+          : "\nDRY RUN ISSUES ⚠️",
+      );
       process.exit(allValid ? 0 : 1);
     })
     .catch((err) => {

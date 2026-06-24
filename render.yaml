@@ -62,6 +62,8 @@ services:
         value: A             # A = approval gate (all posts). B = shadow/canary. C = full autonomy.
       - key: PUBLIC_BASE_URL            # web service URL, for Slack approval links
         value: https://gcd-social-api.onrender.com
+      - key: ACTIVE_PLATFORMS           # IG+FB while GBP API access is pending; add gbp when approved
+        value: instagram,facebook
 
   # 2) Orchestration worker — runs the manager + subagents. Long-running; persistent, not serverless.
   - type: worker
@@ -116,6 +118,8 @@ services:
         value: A
       - key: PUBLIC_BASE_URL
         value: https://gcd-social-api.onrender.com
+      - key: ACTIVE_PLATFORMS
+        value: instagram,facebook
 
 # Posting cadence: 1 post/platform/day. Drive scheduled briefs via a Render Cron Job
 # that POSTs to gcd-social-api, or via the SDK's scheduled-tasks pattern.
