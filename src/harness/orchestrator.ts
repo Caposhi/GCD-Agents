@@ -19,6 +19,7 @@ import { CostTracker } from "./cost.js";
 import { runAgent } from "./sdk.js";
 import { withRetry } from "./retry.js";
 import { saveSessionState } from "./state.js";
+import { buildFinalPackage } from "./packageMap.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const AGENTS_DIR = resolve(__dirname, "../../agents");
@@ -184,9 +185,11 @@ export async function runBrief(brief: Brief, opts: RunOptions = {}): Promise<Run
     return outcome;
   }
 
-  // 5. Format to platform conventions, then stop at an approval request.
+  // 5. Format to platform conventions, then build the CANONICAL package in code
+  //    (don't trust one agent to carry everything), then stop at approval.
   const candidate = assemble(copy, image, tags);
-  const pkg = await runner("platform-formatter", { candidate });
+  const formatted = await runner("platform-formatter", { candidate });
+  const pkg = buildFinalPackage(formatted, image, tags);
 
   const outcome: RunOutcome = {
     status: "awaiting_approval",
