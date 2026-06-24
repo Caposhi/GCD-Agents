@@ -39,8 +39,9 @@ Posts go through `graph.instagram.com` with an **Instagram user token**.
 3. Assign the IG account the **Instagram Tester** role (Roles tab).
 4. **Generate token** for the account → copy the IG user token.
 5. Env:
-   - `IG_USER_ID` = `17841400589230178` (germancardepot)
+   - `IG_USER_ID` = `17841400589230178` (germancardepot) — the **numeric** id, not the handle
    - `IG_ACCESS_TOKEN` = the generated token (secret)
+   - `IG_APP_ID` / `IG_APP_SECRET` = from the Instagram API → "API setup with Instagram login" page (app id is not secret; app secret IS). Used by the token-refresh/exchange layer + `appsecret_proof`, **not** by the publish calls. The dashboard token is long-lived (~60 days); refresh before expiry.
 - Constraints enforced by the tool: image must be a **public JPEG URL**; AI
   images set `is_ai_generated=true`; 100 posts/24h (we post 1/day).
 

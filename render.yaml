@@ -32,6 +32,10 @@ services:
         sync: false
       - key: IG_ACCESS_TOKEN            # Instagram user token (Instagram-Login path)
         sync: false
+      - key: IG_APP_ID                  # Instagram app id (token refresh / appsecret_proof) — not secret
+        sync: false
+      - key: IG_APP_SECRET              # Instagram app secret (SECRET — token exchange/refresh)
+        sync: false
       - key: FB_PAGE_ID
         sync: false
       - key: FB_PAGE_ACCESS_TOKEN       # Facebook Page token (graph.facebook.com)
@@ -71,6 +75,10 @@ services:
       - key: IG_USER_ID
         sync: false
       - key: IG_ACCESS_TOKEN
+        sync: false
+      - key: IG_APP_ID
+        sync: false
+      - key: IG_APP_SECRET
         sync: false
       - key: FB_PAGE_ID
         sync: false
