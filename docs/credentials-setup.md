@@ -63,13 +63,19 @@ Posts go through `graph.facebook.com` with a **Page token**.
 Posts use the v4 `localPosts` API with OAuth.
 
 1. Google Cloud project → **submit the Business Profile API access request**
-   and wait for approval (the slow gate).
-2. OAuth consent screen + OAuth client; scope `https://www.googleapis.com/auth/business.manage`.
-3. Authorize once; capture **access + refresh tokens**.
-4. Find IDs: `accounts.list` → `GBP_ACCOUNT_ID`; `locations.list` →
+   and wait for approval (the slow gate). Until approved, calls return
+   PERMISSION_DENIED.
+2. Enable APIs: My Business Account Management API, My Business Business
+   Information API, and the Google My Business API (v4, has `localPosts`).
+3. OAuth consent screen + OAuth client (Web). Note **Client ID + Secret**.
+   Scope `https://www.googleapis.com/auth/business.manage`.
+4. Get tokens (easiest via the OAuth Playground with your own client creds):
+   capture **access + refresh tokens**.
+5. Find IDs: `accounts.list` → `GBP_ACCOUNT_ID`; `locations.list` →
    `GBP_LOCATION_ID` (the correct location: Doral vs Hollywood/Wiley St).
-5. Env: `GOOGLE_ACCESS_TOKEN`, `GOOGLE_REFRESH_TOKEN`, `GBP_ACCOUNT_ID`,
-   `GBP_LOCATION_ID`.
+6. Env: `GOOGLE_ACCESS_TOKEN`, `GOOGLE_REFRESH_TOKEN`, `GOOGLE_CLIENT_ID`,
+   `GOOGLE_CLIENT_SECRET`, `GBP_ACCOUNT_ID`, `GBP_LOCATION_ID`. The access token
+   is 1-hour; the refresh token + client id/secret renew it.
 
 ## 5. Other env vars
 

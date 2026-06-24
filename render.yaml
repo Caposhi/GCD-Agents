@@ -48,6 +48,10 @@ services:
         sync: false
       - key: GOOGLE_REFRESH_TOKEN
         sync: false
+      - key: GOOGLE_CLIENT_ID           # OAuth client id (for token refresh)
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET       # OAuth client secret (SECRET)
+        sync: false
       - key: GBP_ACCOUNT_ID
         sync: false
       - key: GBP_LOCATION_ID
@@ -95,6 +99,10 @@ services:
       - key: GOOGLE_ACCESS_TOKEN
         sync: false
       - key: GOOGLE_REFRESH_TOKEN
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
         sync: false
       - key: GBP_ACCOUNT_ID
         sync: false
