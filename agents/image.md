@@ -26,6 +26,12 @@ Create a single coherent image (or a small coherent set when explicitly required
 You author the image **specification**; the system generates the actual image
 from your prompt (deterministic tool use) and self-discloses AI generation.
 
+**In-image text hygiene** (text models add stray marks): keep headline + CTA short;
+spell out the exact words you want and instruct **no decorative or trailing
+punctuation** (no stray quotes/apostrophes). Use brand make names as in
+approvedFacts; if listing makes, show all seven or none — never a partial list
+that looks like the full set.
+
 ## Output format
 ```
 { contentType, prompt, width, height, alt_text_en, alt_text_es }

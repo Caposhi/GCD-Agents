@@ -191,6 +191,23 @@ function findingsFor(critique: any, owner: string): any[] {
   return (critique?.findings ?? []).filter((f: any) => f?.owning_subagent === owner);
 }
 
+/** Normalize a critic finding's free-form owner to a canonical agent id. */
+function ownerOf(f: any): "copywriter" | "image" | "hashtag-seo-timing" | null {
+  const s = String(f?.owning_subagent ?? "").toLowerCase();
+  if (s.includes("copy") || s.includes("writer")) return "copywriter";
+  if (s.includes("image") || s.includes("paint") || s.includes("graphic")) return "image";
+  if (s.includes("hashtag") || s.includes("seo") || s.includes("tag") || s.includes("schedul") || s.includes("timing"))
+    return "hashtag-seo-timing";
+  return null;
+}
+
+/** A finding worth acting on this cycle (skip "no action"/PASS/optional notes). */
+function isActionable(f: any): boolean {
+  const fix = String(f?.exact_fix ?? "").trim().toLowerCase();
+  if (!fix) return false;
+  return !(fix.startsWith("no ") || fix.startsWith("n/a") || fix.startsWith("optional") || fix.startsWith("confirm"));
+}
+
 function assemble(copy: any, image: any, tags: any): unknown {
   return config.activePlatforms.map((platform) => ({
     platform,
@@ -249,16 +266,21 @@ export async function runBrief(brief: Brief, opts: RunOptions = {}): Promise<Run
     if (verdict === "PASS") break;
     if (attempt === maxCycles) break; // out of cycles → escalate below
 
-    // Revise: re-run only the subagents that own a finding, with feedback.
-    const owners = new Set((critique?.findings ?? []).map((f: any) => f?.owning_subagent));
-    if (owners.has("copywriter"))
-      copy = await runner("copywriter", { brief, analytics, feedback: findingsFor(critique, "copywriter") });
-    if (owners.has("image")) {
-      image = await runner("image", { brief, feedback: findingsFor(critique, "image") });
+    // Revise: route each actionable finding to its owning subagent (tolerant of
+    // the critic's free-form owner labels), then re-run those agents with feedback.
+    const grouped: Record<string, any[]> = {};
+    for (const f of (critique?.findings ?? []).filter(isActionable)) {
+      const o = ownerOf(f);
+      if (o) (grouped[o] ||= []).push(f);
+    }
+    if (grouped.copywriter)
+      copy = await runner("copywriter", { brief, analytics, platforms, feedback: grouped.copywriter });
+    if (grouped.image) {
+      image = await runner("image", { brief, platforms, feedback: grouped.image });
       image = await resolveImage(image);
     }
-    if (owners.has("hashtag-seo-timing"))
-      tags = await runner("hashtag-seo-timing", { brief, analytics, feedback: findingsFor(critique, "hashtag-seo-timing") });
+    if (grouped["hashtag-seo-timing"])
+      tags = await runner("hashtag-seo-timing", { brief, analytics, platforms, feedback: grouped["hashtag-seo-timing"] });
   }
 
   if (verdict !== "PASS") {
