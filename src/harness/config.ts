@@ -20,6 +20,7 @@ export interface Config {
   anthropicApiKey: string | undefined;
   imagegenApiKey: string | undefined;
   approvalChannelWebhook: string | undefined;
+  publicBaseUrl: string | undefined;
   autonomyPhase: AutonomyPhase;
   compactContextThreshold: number;
   compactContextInterval: number;
@@ -37,6 +38,8 @@ export const config: Config = {
   anthropicApiKey: process.env.ANTHROPIC_API_KEY || undefined,
   imagegenApiKey: process.env.IMAGEGEN_API_KEY || undefined,
   approvalChannelWebhook: process.env.APPROVAL_CHANNEL_WEBHOOK || undefined,
+  // Public URL of the web service (for approval links in Slack). e.g. https://gcd-social-api.onrender.com
+  publicBaseUrl: process.env.PUBLIC_BASE_URL || undefined,
   autonomyPhase: parsePhase(process.env.AUTONOMY_PHASE),
   compactContextThreshold: num("COMPACT_CONTEXT_THRESHOLD", 160_000),
   compactContextInterval: num("COMPACT_CONTEXT_INTERVAL", 60_000),
