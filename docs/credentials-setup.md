@@ -54,8 +54,9 @@ Posts go through `graph.facebook.com` with a **Page token**.
 3. Get a **long-lived Page access token** (Graph API Explorer → exchange for
    long-lived; renew ~every 60 days).
 4. Env:
-   - `FB_PAGE_ID` = the GCD Page id
-   - `FB_PAGE_ACCESS_TOKEN` = long-lived Page token (secret)
+   - `FB_PAGE_ID` = the GCD Page id (e.g. `213928365298843`)
+   - `FB_PAGE_ACCESS_TOKEN` = long-lived Page token (secret). Verify "Expires: Never" in the Access Token Debugger; a Page token derived from a long-lived user token does not expire.
+   - `FB_APP_ID` / `FB_APP_SECRET` = GCD-Agent app id/secret (id not secret; secret IS). For token refresh.
 
 ## 4. Google Business Profile
 
