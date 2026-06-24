@@ -13,6 +13,7 @@ import { PostPackage, PlatformCredentials, PostingProvider, PublishResult } from
 
 export * from "./types.js";
 export { NativePostingProvider } from "./native/provider.js";
+export { buildGbpLocalPost, buildIgCreateContainer, buildIgPublish, buildFacebookPost } from "./native/requests.js";
 
 const defaultProvider: PostingProvider = new NativePostingProvider();
 

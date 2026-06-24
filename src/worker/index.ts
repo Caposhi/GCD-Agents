@@ -12,63 +12,12 @@ import { config } from "../harness/config.js";
 import { initState, stateEnabled, closeState, claimNextBrief, completeBrief, setApprovalStatus } from "../harness/state.js";
 import { requestApproval, waitForApproval, postingRequiresApproval } from "../harness/hitl.js";
 import { runBrief } from "../harness/orchestrator.js";
-import { publishApprovedPackage, PostPackage, Platform, PlatformCredentials } from "../mcp/posting-tool/index.js";
+import { publishApprovedPackage, PlatformCredentials } from "../mcp/posting-tool/index.js";
+import { toPostPackages, summarize, FinalPackage } from "../harness/packageMap.js";
+import { credsFromEnv } from "../harness/creds.js";
 
 let running = true;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-function credsFromEnv(): PlatformCredentials {
-  return {
-    igUserId: process.env.IG_USER_ID,
-    igAccessToken: process.env.IG_ACCESS_TOKEN,
-    igGraphHost: process.env.IG_GRAPH_HOST, // optional; defaults to graph.instagram.com
-    fbPageId: process.env.FB_PAGE_ID,
-    fbPageAccessToken: process.env.FB_PAGE_ACCESS_TOKEN,
-    googleAccessToken: process.env.GOOGLE_ACCESS_TOKEN,
-    gbpAccountId: process.env.GBP_ACCOUNT_ID,
-    gbpLocationId: process.env.GBP_LOCATION_ID,
-    graphVersion: process.env.GRAPH_VERSION,
-  };
-}
-
-const PLATFORM_MAP: Record<string, Platform> = {
-  instagram: "instagram",
-  facebook: "facebook",
-  gbp: "gbp",
-};
-
-/**
- * Best-effort mapping of the platform-formatter output to PostPackages.
- * The formatter's exact shape is finalized in Phase 7 against real agent
- * output; this is defensive and skips anything it can't map.
- */
-function toPostPackages(formatted: any): PostPackage[] {
-  const entries: any[] = Array.isArray(formatted) ? formatted : formatted?.platforms ?? [];
-  const out: PostPackage[] = [];
-  for (const e of entries) {
-    const platform = PLATFORM_MAP[String(e?.platform)];
-    const text = e?.formatted_body ?? e?.body ?? e?.text;
-    if (!platform || !text) continue;
-    const imgUrl = e?.image?.url ?? e?.image_ref ?? e?.image_url;
-    const pkg: PostPackage = {
-      platform,
-      text: String(text),
-      languageCode: e?.lang,
-      images: imgUrl ? [{ url: String(imgUrl), altText: e?.image?.alt_text_en, aiGenerated: true }] : undefined,
-    };
-    if (platform === "gbp" && e?.cta?.url) {
-      pkg.gbp = { topicType: "STANDARD", callToAction: { actionType: e.cta.actionType ?? "LEARN_MORE", url: e.cta.url } };
-    }
-    out.push(pkg);
-  }
-  return out;
-}
-
-function summarize(formatted: any): string {
-  const pkgs = toPostPackages(formatted);
-  if (pkgs.length === 0) return "Package ready for review (no auto-summary).";
-  return pkgs.map((p) => `• *${p.platform}*: ${p.text.slice(0, 120)}${p.text.length > 120 ? "…" : ""}`).join("\n");
-}
 
 async function processBrief(id: string, brief: any): Promise<void> {
   console.log(`[worker] running brief ${id}: ${brief?.goal ?? "(no goal)"}`);
@@ -81,7 +30,8 @@ async function processBrief(id: string, brief: any): Promise<void> {
   }
 
   // awaiting_approval → route to the human gate.
-  const handle = await requestApproval({ summary: summarize(outcome.package), packageFormatted: outcome.package });
+  const pkg = outcome.package as FinalPackage;
+  const handle = await requestApproval({ summary: summarize(pkg), packageFormatted: pkg });
   console.log(`[worker] brief ${id} awaiting approval (id=${handle.id})`);
   const decision = await waitForApproval(handle.id);
 
@@ -94,7 +44,7 @@ async function processBrief(id: string, brief: any): Promise<void> {
   // APPROVED → publish (gated by assertPublishAllowed inside the tool).
   const approved = true;
   const creds = credsFromEnv();
-  const pkgs = toPostPackages(outcome.package);
+  const pkgs = toPostPackages(pkg);
   const results = [];
   for (const pkg of pkgs) {
     try {
