@@ -47,8 +47,9 @@ export class FalImageProvider implements ImageProvider {
         },
         { shouldRetry: retryableStatus },
       );
-      const url = json?.images?.[0]?.url as string | undefined;
-      if (!url) return { ok: false, model: built.model, error: "no image url in fal response" };
+      // fal sync responses vary slightly by model; check the common shapes.
+      const url = (json?.images?.[0]?.url ?? json?.image?.url ?? json?.data?.images?.[0]?.url) as string | undefined;
+      if (!url) return { ok: false, model: built.model, error: `no image url in fal response: ${JSON.stringify(json).slice(0, 200)}` };
       return { ok: true, url, model: built.model };
     } catch (err) {
       return { ok: false, model: built.model, error: (err as Error).message };
