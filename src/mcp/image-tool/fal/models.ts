@@ -22,6 +22,17 @@ export function modelFor(contentType: ImageContentType): string {
   return model;
 }
 
+/**
+ * Per-model extra body params. Kept here so model-specific knobs don't leak into
+ * the generic builder. Ideogram v3's QUALITY tier yields richer, more photoreal
+ * compositions (vs the default BALANCED) — worth it for hero brand graphics.
+ */
+const MODEL_EXTRAS: Record<ImageContentType, Record<string, unknown>> = {
+  "text-graphic": { rendering_speed: "QUALITY" },
+  photoreal: {},
+  "graphic-vector": {},
+};
+
 /** fal sync endpoint: POST https://fal.run/<model> with { prompt, image_size }. */
 export function buildFalRequest(req: ImageRequest): BuiltImageRequest {
   if (!req.prompt) throw new Error("prompt is required");
@@ -36,6 +47,7 @@ export function buildFalRequest(req: ImageRequest): BuiltImageRequest {
       num_images: 1,
       // Instagram only accepts JPEG; request it so the same asset works on IG + FB.
       output_format: "jpeg",
+      ...MODEL_EXTRAS[req.contentType],
     },
   };
 }
