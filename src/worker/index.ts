@@ -9,7 +9,7 @@
  */
 
 import { config } from "../harness/config.js";
-import { initState, stateEnabled, closeState, claimNextBrief, completeBrief, setApprovalStatus } from "../harness/state.js";
+import { initState, stateEnabled, closeState, claimNextBrief, completeBrief, setApprovalStatus, recordEvent } from "../harness/state.js";
 import { requestApproval, waitForApproval, postingRequiresApproval } from "../harness/hitl.js";
 import { runBrief } from "../harness/orchestrator.js";
 import { publishApprovedPackage, PlatformCredentials } from "../mcp/posting-tool/index.js";
@@ -33,7 +33,7 @@ async function igTokenTick(): Promise<void> {
 
 async function processBrief(id: string, brief: any): Promise<void> {
   console.log(`[worker] running brief ${id}: ${brief?.goal ?? "(no goal)"}`);
-  const outcome = await runBrief(brief);
+  const outcome = await runBrief(brief, { runId: id });
 
   if (outcome.status === "escalated") {
     console.log(`[worker] brief ${id} escalated: ${outcome.escalation}`);
@@ -72,6 +72,12 @@ async function processBrief(id: string, brief: any): Promise<void> {
   await setApprovalStatus(handle.id, allOk ? "posted" : "failed");
   await completeBrief(id, allOk ? "done" : "failed", { decision, results, cost: outcome.costUsd });
   console.log(`[worker] brief ${id} published: ${JSON.stringify(results)}`);
+  void recordEvent({
+    runId: id,
+    kind: allOk ? "brief:published" : "brief:publish_failed",
+    message: allOk ? "published to all platforms" : "one or more platforms failed",
+    data: { results },
+  }).catch(() => {});
 }
 
 async function loop(): Promise<void> {

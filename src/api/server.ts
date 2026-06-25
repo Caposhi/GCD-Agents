@@ -12,7 +12,7 @@
 
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { config } from "../harness/config.js";
-import { initState, stateEnabled, enqueueBrief, getApproval, decideApproval, getMedia } from "../harness/state.js";
+import { initState, stateEnabled, enqueueBrief, getApproval, decideApproval, getMedia, recentEvents, consoleSnapshot } from "../harness/state.js";
 import { credsFromEnv } from "../harness/creds.js";
 import { igTokenStatus, effectiveIgToken } from "../harness/igToken.js";
 
@@ -31,6 +31,68 @@ async function readBody(req: IncomingMessage): Promise<string> {
   const chunks: Buffer[] = [];
   for await (const chunk of req) chunks.push(chunk as Buffer);
   return Buffer.concat(chunks).toString("utf8");
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// ---- console contract (consumed by the gcd-arcade hub) ----
+
+/** Static description of this app for the hub launcher / home screen. */
+const CONSOLE_MANIFEST = {
+  id: "gcd-social",
+  name: "GCD-SOCIAL",
+  tagline: "Autonomous social posting — Instagram + Facebook",
+  description:
+    "A multi-agent manager that drafts, illustrates, fact-checks, and (on human approval) publishes daily posts for German Car Depot.",
+  theme: { palette: ["#182848", "#18479F", "#F8E000"], style: "8-bit shop floor", icon: "🔧" },
+  agents: ["analytics", "copywriter", "image", "hashtag-seo-timing", "brand-compliance-critic", "platform-formatter", "posting"],
+  endpoints: { state: "/console/state", stream: "/console/stream" },
+};
+
+/** Read-only telemetry is open by default; lock it by setting CONSOLE_TOKEN. */
+function consoleAuthed(url: URL, req: IncomingMessage): boolean {
+  const need = process.env.CONSOLE_TOKEN;
+  if (!need) return true;
+  const got = url.searchParams.get("key") ?? req.headers["x-console-token"];
+  return got === need;
+}
+function cors(res: ServerResponse): void {
+  res.setHeader("access-control-allow-origin", "*");
+  res.setHeader("access-control-allow-headers", "content-type, x-console-token");
+}
+function sseFrame(e: { id: number; kind: string }): string {
+  return `id: ${e.id}\nevent: ${e.kind}\ndata: ${JSON.stringify(e)}\n\n`;
+}
+
+/** Server-Sent Events feed of live activity for the "live game view". */
+async function streamConsole(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+  res.writeHead(200, {
+    "content-type": "text/event-stream",
+    "cache-control": "no-cache",
+    connection: "keep-alive",
+    "access-control-allow-origin": "*",
+  });
+  let cursor = Number(url.searchParams.get("since") ?? 0) || 0;
+  let open = true;
+  req.on("close", () => {
+    open = false;
+  });
+  // Backlog so a freshly-opened view isn't blank, then tail new events.
+  for (let first = true; open; first = false) {
+    if (!first) await sleep(1500);
+    let batch: Awaited<ReturnType<typeof recentEvents>> = [];
+    try {
+      batch = await recentEvents({ sinceId: cursor, limit: first ? 50 : 100 });
+    } catch {
+      batch = [];
+    }
+    for (const e of batch) {
+      res.write(sseFrame(e));
+      cursor = e.id;
+    }
+    res.write(": ping\n\n"); // heartbeat keeps proxies from closing the stream
+  }
+  res.end();
 }
 
 /** Mask a secret to "set (…1234)" so diagnostics can confirm presence without leaking. */
@@ -121,6 +183,37 @@ const server = createServer(async (req, res) => {
     // Read-only credential diagnostic for the Instagram/Facebook auth setup.
     if (req.method === "GET" && path === "/diag/ig") {
       return json(res, 200, await diagIg());
+    }
+
+    // ---- console contract (hub launcher + live game view) ----
+    if (path.startsWith("/console/")) {
+      cors(res);
+      if (req.method === "OPTIONS") {
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+      if (!consoleAuthed(url, req)) return json(res, 401, { error: "console token required" });
+
+      if (req.method === "GET" && path === "/console/manifest") {
+        return json(res, 200, CONSOLE_MANIFEST);
+      }
+      if (req.method === "GET" && path === "/console/state") {
+        const snap = await consoleSnapshot();
+        return json(res, 200, {
+          id: "gcd-social",
+          autonomyPhase: config.autonomyPhase,
+          activePlatforms: config.activePlatforms,
+          state: stateEnabled() ? "postgres" : "ephemeral",
+          igToken: await igTokenStatus(Date.now()),
+          ...snap,
+          recentEvents: await recentEvents({ limit: 20 }),
+        });
+      }
+      if (req.method === "GET" && path === "/console/stream") {
+        return streamConsole(req, res, url);
+      }
+      return json(res, 404, { error: "unknown console endpoint" });
     }
 
     // Hosted media: serve transcoded JPEGs to the social platforms.
