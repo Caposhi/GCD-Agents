@@ -13,6 +13,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "start:api": "node dist/api/server.js",
     "start:worker": "node dist/worker/index.js",
+    "start:scheduler": "node dist/scheduler/daily.js",
     "migrate": "node dist/state/migrate.js",
     "test:posting": "node dist/mcp/posting-tool/selftest.js",
     "test:image": "node dist/mcp/image-tool/selftest.js",

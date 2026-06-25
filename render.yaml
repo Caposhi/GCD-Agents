@@ -126,5 +126,23 @@ services:
       - key: ACTIVE_PLATFORMS
         value: instagram,facebook
 
-# Posting cadence: 1 post/platform/day. Drive scheduled briefs via a Render Cron Job
-# that POSTs to gcd-social-api, or via the SDK's scheduled-tasks pattern.
+  # 3) Daily scheduler — enqueues one themed brief per day (content calendar).
+  #    It does NOT publish: the worker still runs the brief through the manager
+  #    loop + HITL Slack approval (Phase A) before anything goes live.
+  - type: cron
+    name: gcd-social-scheduler
+    runtime: node
+    plan: starter
+    schedule: "0 13 * * *"   # 13:00 UTC daily (~8–9 AM ET) — brief generated, approval lands mid-morning
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: npm run start:scheduler
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL          # only needs the queue; the worker holds the posting creds
+        fromDatabase:
+          name: gcd-social-db
+          property: connectionString
+
+# Posting cadence: 1 brief/day via the gcd-social-scheduler cron → 1 post/platform/day
+# (IG + FB now; + GBP once added to ACTIVE_PLATFORMS). Approval gate stays on (Phase A).
