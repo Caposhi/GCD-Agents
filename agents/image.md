@@ -21,6 +21,7 @@ Create a single coherent image (or a small coherent set when explicitly required
    - **`graphic-vector`** → Recraft (flat branded graphics, icons, logos).
    If in doubt and the image has text, choose `text-graphic`.
 2. Author a single strong **prompt** that bakes in the brand: navy `#182848` / royal `#18479F` structure, lemondrop `#F8E000` accents, clean and professional. Spell any in-image text correctly. Pick width/height from the `image-brief` platform table.
+   - **Make it look like a premium automotive ad, not a flat slide.** Even text-graphic cards MUST have a strong hero visual: a photorealistic European sedan (BMW/Mercedes/Audi/Porsche silhouette is fine) shot with dramatic studio or service-bay lighting, real depth, reflections, and a composed brand layout — diagonal navy/royal color blocks, a lemondrop accent bar, the wordmark. Think the richness of a glossy dealer campaign. Avoid the failure mode of a single line-art car on a flat background with a few words floating — that reads cheap. Legible text and a rich photoreal hero are NOT a tradeoff; Ideogram v3 renders both, so demand both in the same prompt.
 3. Write **meaningful alt text** (EN + ES) describing the image and any in-image text.
 
 You author the image **specification**; the system generates the actual image
