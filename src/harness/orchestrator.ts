@@ -19,7 +19,7 @@ import { config } from "./config.js";
 import { CostTracker } from "./cost.js";
 import { runAgent } from "./sdk.js";
 import { withRetry } from "./retry.js";
-import { saveSessionState, saveMedia } from "./state.js";
+import { saveSessionState, saveMedia, recordEvent } from "./state.js";
 import { buildFinalPackage } from "./packageMap.js";
 import { generateImage } from "../mcp/image-tool/index.js";
 
@@ -86,6 +86,8 @@ export interface RunOptions {
   runner?: AgentRunner;
   maxCritiqueCycles?: number;
   sessionId?: string;
+  /** Correlates live events for the console "live game view". */
+  runId?: string;
 }
 
 export interface RunOutcome {
@@ -157,7 +159,12 @@ export function parseAgentJson(text: string): any {
   return { _raw: text.trim() };
 }
 
-function makeSdkRunner(cost: CostTracker): AgentRunner {
+/** Fire-and-forget live event — telemetry must never break a run. */
+function emit(runId: string | undefined, kind: string, message: string, extra: { agent?: string; data?: unknown } = {}): void {
+  void recordEvent({ runId, kind, message, agent: extra.agent, data: extra.data }).catch(() => {});
+}
+
+function makeSdkRunner(cost: CostTracker, runId?: string): AgentRunner {
   return async (agentName, input) => {
     const def = await loadAgent(agentName);
     const prompt =
@@ -165,11 +172,14 @@ function makeSdkRunner(cost: CostTracker): AgentRunner {
       `Respond ONLY with the JSON described in your contract — no prose.`;
     const t0 = Date.now();
     console.log(`[agent] ${agentName} → running (${def.model ?? "default"})`);
+    emit(runId, "agent:start", `${agentName} → running`, { agent: agentName, data: { model: def.model ?? "default" } });
     const res = await withRetry(() =>
       runAgent({ systemPrompt: def.systemPrompt, prompt, model: def.model }),
     );
     cost.add(res.totalCostUsd);
-    console.log(`[agent] ${agentName} ✓ ${Date.now() - t0}ms · $${cost.totalUsd.toFixed(4)} cumulative`);
+    const ms = Date.now() - t0;
+    console.log(`[agent] ${agentName} ✓ ${ms}ms · $${cost.totalUsd.toFixed(4)} cumulative`);
+    emit(runId, "agent:done", `${agentName} ✓ ${ms}ms`, { agent: agentName, data: { ms, costUsd: cost.totalUsd } });
     return parseAgentJson(res.text);
   };
 }
@@ -248,9 +258,11 @@ function assemble(copy: any, image: any, tags: any): unknown {
  */
 export async function runBrief(brief: Brief, opts: RunOptions = {}): Promise<RunOutcome> {
   const cost = new CostTracker();
-  const runner = opts.runner ?? makeSdkRunner(cost);
   const maxCycles = opts.maxCritiqueCycles ?? 3;
   const sessionId = opts.sessionId ?? `brief-${brief.goal.slice(0, 40)}`;
+  const runId = opts.runId ?? sessionId;
+  const runner = opts.runner ?? makeSdkRunner(cost, runId);
+  emit(runId, "brief:start", `running brief: ${brief.goal}`, { data: { goal: brief.goal } });
 
   // Merge stored approved facts as defaults (brief can override per-run).
   const defaults = await loadApprovedFacts();
@@ -272,6 +284,7 @@ export async function runBrief(brief: Brief, opts: RunOptions = {}): Promise<Run
     runner("hashtag-seo-timing", { brief, analytics, platforms }),
   ]);
   image = await resolveImage(image);
+  if (image?.url) emit(runId, "image:done", "image generated", { agent: "image", data: { url: image.url, model: image.model } });
 
   // 3–4. Critique loop (evaluator-optimizer), capped.
   const history: any[] = [];
@@ -286,6 +299,7 @@ export async function runBrief(brief: Brief, opts: RunOptions = {}): Promise<Run
     const critique = await runner("brand-compliance-critic", { candidate, brief });
     history.push(critique);
     verdict = critique?.verdict === "PASS" ? "PASS" : "FAIL";
+    emit(runId, "critic:verdict", `critic ${verdict} (cycle ${attempt})`, { agent: "brand-compliance-critic", data: { verdict, cycle: attempt } });
     if (verdict === "PASS") break;
     if (attempt === maxCycles) break; // out of cycles → escalate below
 
@@ -313,6 +327,7 @@ export async function runBrief(brief: Brief, opts: RunOptions = {}): Promise<Run
       escalation: `Failed critique after ${cycles} cycle(s); not shipping a failing package.`,
       costUsd: cost.totalUsd,
     };
+    emit(runId, "brief:escalated", `escalated after ${cycles} cycle(s)`, { data: { cycles } });
     await safeRecord(sessionId, outcome);
     return outcome;
   }
@@ -331,6 +346,9 @@ export async function runBrief(brief: Brief, opts: RunOptions = {}): Promise<Run
     critique: { cycles, finalVerdict: "PASS", history },
     costUsd: cost.totalUsd,
   };
+  emit(runId, "brief:awaiting_approval", "package ready — awaiting approval", {
+    data: { postCount: pkg.platforms.length, platforms: pkg.platforms.map((p) => p.platform) },
+  });
   await safeRecord(sessionId, outcome);
   return outcome;
 }

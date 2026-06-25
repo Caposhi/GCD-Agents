@@ -187,6 +187,94 @@ export async function setApprovalStatus(id: string, status: ApprovalStatus): Pro
   await pool.query(`UPDATE approval_queue SET status=$2 WHERE id=$1`, [id, status]);
 }
 
+// --- live activity events (console / "live game view") ---
+
+export interface EventRow {
+  id: number;
+  runId?: string;
+  kind: string;
+  agent?: string;
+  message: string;
+  data?: unknown;
+  createdAt: string;
+}
+
+interface EventInput {
+  runId?: string;
+  kind: string;
+  agent?: string;
+  message: string;
+  data?: unknown;
+}
+
+const eventMem: EventRow[] = [];
+let eventMemSeq = 0;
+
+/** Append a live event. Fire-and-forget at call sites — never let telemetry break a run. */
+export async function recordEvent(e: EventInput): Promise<void> {
+  if (!enabled || !pool) {
+    eventMem.push({
+      id: ++eventMemSeq,
+      runId: e.runId,
+      kind: e.kind,
+      agent: e.agent,
+      message: e.message,
+      data: e.data,
+      createdAt: new Date().toISOString(),
+    });
+    if (eventMem.length > 500) eventMem.shift();
+    return;
+  }
+  await pool.query(
+    `INSERT INTO events (run_id, kind, agent, message, data) VALUES ($1, $2, $3, $4, $5)`,
+    [e.runId ?? null, e.kind, e.agent ?? null, e.message, e.data === undefined ? null : JSON.stringify(e.data)],
+  );
+}
+
+/** Events with id greater than `sinceId` (the SSE cursor), oldest first. */
+export async function recentEvents(opts: { sinceId?: number; limit?: number } = {}): Promise<EventRow[]> {
+  const sinceId = opts.sinceId ?? 0;
+  const limit = Math.min(opts.limit ?? 100, 500);
+  if (!enabled || !pool) {
+    return eventMem.filter((e) => e.id > sinceId).slice(-limit);
+  }
+  const res = await pool.query(
+    `SELECT id, run_id AS "runId", kind, agent, message, data, created_at AS "createdAt"
+     FROM events WHERE id > $1 ORDER BY id ASC LIMIT $2`,
+    [sinceId, limit],
+  );
+  return res.rows as EventRow[];
+}
+
+/** Compact operational snapshot for /console/state. */
+export async function consoleSnapshot(): Promise<{
+  queue: Record<string, number>;
+  lastBrief?: { id: string; status: string; goal?: string };
+}> {
+  if (!enabled || !pool) {
+    const queue: Record<string, number> = {};
+    let last: BriefRow | undefined;
+    for (const row of briefMem.values()) {
+      queue[row.status] = (queue[row.status] ?? 0) + 1;
+      last = row;
+    }
+    return {
+      queue,
+      lastBrief: last ? { id: last.id, status: last.status, goal: (last.brief as any)?.goal } : undefined,
+    };
+  }
+  const counts = await pool.query(`SELECT status, count(*)::int AS n FROM brief_queue GROUP BY status`);
+  const queue: Record<string, number> = {};
+  for (const r of counts.rows) queue[r.status as string] = r.n as number;
+  const last = await pool.query(
+    `SELECT id, status, brief->>'goal' AS goal FROM brief_queue ORDER BY created_at DESC LIMIT 1`,
+  );
+  return {
+    queue,
+    lastBrief: last.rows[0] ? { id: last.rows[0].id, status: last.rows[0].status, goal: last.rows[0].goal } : undefined,
+  };
+}
+
 // --- hosted media (transcoded JPEGs served by the web service) ---
 
 const mediaMem = new Map<string, { mime: string; bytes: Buffer }>();
