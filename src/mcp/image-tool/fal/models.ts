@@ -34,6 +34,8 @@ export function buildFalRequest(req: ImageRequest): BuiltImageRequest {
       prompt: req.prompt,
       image_size: { width: req.width, height: req.height },
       num_images: 1,
+      // Instagram only accepts JPEG; request it so the same asset works on IG + FB.
+      output_format: "jpeg",
     },
   };
 }
