@@ -186,3 +186,24 @@ export async function setApprovalStatus(id: string, status: ApprovalStatus): Pro
   }
   await pool.query(`UPDATE approval_queue SET status=$2 WHERE id=$1`, [id, status]);
 }
+
+// --- hosted media (transcoded JPEGs served by the web service) ---
+
+const mediaMem = new Map<string, { mime: string; bytes: Buffer }>();
+
+export async function saveMedia(mime: string, bytes: Buffer): Promise<string> {
+  if (!enabled || !pool) {
+    const id = randomUUID();
+    mediaMem.set(id, { mime, bytes });
+    return id;
+  }
+  const res = await pool.query(`INSERT INTO media (mime, bytes) VALUES ($1, $2) RETURNING id`, [mime, bytes]);
+  return res.rows[0].id as string;
+}
+
+export async function getMedia(id: string): Promise<{ mime: string; bytes: Buffer } | undefined> {
+  if (!enabled || !pool) return mediaMem.get(id);
+  const res = await pool.query(`SELECT mime, bytes FROM media WHERE id = $1`, [id]);
+  if (!res.rows[0]) return undefined;
+  return { mime: res.rows[0].mime as string, bytes: res.rows[0].bytes as Buffer };
+}

@@ -11,7 +11,7 @@
 
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { config } from "../harness/config.js";
-import { initState, stateEnabled, enqueueBrief, getApproval, decideApproval } from "../harness/state.js";
+import { initState, stateEnabled, enqueueBrief, getApproval, decideApproval, getMedia } from "../harness/state.js";
 
 function json(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { "content-type": "application/json" });
@@ -42,6 +42,16 @@ const server = createServer(async (req, res) => {
         autonomyPhase: config.autonomyPhase,
         state: stateEnabled() ? "postgres" : "ephemeral",
       });
+    }
+
+    // Hosted media: serve transcoded JPEGs to the social platforms.
+    const media = path.match(/^\/media\/([^/.]+)(?:\.[a-z0-9]+)?$/i);
+    if (req.method === "GET" && media) {
+      const m = await getMedia(media[1]!);
+      if (!m) return json(res, 404, { error: "not found" });
+      res.writeHead(200, { "content-type": m.mime, "cache-control": "public, max-age=31536000" });
+      res.end(m.bytes);
+      return;
     }
 
     if (req.method === "POST" && path === "/triggers") {
