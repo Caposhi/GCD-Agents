@@ -16,6 +16,7 @@
  */
 
 import { loadSessionState, saveSessionState } from "./state.js";
+import { config } from "./config.js";
 
 const STORE_KEY = "cred:ig_access_token";
 const DAY = 24 * 60 * 60 * 1000;
@@ -39,6 +40,24 @@ function igHost(): string {
 /** Only the Instagram-Login path uses expiring tokens; FB-Login Page tokens don't. */
 function isIgLoginPath(): boolean {
   return igHost().includes("instagram.com");
+}
+
+/** Page the human via the Slack approval channel when self-healing can't heal. */
+async function postAlert(text: string): Promise<void> {
+  const hook = config.approvalChannelWebhook;
+  if (!hook) {
+    console.warn(`[ig-token] ALERT (no APPROVAL_CHANNEL_WEBHOOK): ${text}`);
+    return;
+  }
+  try {
+    await fetch(hook, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: `*GCD-SOCIAL — Instagram token alert*\n${text}` }),
+    });
+  } catch (err) {
+    console.error("[ig-token] alert post failed:", (err as Error).message);
+  }
 }
 
 async function callRefresh(current: string): Promise<{ token: string; expiresIn: number }> {
@@ -79,10 +98,29 @@ export async function getCurrentIgToken(nowMs: number): Promise<string | undefin
       await saveSessionState(STORE_KEY, stored).catch(() => {});
       console.log(`[ig-token] refreshed — valid ~${Math.round(expiresIn / 86400)} more days`);
     } catch (err) {
-      console.error(`[ig-token] refresh FAILED, still using current token: ${(err as Error).message}`);
+      const daysLeft = Math.round((stored.expiresAt - nowMs) / DAY);
+      console.error(`[ig-token] refresh FAILED, still using current token (~${daysLeft}d left): ${(err as Error).message}`);
+      // Self-healing couldn't heal — page a human while the current token still works.
+      await postAlert(
+        `Auto-refresh FAILED — est. ~${daysLeft} days of validity left.\nError: ${(err as Error).message}\n` +
+          `Posting still works for now. If this persists, generate a fresh long-lived IG token and update IG_ACCESS_TOKEN on the worker (it re-seeds automatically).`,
+      );
     }
   }
   return stored.token;
+}
+
+/**
+ * The token the worker actually publishes with: DB store first, env fallback.
+ * Read-only — never refreshes or seeds. Used by diagnostics so /diag/ig reflects
+ * the live posting token, not the (intentionally static) env seed.
+ */
+export async function effectiveIgToken(): Promise<{ token?: string; source: "db-store" | "env" | "none" }> {
+  const envToken = process.env.IG_ACCESS_TOKEN || undefined;
+  if (!isIgLoginPath()) return { token: envToken, source: envToken ? "env" : "none" };
+  const stored = await loadSessionState<StoredToken>(STORE_KEY).catch(() => undefined);
+  if (stored?.token) return { token: stored.token, source: "db-store" };
+  return { token: envToken, source: envToken ? "env" : "none" };
 }
 
 /** Read-only snapshot for diagnostics. Never returns the token value. */

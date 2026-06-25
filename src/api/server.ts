@@ -14,7 +14,7 @@ import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { config } from "../harness/config.js";
 import { initState, stateEnabled, enqueueBrief, getApproval, decideApproval, getMedia } from "../harness/state.js";
 import { credsFromEnv } from "../harness/creds.js";
-import { igTokenStatus } from "../harness/igToken.js";
+import { igTokenStatus, effectiveIgToken } from "../harness/igToken.js";
 
 function json(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { "content-type": "application/json" });
@@ -74,14 +74,18 @@ async function diagIg(): Promise<unknown> {
     },
   };
 
-  // 1) Does the IG token + host + user-id resolve? This is the createContainer auth context.
-  if (c.igAccessToken && c.igUserId) {
+  // 1) Does the LIVE token (DB store first, env fallback) resolve? This tests the
+  // exact token the worker publishes with — so a green check means posting is green,
+  // regardless of whether the static env seed has drifted from the refreshed token.
+  const live = await effectiveIgToken();
+  out.igTokenSource = live.source; // "db-store" once the worker has seeded; "env" before then
+  if (live.token && c.igUserId) {
     out.igTokenCheck = await graphGet(
       `https://${igHost}/${ver}/${encodeURIComponent(c.igUserId)}?fields=id,username,account_type`,
-      c.igAccessToken,
+      live.token,
     );
   } else {
-    out.igTokenCheck = { skipped: "need IG_ACCESS_TOKEN and IG_USER_ID" };
+    out.igTokenCheck = { skipped: "need a live IG token (env seed or DB store) and IG_USER_ID" };
   }
 
   // 2) Is an IG Business account linked to the Page? (Facebook-Login path readiness.)
