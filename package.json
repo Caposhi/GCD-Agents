@@ -2,7 +2,7 @@
   "name": "gcd-social",
   "version": "0.1.0",
   "private": true,
-  "description": "GCD-SOCIAL \u2014 autonomous multi-agent social posting system (harness skeleton).",
+  "description": "GCD-SOCIAL — autonomous multi-agent social posting system (harness skeleton).",
   "license": "MIT",
   "type": "module",
   "engines": {
@@ -23,6 +23,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.106.0",
+    "jimp": "^1.6.1",
     "pg": "^8.22.0"
   },
   "devDependencies": {

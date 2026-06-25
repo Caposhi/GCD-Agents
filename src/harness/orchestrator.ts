@@ -19,9 +19,31 @@ import { config } from "./config.js";
 import { CostTracker } from "./cost.js";
 import { runAgent } from "./sdk.js";
 import { withRetry } from "./retry.js";
-import { saveSessionState } from "./state.js";
+import { saveSessionState, saveMedia } from "./state.js";
 import { buildFinalPackage } from "./packageMap.js";
 import { generateImage } from "../mcp/image-tool/index.js";
+
+/**
+ * Instagram only accepts JPEG, and fal's Ideogram returns PNG — so fetch the
+ * generated image, transcode to JPEG, store it, and return a public URL served
+ * by our web service. Returns null (keep the original URL) if we can't host it.
+ */
+async function transcodeAndHost(srcUrl: string): Promise<string | null> {
+  if (!config.publicBaseUrl) return null;
+  try {
+    const resp = await fetch(srcUrl);
+    if (!resp.ok) return null;
+    const buf = Buffer.from(await resp.arrayBuffer());
+    const { Jimp, JimpMime } = await import("jimp");
+    const img = await Jimp.read(buf);
+    const jpeg = await img.getBuffer(JimpMime.jpeg);
+    const id = await saveMedia("image/jpeg", jpeg as Buffer);
+    return `${config.publicBaseUrl.replace(/\/$/, "")}/media/${id}.jpg`;
+  } catch (e) {
+    console.warn(`[image] JPEG transcode/host failed: ${(e as Error).message}`);
+    return null;
+  }
+}
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const AGENTS_DIR = resolve(__dirname, "../../agents");
@@ -173,9 +195,10 @@ async function resolveImage(image: any): Promise<any> {
       config.imagegenApiKey,
     );
     if (gen.ok && gen.url) {
-      image.url = gen.url;
+      const hosted = await transcodeAndHost(gen.url);
+      image.url = hosted ?? gen.url;
       image.model = gen.model;
-      console.log(`[image] ✓ ${gen.model} → ${gen.url}`);
+      console.log(`[image] ✓ ${gen.model} → ${image.url}${hosted ? " (transcoded JPEG)" : ""}`);
     } else {
       console.warn(`[image] generation failed: ${gen.error}`);
     }
