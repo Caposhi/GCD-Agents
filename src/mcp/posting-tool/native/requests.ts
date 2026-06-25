@@ -72,6 +72,17 @@ export function buildIgCreateContainer(pkg: PostPackage, creds: PlatformCredenti
   };
 }
 
+/** Step 1.5: GET /<container-id>?fields=status_code — poll until FINISHED before publishing. */
+export function buildIgContainerStatus(containerId: string, creds: PlatformCredentials): BuiltRequest {
+  const ver = creds.graphVersion ?? DEFAULT_GRAPH;
+  const host = creds.igGraphHost ?? DEFAULT_IG_HOST;
+  return {
+    method: "GET",
+    url: `https://${host}/${ver}/${requireCred(containerId, "containerId")}?fields=status_code`,
+    step: "ig:status",
+  };
+}
+
 /** Step 2: POST /<IG_ID>/media_publish with the container id. */
 export function buildIgPublish(containerId: string, creds: PlatformCredentials): BuiltRequest {
   const ig = requireCred(creds.igUserId, "igUserId");
