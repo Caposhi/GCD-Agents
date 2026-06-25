@@ -43,25 +43,47 @@ function tagsForPlatform(tags: any, platform: string): string[] | undefined {
 }
 
 /**
- * Build the canonical package from raw subagent outputs. Tolerant of shape
- * variation; drops any entry without a platform + body.
+ * Build the canonical package, driven by the COPYWRITER's per-platform array
+ * (reliable: [{platform, lang, body, cta}]). The platform-formatter output is
+ * used only to refine the body when present. One post per platform, EN then ES.
  */
-export function buildFinalPackage(formatted: any, image: any, tags: any): FinalPackage {
-  const entries: any[] = Array.isArray(formatted) ? formatted : formatted?.platforms ?? [];
+export function buildFinalPackage(copy: any, formatted: any, image: any, tags: any): FinalPackage {
+  const copyArr: any[] = Array.isArray(copy) ? copy : copy?.posts ?? [];
+  const fmtArr: any[] = Array.isArray(formatted) ? formatted : formatted?.platforms ?? [];
+  const tagArr: any[] = Array.isArray(tags) ? tags : tags?.platforms ?? [];
+
   const platforms: FinalPackagePost[] = [];
-  for (const e of entries) {
-    const platform = normPlatform(e?.platform);
-    const body = e?.formatted_body ?? e?.body ?? e?.text;
-    if (!platform || !body) continue;
+  const seen = new Set<Platform>();
+
+  for (const c of copyArr) {
+    const platform = normPlatform(c?.platform);
+    if (!platform || seen.has(platform)) continue;
+    seen.add(platform);
+
+    const entries = copyArr.filter((e) => normPlatform(e?.platform) === platform);
+    const bodyFor = (lang: string): string | null => {
+      const f = fmtArr.find((x) => normPlatform(x?.platform) === platform && (x?.lang === lang || x?.lang == null));
+      const e = entries.find((x) => x?.lang === lang) ?? (lang === "en" ? entries.find((x) => x?.lang == null) : undefined);
+      return f?.formatted_body || e?.body || e?.formatted_body || null;
+    };
+    const en = bodyFor("en");
+    const es = bodyFor("es");
+    const body = [en, es].filter(Boolean).join("\n\n");
+    if (!body) continue;
+
+    const tag = tagArr.find((t) => normPlatform(t?.platform) === platform);
+    const ctaSrc = fmtArr.find((x) => normPlatform(x?.platform) === platform)?.cta ?? entries[0]?.cta;
+    const cta = ctaSrc && typeof ctaSrc === "object" && ctaSrc.url ? ctaSrc : undefined;
+
     platforms.push({
       platform,
-      body: String(body),
-      lang: e?.lang,
-      hashtags: e?.hashtags ?? tagsForPlatform(tags, e?.platform),
-      cta: e?.cta,
-      scheduledTime: e?.scheduled_time ?? e?.recommended_time,
+      body,
+      hashtags: tag?.hashtags,
+      cta,
+      scheduledTime: tag?.recommended_time,
     });
   }
+
   const img = image?.url
     ? { url: String(image.url), altEn: image.alt_text_en ?? image.altEn, altEs: image.alt_text_es ?? image.altEs }
     : undefined;

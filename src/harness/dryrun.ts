@@ -35,6 +35,7 @@ export interface DryRunReport {
   postCount: number;
   builtRequests: { platform: string; method: string; url: string; valid: boolean }[];
   scorecard: { platform: string; compliancePass: boolean; critiqueCycles: number; reworked: boolean }[];
+  package?: FinalPackage;
   criticFindings?: any[];
   escalation?: string;
 }
@@ -100,6 +101,7 @@ export async function runDryRun(brief: Brief, runner?: AgentRunner): Promise<Dry
     postCount: posts.length,
     builtRequests,
     scorecard,
+    package: pkg,
   };
 }
 

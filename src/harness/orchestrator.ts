@@ -298,7 +298,7 @@ export async function runBrief(brief: Brief, opts: RunOptions = {}): Promise<Run
   //    (don't trust one agent to carry everything), then stop at approval.
   const candidate = assemble(copy, image, tags);
   const formatted = await runner("platform-formatter", { candidate, platforms });
-  const pkg = buildFinalPackage(formatted, image, tags);
+  const pkg = buildFinalPackage(copy, formatted, image, tags);
   // Safety net: only ship posts for active platforms.
   pkg.platforms = pkg.platforms.filter((p) => config.activePlatforms.includes(p.platform));
 
