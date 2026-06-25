@@ -1,6 +1,7 @@
 /**
  * Trigger/webhook receiver (Render `web` service). Minimal Node http server.
  *   GET  /healthz                 — liveness (Render healthCheckPath)
+ *   GET  /diag/ig                 — read-only IG/FB credential diagnostic (no posting)
  *   POST /triggers                — accept a brief; enqueue for the worker
  *   GET  /approvals/:id?token=     — human review page (shows package + buttons)
  *   POST /approvals/:id/decision   — record approve/reject (token-guarded)
@@ -12,6 +13,7 @@
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { config } from "../harness/config.js";
 import { initState, stateEnabled, enqueueBrief, getApproval, decideApproval, getMedia } from "../harness/state.js";
+import { credsFromEnv } from "../harness/creds.js";
 
 function json(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { "content-type": "application/json" });
@@ -30,6 +32,70 @@ async function readBody(req: IncomingMessage): Promise<string> {
   return Buffer.concat(chunks).toString("utf8");
 }
 
+/** Mask a secret to "set (…1234)" so diagnostics can confirm presence without leaking. */
+function maskPresence(v: string | undefined): string {
+  if (!v) return "MISSING";
+  return `set (…${v.slice(-4)})`;
+}
+
+/** GET a Graph endpoint with a bearer token; never throws — returns parsed body or the error. */
+async function graphGet(urlStr: string, token: string): Promise<{ ok: boolean; status: number; body: unknown }> {
+  try {
+    const res = await fetch(urlStr, { headers: { authorization: `Bearer ${token}` } });
+    const text = await res.text();
+    let body: unknown;
+    try { body = text ? JSON.parse(text) : {}; } catch { body = text; }
+    return { ok: res.ok, status: res.status, body };
+  } catch (err) {
+    return { ok: false, status: 0, body: (err as Error).message };
+  }
+}
+
+/**
+ * Read-only Instagram/Facebook credential diagnostic. Confirms — without running a
+ * brief or posting anything — whether the configured IG token + host + user-id are
+ * valid (the exact auth context ig:createContainer uses) and whether the Page has a
+ * linked IG Business account (the Facebook-Login path). Echoes Meta's own error so
+ * code 190 etc. is visible. Never returns token values.
+ */
+async function diagIg(): Promise<unknown> {
+  const c = credsFromEnv();
+  const ver = c.graphVersion ?? "v25.0";
+  const igHost = c.igGraphHost ?? "graph.instagram.com";
+  const out: Record<string, unknown> = {
+    env: {
+      IG_USER_ID: c.igUserId ?? "MISSING",
+      IG_ACCESS_TOKEN: maskPresence(c.igAccessToken),
+      IG_GRAPH_HOST: igHost,
+      FB_PAGE_ID: c.fbPageId ?? "MISSING",
+      FB_PAGE_ACCESS_TOKEN: maskPresence(c.fbPageAccessToken),
+      GRAPH_VERSION: ver,
+    },
+  };
+
+  // 1) Does the IG token + host + user-id resolve? This is the createContainer auth context.
+  if (c.igAccessToken && c.igUserId) {
+    out.igTokenCheck = await graphGet(
+      `https://${igHost}/${ver}/${encodeURIComponent(c.igUserId)}?fields=id,username,account_type`,
+      c.igAccessToken,
+    );
+  } else {
+    out.igTokenCheck = { skipped: "need IG_ACCESS_TOKEN and IG_USER_ID" };
+  }
+
+  // 2) Is an IG Business account linked to the Page? (Facebook-Login path readiness.)
+  if (c.fbPageAccessToken && c.fbPageId) {
+    out.pageLinkCheck = await graphGet(
+      `https://graph.facebook.com/${ver}/${encodeURIComponent(c.fbPageId)}?fields=instagram_business_account{id,username}`,
+      c.fbPageAccessToken,
+    );
+  } else {
+    out.pageLinkCheck = { skipped: "need FB_PAGE_ACCESS_TOKEN and FB_PAGE_ID" };
+  }
+
+  return out;
+}
+
 const server = createServer(async (req, res) => {
   try {
     const url = new URL(req.url ?? "/", "http://localhost");
@@ -42,6 +108,11 @@ const server = createServer(async (req, res) => {
         autonomyPhase: config.autonomyPhase,
         state: stateEnabled() ? "postgres" : "ephemeral",
       });
+    }
+
+    // Read-only credential diagnostic for the Instagram/Facebook auth setup.
+    if (req.method === "GET" && path === "/diag/ig") {
+      return json(res, 200, await diagIg());
     }
 
     // Hosted media: serve transcoded JPEGs to the social platforms.
