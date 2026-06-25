@@ -14,6 +14,7 @@ import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { config } from "../harness/config.js";
 import { initState, stateEnabled, enqueueBrief, getApproval, decideApproval, getMedia } from "../harness/state.js";
 import { credsFromEnv } from "../harness/creds.js";
+import { igTokenStatus } from "../harness/igToken.js";
 
 function json(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { "content-type": "application/json" });
@@ -92,6 +93,9 @@ async function diagIg(): Promise<unknown> {
   } else {
     out.pageLinkCheck = { skipped: "need FB_PAGE_ACCESS_TOKEN and FB_PAGE_ID" };
   }
+
+  // 3) Auto-refresh state (Instagram-Login path only).
+  out.igTokenStore = await igTokenStatus(Date.now());
 
   return out;
 }

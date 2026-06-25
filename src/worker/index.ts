@@ -15,9 +15,21 @@ import { runBrief } from "../harness/orchestrator.js";
 import { publishApprovedPackage, PlatformCredentials } from "../mcp/posting-tool/index.js";
 import { toPostPackages, summarize, FinalPackage } from "../harness/packageMap.js";
 import { credsFromEnv } from "../harness/creds.js";
+import { getCurrentIgToken } from "../harness/igToken.js";
 
 let running = true;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// Keep the (60-day-capped) Instagram-Login token fresh out-of-band so posting never lapses.
+const TOKEN_REFRESH_INTERVAL_MS = 12 * 60 * 60 * 1000;
+let tokenTimer: ReturnType<typeof setInterval> | undefined;
+async function igTokenTick(): Promise<void> {
+  try {
+    await getCurrentIgToken(Date.now());
+  } catch (err) {
+    console.error("[ig-token] tick error:", (err as Error).message);
+  }
+}
 
 async function processBrief(id: string, brief: any): Promise<void> {
   console.log(`[worker] running brief ${id}: ${brief?.goal ?? "(no goal)"}`);
@@ -44,6 +56,9 @@ async function processBrief(id: string, brief: any): Promise<void> {
   // APPROVED → publish (gated by assertPublishAllowed inside the tool).
   const approved = true;
   const creds = credsFromEnv();
+  // Use the auto-refreshed IG token (DB-backed) rather than the possibly-stale env value.
+  const liveIgToken = await getCurrentIgToken(Date.now());
+  if (liveIgToken) creds.igAccessToken = liveIgToken;
   const pkgs = toPostPackages(pkg);
   const results = [];
   for (const pkg of pkgs) {
@@ -90,6 +105,8 @@ async function main(): Promise<void> {
   console.log("[worker] gcd-social-worker started");
   console.log(`[worker] autonomy phase: ${config.autonomyPhase} · posting requires approval: ${postingRequiresApproval()}`);
   console.log(`[worker] state backend: ${stateEnabled() ? "postgres" : "ephemeral"}`);
+  await igTokenTick(); // seed/refresh the IG token at startup
+  tokenTimer = setInterval(() => void igTokenTick(), TOKEN_REFRESH_INTERVAL_MS);
   console.log("[worker] polling brief queue…");
   await loop();
 }
@@ -97,6 +114,7 @@ async function main(): Promise<void> {
 for (const sig of ["SIGINT", "SIGTERM"] as const) {
   process.on(sig, async () => {
     running = false;
+    if (tokenTimer) clearInterval(tokenTimer);
     await closeState();
     console.log(`[worker] received ${sig}, shutting down`);
     process.exit(0);
