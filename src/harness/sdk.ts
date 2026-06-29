@@ -54,6 +54,41 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
     },
     { timeout: 90_000 },
   );
+  return collect(res, model);
+}
+
+export interface VisionRunOptions {
+  systemPrompt: string;
+  prompt: string;
+  jpegBase64: string;
+  model?: string;
+  maxTokens?: number;
+}
+
+/** Single-shot vision call: inspect a JPEG and return the model's text. */
+export async function runVision(opts: VisionRunOptions): Promise<AgentRunResult> {
+  const model = opts.model || "claude-sonnet-4-6";
+  const res = await getClient().messages.create(
+    {
+      model,
+      max_tokens: opts.maxTokens ?? 1000,
+      system: opts.systemPrompt,
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "image", source: { type: "base64", media_type: "image/jpeg", data: opts.jpegBase64 } },
+            { type: "text", text: opts.prompt },
+          ],
+        },
+      ],
+    },
+    { timeout: 90_000 },
+  );
+  return collect(res, model);
+}
+
+function collect(res: Anthropic.Message, model: string): AgentRunResult {
   let text = "";
   for (const block of res.content) {
     if (block.type === "text") text += block.text;
