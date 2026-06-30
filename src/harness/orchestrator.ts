@@ -22,13 +22,14 @@ import { withRetry } from "./retry.js";
 import { saveSessionState, saveMedia, recordEvent } from "./state.js";
 import { buildFinalPackage } from "./packageMap.js";
 import { generateImage } from "../mcp/image-tool/index.js";
+import { inspectImageText } from "./imageQc.js";
 
 /**
  * Instagram only accepts JPEG, and fal's Ideogram returns PNG — so fetch the
  * generated image, transcode to JPEG, store it, and return a public URL served
  * by our web service. Returns null (keep the original URL) if we can't host it.
  */
-async function transcodeAndHost(srcUrl: string): Promise<string | null> {
+async function transcodeAndHost(srcUrl: string): Promise<{ url: string; jpeg: Buffer } | null> {
   if (!config.publicBaseUrl) return null;
   try {
     const resp = await fetch(srcUrl);
@@ -36,9 +37,9 @@ async function transcodeAndHost(srcUrl: string): Promise<string | null> {
     const buf = Buffer.from(await resp.arrayBuffer());
     const { Jimp, JimpMime } = await import("jimp");
     const img = await Jimp.read(buf);
-    const jpeg = await img.getBuffer(JimpMime.jpeg);
-    const id = await saveMedia("image/jpeg", jpeg as Buffer);
-    return `${config.publicBaseUrl.replace(/\/$/, "")}/media/${id}.jpg`;
+    const jpeg = (await img.getBuffer(JimpMime.jpeg)) as Buffer;
+    const id = await saveMedia("image/jpeg", jpeg);
+    return { url: `${config.publicBaseUrl.replace(/\/$/, "")}/media/${id}.jpg`, jpeg };
   } catch (e) {
     console.warn(`[image] JPEG transcode/host failed: ${(e as Error).message}`);
     return null;
@@ -189,32 +190,69 @@ function makeSdkRunner(cost: CostTracker, runId?: string): AgentRunner {
  * (deterministic tool use). Mutates `image` to add a real URL when the fal key
  * is configured and the agent supplied a prompt.
  */
-async function resolveImage(image: any): Promise<any> {
+const MAX_IMAGE_ATTEMPTS = 3;
+
+async function resolveImage(image: any, runId?: string): Promise<any> {
   if (!config.imagegenApiKey || !image || image.url) return image;
-  const prompt = image.prompt || image.image_prompt || image.description;
-  if (!prompt) return image;
-  try {
-    console.log(`[image] generating via fal (${image.contentType || "text-graphic"})…`);
-    const gen = await generateImage(
-      {
-        contentType: image.contentType || "text-graphic",
-        prompt,
-        width: image.width || 1080,
-        height: image.height || 1350,
-      },
-      config.imagegenApiKey,
-    );
-    if (gen.ok && gen.url) {
+  const basePrompt = image.prompt || image.image_prompt || image.description;
+  if (!basePrompt) return image;
+  const expected: string[] = Array.isArray(image.in_image_text)
+    ? image.in_image_text.map(String)
+    : Array.isArray(image.inImageText)
+      ? image.inImageText.map(String)
+      : [];
+  const ct = image.contentType || "text-graphic";
+  const width = image.width || 1080;
+  const height = image.height || 1350;
+
+  let lastIssues: string[] = [];
+  for (let attempt = 1; attempt <= MAX_IMAGE_ATTEMPTS; attempt++) {
+    // On a retry, hard-constrain the prompt to ONLY the intended words.
+    const prompt =
+      attempt === 1
+        ? basePrompt
+        : `${basePrompt}\n\nCRITICAL FIX: the previous render had garbled/illegible text (${lastIssues.join("; ") || "unreadable text"}). ` +
+          `Render ONLY these exact words — large, sharp, and perfectly legible — with NO other text: no body paragraphs, no second call-to-action, no license-plate text. ` +
+          `Allowed text: ${expected.length ? expected.map((t) => `"${t}"`).join(", ") : "the kicker, the headline, one CTA button, the wordmark, and the URL only"}.`;
+    try {
+      console.log(`[image] generating via fal (${ct})… attempt ${attempt}/${MAX_IMAGE_ATTEMPTS}`);
+      const gen = await generateImage({ contentType: ct, prompt, width, height }, config.imagegenApiKey);
+      if (!gen.ok || !gen.url) {
+        console.warn(`[image] generation failed: ${gen.error}`);
+        break;
+      }
       const hosted = await transcodeAndHost(gen.url);
-      image.url = hosted ?? gen.url;
+      image.url = hosted?.url ?? gen.url;
       image.model = gen.model;
       console.log(`[image] ✓ ${gen.model} → ${image.url}${hosted ? " (transcoded JPEG)" : ""}`);
-    } else {
-      console.warn(`[image] generation failed: ${gen.error}`);
+
+      // Can only inspect what we can host as JPEG bytes. Without PUBLIC_BASE_URL
+      // (offline/dev), skip QC rather than block.
+      if (!hosted?.jpeg) {
+        image.qcFailed = false;
+        return image;
+      }
+
+      const qc = await inspectImageText(hosted.jpeg.toString("base64"), expected);
+      image.qc = { ok: qc.ok, issues: qc.issues, readText: qc.readText, attempts: attempt, errored: qc.errored };
+      if (qc.ok) {
+        image.qcFailed = false;
+        emit(runId, "image:qc", `image legibility QC passed (attempt ${attempt})`, { agent: "image" });
+        return image;
+      }
+      lastIssues = qc.issues;
+      console.warn(`[image] legibility QC FAILED attempt ${attempt}: ${qc.issues.join("; ")}`);
+      emit(runId, "image:qc", `image legibility QC FAILED (attempt ${attempt}): ${qc.issues.join("; ")}`, {
+        agent: "image",
+        data: { issues: qc.issues },
+      });
+    } catch (e) {
+      console.warn(`[image] error: ${(e as Error).message}`);
+      break;
     }
-  } catch (e) {
-    console.warn(`[image] error: ${(e as Error).message}`);
   }
+  // Exhausted attempts without a clean, legible render → flag for the hard gate.
+  image.qcFailed = true;
   return image;
 }
 
@@ -283,7 +321,7 @@ export async function runBrief(brief: Brief, opts: RunOptions = {}): Promise<Run
     runner("image", { brief, platforms }),
     runner("hashtag-seo-timing", { brief, analytics, platforms }),
   ]);
-  image = await resolveImage(image);
+  image = await resolveImage(image, runId);
   if (image?.url) emit(runId, "image:done", "image generated", { agent: "image", data: { url: image.url, model: image.model } });
 
   // 3–4. Critique loop (evaluator-optimizer), capped.
@@ -314,7 +352,7 @@ export async function runBrief(brief: Brief, opts: RunOptions = {}): Promise<Run
       copy = await runner("copywriter", { brief, analytics, platforms, feedback: grouped.copywriter });
     if (grouped.image) {
       image = await runner("image", { brief, platforms, feedback: grouped.image });
-      image = await resolveImage(image);
+      image = await resolveImage(image, runId);
     }
     if (grouped["hashtag-seo-timing"])
       tags = await runner("hashtag-seo-timing", { brief, analytics, platforms, feedback: grouped["hashtag-seo-timing"] });
@@ -328,6 +366,20 @@ export async function runBrief(brief: Brief, opts: RunOptions = {}): Promise<Run
       costUsd: cost.totalUsd,
     };
     emit(runId, "brief:escalated", `escalated after ${cycles} cycle(s)`, { data: { cycles } });
+    await safeRecord(sessionId, outcome);
+    return outcome;
+  }
+
+  // Hard legibility gate: a garbled image can NEVER pass QC into a live post.
+  // The text-only critic can't see pixels, so this code-level guard is authoritative.
+  if (image?.qcFailed) {
+    const outcome: RunOutcome = {
+      status: "escalated",
+      critique: { cycles, finalVerdict: "FAIL", history },
+      escalation: `Image failed legibility QC after ${MAX_IMAGE_ATTEMPTS} attempts: ${image?.qc?.issues?.join("; ") || "garbled/illegible text"}`,
+      costUsd: cost.totalUsd,
+    };
+    emit(runId, "brief:escalated", "image failed legibility QC — not shipping", { data: { issues: image?.qc?.issues } });
     await safeRecord(sessionId, outcome);
     return outcome;
   }

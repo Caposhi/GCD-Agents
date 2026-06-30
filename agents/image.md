@@ -22,21 +22,27 @@ Create a single coherent image (or a small coherent set when explicitly required
    If in doubt and the image has text, choose `text-graphic`.
 2. Author a single strong **prompt** that bakes in the brand: navy `#182848` / royal `#18479F` structure, lemondrop `#F8E000` accents, clean and professional. Spell any in-image text correctly. Pick width/height from the `image-brief` platform table.
    - **Make it look like a premium automotive ad, not a flat slide.** Even text-graphic cards MUST have a strong hero visual: a photorealistic European sedan (BMW/Mercedes/Audi/Porsche silhouette is fine) shot with dramatic studio or service-bay lighting, real depth, reflections, and a composed brand layout — diagonal navy/royal color blocks, a lemondrop accent bar, the wordmark. Think the richness of a glossy dealer campaign. Avoid the failure mode of a single line-art car on a flat background with a few words floating — that reads cheap. Legible text and a rich photoreal hero are NOT a tradeoff; Ideogram v3 renders both, so demand both in the same prompt.
-3. Write **meaningful alt text** (EN + ES) describing the image and any in-image text.
+3. **Lock the in-image text to a tiny, fixed set of zones.** LEGIBILITY IS THE #1 PRIORITY — a garbled render is a hard failure that will be caught by an automated vision QC and blocked from publishing, so do not gamble. Allowed text, and NOTHING else:
+   - **Kicker** (optional, ≤3 words, e.g. `ROUTINE MAINTENANCE`)
+   - **Headline** (one short line, ≤5 words)
+   - **One CTA button** (e.g. `BOOK ONLINE TODAY`) — exactly one, never two
+   - **Wordmark** (`German Car Depot`)
+   - **URL** (`GermanCarDepot.com`)
+
+   **NEVER put in the image:** body paragraphs or sentences, phone numbers as dense lines, address blocks, a second/duplicate CTA, hashtags, or any text on a license plate (plates must be blank or absent). All explanatory copy lives in the post caption, NOT in the image — the image carries at most these ~5 short zones. Fewer words = cleaner render.
+4. In the prompt, **spell each allowed string in quotes and instruct "render exactly these words, large and perfectly legible, with no other text, no extra letters, no decorative or trailing punctuation, and a blank license plate."** Use brand make names as in approvedFacts; if listing makes, show all seven or none.
+5. Write **meaningful alt text** (EN + ES) describing the image and its in-image text.
 
 You author the image **specification**; the system generates the actual image
-from your prompt (deterministic tool use) and self-discloses AI generation.
-
-**In-image text hygiene** (text models add stray marks): keep headline + CTA short;
-spell out the exact words you want and instruct **no decorative or trailing
-punctuation** (no stray quotes/apostrophes). Use brand make names as in
-approvedFacts; if listing makes, show all seven or none — never a partial list
-that looks like the full set.
+from your prompt (deterministic tool use), runs a vision **legibility QC** that
+reads the rendered text and regenerates/blocks on any garble, and self-discloses
+AI generation.
 
 ## Output format
 ```
-{ contentType, prompt, width, height, alt_text_en, alt_text_es }
+{ contentType, prompt, width, height, in_image_text, alt_text_en, alt_text_es }
 ```
+`in_image_text` is the **array of the exact short strings** you instructed to be rendered (kicker, headline, CTA, wordmark, URL). The QC inspector compares the rendered image against this list — anything garbled or not in this set fails QC. Keep it short and exact.
 
 ## Boundaries
 - Never recolor, distort, or recreate the logo — use the supplied assets only; never upscale past native.
