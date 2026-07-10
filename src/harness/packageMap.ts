@@ -68,7 +68,9 @@ export function buildFinalPackage(copy: any, formatted: any, image: any, tags: a
     };
     const en = bodyFor("en");
     const es = bodyFor("es");
-    const body = [en, es].filter(Boolean).join("\n\n");
+    // GBP is a single-locale listing (one languageCode per post) → English only.
+    // IG/FB carry both languages.
+    const body = platform === "gbp" ? (en || es || "") : [en, es].filter(Boolean).join("\n\n");
     if (!body) continue;
 
     const tag = tagArr.find((t) => normPlatform(t?.platform) === platform);
@@ -90,11 +92,23 @@ export function buildFinalPackage(copy: any, formatted: any, image: any, tags: a
   return { image: img, platforms };
 }
 
+const GBP_SUMMARY_MAX = 1500; // Google Business Profile localPost.summary hard limit
+
+/** Truncate to a max length at a word boundary, with an ellipsis. */
+function capText(s: string, max: number): string {
+  if (s.length <= max) return s;
+  const cut = s.slice(0, max - 1);
+  const at = cut.lastIndexOf(" ");
+  return `${(at > max * 0.6 ? cut.slice(0, at) : cut).trimEnd()}…`;
+}
+
 function bodyWithTags(post: FinalPackagePost): string {
   // Hashtags on Instagram only; GBP forbids them, FB leans on plain language.
   if (post.platform === "instagram" && post.hashtags?.length) {
     return `${post.body}\n\n${post.hashtags.join(" ")}`;
   }
+  // GBP summary has a hard 1,500-char cap.
+  if (post.platform === "gbp") return capText(post.body, GBP_SUMMARY_MAX);
   return post.body;
 }
 

@@ -15,6 +15,7 @@ import { config } from "../harness/config.js";
 import { initState, stateEnabled, enqueueBrief, getApproval, decideApproval, getMedia, recentEvents, consoleSnapshot } from "../harness/state.js";
 import { credsFromEnv } from "../harness/creds.js";
 import { igTokenStatus, effectiveIgToken } from "../harness/igToken.js";
+import { getGoogleAccessToken, googleOAuthConfigured } from "../harness/googleToken.js";
 
 function json(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { "content-type": "application/json" });
@@ -166,6 +167,57 @@ async function diagIg(): Promise<unknown> {
   return out;
 }
 
+/**
+ * Read-only Google Business Profile diagnostic. Confirms the Google token,
+ * lists the accessible accounts + locations (so you can copy the exact
+ * GBP_ACCOUNT_ID / GBP_LOCATION_ID), and never returns the token value.
+ */
+async function diagGbp(): Promise<unknown> {
+  const out: Record<string, unknown> = {
+    env: {
+      GBP_ACCOUNT_ID: process.env.GBP_ACCOUNT_ID ?? "MISSING",
+      GBP_LOCATION_ID: process.env.GBP_LOCATION_ID ?? "MISSING",
+      googleAuth: googleOAuthConfigured()
+        ? "refresh-token configured (self-renewing)"
+        : process.env.GOOGLE_ACCESS_TOKEN
+          ? "static GOOGLE_ACCESS_TOKEN only (expires hourly)"
+          : "MISSING",
+      ACTIVE_PLATFORMS: config.activePlatforms.join(","),
+    },
+  };
+
+  let token: string | undefined;
+  try {
+    token = await getGoogleAccessToken();
+  } catch (err) {
+    out.tokenError = (err as Error).message;
+    return out;
+  }
+  if (!token) {
+    out.tokenError = "no Google token — set GOOGLE_REFRESH_TOKEN + GOOGLE_CLIENT_ID/SECRET (preferred) or GOOGLE_ACCESS_TOKEN";
+    return out;
+  }
+
+  // Accounts (My Business Account Management API v1)
+  out.accounts = await graphGet("https://mybusinessaccountmanagement.googleapis.com/v1/accounts", token);
+
+  // Locations for the chosen account (env first, else the first account returned)
+  let acctId = process.env.GBP_ACCOUNT_ID;
+  const firstName = (out.accounts as any)?.body?.accounts?.[0]?.name; // "accounts/123"
+  if (!acctId && typeof firstName === "string") acctId = firstName.split("/")[1];
+  if (acctId) {
+    out.locations = await graphGet(
+      `https://mybusinessbusinessinformation.googleapis.com/v1/accounts/${encodeURIComponent(acctId)}/locations?readMask=name,title,storefrontAddress`,
+      token,
+    );
+    out.suggested = {
+      GBP_ACCOUNT_ID: acctId,
+      note: "GBP_LOCATION_ID = the number after 'locations/' in locations[].name",
+    };
+  }
+  return out;
+}
+
 const server = createServer(async (req, res) => {
   try {
     const url = new URL(req.url ?? "/", "http://localhost");
@@ -183,6 +235,11 @@ const server = createServer(async (req, res) => {
     // Read-only credential diagnostic for the Instagram/Facebook auth setup.
     if (req.method === "GET" && path === "/diag/ig") {
       return json(res, 200, await diagIg());
+    }
+
+    // Read-only Google Business Profile diagnostic (lists accounts + locations).
+    if (req.method === "GET" && path === "/diag/gbp") {
+      return json(res, 200, await diagGbp());
     }
 
     // ---- console contract (hub launcher + live game view) ----
