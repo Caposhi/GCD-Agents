@@ -392,6 +392,14 @@ export async function runBrief(brief: Brief, opts: RunOptions = {}): Promise<Run
   // Safety net: only ship posts for active platforms.
   pkg.platforms = pkg.platforms.filter((p) => config.activePlatforms.includes(p.platform));
 
+  // Give the GBP post a "Book" button → the approved SteerCRM booking URL,
+  // unless the copywriter/formatter already supplied a CTA.
+  const bookingUrl = (brief.approvedFacts as any)?.bookingUrl;
+  if (bookingUrl) {
+    const gbpPost = pkg.platforms.find((p) => p.platform === "gbp");
+    if (gbpPost && !gbpPost.cta?.url) gbpPost.cta = { actionType: "BOOK", url: String(bookingUrl) };
+  }
+
   const outcome: RunOutcome = {
     status: "awaiting_approval",
     package: pkg,
