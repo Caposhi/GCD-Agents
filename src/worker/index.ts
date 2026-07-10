@@ -16,6 +16,7 @@ import { publishApprovedPackage, PlatformCredentials } from "../mcp/posting-tool
 import { toPostPackages, summarize, FinalPackage } from "../harness/packageMap.js";
 import { credsFromEnv } from "../harness/creds.js";
 import { getCurrentIgToken } from "../harness/igToken.js";
+import { getGoogleAccessToken } from "../harness/googleToken.js";
 
 let running = true;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -59,6 +60,13 @@ async function processBrief(id: string, brief: any): Promise<void> {
   // Use the auto-refreshed IG token (DB-backed) rather than the possibly-stale env value.
   const liveIgToken = await getCurrentIgToken(Date.now());
   if (liveIgToken) creds.igAccessToken = liveIgToken;
+  // Fresh Google token for GBP (auto-refreshed); harmless if GBP isn't active.
+  try {
+    const g = await getGoogleAccessToken();
+    if (g) creds.googleAccessToken = g;
+  } catch (err) {
+    console.error("[gbp] Google token refresh failed:", (err as Error).message);
+  }
   const pkgs = toPostPackages(pkg);
   const results = [];
   for (const pkg of pkgs) {

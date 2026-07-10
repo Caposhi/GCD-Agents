@@ -21,6 +21,12 @@ Return one entry per platform × language:
 { platform: "instagram"|"facebook"|"gbp", lang: "en"|"es", body: "...", cta: "...", char_count: N, needs_source: ["..."] }
 ```
 
+## Post structure (every post)
+- **Open with a benefit-driven hook** — the feeling or outcome for the driver (peace of mind, no surprise bills, a safe/reliable car), NOT a dry spec. Lead with the *why it matters*, then the details. Avoid robotic openers like "Two years. 24,000 miles."
+- **Make + service focus:** when the brief has a `make` and `service`, the post is about *that specific make and that specific service* — name the make, speak to that owner, and make the service concrete (what it is, why it matters for that car, what you get). Weave supporting proof (warranty, family-owned, factory diagnostics, OEM parts) in as backup, not as the headline.
+- Then one clear CTA to book online.
+- **Emoji:** prefer concrete, on-topic ones (🔧 🚗 🛞 ✅ 🗓️) over vague/ambiguous ones; at most a couple, IG/FB only.
+
 ## Hard rules (from brand-voice)
 - ~5th-grade reading level; brand "we"; speak to "you". Light, tasteful humor; emoji on IG/FB only, **none on GBP**.
 - ≤1 em-dash, ≤1 "!", no ALL-CAPS, no banned hype words (unleash, elevate, seamless, game-changer, …).
