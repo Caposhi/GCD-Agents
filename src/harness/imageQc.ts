@@ -18,15 +18,20 @@ You are the last line of defense against garbled AI-generated text reaching a li
 Look ONLY at the image provided. Do not assume; report what is actually rendered.
 
 Transcribe EVERY piece of text visible in the image, exactly as rendered.
-Then decide whether the image is publishable. Mark it NOT publishable (garbled=true) if ANY of these are present:
+Then decide whether the image is publishable. Mark it NOT publishable (garbled=true) ONLY if ANY of these true defects are present:
 - garbled, scrambled, or melted letterforms
-- misspelled or nonsensical "words" that are not real English/Spanish
+- misspelled or nonsensical "words" that are not real English/Spanish (wrong LETTERS)
 - placeholder gibberish (e.g. a scrambled license plate, fake body paragraphs)
 - a broken, duplicated, or nonsensical call-to-action
-- any text block that does not match the expected text you are given
+- wording that is clearly WRONG vs. the expected text — different words, or a different meaning
 
-Be conservative: if text is even partially garbled or you are unsure it reads cleanly, set garbled=true.
-Brand/wordmark text ("German Car Depot") and the URL ("GermanCarDepot.com") are allowed even if not in the expected list, but they must be spelled correctly.
+Do NOT fail the image for purely cosmetic differences when the letters are correct and readable:
+- capitalization differences (e.g. "Germancardepot.com" vs "GermanCarDepot.com") — PASS
+- a stray trailing comma or period, or minor spacing — PASS
+- expected text rendered in a different case or with brand styling — PASS
+
+Judge on legibility and correctness of the WORDS, not exact casing/punctuation. If the letters are all correct and every word is a real, readable word, set garbled=false even if casing or punctuation differs from the expected strings.
+Brand/wordmark text ("German Car Depot") and the URL ("GermanCarDepot.com") are allowed even if not in the expected list; they only fail if the LETTERS are wrong/garbled, not if the casing differs.
 
 Respond with ONLY this JSON, no prose:
 {"readText": ["...each distinct text element..."], "garbled": true|false, "issues": ["short reason", "..."]}`;
@@ -52,7 +57,8 @@ export async function inspectImageText(jpegBase64: string, expected: string[] = 
   const prompt =
     `Expected text — ONLY these short strings (plus the brand wordmark and URL) should appear in the image:\n` +
     `${JSON.stringify(expected)}\n\n` +
-    `Transcribe ALL visible text and flag anything garbled, misspelled, nonsensical, placeholder, a broken/duplicate CTA, or not in the expected set. Return JSON only.`;
+    `Transcribe ALL visible text and flag ONLY true defects: garbled/scrambled letters, misspellings (wrong letters), nonsensical words, placeholder gibberish, a broken/duplicate CTA, or wording that means something different from the expected text. ` +
+    `Do NOT flag differences that are only capitalization or minor punctuation when the letters are correct. Return JSON only.`;
   try {
     const res = await runVision({ systemPrompt: QC_SYSTEM, prompt, jpegBase64, model: "claude-sonnet-4-6", maxTokens: 900 });
     const json = parseAgentJson(res.text);
