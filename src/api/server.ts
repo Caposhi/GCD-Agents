@@ -218,6 +218,94 @@ async function diagGbp(): Promise<unknown> {
   return out;
 }
 
+/**
+ * Mobile-first approval page: a mock social post — chosen image on top, an
+ * Instagram-style caption below (with FB/Google captions a tap away), the
+ * QC-rejected candidates in a collapsible section, and Approve/Reject buttons.
+ */
+function renderReviewPage(id: string, token: string, pkg: any, summary: string): string {
+  const imgUrl = pkg?.image?.url as string | undefined;
+  const rejected: Array<{ url: string; issues: string[] }> = Array.isArray(pkg?.image?.rejected) ? pkg.image.rejected : [];
+  const platforms: any[] = Array.isArray(pkg?.platforms) ? pkg.platforms : [];
+  const label: Record<string, string> = { instagram: "Instagram", facebook: "Facebook", gbp: "Google" };
+
+  const tabs = platforms
+    .map((p, i) => `<button type="button" class="tab${i === 0 ? " on" : ""}" data-t="${esc(String(p.platform))}">${esc(label[p.platform] ?? String(p.platform))}</button>`)
+    .join("");
+
+  const caps = platforms
+    .map((p, i) => {
+      const body = esc(String(p.body ?? ""));
+      const tags = Array.isArray(p.hashtags) && p.hashtags.length ? `\n\n<span class="tags">${esc(p.hashtags.join(" "))}</span>` : "";
+      const when = p.scheduledTime ? `<div class="when">🕗 ${esc(String(p.scheduledTime))}</div>` : "";
+      return `<div class="cap${i === 0 ? " on" : ""}" id="cap-${esc(String(p.platform))}"><span class="cap-body"><b>germancardepot</b> ${body}${tags}</span>${when}</div>`;
+    })
+    .join("");
+
+  const img = imgUrl ? `<img class="photo" src="${esc(imgUrl)}" alt="chosen post image">` : `<div class="noimg">No image</div>`;
+
+  const rej = rejected.length
+    ? `<details class="rej"><summary>Other versions the QC rejected (${rejected.length})</summary>
+       <p class="rej-note">Auto-generated, failed the legibility check, and NOT chosen:</p>
+       <div class="rej-grid">${rejected
+         .map((r) => `<figure><img src="${esc(r.url)}" alt="rejected version" loading="lazy"><figcaption>${esc((r.issues || []).join("; ")).slice(0, 240)}</figcaption></figure>`)
+         .join("")}</div></details>`
+    : "";
+
+  const css = `*{box-sizing:border-box}body{margin:0;background:#0f1420;color:#111;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+.wrap{max-width:470px;margin:0 auto;padding:16px 12px 40px}
+.top{display:flex;gap:10px;align-items:center;color:#fff;margin:6px 4px 14px}
+.top .logo{width:34px;height:34px;border-radius:8px;background:#F8E000;color:#182848;font-weight:800;display:flex;align-items:center;justify-content:center;font-size:12px}
+.top .t{font-weight:700;font-size:17px}.top .s{font-size:12px;color:#9fb0c9;line-height:1.35;margin-top:2px}
+.card{background:#fff;border-radius:14px;overflow:hidden;box-shadow:0 6px 24px rgba(0,0,0,.35)}
+.head{display:flex;align-items:center;gap:10px;padding:10px 12px}
+.avatar{width:32px;height:32px;border-radius:50%;background:linear-gradient(135deg,#18479F,#182848);color:#fff;font-weight:700;font-size:12px;display:flex;align-items:center;justify-content:center}
+.who b{font-size:14px;display:block;line-height:1.1}.who span{font-size:11px;color:#666}
+.photo{display:block;width:100%;height:auto}.noimg{padding:60px;text-align:center;color:#999;background:#f2f2f2}
+.bar{display:flex;gap:16px;padding:10px 12px 2px;font-size:20px}.bar .save{margin-left:auto}
+.tabs{display:flex;gap:6px;padding:8px 12px 0}
+.tab{border:0;background:#f0f2f5;color:#333;font-size:12px;font-weight:600;padding:6px 12px;border-radius:999px;cursor:pointer}
+.tab.on{background:#182848;color:#fff}
+.cap{display:none;padding:10px 14px 16px;font-size:14px;line-height:1.5;white-space:pre-wrap;word-wrap:break-word;overflow-wrap:anywhere}
+.cap.on{display:block}.cap b{margin-right:3px}.cap .tags{color:#18479F}
+.cap .when{margin-top:10px;font-size:12px;color:#888;white-space:normal}
+.rej{margin:14px 2px 0;background:#151b28;border:1px solid #263149;border-radius:12px;color:#c8d3e6;padding:2px 12px}
+.rej summary{cursor:pointer;padding:11px 0;font-weight:600;font-size:14px}
+.rej-note{font-size:12px;color:#8ea3c2;margin:0 0 8px}
+.rej-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding-bottom:12px}
+.rej figure{margin:0}.rej img{width:100%;border-radius:8px;display:block;opacity:.8}
+.rej figcaption{font-size:10px;color:#94a3bd;line-height:1.35;margin-top:4px}
+.btns{display:flex;flex-direction:column;gap:10px;margin-top:18px}.btns form{margin:0}
+.btns button{width:100%;border:0;border-radius:12px;padding:16px;font-size:16px;font-weight:700;cursor:pointer}
+.approve{background:#18479F;color:#fff}.reject{background:transparent;color:#ff8080;border:1px solid #7a2a2a}`;
+
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>GCD-SOCIAL — Review post</title><style>${css}</style></head>
+<body><div class="wrap">
+  <header class="top"><div class="logo">GCD</div><div><div class="t">Review post</div><div class="s">${esc(summary || "Approve to publish to the active platforms.")}</div></div></header>
+  <div class="card">
+    <div class="head"><div class="avatar">GCD</div><div class="who"><b>germancardepot</b><span>Hollywood, FL</span></div></div>
+    ${img}
+    <div class="bar"><span>♥</span><span>💬</span><span>➤</span><span class="save">🔖</span></div>
+    <div class="tabs">${tabs}</div>
+    ${caps}
+  </div>
+  ${rej}
+  <div class="btns">
+    <form method="POST" action="/approvals/${esc(id)}/decision"><input type="hidden" name="token" value="${esc(token)}"><input type="hidden" name="action" value="approve"><button class="approve">Approve &amp; publish</button></form>
+    <form method="POST" action="/approvals/${esc(id)}/decision"><input type="hidden" name="token" value="${esc(token)}"><input type="hidden" name="action" value="reject"><button class="reject">Reject</button></form>
+  </div>
+</div>
+<script>
+document.querySelectorAll('.tab').forEach(function(b){b.addEventListener('click',function(){
+  document.querySelectorAll('.tab').forEach(function(x){x.classList.remove('on')});
+  document.querySelectorAll('.cap').forEach(function(x){x.classList.remove('on')});
+  b.classList.add('on');var el=document.getElementById('cap-'+b.dataset.t);if(el)el.classList.add('on');
+});});
+</script></body></html>`;
+}
+
 const server = createServer(async (req, res) => {
   try {
     const url = new URL(req.url ?? "/", "http://localhost");
@@ -310,26 +398,7 @@ const server = createServer(async (req, res) => {
         const token = url.searchParams.get("token") ?? "";
         if (token !== row.token) return html(res, 403, "<h2>Invalid or missing token</h2>");
         if (row.status !== "pending") return html(res, 200, `<h2>Already ${esc(row.status)}</h2>`);
-        const pkg = esc(JSON.stringify(row.packageFormatted, null, 2)).slice(0, 8000);
-        return html(
-          res,
-          200,
-          `<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1">
-          <body style="font-family:system-ui;max-width:760px;margin:2rem auto;padding:0 1rem">
-          <h2>GCD-SOCIAL — Approve post</h2>
-          <p>${esc(row.summary)}</p>
-          <pre style="background:#f4f4f4;padding:1rem;overflow:auto;border-radius:8px">${pkg}</pre>
-          <form method="POST" action="/approvals/${esc(id)}/decision" style="display:inline">
-            <input type="hidden" name="token" value="${esc(token)}">
-            <input type="hidden" name="action" value="approve">
-            <button style="background:#18479F;color:#fff;border:0;padding:.8rem 1.4rem;border-radius:8px;font-size:1rem">Approve &amp; publish</button>
-          </form>
-          <form method="POST" action="/approvals/${esc(id)}/decision" style="display:inline;margin-left:1rem">
-            <input type="hidden" name="token" value="${esc(token)}">
-            <input type="hidden" name="action" value="reject">
-            <button style="background:#fff;color:#b00;border:1px solid #b00;padding:.8rem 1.4rem;border-radius:8px;font-size:1rem">Reject</button>
-          </form></body>`,
-        );
+        return html(res, 200, renderReviewPage(id, token, row.packageFormatted, row.summary));
       }
 
       if (req.method === "POST" && isDecision) {

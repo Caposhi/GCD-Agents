@@ -206,6 +206,7 @@ async function resolveImage(image: any, runId?: string): Promise<any> {
   const height = image.height || 1350;
 
   let lastIssues: string[] = [];
+  const rejected: Array<{ url: string; issues: string[] }> = [];
   for (let attempt = 1; attempt <= MAX_IMAGE_ATTEMPTS; attempt++) {
     // On a retry, hard-constrain the prompt to ONLY the intended words.
     const prompt =
@@ -237,9 +238,11 @@ async function resolveImage(image: any, runId?: string): Promise<any> {
       image.qc = { ok: qc.ok, issues: qc.issues, readText: qc.readText, attempts: attempt, errored: qc.errored };
       if (qc.ok) {
         image.qcFailed = false;
+        if (rejected.length) image.rejected = rejected;
         emit(runId, "image:qc", `image legibility QC passed (attempt ${attempt})`, { agent: "image" });
         return image;
       }
+      rejected.push({ url: image.url, issues: qc.issues });
       lastIssues = qc.issues;
       console.warn(`[image] legibility QC FAILED attempt ${attempt}: ${qc.issues.join("; ")}`);
       emit(runId, "image:qc", `image legibility QC FAILED (attempt ${attempt}): ${qc.issues.join("; ")}`, {
@@ -253,6 +256,7 @@ async function resolveImage(image: any, runId?: string): Promise<any> {
   }
   // Exhausted attempts without a clean, legible render → flag for the hard gate.
   image.qcFailed = true;
+  if (rejected.length) image.rejected = rejected;
   return image;
 }
 
