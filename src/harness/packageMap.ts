@@ -19,7 +19,7 @@ export interface FinalPackagePost {
 }
 
 export interface FinalPackage {
-  image?: { url?: string; altEn?: string; altEs?: string };
+  image?: { url?: string; altEn?: string; altEs?: string; rejected?: { url: string; issues: string[] }[] };
   platforms: FinalPackagePost[];
 }
 
@@ -87,7 +87,12 @@ export function buildFinalPackage(copy: any, formatted: any, image: any, tags: a
   }
 
   const img = image?.url
-    ? { url: String(image.url), altEn: image.alt_text_en ?? image.altEn, altEs: image.alt_text_es ?? image.altEs }
+    ? {
+        url: String(image.url),
+        altEn: image.alt_text_en ?? image.altEn,
+        altEs: image.alt_text_es ?? image.altEs,
+        rejected: Array.isArray(image.rejected) ? image.rejected : undefined,
+      }
     : undefined;
   return { image: img, platforms };
 }
