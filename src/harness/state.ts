@@ -231,17 +231,36 @@ export async function recordEvent(e: EventInput): Promise<void> {
   );
 }
 
-/** Events with id greater than `sinceId` (the SSE cursor), oldest first. */
+/**
+ * Events for either of two callers, oldest-first in the returned array:
+ *  - SSE cursor resume (`sinceId` explicitly passed, e.g. 0 for "from the
+ *    start"): the next `limit` events after that id — a forward page.
+ *  - a "recent activity" snapshot (`sinceId` omitted, e.g. /console/state):
+ *    the most recent `limit` events, not the oldest ones ever recorded.
+ * These are NOT interchangeable — collapsing "omitted" and "explicitly 0"
+ * into the same value here previously pinned every snapshot caller to the
+ * oldest 20 events forever (`WHERE id > 0 ORDER BY id ASC LIMIT 20`), so the
+ * console's recent-activity strip never advanced past the very first posts.
+ */
 export async function recentEvents(opts: { sinceId?: number; limit?: number } = {}): Promise<EventRow[]> {
-  const sinceId = opts.sinceId ?? 0;
   const limit = Math.min(opts.limit ?? 100, 500);
   if (!enabled || !pool) {
+    const sinceId = opts.sinceId ?? 0;
     return eventMem.filter((e) => e.id > sinceId).slice(-limit);
+  }
+  if (opts.sinceId === undefined) {
+    const res = await pool.query(
+      `SELECT id, run_id AS "runId", kind, agent, message, data, created_at AS "createdAt"
+       FROM (SELECT * FROM events ORDER BY id DESC LIMIT $1) AS latest
+       ORDER BY id ASC`,
+      [limit],
+    );
+    return res.rows as EventRow[];
   }
   const res = await pool.query(
     `SELECT id, run_id AS "runId", kind, agent, message, data, created_at AS "createdAt"
      FROM events WHERE id > $1 ORDER BY id ASC LIMIT $2`,
-    [sinceId, limit],
+    [opts.sinceId, limit],
   );
   return res.rows as EventRow[];
 }
