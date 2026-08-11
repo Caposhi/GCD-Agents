@@ -1,5 +1,7 @@
 # mcp/image-tool
 
+> Runtime note: despite the directory name, this is an imported TypeScript library, not a standalone MCP server or tool exposed to model calls.
+
 The image MCP tool generates on-brand images via **fal.ai** as a single
 aggregator key, **routed by content type**:
 

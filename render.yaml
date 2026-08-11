@@ -1,12 +1,11 @@
 # GCD-SOCIAL — Render Blueprint
 # Web service (trigger/webhook receiver) + background worker (long-running orchestration) + Postgres.
-# Runtime shown as Node; swap `runtime: node` → `python` and the commands if you build the harness in Python.
 # NOTE: set all real secrets in the Render dashboard or as a secret group, NOT here. This file is committed.
 
 databases:
   - name: gcd-social-db
     databaseName: gcd_social
-    plan: basic-256mb        # smallest current (non-legacy) Postgres plan (~$6/mo). Use `free` for zero-cost testing (expires after 30 days).
+    plan: basic-256mb        # Verify current availability, pricing, retention, and capacity in Render before deployment.
     # stores: agent state, approval queue, brand scorecard, self-improvement proposal lineage
 
 services:
@@ -30,23 +29,21 @@ services:
           property: connectionString
       - key: ANTHROPIC_API_KEY
         sync: false          # set in dashboard
+      - key: CONSOLE_TOKEN
+        sync: false          # required to protect /console/*
       # Native publishing credentials (no aggregator). All set in dashboard.
       - key: IG_USER_ID                 # Instagram user id (graph.instagram.com)
         sync: false
       - key: IG_ACCESS_TOKEN            # Instagram user token (Instagram-Login path)
         sync: false
-      - key: IG_APP_ID                  # Instagram app id (token refresh / appsecret_proof) — not secret
-        sync: false
-      - key: IG_APP_SECRET              # Instagram app secret (SECRET — token exchange/refresh)
-        sync: false
+      - key: IG_GRAPH_HOST
+        value: graph.instagram.com
       - key: FB_PAGE_ID
         sync: false
       - key: FB_PAGE_ACCESS_TOKEN       # Facebook Page token (graph.facebook.com)
         sync: false
-      - key: FB_APP_ID                  # GCD-Agent app id (FB token refresh) — not secret
-        sync: false
-      - key: FB_APP_SECRET              # GCD-Agent app secret (SECRET)
-        sync: false
+      - key: GRAPH_VERSION
+        value: v25.0
       - key: GOOGLE_ACCESS_TOKEN        # GBP OAuth (refreshed via GOOGLE_REFRESH_TOKEN)
         sync: false
       - key: GOOGLE_REFRESH_TOKEN
@@ -59,16 +56,16 @@ services:
         sync: false
       - key: GBP_LOCATION_ID
         sync: false
-      - key: APPROVAL_CHANNEL_WEBHOOK   # Slack incoming webhook (locked decision: Slack primary, email fallback)
+      - key: APPROVAL_CHANNEL_WEBHOOK   # Slack incoming webhook; no email fallback in current source
         sync: false
       - key: AUTONOMY_PHASE
-        value: A             # A = approval gate (all posts). B = shadow/canary. C = full autonomy.
+        value: A             # A = approval assertion. Worker currently waits for approval in every phase.
       - key: PUBLIC_BASE_URL            # web service URL, for Slack approval links
         value: https://gcd-social-api.onrender.com
       - key: ACTIVE_PLATFORMS           # IG+FB while GBP API access is pending; add gbp when approved
         value: instagram,facebook
 
-  # 2) Orchestration worker — runs the manager + subagents. Long-running; persistent, not serverless.
+  # 2) Orchestration worker — runs deterministic TypeScript orchestration and model calls. Long-running; persistent, not serverless.
   - type: worker
     name: gcd-social-worker
     runtime: node
@@ -93,18 +90,14 @@ services:
         sync: false
       - key: IG_ACCESS_TOKEN
         sync: false
-      - key: IG_APP_ID
-        sync: false
-      - key: IG_APP_SECRET
-        sync: false
+      - key: IG_GRAPH_HOST
+        value: graph.instagram.com
       - key: FB_PAGE_ID
         sync: false
       - key: FB_PAGE_ACCESS_TOKEN
         sync: false
-      - key: FB_APP_ID
-        sync: false
-      - key: FB_APP_SECRET
-        sync: false
+      - key: GRAPH_VERSION
+        value: v25.0
       - key: GOOGLE_ACCESS_TOKEN
         sync: false
       - key: GOOGLE_REFRESH_TOKEN
@@ -127,8 +120,8 @@ services:
         value: instagram,facebook
 
   # 3) Daily scheduler — enqueues one themed brief per day (content calendar).
-  #    It does NOT publish: the worker still runs the brief through the manager
-  #    loop + HITL Slack approval (Phase A) before anything goes live.
+  #    It does NOT publish: the worker runs deterministic orchestration and
+  #    waits for Slack approval before anything goes live.
   - type: cron
     name: gcd-social-scheduler
     runtime: node

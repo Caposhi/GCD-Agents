@@ -17,15 +17,8 @@ AgentShield: repo scanned with `ecc-agentshield@1.4.0 scan` on 2026-06-23 → **
 
 `skills/self-improvement-protocol/SKILL.md` is **adapted from** ECC `skills/continuous-learning-v2` @ `71d22d0` (instinct/confidence mechanics). No upstream files were copied — it is an original GCD-SOCIAL authoring; the propose-don't-apply gate, append-only rule, and core-objective lock take precedence over upstream behavior. ECC's executable learning hooks (`observe.sh`, `session-guardian.sh`, etc.) were deliberately NOT vendored.
 
-## Planned (later phases — not yet vendored)
+## Adapted concepts, not vendored files
 
-| GCD-SOCIAL path | Source repo | Source path | Commit SHA | Date | AgentShield | Notes |
-|---|---|---|---|---|---|---|
-| skills/eval-harness/ | affaan-m/ECC | skills/eval-harness, skills/verification-loop | `<TODO>` | `<TODO>` | `<TODO>` | Phase 7 validation |
-| skills/model-routing/ | affaan-m/ECC | skills/cost-aware-llm-pipeline | `<TODO>` | `<TODO>` | `<TODO>` | Opus/Sonnet routing + budget (Phase 2) |
-| skills/brand-voice/ (seed) | affaan-m/ECC | skills/brand-voice | `<TODO>` | `<TODO>` | `<TODO>` | Heavily rewritten for GCD (Phase 2) |
-| skills/platform-specs/ (seed) | affaan-m/ECC | skills/content-engine | `<TODO>` | `<TODO>` | `<TODO>` | Repurposing patterns (Phase 2) |
-| skills/brand-voice/ (anti-slop rules) | Leonxlnx/taste-skill | skills/<design-taste> | `<TODO>` | `<TODO>` | `<TODO>` | Anti-slop / anti-repetition rules only (Phase 2) |
-| skills/image-brief/ (seed) | Leonxlnx/taste-skill | skills/brandkit | `<TODO>` | `<TODO>` | `<TODO>` | Brand-kit / image-first pattern (Phase 2) |
+The current GCD-authored skills under `skills/` cite conceptual influences in their own text. No additional upstream files from ECC or taste-skill are present under `vendor/`, so placeholder provenance rows are not retained as if copies were still planned. Any future copied file must be pinned, licensed, scanned, and added to this ledger before use.
 
 Reference-only (NOT vendored): shanraisshan/claude-code-best-practice (wiring patterns), Egonex-AI/Understand-Anything (optional internal repo-mapping tool).

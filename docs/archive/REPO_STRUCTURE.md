@@ -1,3 +1,7 @@
+# Historical only — not operational
+
+This target skeleton has been superseded by the implemented repository tree. It is retained only for provenance.
+
 # GCD-SOCIAL — Repo Structure
 
 Target layout for the new, isolated repo. Phase 0/1 establishes the skeleton; later phases fill `agents/`, `skills/`, `mcp/`.

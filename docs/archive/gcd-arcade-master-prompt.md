@@ -1,3 +1,7 @@
+# Historical only — not operational
+
+This cross-repository build prompt is retained for provenance after `gcd-arcade` adopted its own current handoff. Its URLs, inventory, security assumptions, and implementation status may be stale.
+
 # GCD-ARCADE — Master Build Prompt
 
 > Paste this whole document as the opening prompt of a **new Claude Code session**, started from the new `gcd-arcade` repo. Add the sibling repos (`caposhi/gcd-agents`, `german-car-depot-attribution`, `gcd-webhook`) to that session so the agent can read each app's stack when wiring its `/console/*` contract.

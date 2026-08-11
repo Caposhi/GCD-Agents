@@ -5,6 +5,8 @@ description: How the posting subagent publishes an approved package to the three
 
 # Posting Workflow
 
+> **Current-runtime note:** the worker invokes the posting library directly after database approval; it does not run the Markdown `posting` agent. `PostPackage.idempotencyKey` is declared but not implemented by the native provider, so exactly-once posting and crash-safe retry are not yet guaranteed.
+
 The **only** path to publishing. Executed solely by the `posting` agent, solely on a package that has cleared the human approval gate. No creative judgment here — publish exactly what was approved.
 
 **Publishing approach: native platform APIs** (no aggregator). Implemented in `src/mcp/posting-tool/` behind a provider-agnostic interface so a managed provider could be swapped in later without touching the agents.
@@ -46,13 +48,13 @@ The **only** path to publishing. Executed solely by the `posting` agent, solely 
 5. Mark approval_queue row `posted`; record IDs to state for the scorecard.
 
 ## Idempotency & safety
-- Use an **idempotency key** per package+platform so a retry never double-posts.
+- **Required but not implemented:** persist an idempotency key and provider operation/result per package+platform before claiming that retries cannot double-post.
 - Confirm success from the API response, not assumption (IG: confirm `media_publish` returned an ID; GBP/FB: confirm the returned `id`).
 - **No sandbox** — live testing uses a dedicated **test Page / test IG account / test GBP location**, never the real profiles.
 
 ## Failure handling
 - **Transient** (network/5xx/rate limit): retry with exponential backoff (2s, 4s, 8s, 16s; max 4) via `harness/retry.ts`.
-- **Partial** (some platforms succeed): record successes; retry only the failed ones (idempotency key prevents doubles).
+- **Partial** (some platforms succeed): record successes and reconcile them before retrying failed platforms. Current state lacks durable per-platform idempotency, so a crash/retry can duplicate a post.
 - **Hard failure** (auth/token expired, permission, PPA required, content rejected, GBP access not approved): STOP, mark `failed`, escalate to human via `ApprovalChannel` with the platform error.
 - **Token expiry**: Meta long-lived Page tokens and Google refresh tokens are managed by the token provider; on 401/invalid-token, escalate (re-auth is a human/credential step).
 

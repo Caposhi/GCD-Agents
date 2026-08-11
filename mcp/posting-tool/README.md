@@ -1,5 +1,7 @@
 # mcp/posting-tool
 
+> Runtime note: despite the directory name, this is an imported TypeScript library called directly by the worker, not a standalone MCP server or model-exposed tool.
+
 The posting MCP tool wraps the **native platform APIs** (Google Business Profile
 v4 `localPosts`, Instagram Graph content publishing, Facebook Pages) — no
 aggregator. Provider-agnostic interface so a managed provider could be swapped
@@ -25,4 +27,4 @@ tool output can lift this.
 - **Meta:** App with App Review for `instagram_content_publish` +
   `pages_manage_posts`, business verification, Page + IG-user IDs, long-lived
   Page token; Page Publishing Authorization may be required.
-See the credential checklist in the Phase 3 handoff.
+See [`docs/credentials-setup.md`](../../docs/credentials-setup.md).

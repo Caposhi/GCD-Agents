@@ -1,103 +1,42 @@
-# Credentials & Deploy Setup
+# Credentials and deployment setup
 
-How to stand up GCD-SOCIAL on **Render** and wire the **native** publishing
-credentials (Instagram, Facebook Page, Google Business Profile). All secret
-values live in Render (or a local `.env`) — **never commit them**.
+This is a provider-setup checklist, not a credential register. Store real values in Render or an approved secret manager. Record account/owner locations privately, never token values in Git.
 
-Platform decision: **Render**, not Vercel. The orchestration runs as a
-long-running background worker that waits on human approval — serverless
-(Vercel) cannot host that. See `BUILD_PLAN.md`.
+## Render Blueprint
 
----
+1. Connect the intended repository/branch to a Render Blueprint and review `render.yaml`.
+2. Confirm it proposes `gcd-social-api`, `gcd-social-worker`, `gcd-social-scheduler`, and `gcd-social-db` in the intended team/environment.
+3. Enter every `sync: false` value from the private register. Confirm `AUTONOMY_PHASE=A`, explicit `ACTIVE_PLATFORMS`, and a nonempty `CONSOLE_TOKEN`.
+4. Back up an existing database before deployment. The API predeploy runs `npm run migrate` automatically.
+5. Keep scheduler and worker suspended until account identity, approval channel, public base URL, and provider test assets are verified.
 
-## 1. Deploy on Render (Blueprint)
+## Instagram
 
-The repo ships a `render.yaml` Blueprint defining everything: a `web` service
-(trigger receiver), a `worker` (orchestration), and a Postgres DB.
+Current code defaults to the Instagram-login host and requires `IG_USER_ID` plus `IG_ACCESS_TOKEN`. `IG_GRAPH_HOST` and `GRAPH_VERSION` select the request host/version. Configure the provider app/account with the minimum publishing permissions and use a dedicated test professional account for live validation.
 
-1. Render dashboard → **Blueprints** → **New Blueprint Instance** (not the
-   "New service" dropdown — that's for one-off services).
-2. Connect the GitHub repo **Caposhi/GCD-Agents**, branch **main**.
-3. Render reads `render.yaml` and proposes: `gcd-social-api`,
-   `gcd-social-worker`, `gcd-social-db`. Apply.
-4. It will prompt for every `sync: false` env var — fill them from sections
-   2–4 below. `DATABASE_URL` is wired automatically from the DB.
-5. After first deploy, run migrations once: a Render **Shell** on the worker →
-   `npm run migrate` (or a one-off job) to create the tables.
+The worker seeds the environment token into PostgreSQL and periodically refreshes it. Current storage is plaintext `session_state`; restrict database access and prioritize encryption/managed-secret migration. App ID/secret variables from older instructions are not consumed by active code.
 
-> Manual alternative (if not using the Blueprint): create **Postgres**, then a
-> **Web Service** (`npm run start:api`, health check `/healthz`), then a
-> **Background Worker** (`npm run start:worker`), all build `npm ci && npm run build`.
+## Facebook Page
 
-## 2. Instagram (Instagram-Login path)
+Set `FB_PAGE_ID` and `FB_PAGE_ACCESS_TOKEN` for an approved test/production Page with the minimum content-publishing permissions. Active code does not implement Facebook token refresh and does not consume the older `FB_APP_ID` / `FB_APP_SECRET` settings; track renewal/rotation privately.
 
-Posts go through `graph.instagram.com` with an **Instagram user token**.
+## Google Business Profile
 
-1. Meta app → use case **"Manage messaging & content on Instagram"**.
-2. Permissions & features → add **`instagram_business_content_publish`**
-   (plus `instagram_business_basic`). This is what allows publishing.
-3. Assign the IG account the **Instagram Tester** role (Roles tab).
-4. **Generate token** for the account → copy the IG user token.
-5. Env:
-   - `IG_USER_ID` = `17841400589230178` (germancardepot) — the **numeric** id, not the handle
-   - `IG_ACCESS_TOKEN` = the generated token (secret)
-   - `IG_APP_ID` / `IG_APP_SECRET` = from the Instagram API → "API setup with Instagram login" page (app id is not secret; app secret IS). Used by the token-refresh/exchange layer + `appsecret_proof`, **not** by the publish calls. The dashboard token is long-lived (~60 days); refresh before expiry.
-- Constraints enforced by the tool: image must be a **public JPEG URL**; AI
-  images set `is_ai_generated=true`; 100 posts/24h (we post 1/day).
+Obtain Business Profile API access and enable the provider APIs required by the active endpoint. Configure OAuth with the minimum business-management scope. Prefer `GOOGLE_REFRESH_TOKEN`, `GOOGLE_CLIENT_ID`, and `GOOGLE_CLIENT_SECRET`; `GOOGLE_ACCESS_TOKEN` is only a short-lived fallback. Set `GBP_ACCOUNT_ID` and `GBP_LOCATION_ID` only after verifying the target test/production listing.
 
-## 3. Facebook Page (Facebook-Login path)
+Provider approval, endpoint/version validity, scopes, and accessible account/location IDs are external state and must be reverified. `/diag/gbp` currently calls live Google APIs and is unauthenticated; do not expose or use it until gated.
 
-Posts go through `graph.facebook.com` with a **Page token**.
+## Anthropic, image generation, Slack, and Arcade
 
-1. Meta app → use case **"Manage everything on your Page"** (Pages API).
-2. Permissions: `pages_manage_posts`, `pages_read_engagement`, `pages_show_list`.
-3. Get a **long-lived Page access token** (Graph API Explorer → exchange for
-   long-lived; renew ~every 60 days).
-4. Env:
-   - `FB_PAGE_ID` = the GCD Page id (e.g. `213928365298843`)
-   - `FB_PAGE_ACCESS_TOKEN` = long-lived Page token (secret). Verify "Expires: Never" in the Access Token Debugger; a Page token derived from a long-lived user token does not expire.
-   - `FB_APP_ID` / `FB_APP_SECRET` = GCD-Agent app id/secret (id not secret; secret IS). For token refresh.
+- `ANTHROPIC_API_KEY`: model and vision calls; configure billing/spend alerts.
+- `IMAGEGEN_API_KEY`: fal.ai image generation; configure spending and asset-retention expectations.
+- `APPROVAL_CHANNEL_WEBHOOK`: Slack incoming webhook to a restricted approval channel. No email fallback is implemented.
+- `CONSOLE_TOKEN`: shared with the Arcade server/BFF; nonempty is mandatory because console endpoints otherwise fail open.
 
-## 4. Google Business Profile
+## Safe validation
 
-Posts use the v4 `localPosts` API with OAuth.
+Run the offline commands in `docs/TESTING.md`. Provider validation has no assumed sandbox: use dedicated test accounts/pages/locations and explicit authority. Never run `dryrun:live`, diagnostics, scheduler/worker, migrations, approvals, or publishing merely as a smoke test.
 
-1. Google Cloud project → **submit the Business Profile API access request**
-   and wait for approval (the slow gate). Until approved, calls return
-   PERMISSION_DENIED.
-2. Enable APIs: My Business Account Management API, My Business Business
-   Information API, and the Google My Business API (v4, has `localPosts`).
-3. OAuth consent screen + OAuth client (Web). Note **Client ID + Secret**.
-   Scope `https://www.googleapis.com/auth/business.manage`.
-4. Get tokens (easiest via the OAuth Playground with your own client creds):
-   capture **access + refresh tokens**.
-5. Find IDs: `accounts.list` → `GBP_ACCOUNT_ID`; `locations.list` →
-   `GBP_LOCATION_ID` (the GCD location: Hollywood, FL — 2130 Fillmore St).
-6. Env: `GOOGLE_ACCESS_TOKEN`, `GOOGLE_REFRESH_TOKEN`, `GOOGLE_CLIENT_ID`,
-   `GOOGLE_CLIENT_SECRET`, `GBP_ACCOUNT_ID`, `GBP_LOCATION_ID`. The access token
-   is 1-hour; the refresh token + client id/secret renew it.
+## Rotation and takeover
 
-## 5. Other env vars
-
-| Key | Where it comes from |
-|---|---|
-| `ANTHROPIC_API_KEY` | Anthropic console |
-| `IMAGEGEN_API_KEY` | image provider (chosen in Phase 3 image-tool) |
-| `APPROVAL_CHANNEL_WEBHOOK` | Slack incoming webhook (approval channel) |
-| `AUTONOMY_PHASE` | `A` (default; human approves every post) |
-| `DATABASE_URL` | auto-wired by Render Postgres |
-
-## Token lifecycle (TODO before go-live)
-- Meta long-lived Page token ≈ 60-day expiry → needs periodic refresh.
-- Google access token is short-lived → refresh via `GOOGLE_REFRESH_TOKEN`.
-- A token-refresh layer will be added when live creds are wired; until then the
-  tool uses the supplied tokens directly and escalates on 401/expiry.
-
-## Testing
-- Offline (no creds): `npm run build && npm run test:posting`.
-- Live: there is **no sandbox** — test against a dedicated test Page / test IG
-  account / test GBP location before touching the real profiles.
-
-## Golden rule
-Tokens and keys are secrets. They go in Render's `sync: false` env or a local
-`.env` (gitignored). Never paste them into chat, code, commits, or the repo.
+For each provider, privately record account/app/page/location identity, scopes, credential-store location, billing owner, rotation/expiry, test assets, recovery contact, revoke path, and last verification. Rotate one boundary at a time and reconcile both sides before resuming the worker.

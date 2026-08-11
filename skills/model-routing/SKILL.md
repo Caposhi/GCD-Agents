@@ -5,6 +5,8 @@ description: Cost-aware model routing for GCD-SOCIAL. Which Claude model runs th
 
 # Model Routing
 
+> **Current-runtime note:** the production worker has no Opus manager call. Deterministic TypeScript invokes the listed worker models directly. The manager row describes the dormant `agentLoop.ts` harness/future design.
+
 Match model power to the job. Judgment runs on Opus; mechanical work runs on Sonnet or Haiku. Adapted from ECC `cost-aware-llm-pipeline` (concept only; no code copied).
 
 ## Default routing

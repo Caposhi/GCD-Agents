@@ -1,3 +1,7 @@
+# Historical only — not operational
+
+This phased plan predates the implemented runtime and contains aspirations that diverge from current source. Use the root README and current runbooks for operation.
+
 # GCD-SOCIAL — Build Plan (v2)
 
 Autonomous multi-agent social posting system. Anthropic-native (Claude Agent SDK), orchestrator–worker core with an evaluator-optimizer manager, staged autonomy ramp. This version folds in four GitHub repos as **vendored components**, not installed dependencies.
