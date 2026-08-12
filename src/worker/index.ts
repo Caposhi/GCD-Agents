@@ -10,7 +10,7 @@
 
 import { config } from "../harness/config.js";
 import { initState, stateEnabled, closeState, claimNextBrief, completeBrief, setApprovalStatus, recordEvent } from "../harness/state.js";
-import { requestApproval, waitForApproval, postingRequiresApproval } from "../harness/hitl.js";
+import { requestApproval, waitForApproval, postingRequiresApproval, notifyEscalation } from "../harness/hitl.js";
 import { runBrief } from "../harness/orchestrator.js";
 import { publishApprovedPackage, PlatformCredentials } from "../mcp/posting-tool/index.js";
 import { toPostPackages, summarize, FinalPackage } from "../harness/packageMap.js";
@@ -38,6 +38,7 @@ async function processBrief(id: string, brief: any): Promise<void> {
 
   if (outcome.status === "escalated") {
     console.log(`[worker] brief ${id} escalated: ${outcome.escalation}`);
+    await notifyEscalation(brief?.goal ?? "(no goal)", outcome.escalation ?? "unknown reason", id);
     await completeBrief(id, "failed", { reason: outcome.escalation, cost: outcome.costUsd });
     return;
   }
