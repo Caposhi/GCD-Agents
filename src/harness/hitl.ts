@@ -60,6 +60,44 @@ async function notifyApprovalChannel(summary: string, id: string, token: string)
   });
 }
 
+/**
+ * Alerts the ApprovalChannel (Slack) that a brief was escalated instead of
+ * shipped — it failed the brand-compliance critic loop or the image
+ * legibility QC gate after every allowed attempt, so there is no package to
+ * approve. Without this, an escalation only ever landed in the state DB and
+ * the console log; a human had no way to learn about it short of noticing a
+ * silent "awaiting human review" tile on the Arcade dashboard.
+ *
+ * Deliberately best-effort: unlike notifyApprovalChannel (part of the
+ * approval gate's critical path), a failed escalation alert must not stop
+ * the brief from being recorded "failed" and the worker moving on.
+ */
+export async function notifyEscalation(goal: string, reason: string, runId: string): Promise<void> {
+  if (!config.approvalChannelWebhook) {
+    console.warn(`[hitl] brief escalated (runId=${runId}) — no APPROVAL_CHANNEL_WEBHOOK set. Reason: ${reason}`);
+    return;
+  }
+  try {
+    await withRetry(async () => {
+      const res = await fetch(config.approvalChannelWebhook as string, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          text:
+            `🚨 *GCD-SOCIAL — escalated, nothing to review yet*\n` +
+            `Goal: ${goal}\n` +
+            `Reason: ${reason}\n\n` +
+            `No post was produced for this brief — there's no approval link waiting. ` +
+            `Check the worker service logs (runId: ${runId}) for the full critique/QC history.`,
+        }),
+      });
+      if (!res.ok) throw new Error(`approval channel responded ${res.status}`);
+    });
+  } catch (err) {
+    console.error(`[hitl] failed to notify approval channel of escalation (runId=${runId}):`, (err as Error).message);
+  }
+}
+
 export interface WaitOptions {
   timeoutMs?: number;
   pollMs?: number;
