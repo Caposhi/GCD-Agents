@@ -158,4 +158,4 @@ jobs:
         run: actionlint -color
 
       - name: Parse checked-in YAML
-        run: ruby -e 'require "yaml"; ARGV.each { |file| YAML.load_file(file); puts "parsed #{file}" }' render.yaml .github/workflows/*.yml
+        run: ruby scripts/ci/check-yaml.rb render.yaml .github/workflows/*.yml
