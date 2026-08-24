@@ -2,6 +2,12 @@
 
 Normal validation is offline and must not publish or call production providers.
 
+## Verified Phase 0D evidence
+
+The Phase 0D exact reviewed head and merge CI passed Node 22 offline quality gates, PostgreSQL 16 and 18 integration, AgentShield 1.4.0, and workflow/YAML validation. The executable offline suites reported posting 52, image 10, orchestrator 81, gate 56, and API 51 passing checks; the Render identity/startup suite reports a single invariant-suite PASS. Each disposable PostgreSQL version reported 86 passing integration assertions (fresh 12, upgrade 33, durable 41), and each bound HTTP suite reported 54 passing assertions. These numbers are evidence from the current executable suites, not a promised permanent count.
+
+After the Phase 0D merge, the production workflow's authorization job failed closed because `RENDER_DEPLOY_AUTOMATION_ENABLED=false`, and its deploy job was skipped. That is expected disabled-gate evidence, not a failed application release and not proof that the controller has operated in production. The current Phase 0D commit was separately observed live on all three Render services through the previous native auto-deploy path; API health and worker readiness matched the exact commit. A normal current-SHA scheduler execution remains unobserved.
+
 ```bash
 npm ci
 npm run build

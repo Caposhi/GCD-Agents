@@ -2,14 +2,14 @@
 
 ## Workflow
 
-1. Read `AGENTS.md`, the root README, `docs/STATUS.md`, and the affected runbook/agent/skill.
+1. Read `AGENTS.md`, `docs/AI_HANDOFF.md`, `docs/STATUS.md`, and the affected runbook/agent/skill.
 2. Inspect `git status`; preserve unrelated changes.
 3. Trace behavior through API, worker, scheduler, harness, provider, migration, Render, and prompt/skill callers before editing.
 4. Keep provider calls behind recorded approval and use offline builders/fakes for normal validation.
 5. Update code, migrations, prompts, agent definitions, skills, environment references, diagrams, and runbooks together.
 6. Run validation and review the complete diff.
 
-Pull requests and `main` must pass `.github/workflows/ci.yml`. A successful manual CI dispatch is diagnostic only. Production delivery is a separate serialized workflow and remains disabled until the documented Render native-auto-deploy cutover; never enable or bypass it as part of an ordinary source change.
+Pull requests and `main` must pass `.github/workflows/ci.yml`. A successful manual CI dispatch is diagnostic only. Production delivery is a separate serialized workflow. Render native auto-deploy is off, while the GitHub enable gate remains false pending controlled proof; never enable, bypass, or restore either authority as part of an ordinary source change.
 
 ## State changes
 

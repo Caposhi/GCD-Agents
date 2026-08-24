@@ -4,8 +4,8 @@ Read-only Render production discovery was completed on 2026-08-24; no external s
 
 | System | Direction/responsibility | Credentials/identifiers | Failure/cost boundary | Owner |
 |---|---|---|---|---|
-| Render | API, worker, scheduler, PostgreSQL; CLI deployment target; MCP diagnosis | GitHub `RENDER_API_KEY`; non-secret workspace/service IDs; interactive OAuth for MCP | Native auto-deploy currently on; after cutover GitHub serializes exact-SHA releases; deploy/runtime/log/backup risk | Assign privately |
-| GitHub Actions | Pull-request/main CI and disabled-until-cutover production controller | `production` environment secret/variables | CI supply chain; deployment authority after successful main CI only | Repository owner |
+| Render | API, worker, scheduler, PostgreSQL; CLI deployment target; MCP diagnosis | GitHub `RENDER_API_KEY`; non-secret workspace/service IDs; interactive OAuth for MCP | Native auto-deploy off on all three; no current unattended authority; deploy/runtime/log/backup risk | Assign privately |
+| GitHub Actions | Pull-request/main CI and configured-but-disabled production controller | `production` environment secret/variables | CI supply chain; future deployment authority after exact gate enable and proof | Repository owner |
 | PostgreSQL | Queues, hash-bound approvals/decisions, content-addressed media, events, sessions/tokens | `DATABASE_URL` | API/worker/scheduler fail startup when absent, unreachable, or missing migration-005 approval/media schema/constraints/triggers; offline memory mode cannot publish | Assign privately |
 | Anthropic | Copy, image prompt, SEO, final-package critic, text/privacy/safety/material-integrity vision QC | `ANTHROPIC_API_KEY`, configured model IDs | Cost/data egress; failures retry; missing/malformed/errored QC fails closed | Budget/technical owner |
 | fal.ai | Image generation | `IMAGEGEN_API_KEY`, model slugs | Cost and hosted-media dependency | Creative/technical owner |
@@ -20,7 +20,7 @@ Read-only Render production discovery was completed on 2026-08-24; no external s
 
 GitHub Actions and interactive Codex use different Render integrations. The production workflow uses reviewed Render CLI 2.22.0 non-interactively with JSON output, explicit confirmation, exact commit SHAs, and `--wait`. It never uses deploy hooks. A Codex task may use the official Render MCP for explicitly scoped read operations such as service/deploy/log/metric/PostgreSQL metadata inspection. MCP write tools are not self-authorizing; deployment, configuration/environment mutation, production SQL, and restart operations still require explicit authority.
 
-The exact GitHub configuration, migration stop, serial order, recognized-pattern-redacted failure report, and native-auto-deploy cutover live in [Deployment control](DEPLOYMENT.md). Render CLI exact-commit deploys do not themselves disable native auto-deploy, so the two authorities must be cut over explicitly.
+The exact GitHub configuration, migration stop, serial order, recognized-pattern-redacted failure report, and remaining proof steps live in [Deployment control](DEPLOYMENT.md). Render CLI exact-commit deploys do not themselves disable native auto-deploy. Native auto-deploy is now off and the GitHub gate remains false, intentionally leaving zero unattended authorities until the separately authorized proof.
 
 ## Native publishing boundaries
 
