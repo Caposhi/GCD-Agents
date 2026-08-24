@@ -20,7 +20,7 @@ Read-only Render production discovery was completed on 2026-08-24; no external s
 
 GitHub Actions and interactive Codex use different Render integrations. The production workflow uses reviewed Render CLI 2.22.0 non-interactively with JSON output, explicit confirmation, exact commit SHAs, and `--wait`. It never uses deploy hooks. A Codex task may use the official Render MCP for explicitly scoped read operations such as service/deploy/log/metric/PostgreSQL metadata inspection. MCP write tools are not self-authorizing; deployment, configuration/environment mutation, production SQL, and restart operations still require explicit authority.
 
-The exact GitHub configuration, migration stop, serial order, redacted failure report, and native-auto-deploy cutover live in [Deployment control](DEPLOYMENT.md). Render CLI exact-commit deploys do not themselves disable native auto-deploy, so the two authorities must be cut over explicitly.
+The exact GitHub configuration, migration stop, serial order, recognized-pattern-redacted failure report, and native-auto-deploy cutover live in [Deployment control](DEPLOYMENT.md). Render CLI exact-commit deploys do not themselves disable native auto-deploy, so the two authorities must be cut over explicitly.
 
 ## Native publishing boundaries
 

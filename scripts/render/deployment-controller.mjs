@@ -11,7 +11,7 @@ const MAX_COMMAND_BYTES = 4 * 1024 * 1024;
 const MAX_LOG_LINES = 100;
 const MAX_LOG_CHARS = 500;
 const MAX_DIAGNOSTIC_INPUT_CHARS = 20_000;
-const MAX_HEALTH_BODY_CHARS = 4_096;
+export const MAX_HEALTH_BODY_BYTES = 4_096;
 const EXPECTED_API_HEALTH_ORIGIN = "https://gcd-social-api.onrender.com";
 const EXPECTED_API_HEALTH_PATH = "/healthz";
 const WORKER_READY_PREFIX = "[worker] ready ";
@@ -196,35 +196,66 @@ function structuredDiagnostic(source) {
   }
 }
 
+function unescapeQuotedDiagnostic(value) {
+  let diagnostic = value;
+  for (let depth = 0; depth < 4; depth += 1) {
+    const unescaped = diagnostic.replace(/\\"/g, '"').replace(/\\'/g, "'");
+    if (unescaped === diagnostic) break;
+    diagnostic = unescaped;
+  }
+  return diagnostic;
+}
+
+function fallbackRedactDiagnostic(value) {
+  const separator = "(?:=>|->|[:=])";
+  const assignment = new RegExp(
+    `((?:["'](?:${FALLBACK_SECRET_KEY_SOURCE})["']|\\b(?:${FALLBACK_SECRET_KEY_SOURCE}))\\s*${separator}\\s*)`
+      + `(?:(?:Basic|Bearer)\\s+)?(?:"(?:\\\\.|[^"\\\\])*"|'(?:\\\\.|[^'\\\\])*'|[^\\s,;}\\]]+)`,
+    "gi",
+  );
+  return value
+    .replace(assignment, '$1"[REDACTED]"')
+    .replace(/https:\/\/hooks\.slack\.com\/services\/[^\s"'<>)}\]]+/gi, "[REDACTED_SLACK_WEBHOOK]")
+    .replace(/\b(?:postgres(?:ql)?|mysql|redis|rediss):\/\/[^\s"'<>)}\]]+/gi, "[REDACTED_DATABASE_URL]")
+    .replace(/\bhttps?:\/\/[^\s/@:]+:[^\s/@]+@[^\s"'<>)}\]]+/gi, "[REDACTED_CREDENTIAL_URL]")
+    .replace(/\bBearer\s+[^\s,;}\]]+/gi, "Bearer [REDACTED]")
+    .replace(/\b(?:rnd_|sk-ant-|gh[pousr]_|xox[a-z]-|ya29\.)[A-Za-z0-9._-]+\b/gi, "[REDACTED_TOKEN]")
+    .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[REDACTED_JWT]")
+    .replace(/([?&](?:access_token|refresh_token|api_key|key|token|secret|signature|password)=)[^&\s"'<>]+/gi, "$1[REDACTED]")
+    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, "[REDACTED_EMAIL]");
+}
+
+function percentDecodedShadows(value) {
+  const shadows = [];
+  let shadow = value;
+  for (let depth = 0; depth < 4; depth += 1) {
+    const decoded = shadow.replace(/%([0-9a-f]{2})/gi, (_encoded, hex) => (
+      String.fromCharCode(Number.parseInt(hex, 16))
+    ));
+    if (decoded === shadow) break;
+    shadows.push(decoded);
+    if (decoded.includes("+")) shadows.push(decoded.replace(/\+/g, " "));
+    shadow = decoded;
+  }
+  return shadows;
+}
+
+function hasRecognizedEncodedCredential(value) {
+  for (const shadow of percentDecodedShadows(value)) {
+    const unescaped = unescapeQuotedDiagnostic(shadow);
+    const structured = structuredDiagnostic(unescaped);
+    if (structured.includes("[REDACTED]")) return true;
+    if (fallbackRedactDiagnostic(unescaped) !== unescaped) return true;
+  }
+  return false;
+}
+
 export function sanitizeDiagnostic(value) {
   try {
     const source = String(value ?? "").slice(0, MAX_DIAGNOSTIC_INPUT_CHARS);
-    const quotedKey = new RegExp(
-      `(["'](?:${FALLBACK_SECRET_KEY_SOURCE})["']\\s*:\\s*)(?:"(?:\\\\.|[^"\\\\])*"|'(?:\\\\.|[^'\\\\])*'|[^\\s,}\\]]+)`,
-      "gi",
-    );
-    const assignment = new RegExp(
-      `\\b(${FALLBACK_SECRET_KEY_SOURCE})\\s*[:=]\\s*(?:"(?:\\\\.|[^"\\\\])*"|'(?:\\\\.|[^'\\\\])*'|[^\\s,;}\\]]+)`,
-      "gi",
-    );
-    let diagnostic = structuredDiagnostic(source);
-    for (let depth = 0; depth < 4; depth += 1) {
-      const unescaped = diagnostic.replace(/\\"/g, '"').replace(/\\'/g, "'");
-      if (unescaped === diagnostic) break;
-      diagnostic = unescaped;
-    }
-    return diagnostic
-      .replace(quotedKey, '$1"[REDACTED]"')
-      .replace(/https:\/\/hooks\.slack\.com\/services\/[^\s"'<>)}\]]+/gi, "[REDACTED_SLACK_WEBHOOK]")
-      .replace(/\b(?:postgres(?:ql)?|mysql|redis|rediss):\/\/[^\s"'<>)}\]]+/gi, "[REDACTED_DATABASE_URL]")
-      .replace(/\bhttps?:\/\/[^\s/@:]+:[^\s/@]+@[^\s"'<>)}\]]+/gi, "[REDACTED_CREDENTIAL_URL]")
-      .replace(/\bAuthorization\s*[:=]\s*(?:(?:Basic|Bearer)\s+)?(?:"[^"]*"|'[^']*'|[^\s,;}\]]+)/gi, "Authorization: [REDACTED]")
-      .replace(/\bBearer\s+[^\s,;}\]]+/gi, "Bearer [REDACTED]")
-      .replace(/\b(?:rnd_|sk-ant-|gh[pousr]_|xox[a-z]-|ya29\.)[A-Za-z0-9._-]+\b/gi, "[REDACTED_TOKEN]")
-      .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[REDACTED_JWT]")
-      .replace(assignment, "$1=[REDACTED]")
-      .replace(/([?&](?:access_token|refresh_token|api_key|key|token|secret|signature|password)=)[^&\s"'<>]+/gi, "$1[REDACTED]")
-      .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, "[REDACTED_EMAIL]")
+    const diagnostic = unescapeQuotedDiagnostic(structuredDiagnostic(source));
+    if (hasRecognizedEncodedCredential(diagnostic)) return "[REDACTED_DIAGNOSTIC]";
+    return fallbackRedactDiagnostic(diagnostic)
       .replace(/[\u0000-\u001f\u007f]+/g, " ")
       .slice(0, MAX_LOG_CHARS);
   } catch {
@@ -318,19 +349,123 @@ export function validateApiHealthUrl(value) {
   return url;
 }
 
-export async function apiHealthResponseMatches(response, targetSha) {
+function requestStreamCancel(stream, reason) {
   try {
-    if (!response?.ok || response.redirected) return false;
+    const cancellation = stream?.cancel?.(reason);
+    if (cancellation && typeof cancellation.catch === "function") cancellation.catch(() => {});
+  } catch {
+    // A failed cancellation must not expose or retain the rejected body.
+  }
+}
+
+function abortReason(signal) {
+  return signal?.reason instanceof Error ? signal.reason : new Error("health response body aborted");
+}
+
+async function readWithAbort(reader, view, signal) {
+  if (!signal) return reader.read(view);
+  if (signal.aborted) throw abortReason(signal);
+  let onAbort;
+  const aborted = new Promise((_, reject) => {
+    onAbort = () => reject(abortReason(signal));
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([reader.read(view), aborted]);
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+  }
+}
+
+async function readBoundedHealthBody(response, signal) {
+  const body = response?.body;
+  if (!body || typeof body.getReader !== "function") return null;
+  if (signal?.aborted) {
+    requestStreamCancel(body, "health response aborted");
+    return null;
+  }
+
+  const contentLength = response.headers?.get?.("content-length");
+  if (contentLength !== null && contentLength !== undefined) {
+    const normalized = String(contentLength).trim();
+    if (!/^\d+$/.test(normalized)) {
+      requestStreamCancel(body, "invalid health response content length");
+      return null;
+    }
+    const declaredBytes = BigInt(normalized);
+    if (declaredBytes === 0n || declaredBytes > BigInt(MAX_HEALTH_BODY_BYTES)) {
+      requestStreamCancel(body, "health response content length rejected");
+      return null;
+    }
+  }
+
+  let reader;
+  try {
+    reader = body.getReader({ mode: "byob" });
+  } catch {
+    requestStreamCancel(body, "health response body is not a readable byte stream");
+    return null;
+  }
+
+  let bytes = new Uint8Array(MAX_HEALTH_BODY_BYTES + 1);
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const result = await readWithAbort(reader, bytes.subarray(totalBytes), signal);
+      const value = result?.value;
+      if (
+        !(value instanceof Uint8Array)
+        || value.buffer.byteLength !== MAX_HEALTH_BODY_BYTES + 1
+        || value.byteOffset !== totalBytes
+      ) {
+        throw new Error("health response returned an invalid byte-stream chunk");
+      }
+      bytes = new Uint8Array(value.buffer);
+      if (result.done) {
+        if (value.byteLength !== 0) throw new Error("health response ended with an invalid byte-stream chunk");
+        break;
+      }
+      if (value.byteLength === 0) throw new Error("health response byte stream made no progress");
+      totalBytes += value.byteLength;
+      if (totalBytes > MAX_HEALTH_BODY_BYTES) {
+        requestStreamCancel(reader, "health response body exceeded byte limit");
+        return null;
+      }
+    }
+    if (totalBytes === 0) return null;
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, totalBytes));
+  } catch {
+    requestStreamCancel(reader, "health response body rejected");
+    return null;
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {
+      // The response remains rejected even if releasing a failed reader throws.
+    }
+  }
+}
+
+export async function apiHealthResponseMatches(response, targetSha, options = {}) {
+  try {
+    if (!response?.ok || response.redirected) {
+      requestStreamCancel(response?.body, "health response status rejected");
+      return false;
+    }
     const contentType = response.headers?.get?.("content-type") ?? "";
-    if (!/^application\/json(?:\s*;|\s*$)/i.test(contentType)) return false;
-    const text = await response.text();
-    if (typeof text !== "string" || text.length > MAX_HEALTH_BODY_CHARS) return false;
+    if (!/^application\/json(?:\s*;|\s*$)/i.test(contentType)) {
+      requestStreamCancel(response?.body, "health response content type rejected");
+      return false;
+    }
+    const text = await readBoundedHealthBody(response, options.signal);
+    if (!text) return false;
     const body = JSON.parse(text);
     return body?.status === "ok"
       && body?.service === "gcd-social-api"
       && body?.state === "postgres"
       && body?.commit === targetSha;
   } catch {
+    requestStreamCancel(response?.body, "health response rejected");
     return false;
   }
 }
@@ -722,13 +857,14 @@ export async function runDeployment(options = {}) {
     let healthVerified = false;
     for (let attempt = 1; attempt <= 12; attempt += 1) {
       try {
+        const healthSignal = AbortSignal.timeout(10_000);
         const response = await fetchFn(healthUrl, {
           method: "GET",
           redirect: "error",
-          signal: AbortSignal.timeout(10_000),
+          signal: healthSignal,
           headers: { accept: "application/json" },
         });
-        if (await apiHealthResponseMatches(response, targetSha)) {
+        if (await apiHealthResponseMatches(response, targetSha, { signal: healthSignal })) {
           healthVerified = true;
           break;
         }

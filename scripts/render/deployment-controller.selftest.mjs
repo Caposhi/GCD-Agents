@@ -7,6 +7,7 @@ import {
   assertWorkerStabilized,
   DeploymentStop,
   inertDiagnostic,
+  MAX_HEALTH_BODY_BYTES,
   normalizeDeploys,
   normalizeLogRecords,
   parseJsonValues,
@@ -96,6 +97,8 @@ function jsonSequence(entries, separator = "") {
   return entries.map((entry) => JSON.stringify(entry, null, 2)).join(separator);
 }
 
+const textEncoder = new TextEncoder();
+
 function healthResponse(body = {
   status: "ok",
   service: "gcd-social-api",
@@ -104,12 +107,79 @@ function healthResponse(body = {
 }, overrides = {}) {
   const contentType = overrides.contentType ?? "application/json; charset=utf-8";
   const text = overrides.text ?? JSON.stringify(body);
+  const bytes = overrides.bytes ?? textEncoder.encode(text);
+  const metrics = {
+    pulls: 0,
+    bytesProduced: 0,
+    cancellations: 0,
+    maxRequestedBytes: 0,
+  };
+  let offset = 0;
+  const stream = Object.hasOwn(overrides, "body") ? overrides.body : new ReadableStream({
+    type: "bytes",
+    pull(controller) {
+      metrics.pulls += 1;
+      overrides.onPull?.();
+      if (overrides.stall) return;
+      if (overrides.streamErrorAtByte !== undefined && offset >= overrides.streamErrorAtByte) {
+        controller.error(new Error("fixture stream failure"));
+        return;
+      }
+      if (offset >= bytes.byteLength) {
+        controller.close();
+        controller.byobRequest?.respond(0);
+        return;
+      }
+      const request = controller.byobRequest;
+      if (!request) {
+        controller.error(new Error("fixture requires a BYOB reader"));
+        return;
+      }
+      metrics.maxRequestedBytes = Math.max(metrics.maxRequestedBytes, request.view.byteLength);
+      const chunkSize = overrides.chunkSize ?? request.view.byteLength;
+      const count = Math.min(chunkSize, request.view.byteLength, bytes.byteLength - offset);
+      request.view.set(bytes.subarray(offset, offset + count));
+      offset += count;
+      metrics.bytesProduced += count;
+      request.respond(count);
+    },
+    cancel() {
+      metrics.cancellations += 1;
+    },
+  });
+  const contentLength = Object.hasOwn(overrides, "contentLength")
+    ? overrides.contentLength
+    : String(bytes.byteLength);
   return {
     ok: overrides.ok ?? true,
     redirected: overrides.redirected ?? false,
-    headers: { get: (name) => name.toLowerCase() === "content-type" ? contentType : null },
-    text: async () => text,
+    headers: {
+      get: (name) => {
+        if (name.toLowerCase() === "content-type") return contentType;
+        if (name.toLowerCase() === "content-length") return contentLength;
+        return null;
+      },
+    },
+    body: stream,
+    metrics,
   };
+}
+
+function healthJsonAtByteLength(byteLength, marker = "") {
+  const body = {
+    status: "ok",
+    service: "gcd-social-api",
+    state: "postgres",
+    commit: targetSha,
+    padding: "",
+    marker,
+  };
+  const emptyLength = textEncoder.encode(JSON.stringify(body)).byteLength;
+  assert(emptyLength <= byteLength);
+  body.padding = "x".repeat(byteLength - emptyLength);
+  const text = JSON.stringify(body);
+  assert.equal(textEncoder.encode(text).byteLength, byteLength);
+  return text;
 }
 
 function createGitFixture(options = {}) {
@@ -251,6 +321,132 @@ for (const invalidUrl of [
   assert.throws(() => validateApiHealthUrl(invalidUrl), DeploymentStop, invalidUrl);
 }
 assert.equal(await apiHealthResponseMatches(healthResponse(), targetSha), true);
+
+// Node 22's real fetch-compatible Response body supports the bounded BYOB path.
+{
+  const response = new Response(JSON.stringify({
+    status: "ok", service: "gcd-social-api", state: "postgres", commit: targetSha,
+  }), { headers: { "content-type": "application/json" } });
+  assert.equal(await apiHealthResponseMatches(response, targetSha), true);
+}
+
+// Health bodies are counted in transport bytes, with one byte of overflow detection only.
+{
+  const small = healthResponse(undefined, { chunkSize: 3 });
+  assert.equal(await apiHealthResponseMatches(small, targetSha), true);
+  assert.equal(small.metrics.bytesProduced, textEncoder.encode(JSON.stringify({
+    status: "ok", service: "gcd-social-api", state: "postgres", commit: targetSha,
+  })).byteLength);
+
+  const exactText = healthJsonAtByteLength(MAX_HEALTH_BODY_BYTES, "€");
+  const exact = healthResponse(undefined, { text: exactText, chunkSize: 1 });
+  assert.equal(await apiHealthResponseMatches(exact, targetSha), true);
+  assert.equal(exact.metrics.bytesProduced, MAX_HEALTH_BODY_BYTES);
+  assert.equal(exact.metrics.cancellations, 0);
+
+  const oneOver = healthResponse(undefined, {
+    text: `${exactText} `,
+    contentLength: null,
+    chunkSize: 257,
+  });
+  assert(`${exactText} `.length <= MAX_HEALTH_BODY_BYTES);
+  assert.equal(await apiHealthResponseMatches(oneOver, targetSha), false);
+  assert.equal(oneOver.metrics.bytesProduced, MAX_HEALTH_BODY_BYTES + 1);
+  assert.equal(oneOver.metrics.cancellations, 1);
+
+  const megabyte = new Uint8Array(1024 * 1024).fill(0x78);
+  const huge = healthResponse(undefined, { bytes: megabyte, contentLength: null });
+  assert.equal(await apiHealthResponseMatches(huge, targetSha), false);
+  assert.equal(huge.metrics.bytesProduced, MAX_HEALTH_BODY_BYTES + 1);
+  assert.equal(huge.metrics.maxRequestedBytes, MAX_HEALTH_BODY_BYTES + 1);
+  assert.equal(huge.metrics.cancellations, 1);
+  assert(huge.metrics.bytesProduced < megabyte.byteLength);
+
+  const falseSmallLength = healthResponse(undefined, {
+    bytes: megabyte,
+    contentLength: "64",
+  });
+  assert.equal(await apiHealthResponseMatches(falseSmallLength, targetSha), false);
+  assert.equal(falseSmallLength.metrics.bytesProduced, MAX_HEALTH_BODY_BYTES + 1);
+  assert.equal(falseSmallLength.metrics.cancellations, 1);
+
+  const declaredOversize = healthResponse(undefined, {
+    contentLength: String(MAX_HEALTH_BODY_BYTES + 1),
+  });
+  assert.equal(await apiHealthResponseMatches(declaredOversize, targetSha), false);
+  assert.equal(declaredOversize.metrics.pulls, 0);
+  assert.equal(declaredOversize.metrics.bytesProduced, 0);
+  assert.equal(declaredOversize.metrics.cancellations, 1);
+
+  for (const invalidLength of ["", "-1", "4096x", "1e9", "4096, 4096", "9".repeat(100)]) {
+    const invalid = healthResponse(undefined, { contentLength: invalidLength });
+    assert.equal(await apiHealthResponseMatches(invalid, targetSha), false, invalidLength);
+    assert.equal(invalid.metrics.pulls, 0, invalidLength);
+    assert.equal(invalid.metrics.cancellations, 1, invalidLength);
+  }
+
+  const zeroLength = healthResponse(undefined, { contentLength: "0" });
+  assert.equal(await apiHealthResponseMatches(zeroLength, targetSha), false);
+  assert.equal(zeroLength.metrics.pulls, 0);
+  assert.equal(zeroLength.metrics.cancellations, 1);
+
+  const absentLengthSmall = healthResponse(undefined, { contentLength: null, chunkSize: 2 });
+  assert.equal(await apiHealthResponseMatches(absentLengthSmall, targetSha), true);
+
+  const malformedPrefix = textEncoder.encode(JSON.stringify({
+    status: "ok", service: "gcd-social-api", state: "postgres", commit: targetSha, note: "",
+  }).replace('"note":""}', '"note":"'));
+  const malformedSuffix = textEncoder.encode('"}');
+  const malformedBytes = new Uint8Array(malformedPrefix.byteLength + 1 + malformedSuffix.byteLength);
+  malformedBytes.set(malformedPrefix);
+  malformedBytes[malformedPrefix.byteLength] = 0xff;
+  malformedBytes.set(malformedSuffix, malformedPrefix.byteLength + 1);
+  const permissivelyDecoded = JSON.parse(new TextDecoder().decode(malformedBytes));
+  assert.equal(permissivelyDecoded.status, "ok");
+  assert.equal(permissivelyDecoded.service, "gcd-social-api");
+  assert.equal(permissivelyDecoded.state, "postgres");
+  assert.equal(permissivelyDecoded.commit, targetSha);
+  const malformedUtf8 = healthResponse(undefined, { bytes: malformedBytes });
+  assert.equal(await apiHealthResponseMatches(malformedUtf8, targetSha), false);
+
+  const streamFailure = healthResponse(undefined, { chunkSize: 5, streamErrorAtByte: 5 });
+  assert.equal(await apiHealthResponseMatches(streamFailure, targetSha), false);
+  assert(streamFailure.metrics.bytesProduced <= 5);
+
+  const empty = healthResponse(undefined, { bytes: new Uint8Array(), contentLength: null });
+  assert.equal(await apiHealthResponseMatches(empty, targetSha), false);
+
+  const missingBody = healthResponse(undefined, { body: null, contentLength: null });
+  let unsafeTextFallbackCalls = 0;
+  missingBody.text = async () => { unsafeTextFallbackCalls += 1; return "{}"; };
+  assert.equal(await apiHealthResponseMatches(missingBody, targetSha), false);
+  assert.equal(unsafeTextFallbackCalls, 0);
+
+  const nonByteStream = healthResponse(undefined, {
+    body: new ReadableStream({
+      start(controller) {
+        controller.enqueue(textEncoder.encode("{}"));
+        controller.close();
+      },
+    }),
+    contentLength: null,
+  });
+  assert.equal(await apiHealthResponseMatches(nonByteStream, targetSha), false);
+
+  const abortController = new AbortController();
+  const stalled = healthResponse(undefined, {
+    contentLength: null,
+    stall: true,
+    onPull: () => abortController.abort(new Error("fixture health timeout")),
+  });
+  const abortedResult = await Promise.race([
+    apiHealthResponseMatches(stalled, targetSha, { signal: abortController.signal }),
+    new Promise((_, reject) => setTimeout(() => reject(new Error("health abort was not bounded")), 250)),
+  ]);
+  assert.equal(abortedResult, false);
+  assert.equal(stalled.metrics.cancellations, 1);
+}
+
 for (const [scenario, response] of [
   ["redirect", healthResponse(undefined, { redirected: true })],
   ["unrelated 200", healthResponse({ status: "ok", service: "other", state: "postgres", commit: targetSha })],
@@ -299,9 +495,67 @@ for (const [sample, secret] of secretSamples) {
   const sanitized = sanitizeDiagnostic(sample);
   assert(!sanitized.includes(secret), sample);
 }
+
+function percentEncodeAll(value, lowerCaseHex = false) {
+  return Array.from(textEncoder.encode(value), (byte) => {
+    const hex = byte.toString(16).padStart(2, "0");
+    return `%${lowerCaseHex ? hex : hex.toUpperCase()}`;
+  }).join("");
+}
+
+const encodedSecretSamples = [
+  ["Authorization%3A%20Bearer%20EncodedBearerSecret123", "EncodedBearerSecret123"],
+  ["Authorization%3a%20Basic%20EncodedBasicSecret123", "EncodedBasicSecret123"],
+  [percentEncodeAll("Authorization: Bearer FullyByteEncodedAuthSecret123"), "FullyByteEncodedAuthSecret123"],
+  [percentEncodeAll("Authorization: Basic LowerByteEncodedAuthSecret123", true), "LowerByteEncodedAuthSecret123"],
+  ["Authorization%253A%2520Basic%2520DoubleEncodedSecret123", "DoubleEncodedSecret123"],
+  ["Authorization%3A+Bearer+PlusEncodedSecret123", "PlusEncodedSecret123"],
+  ["https%3A%2F%2Fhooks.slack.com%2Fservices%2FT000%2FB000%2FEncodedWebhookSecret123", "EncodedWebhookSecret123"],
+  [percentEncodeAll("https://hooks.slack.com/services/T000/B000/FullyByteEncodedWebhook123"), "FullyByteEncodedWebhook123"],
+  ["https%3A%2F%2Fuser%3AEncodedUrlSecret123%40example.com%2Fpath", "EncodedUrlSecret123"],
+  ["postgresql%3A%2F%2Fuser%3AEncodedPostgresSecret123%40host%2Fdb", "EncodedPostgresSecret123"],
+  ["redis%3a%2f%2fuser%3aEncodedRedisSecret123%40host%2f0", "EncodedRedisSecret123"],
+  ["access%5Ftoken%3DEncodedAccessSecret123", "EncodedAccessSecret123"],
+  ["refresh%5ftoken%3dEncodedRefreshSecret123", "EncodedRefreshSecret123"],
+  ["api%5Fkey%3DEncodedApiSecret123", "EncodedApiSecret123"],
+  ["token%3D%46%75%6C%6C%79%45%6E%63%6F%64%65%64%53%65%63%72%65%74%31%32%33", "FullyEncodedSecret123"],
+  ["secret%3DEncodedGenericSecret123", "EncodedGenericSecret123"],
+  ["password%3DEncodedPasswordSecret123", "EncodedPasswordSecret123"],
+  ["signature%3DEncodedSignatureSecret123", "EncodedSignatureSecret123"],
+  ["%7B%22access_token%22%3A%22EncodedJsonSecret123%22%7D", "EncodedJsonSecret123"],
+  [percentEncodeAll("TOKEN => EncodedArrowSecret123"), "EncodedArrowSecret123"],
+  ["prefix%20Authorization%3A%20Bearer%20MixedEncodedSecret123%20suffix", "MixedEncodedSecret123"],
+  ["%ZZprefix%20Authorization%3A%20Bearer%20MalformedPrefixSecret123", "MalformedPrefixSecret123"],
+  ["%FFAuthorization%3A%20Bearer%20InvalidBytePrefixSecret123", "InvalidBytePrefixSecret123"],
+];
+for (const [sample, secret] of encodedSecretSamples) {
+  assert.equal(sanitizeDiagnostic(sample), "[REDACTED_DIAGNOSTIC]", sample);
+  assert(!sanitizeDiagnostic(sample).includes(secret), sample);
+}
+
+const alternateAssignmentSamples = [
+  ["TOKEN => AlternateSecret123", "AlternateSecret123"],
+  ["TOKEN->TightSecret123", "TightSecret123"],
+  ['password => "QuotedPasswordSecret123"', "QuotedPasswordSecret123"],
+  ['"access_token" => "QuotedAccessSecret123"', "QuotedAccessSecret123"],
+  ["'refresh_token' -> 'QuotedRefreshSecret123'", "QuotedRefreshSecret123"],
+  ['"Authorization" => Bearer QuotedAuthSecret123', "QuotedAuthSecret123"],
+  ["'Authorization' -> Basic QuotedBasicSecret123", "QuotedBasicSecret123"],
+  ['"token" => Bearer QuotedTokenSchemeSecret123', "QuotedTokenSchemeSecret123"],
+];
+for (const [sample, secret] of alternateAssignmentSamples) {
+  assert(!sanitizeDiagnostic(sample).includes(secret), sample);
+}
+
 assert.equal(sanitizeDiagnostic("x".repeat(600)).length, 500);
 assert(sanitizeDiagnostic('{"tokenizer":"harmless-value"}').includes("harmless-value"));
 assert(sanitizeDiagnostic("FOO_TOKENIZER=harmless-assignment").includes("harmless-assignment"));
+assert(sanitizeDiagnostic("FOO_TOKENIZER => HarmlessArrowValue123").includes("HarmlessArrowValue123"));
+assert(sanitizeDiagnostic("tokenizer->HarmlessTightValue123").includes("HarmlessTightValue123"));
+assert(sanitizeDiagnostic("tokenizer%3DHarmlessEncodedValue123").includes("HarmlessEncodedValue123"));
+assert.equal(sanitizeDiagnostic("%3Cscript%3Eencoded-markup-only%3C%2Fscript%3E"),
+  "%3Cscript%3Eencoded-markup-only%3C%2Fscript%3E");
+assert.equal(sanitizeDiagnostic(`${encodedSecretSamples[0][0]}${"x".repeat(25_000)}`), "[REDACTED_DIAGNOSTIC]");
 assert(inertDiagnostic("`".repeat(500)).length <= 5_100);
 
 function summaryContaining(sample) {
@@ -332,6 +586,26 @@ function summaryContaining(sample) {
 for (const [sample, secret] of secretSamples) {
   const summary = summaryContaining(sample);
   assert(!summary.includes(secret), sample);
+  assert(summary.includes("<code>"), sample);
+}
+
+for (const [sample, secret] of [...encodedSecretSamples, ...alternateAssignmentSamples]) {
+  const summary = summaryContaining(sample);
+  assert(!summary.includes(sample), sample);
+  assert(!summary.includes(secret), sample);
+  assert(summary.includes("<code>"), sample);
+}
+
+for (const [sample, secret, activeMarkup] of [
+  ["Authorization%3A%20Bearer%20EncodedMarkdownSecret123 ![image](https://example.invalid/tracker)", "EncodedMarkdownSecret123", "![image](https://example.invalid/tracker)"],
+  ["https%3A%2F%2Fhooks.slack.com%2Fservices%2FT%2FB%2FEncodedHtmlSecret123 <img src='https://example.invalid/tracker'>", "EncodedHtmlSecret123", "<img src='https://example.invalid/tracker'>"],
+  ["TOKEN => ArrowMarkdownSecret123 `inline` [click](https://example.invalid)", "ArrowMarkdownSecret123", "`inline` [click](https://example.invalid)"],
+]) {
+  assert(!sanitizeDiagnostic(sample).includes(secret), sample);
+  const summary = summaryContaining(sample);
+  assert(!summary.includes(sample), sample);
+  assert(!summary.includes(secret), sample);
+  assert(!summary.includes(activeMarkup), sample);
   assert(summary.includes("<code>"), sample);
 }
 
@@ -751,4 +1025,4 @@ for (const status of ["unknown", "timed_out", "cancelled", "build_failed", "upda
   }
 }
 
-console.log("deployment controller self-test: PASS (gate, exact health, target readiness/stabilization, sequencing, fail-closed states, inert redaction)");
+console.log("deployment controller self-test: PASS (gate, byte-bounded exact health, target readiness/stabilization, sequencing, fail-closed states, encoded/fallback redaction, inert summaries)");
