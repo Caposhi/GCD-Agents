@@ -1,0 +1,12 @@
+[
+  {
+    "deploy": {
+      "id": "dep-api-failed",
+      "status": "build_failed",
+      "commit": { "id": "2222222222222222222222222222222222222222" },
+      "errorMessage": "build exited with status 1",
+      "createdAt": "2026-08-24T13:00:00Z",
+      "finishedAt": "2026-08-24T13:02:00Z"
+    }
+  }
+]

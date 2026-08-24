@@ -36,14 +36,19 @@ Daily: API/worker/scheduler status, pending/running/failed briefs, pending/expir
 
 ## Deployment
 
-1. Identify the Render Blueprint instance, branch, database, and all external accounts.
-2. Back up PostgreSQL and review/test new migration SQL against a disposable local database, including the media-table digest scan/backfill and lock duration.
-3. For Phase 0A, stop the legacy scheduler and worker as a hard rollout gate before migration; that publication binary ignores `revoked_at` and must not coexist with or restart against migration 005. Drain/reject every outstanding approval. `005_approval_integrity.sql` revokes legacy pending/approved rows without the new hash binding, clears and constrains the deprecated plaintext-token column to NULL, and requires nonnull equal legacy/canonical copies for bound Phase0A subjects without backfilling unbound historical artifacts. It makes decision/revocation metadata and subject bytes immutable, backfills media byte digests, blocks media id/MIME/bytes/digest changes, and rejects every media deletion; old approval links must not survive rollout. Its transaction-local 10-second lock timeout and five-minute per-statement timeout turn unexpected contention or table size into a failed predeploy; investigate the blocker/size instead of retrying automatically.
-4. Run build, typecheck, the offline self-tests (including API-security tests), simulated dry run, dependency/security scans, and documentation validation.
-5. Using exactly one migration runner/process, apply migration 005 before starting the compatible API/worker/scheduler; do not allow concurrent predeploy migration runners. The API predeploy normally applies migrations, and all three new entry points deliberately fail their approval/media column, approval-constraint, and trigger probes against an unmigrated or partially migrated database. Do not try to backfill approval hashes/tokens.
-6. Verify API liveness and database queue reads without invoking diagnostics or manual triggers unless authorized. Confirm missing/invalid `CONSOLE_TOKEN` fails protected routes and that Arcade sends a supported header.
-7. Confirm the scheduler and worker only after database, canonical facts, public root HTTPS media/review origin, exact Slack webhook, active-platform credentials, and approval-bound target IDs/host/version checks. The checked-in API service intentionally lacks the worker-only Anthropic/image/approval-webhook secrets but retains provider credentials for authenticated diagnostics; verify live Render service scope rather than assuming the Blueprint was applied. Issue new review links for any carried work.
-8. Observe the next authorized test approval lifecycle and reconcile provider results. This runbook does not assert that deployment or migration has occurred.
+Phase 0A is live at the production commit recorded in the root README. The native concurrent rollout produced a real worker-before-migration crash, so future unattended releases must use the controller in [Deployment control](DEPLOYMENT.md) after its explicit cutover. Until then, keep `RENDER_DEPLOY_AUTOMATION_ENABLED=false` and leave native auto-deploy as the sole authority.
+
+For a no-migration release after cutover:
+
+1. Require the complete `CI` workflow to pass for the exact `main` push. A manual CI run is diagnostic only.
+2. After the serialized slot is acquired, require the CI-tested `TARGET_SHA` to equal freshly fetched current `origin/main`. A stale result reports `SUPERSEDED RELEASE — NO DEPLOYMENT` before any Render command. Then derive the API's actual `LIVE_SHA`, validate repository ancestry, and compare `LIVE_SHA..TARGET_SHA`; if all three services already report the target, stop successfully without another deploy.
+3. If any `state/migrations/**` path changed, stop at `CONTROLLED MIGRATION ROLLOUT REQUIRED`. Do not trigger API, worker, scheduler, or an automatic migration. Plan a separately authorized rollout with a backup, reviewed locks/data effects, stopped incompatible consumers, and exactly one migration runner.
+4. Otherwise deploy the API once at `TARGET_SHA`, wait for Render `live`, and verify `/healthz` with bounded retries.
+5. Deploy the worker once, wait for `live`, and require bounded recent logs to show its started/polling signal without an obvious crash.
+6. Deploy the scheduler once only after the worker passes, then require all three live deploy records to report `TARGET_SHA`. Do not manually execute the cron as a deployment smoke test.
+7. On failure, use the redacted `$GITHUB_STEP_SUMMARY` first, then explicitly authorized Render MCP read operations if more context is needed. Do not loop redeploy attempts.
+
+The controller does not implement rollback or migration execution. Application rollback and forward-only database repair/restore remain separate, explicitly authorized procedures. The exact GitHub secret/variables and the no-dual-authority native auto-deploy cutover are in [Deployment control](DEPLOYMENT.md).
 
 ## Backup, restore, and rollback
 
@@ -61,3 +66,5 @@ Application rollback selects a prior release/commit. SQL migrations are forward-
 - Approval review still uses a URL bearer token and a generic `human` actor label; revocation has no operator-facing route.
 - Control-plane authentication shares one secret and uses per-process, direct-socket rate limits rather than distributed identity-aware enforcement.
 - Checked-in facts are authoritative against caller override, but have no enforced source/confidence/freshness/last-review metadata; define that contract before Phase 0B.
+- Production PostgreSQL external access was discovered as `0.0.0.0/0`; remediation is a separate security change.
+- The scheduler artifact was live at discovery, but its first scheduled execution had not yet been observed.

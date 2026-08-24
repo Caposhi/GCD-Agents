@@ -1,0 +1,111 @@
+name: Deploy production to Render
+
+on:
+  workflow_run:
+    workflows: [CI]
+    branches: [main]
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-render-deploy
+  cancel-in-progress: false
+
+jobs:
+  authorize:
+    name: Verify CI provenance and deployment gate
+    runs-on: ubuntu-latest
+    outputs:
+      target_sha: ${{ steps.release.outputs.target_sha }}
+    steps:
+      - name: Refuse non-main, non-push, or unsuccessful CI runs
+        env:
+          CI_WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
+          CI_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          CI_EVENT: ${{ github.event.workflow_run.event }}
+          CI_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          CI_HEAD_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
+          CI_HEAD_REPOSITORY_ID: ${{ github.event.workflow_run.head_repository.id }}
+          EXPECTED_REPOSITORY: ${{ github.repository }}
+          EXPECTED_REPOSITORY_ID: ${{ github.event.repository.id }}
+        run: |
+          test "$CI_WORKFLOW_NAME" = "CI"
+          test "$CI_CONCLUSION" = "success"
+          test "$CI_EVENT" = "push"
+          test "$CI_HEAD_BRANCH" = "main"
+          test "$CI_HEAD_REPOSITORY" = "$EXPECTED_REPOSITORY"
+          test "$CI_HEAD_REPOSITORY_ID" = "$EXPECTED_REPOSITORY_ID"
+
+      - name: Refuse while production automation is disabled
+        env:
+          AUTOMATION_ENABLED: ${{ vars.RENDER_DEPLOY_AUTOMATION_ENABLED }}
+        run: |
+          if [[ "$AUTOMATION_ENABLED" != "true" ]]; then
+            echo "::error::Production deployment refused: RENDER_DEPLOY_AUTOMATION_ENABLED must be exactly true."
+            exit 1
+          fi
+
+      - name: Select exact release commit
+        id: release
+        env:
+          TARGET_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          if [[ ! "$TARGET_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::The CI head SHA is not a full commit SHA."
+            exit 1
+          fi
+          echo "target_sha=$TARGET_SHA" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    name: Serialized API, worker, scheduler release
+    needs: authorize
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: production
+    steps:
+      - name: Check out exact CI-tested commit with full history
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.authorize.outputs.target_sha }}
+          fetch-depth: 0
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install reviewed Render CLI 2.22.0
+        env:
+          RENDER_CLI_VERSION: 2.22.0
+          RENDER_CLI_SHA256: 6cdcd11897b7bd7e673317e6f4aaf041b654d818444f3b1efec7240a835f79ec
+        run: |
+          archive="$RUNNER_TEMP/render-cli.zip"
+          install_dir="$RUNNER_TEMP/render-cli"
+          curl --fail --show-error --silent --location \
+            "https://github.com/render-oss/cli/releases/download/v${RENDER_CLI_VERSION}/cli_${RENDER_CLI_VERSION}_linux_amd64.zip" \
+            --output "$archive"
+          echo "${RENDER_CLI_SHA256}  ${archive}" | sha256sum --check --status
+          mkdir "$install_dir"
+          unzip -q "$archive" -d "$install_dir"
+          mapfile -t binaries < <(find "$install_dir" -maxdepth 2 -type f -perm -u+x)
+          test "${#binaries[@]}" -eq 1
+          install "${binaries[0]}" "$RUNNER_TEMP/render"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
+      - name: Refresh authoritative main immediately before release evaluation
+        run: git fetch --no-tags origin +main:refs/remotes/origin/main
+
+      - name: Run coordinated production controller
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_CLI_CONFIG_PATH: ${{ runner.temp }}/render-cli-config.yaml
+          RENDER_DEPLOY_AUTOMATION_ENABLED: ${{ vars.RENDER_DEPLOY_AUTOMATION_ENABLED }}
+          RENDER_WORKSPACE_ID: ${{ vars.RENDER_WORKSPACE_ID }}
+          RENDER_API_SERVICE_ID: ${{ vars.RENDER_API_SERVICE_ID }}
+          RENDER_WORKER_SERVICE_ID: ${{ vars.RENDER_WORKER_SERVICE_ID }}
+          RENDER_SCHEDULER_SERVICE_ID: ${{ vars.RENDER_SCHEDULER_SERVICE_ID }}
+          RENDER_API_HEALTH_URL: ${{ vars.RENDER_API_HEALTH_URL }}
+          TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
+        run: node scripts/render/deployment-controller.mjs

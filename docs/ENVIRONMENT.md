@@ -1,6 +1,6 @@
 # Environment
 
-`.env.example` is the safe local reference. Production values belong in Render/secret management. `render.yaml` is a declaration, not proof values are present.
+`.env.example` is the safe application-runtime reference. Production application values belong in Render/secret management. `render.yaml` is a declaration, not proof values are present. GitHub deployment-controller configuration is intentionally separate and must not be copied into `.env.example` or Render service environments.
 
 ## Runtime and state
 
@@ -61,4 +61,10 @@ After approval, the worker attempts Google access-token refresh only when the ex
 
 ## Checked-in Render service scope
 
-The checked-in Blueprint keeps `ANTHROPIC_API_KEY`, `IMAGEGEN_API_KEY`, and `APPROVAL_CHANNEL_WEBHOOK` on the worker, not the API. The API retains Meta/Google credentials and identifiers only because its authenticated diagnostics use them; the scheduler receives only `NODE_ENV` and `DATABASE_URL`. This describes `render.yaml`, not the live Render dashboard, which was not inspected or changed during Phase 0A.
+The checked-in Blueprint keeps `ANTHROPIC_API_KEY`, `IMAGEGEN_API_KEY`, and `APPROVAL_CHANNEL_WEBHOOK` on the worker, not the API. The API retains Meta/Google credentials and identifiers only because its authenticated diagnostics use them; the scheduler receives only `NODE_ENV` and `DATABASE_URL`. Read-only production discovery verified service identity, branch, command, health/schedule, native auto-deploy, and database metadata, but did not retrieve application environment values. `render.yaml` remains intent rather than complete proof of secret scope.
+
+## GitHub production deployment configuration
+
+The separate GitHub `production` environment should hold secret `RENDER_API_KEY` and non-secret variables `RENDER_WORKSPACE_ID`, `RENDER_API_SERVICE_ID`, `RENDER_WORKER_SERVICE_ID`, `RENDER_SCHEDULER_SERVICE_ID`, and `RENDER_API_HEALTH_URL`. Repository variable `RENDER_DEPLOY_AUTOMATION_ENABLED` is deliberately outside the environment because the provenance job checks it before the deployment job enters that environment. The exact values and cutover order are in [Deployment control](DEPLOYMENT.md). The enable variable must remain `false` until all three Render native auto-deploy settings are verified off; only the exact string `true` permits the controller to continue.
+
+These names are control-plane inputs read by GitHub workflow/controller code, not application runtime reads. `RENDER_API_KEY` must exist only as a GitHub secret, must never be echoed, and must not be placed in Render service env, `.env`, documentation values, or fixtures.

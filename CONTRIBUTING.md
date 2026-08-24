@@ -9,6 +9,8 @@
 5. Update code, migrations, prompts, agent definitions, skills, environment references, diagrams, and runbooks together.
 6. Run validation and review the complete diff.
 
+Pull requests and `main` must pass `.github/workflows/ci.yml`. A successful manual CI dispatch is diagnostic only. Production delivery is a separate serialized workflow and remains disabled until the documented Render native-auto-deploy cutover; never enable or bypass it as part of an ordinary source change.
+
 ## State changes
 
 SQL migrations are forward-only. Create a new lexical migration, review it for locks/data loss, test against a disposable PostgreSQL database, and back up production before deployment. Database rollback cannot undo social posts, messages, or API/model spend.
@@ -25,5 +27,6 @@ Treat prompt/agent/skill changes as behavioral code. Add a self-test or dry-run 
 - Every active environment read appears safely in `.env.example` and `docs/ENVIRONMENT.md`.
 - Links, credential/PII scan, whitespace check, modified-document reread, and complete diff review pass.
 - `AGENTS.md` documentation acceptance criteria are satisfied.
+- Deployment changes include controller fixture coverage and keep migration-bearing releases fail-closed before any service deploy.
 
 Do not use a live model call, image generation, provider diagnostic, approval, scheduler run, or social post merely as a smoke test.
