@@ -24,7 +24,7 @@ Treat prompt/agent/skill changes as behavioral code. Add a self-test or dry-run 
 - Build/typecheck and relevant offline self-tests pass.
 - Simulated dry run builds valid requests without network or publishing.
 - Approval, idempotency, retry, partial-failure, and recovery implications are documented.
-- Every active environment read appears safely in `.env.example` and `docs/ENVIRONMENT.md`.
+- Every active environment read appears safely in `.env.example` and `docs/ENVIRONMENT.md`, or is explicitly classified and documented as operating-system-, platform-, or disposable-test-provided.
 - Links, credential/PII scan, whitespace check, modified-document reread, and complete diff review pass.
 - `AGENTS.md` documentation acceptance criteria are satisfied.
 - Deployment changes include controller fixture coverage and keep migration-bearing releases fail-closed before any service deploy.

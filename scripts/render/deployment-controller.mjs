@@ -10,6 +10,14 @@ const SHA_PATTERN = /^[0-9a-f]{40}$/;
 const MAX_COMMAND_BYTES = 4 * 1024 * 1024;
 const MAX_LOG_LINES = 100;
 const MAX_LOG_CHARS = 500;
+const MAX_DIAGNOSTIC_INPUT_CHARS = 20_000;
+const MAX_HEALTH_BODY_CHARS = 4_096;
+const EXPECTED_API_HEALTH_ORIGIN = "https://gcd-social-api.onrender.com";
+const EXPECTED_API_HEALTH_PATH = "/healthz";
+const WORKER_READY_PREFIX = "[worker] ready ";
+const WORKER_READY_ATTEMPTS = 12;
+const WORKER_READY_INTERVAL_MS = 5_000;
+const WORKER_STABILIZATION_MS = 10_000;
 
 export class DeploymentStop extends Error {
   constructor(message, code = "DEPLOYMENT_STOP") {
@@ -46,16 +54,49 @@ function parseJson(text) {
   try {
     return JSON.parse(trimmed);
   } catch {
-    const lines = trimmed.split("\n").map((line) => line.trim()).filter(Boolean).reverse();
-    for (const line of lines) {
-      try {
-        return JSON.parse(line);
-      } catch {
-        // Continue to the previous JSON line.
-      }
-    }
     throw new Error("unparseable JSON output");
   }
+}
+
+/** Parse the Render CLI's sequential, optionally pretty-printed JSON values. */
+export function parseJsonValues(text) {
+  const source = String(text ?? "").trim();
+  if (!source) throw new Error("empty JSON output");
+  const values = [];
+  let start = -1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index];
+    if (start < 0) {
+      if (/\s/.test(char)) continue;
+      if (char !== "{" && char !== "[") throw new Error("unexpected non-JSON log output");
+      start = index;
+      depth = 1;
+      continue;
+    }
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+    if (char === "{" || char === "[") depth += 1;
+    else if (char === "}" || char === "]") depth -= 1;
+    if (depth < 0) throw new Error("unbalanced JSON log output");
+    if (depth === 0) {
+      values.push(JSON.parse(source.slice(start, index + 1)));
+      start = -1;
+    }
+  }
+  if (start >= 0 || inString || !values.length) throw new Error("incomplete JSON log output");
+  return values;
 }
 
 function arrayPayload(value) {
@@ -98,29 +139,152 @@ export function selectTargetDeploy(value, targetSha) {
   return normalizeDeploys(value).find((deploy) => deployCommit(deploy) === targetSha);
 }
 
-export function sanitizeDiagnostic(value) {
-  return String(value ?? "")
-    .replace(/https:\/\/hooks\.slack\.com\/services\/\S+/gi, "[REDACTED_SLACK_WEBHOOK]")
-    .replace(/\b(?:postgres(?:ql)?|mysql|redis|rediss):\/\/[^\s]+/gi, "[REDACTED_DATABASE_URL]")
-    .replace(/\bhttps?:\/\/[^\s/@:]+:[^\s/@]+@[^\s]+/gi, "[REDACTED_CREDENTIAL_URL]")
-    .replace(/\bAuthorization\s*[:=]\s*[^\r\n]+/gi, "Authorization: [REDACTED]")
-    .replace(/\bBearer\s+[^\s,;]+/gi, "Bearer [REDACTED]")
-    .replace(/\b(?:rnd_|sk-ant-|gh[pousr]_|xox[a-z]-|ya29\.)[A-Za-z0-9._-]+\b/gi, "[REDACTED_TOKEN]")
-    .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[REDACTED_JWT]")
-    .replace(/\b(RENDER_API_KEY|DATABASE_URL|ACCESS_TOKEN|REFRESH_TOKEN|CLIENT_SECRET|API_KEY|TOKEN|SECRET|PASSWORD)\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi, "$1=[REDACTED]")
-    .replace(/([?&](?:access_token|api_key|key|token|secret|signature)=)[^&\s]+/gi, "$1[REDACTED]")
-    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, "[REDACTED_EMAIL]")
-    .replace(/[\r\n]+/g, " ")
-    .slice(0, MAX_LOG_CHARS);
+const SECRET_KEY_NAMES = new Set([
+  "authorization",
+  "accesstoken",
+  "refreshtoken",
+  "apikey",
+  "renderapikey",
+  "databaseurl",
+  "clientsecret",
+  "password",
+  "passwd",
+  "token",
+  "secret",
+  "signature",
+]);
+const SECRET_KEY_SOURCE = [
+  "authorization",
+  "access[_-]?token",
+  "refresh[_-]?token",
+  "api[_-]?key",
+  "render[_-]?api[_-]?key",
+  "database[_-]?url",
+  "client[_-]?secret",
+  "password",
+  "passwd",
+  "token",
+  "secret",
+  "signature",
+].join("|");
+const FALLBACK_SECRET_KEY_SOURCE = `(?:[A-Za-z][A-Za-z0-9]*[_-])*(?:${SECRET_KEY_SOURCE})`;
+
+function normalizedSecretKey(key) {
+  return String(key).toLowerCase().replace(/[_-]/g, "");
 }
 
-function logEntries(value) {
-  return arrayPayload(value).slice(0, MAX_LOG_LINES).map((entry) => {
-    if (typeof entry === "string") return sanitizeDiagnostic(entry);
-    const timestamp = entry?.timestamp ?? entry?.time ?? entry?.createdAt ?? "";
-    const message = entry?.message ?? entry?.text ?? entry?.log ?? entry?.body ?? "";
-    return sanitizeDiagnostic(`${timestamp ? `${timestamp} ` : ""}${message}`.trim());
-  }).filter(Boolean);
+function redactStructuredValue(value, depth = 0) {
+  if (depth > 20) return "[REDACTED_DEPTH]";
+  if (Array.isArray(value)) return value.map((item) => redactStructuredValue(item, depth + 1));
+  if (!value || typeof value !== "object") return value;
+  const redacted = Object.create(null);
+  for (const [key, item] of Object.entries(value)) {
+    redacted[key] = SECRET_KEY_NAMES.has(normalizedSecretKey(key))
+      ? "[REDACTED]"
+      : redactStructuredValue(item, depth + 1);
+  }
+  return redacted;
+}
+
+function structuredDiagnostic(source) {
+  try {
+    const parsed = JSON.parse(source);
+    if (!parsed || typeof parsed !== "object") return source;
+    return JSON.stringify(redactStructuredValue(parsed));
+  } catch {
+    return source;
+  }
+}
+
+export function sanitizeDiagnostic(value) {
+  try {
+    const source = String(value ?? "").slice(0, MAX_DIAGNOSTIC_INPUT_CHARS);
+    const quotedKey = new RegExp(
+      `(["'](?:${FALLBACK_SECRET_KEY_SOURCE})["']\\s*:\\s*)(?:"(?:\\\\.|[^"\\\\])*"|'(?:\\\\.|[^'\\\\])*'|[^\\s,}\\]]+)`,
+      "gi",
+    );
+    const assignment = new RegExp(
+      `\\b(${FALLBACK_SECRET_KEY_SOURCE})\\s*[:=]\\s*(?:"(?:\\\\.|[^"\\\\])*"|'(?:\\\\.|[^'\\\\])*'|[^\\s,;}\\]]+)`,
+      "gi",
+    );
+    let diagnostic = structuredDiagnostic(source);
+    for (let depth = 0; depth < 4; depth += 1) {
+      const unescaped = diagnostic.replace(/\\"/g, '"').replace(/\\'/g, "'");
+      if (unescaped === diagnostic) break;
+      diagnostic = unescaped;
+    }
+    return diagnostic
+      .replace(quotedKey, '$1"[REDACTED]"')
+      .replace(/https:\/\/hooks\.slack\.com\/services\/[^\s"'<>)}\]]+/gi, "[REDACTED_SLACK_WEBHOOK]")
+      .replace(/\b(?:postgres(?:ql)?|mysql|redis|rediss):\/\/[^\s"'<>)}\]]+/gi, "[REDACTED_DATABASE_URL]")
+      .replace(/\bhttps?:\/\/[^\s/@:]+:[^\s/@]+@[^\s"'<>)}\]]+/gi, "[REDACTED_CREDENTIAL_URL]")
+      .replace(/\bAuthorization\s*[:=]\s*(?:(?:Basic|Bearer)\s+)?(?:"[^"]*"|'[^']*'|[^\s,;}\]]+)/gi, "Authorization: [REDACTED]")
+      .replace(/\bBearer\s+[^\s,;}\]]+/gi, "Bearer [REDACTED]")
+      .replace(/\b(?:rnd_|sk-ant-|gh[pousr]_|xox[a-z]-|ya29\.)[A-Za-z0-9._-]+\b/gi, "[REDACTED_TOKEN]")
+      .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[REDACTED_JWT]")
+      .replace(assignment, "$1=[REDACTED]")
+      .replace(/([?&](?:access_token|refresh_token|api_key|key|token|secret|signature|password)=)[^&\s"'<>]+/gi, "$1[REDACTED]")
+      .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, "[REDACTED_EMAIL]")
+      .replace(/[\u0000-\u001f\u007f]+/g, " ")
+      .slice(0, MAX_LOG_CHARS);
+  } catch {
+    return "[REDACTED_DIAGNOSTIC]";
+  }
+}
+
+function instanceLabel(entry) {
+  if (entry?.labels === undefined) return { instanceId: "", valid: true };
+  if (!Array.isArray(entry.labels)) return { instanceId: "", valid: false };
+  if (entry.labels.some((item) => (
+    !item
+    || typeof item !== "object"
+    || Array.isArray(item)
+    || typeof item.name !== "string"
+    || !item.name
+    || typeof item.value !== "string"
+    || !item.value
+  ))) return { instanceId: "", valid: false };
+  const values = entry.labels
+    .filter((item) => item?.name === "instance")
+    .map((item) => item?.value)
+    .filter((value) => typeof value === "string" && value);
+  if (new Set(values).size > 1) return { instanceId: "", valid: false };
+  return { instanceId: values[0] ?? "", valid: true };
+}
+
+export function normalizeLogRecords(values) {
+  const entries = values.flatMap((value) => {
+    const array = arrayPayload(value);
+    return array.length ? array : [value];
+  });
+  return entries.slice(0, MAX_LOG_LINES + 1).map((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      return { id: "", timestamp: "", message: "[malformed log record]", instanceId: "", metadataValid: false };
+    }
+    const instance = instanceLabel(entry);
+    const id = typeof entry?.id === "string" ? entry.id : "";
+    const rawTimestamp = entry?.timestamp ?? entry?.time ?? entry?.createdAt;
+    const rawMessage = entry?.message ?? entry?.text ?? entry?.log ?? entry?.body;
+    const timestamp = typeof rawTimestamp === "string" ? rawTimestamp : "";
+    const message = typeof rawMessage === "string" && rawMessage ? rawMessage : "[malformed log record]";
+    return {
+      id,
+      timestamp,
+      message,
+      instanceId: instance.instanceId,
+      metadataValid: instance.valid
+        && Boolean(id)
+        && typeof rawTimestamp === "string"
+        && Boolean(timestamp)
+        && typeof rawMessage === "string"
+        && Boolean(rawMessage),
+    };
+  });
+}
+
+function logDiagnostic(entry) {
+  const instance = entry.instanceId ? ` instance=${entry.instanceId}` : "";
+  return sanitizeDiagnostic(`${entry.timestamp}${instance} ${entry.message}`.trim());
 }
 
 function requireValue(env, name, pattern) {
@@ -130,52 +294,205 @@ function requireValue(env, name, pattern) {
   return value;
 }
 
-function markdownCode(value) {
-  return `\`${sanitizeDiagnostic(value).replace(/`/g, "'")}\``;
+export function validateApiHealthUrl(value) {
+  let url;
+  try {
+    url = new URL(String(value));
+  } catch {
+    throw new DeploymentStop("RENDER_API_HEALTH_URL is invalid", "CONFIGURATION_ERROR");
+  }
+  if (
+    url.protocol !== "https:"
+    || url.origin !== EXPECTED_API_HEALTH_ORIGIN
+    || url.pathname !== EXPECTED_API_HEALTH_PATH
+    || url.username
+    || url.password
+    || url.search
+    || url.hash
+  ) {
+    throw new DeploymentStop(
+      `RENDER_API_HEALTH_URL must be exactly ${EXPECTED_API_HEALTH_ORIGIN}${EXPECTED_API_HEALTH_PATH}`,
+      "CONFIGURATION_ERROR",
+    );
+  }
+  return url;
 }
 
-function renderSummary(report) {
+export async function apiHealthResponseMatches(response, targetSha) {
+  try {
+    if (!response?.ok || response.redirected) return false;
+    const contentType = response.headers?.get?.("content-type") ?? "";
+    if (!/^application\/json(?:\s*;|\s*$)/i.test(contentType)) return false;
+    const text = await response.text();
+    if (typeof text !== "string" || text.length > MAX_HEALTH_BODY_CHARS) return false;
+    const body = JSON.parse(text);
+    return body?.status === "ok"
+      && body?.service === "gcd-social-api"
+      && body?.state === "postgres"
+      && body?.commit === targetSha;
+  } catch {
+    return false;
+  }
+}
+
+const INSTANCE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
+const RFC3339_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
+const CRASH_PATTERN = /^\s*(?:==>\s*)?(?:\[worker\]\s+(?:fatal|panic|uncaught(?:exception)?|unhandledrejection|crash(?:ed|ing)?)(?::|\b)|(?:fatal|panic|uncaught(?:\s+(?:exception|error)|exception)?|unhandledrejection)(?::|\b)|(?:(?:process|instance|worker)\s+)?(?:exited|exit)(?:\s+with)?\s+(?:code|status)\s+[1-9]\d*\b|(?:(?:process|instance|worker)\s+)?crashed\b)/i;
+
+function strictLogWindow(records) {
+  if (!records.length) throw new DeploymentStop("worker logs are missing", "WORKER_LOGS_AMBIGUOUS");
+  if (records.length >= MAX_LOG_LINES) {
+    throw new DeploymentStop("worker log window reached its safety bound", "WORKER_LOGS_AMBIGUOUS");
+  }
+  const byId = new Map();
+  for (const record of records) {
+    const timestampMs = Date.parse(record.timestamp);
+    if (!record.metadataValid || !RFC3339_PATTERN.test(record.timestamp) || !Number.isFinite(timestampMs)) {
+      throw new DeploymentStop("worker log metadata is malformed", "WORKER_LOGS_AMBIGUOUS");
+    }
+    if (record.instanceId && !INSTANCE_ID_PATTERN.test(record.instanceId)) {
+      throw new DeploymentStop("worker log instance identity is malformed", "WORKER_LOGS_AMBIGUOUS");
+    }
+    const previous = byId.get(record.id);
+    if (previous && JSON.stringify(previous) !== JSON.stringify(record)) {
+      throw new DeploymentStop("worker log IDs conflict", "WORKER_LOGS_AMBIGUOUS");
+    }
+    byId.set(record.id, { ...record, timestampMs });
+  }
+  return [...byId.values()].sort((left, right) => (
+    left.timestampMs - right.timestampMs || left.id.localeCompare(right.id)
+  ));
+}
+
+function parseWorkerReadyRecord(record) {
+  if (!record.message.startsWith(WORKER_READY_PREFIX)) return null;
+  let identity;
+  try {
+    identity = JSON.parse(record.message.slice(WORKER_READY_PREFIX.length));
+  } catch {
+    throw new DeploymentStop("worker readiness marker is malformed", "WORKER_READINESS_FAILED");
+  }
+  const plainObject = identity
+    && typeof identity === "object"
+    && !Array.isArray(identity)
+    && Object.getPrototypeOf(identity) === Object.prototype;
+  const instanceValid = identity?.instance === null
+    || (typeof identity?.instance === "string" && INSTANCE_ID_PATTERN.test(identity.instance));
+  if (
+    !plainObject
+    || identity.service !== "gcd-social-worker"
+    || identity.state !== "postgres"
+    || typeof identity.commit !== "string"
+    || !SHA_PATTERN.test(identity.commit)
+    || !instanceValid
+    || (identity.instance && record.instanceId && identity.instance !== record.instanceId)
+  ) {
+    throw new DeploymentStop("worker readiness identity is invalid", "WORKER_READINESS_FAILED");
+  }
+  return {
+    id: record.id,
+    timestamp: record.timestamp,
+    timestampMs: record.timestampMs,
+    commit: identity.commit,
+    instance: identity.instance || record.instanceId || null,
+  };
+}
+
+export function selectWorkerReadiness(records, targetSha) {
+  if (!records.length) return null;
+  const window = strictLogWindow(records);
+  const markers = window.map(parseWorkerReadyRecord).filter(Boolean);
+  const targetMarkers = markers.filter((marker) => marker.commit === targetSha);
+  if (!targetMarkers.length) return null;
+  if (targetMarkers.length !== 1) {
+    throw new DeploymentStop("multiple target worker readiness events are ambiguous", "WORKER_READINESS_FAILED");
+  }
+  return targetMarkers[0];
+}
+
+export function assertWorkerStabilized(records, ready, targetSha) {
+  const window = strictLogWindow(records);
+  const markers = window.map(parseWorkerReadyRecord).filter(Boolean);
+  const authoritative = markers.find((marker) => marker.id === ready.id && marker.commit === targetSha);
+  if (!authoritative) {
+    throw new DeploymentStop("authoritative readiness event is missing during stabilization", "WORKER_STABILIZATION_FAILED");
+  }
+  if (markers.some((marker) => marker.commit === targetSha && marker.id !== ready.id)) {
+    throw new DeploymentStop("worker restarted during stabilization", "WORKER_STABILIZATION_FAILED");
+  }
+  if (markers.some((marker) => marker.commit !== targetSha && marker.timestampMs >= ready.timestampMs)) {
+    throw new DeploymentStop("non-target worker instance appeared after readiness", "WORKER_STABILIZATION_FAILED");
+  }
+  const knownOldInstances = new Set(markers
+    .filter((marker) => marker.commit !== targetSha && marker.instance && marker.timestampMs < ready.timestampMs)
+    .map((marker) => marker.instance));
+  for (const record of window) {
+    if (record.timestampMs < ready.timestampMs) continue;
+    if (!ready.instance && record.instanceId) {
+      if (knownOldInstances.has(record.instanceId)) continue;
+      throw new DeploymentStop("worker instance is ambiguous after readiness", "WORKER_STABILIZATION_FAILED");
+    }
+    if (ready.instance && record.instanceId && record.instanceId !== ready.instance) {
+      if (knownOldInstances.has(record.instanceId)) continue;
+      throw new DeploymentStop("unknown worker instance appeared after readiness", "WORKER_STABILIZATION_FAILED");
+    }
+    if (CRASH_PATTERN.test(record.message)) {
+      throw new DeploymentStop("worker emitted a crash signal after readiness", "WORKER_STABILIZATION_FAILED");
+    }
+  }
+  return true;
+}
+
+export function inertDiagnostic(value) {
+  const safe = Array.from(sanitizeDiagnostic(value), (char) => (
+    /^[A-Za-z0-9 ]$/.test(char) ? char : `&#${char.codePointAt(0)};`
+  )).join("");
+  return `<code>${safe}</code>`;
+}
+
+export function renderSummary(report) {
   const lines = [
     "# Render production deployment report",
     "",
-    `- Result: **${report.result}**`,
-    `- Started: ${markdownCode(report.startedAt)}`,
-    `- Finished: ${markdownCode(report.finishedAt ?? "unavailable")}`,
-    `- LIVE_SHA: ${markdownCode(report.liveSha ?? "unavailable")}`,
-    `- TARGET_SHA: ${markdownCode(report.targetSha ?? "unavailable")}`,
-    `- CURRENT_MAIN_SHA: ${markdownCode(report.currentMainSha ?? "unavailable")}`,
+    `- Result: ${inertDiagnostic(report.result)}`,
+    `- Started: ${inertDiagnostic(report.startedAt)}`,
+    `- Finished: ${inertDiagnostic(report.finishedAt ?? "unavailable")}`,
+    `- LIVE_SHA: ${inertDiagnostic(report.liveSha ?? "unavailable")}`,
+    `- TARGET_SHA: ${inertDiagnostic(report.targetSha ?? "unavailable")}`,
+    `- CURRENT_MAIN_SHA: ${inertDiagnostic(report.currentMainSha ?? "unavailable")}`,
     "",
   ];
   if (report.migrations?.length) {
     lines.push("## Migration safety gate", "", "**CONTROLLED MIGRATION ROLLOUT REQUIRED**", "");
-    for (const file of report.migrations) lines.push(`- ${markdownCode(file)}`);
+    for (const file of report.migrations) lines.push(`- ${inertDiagnostic(file)}`);
     lines.push("");
   }
   if (report.stages.length) {
     lines.push("## Service stages", "", "| Service | ID | Deploy | Status | Commit |", "|---|---|---|---|---|");
     for (const stage of report.stages) {
-      lines.push(`| ${stage.name} | ${markdownCode(stage.id)} | ${markdownCode(stage.deployId ?? "unavailable")} | ${markdownCode(stage.status)} | ${markdownCode(stage.commit ?? "unavailable")} |`);
+      lines.push(`| ${inertDiagnostic(stage.name)} | ${inertDiagnostic(stage.id)} | ${inertDiagnostic(stage.deployId ?? "unavailable")} | ${inertDiagnostic(stage.status)} | ${inertDiagnostic(stage.commit ?? "unavailable")} |`);
     }
     lines.push("");
   }
   if (report.evidence.length) {
     lines.push("## Bounded failure evidence", "");
     for (const evidence of report.evidence) {
-      lines.push(`### ${evidence.name}`, "",
-        `- Service ID: ${markdownCode(evidence.id)}`,
-        `- Deploy ID: ${markdownCode(evidence.deployId ?? "unavailable")}`,
-        `- Deploy status: ${markdownCode(evidence.status ?? "unavailable")}`,
-        `- Render error: ${sanitizeDiagnostic(evidence.error || "unavailable")}`,
-        `- Created: ${markdownCode(evidence.createdAt ?? "unavailable")}`,
-        `- Finished: ${markdownCode(evidence.finishedAt ?? "unavailable")}`,
+      lines.push("### Service evidence", "",
+        `- Service: ${inertDiagnostic(evidence.name)}`,
+        `- Service ID: ${inertDiagnostic(evidence.id)}`,
+        `- Deploy ID: ${inertDiagnostic(evidence.deployId ?? "unavailable")}`,
+        `- Deploy status: ${inertDiagnostic(evidence.status ?? "unavailable")}`,
+        `- Render error: ${inertDiagnostic(evidence.error || "unavailable")}`,
+        `- Created: ${inertDiagnostic(evidence.createdAt ?? "unavailable")}`,
+        `- Finished: ${inertDiagnostic(evidence.finishedAt ?? "unavailable")}`,
         "", "Build logs (sanitized, bounded):", "");
-      lines.push(...(evidence.buildLogs.length ? evidence.buildLogs.map((line) => `- ${line}`) : ["- unavailable"]));
+      lines.push(...(evidence.buildLogs.length ? evidence.buildLogs.map((line) => `- ${inertDiagnostic(line)}`) : ["- unavailable"]));
       lines.push("", "Runtime logs (sanitized, bounded):", "");
-      lines.push(...(evidence.runtimeLogs.length ? evidence.runtimeLogs.map((line) => `- ${line}`) : ["- unavailable"]));
+      lines.push(...(evidence.runtimeLogs.length ? evidence.runtimeLogs.map((line) => `- ${inertDiagnostic(line)}`) : ["- unavailable"]));
       lines.push("");
     }
   }
-  if (report.notes.length) lines.push("## Notes", "", ...report.notes.map((note) => `- ${sanitizeDiagnostic(note)}`), "");
+  if (report.notes.length) lines.push("## Notes", "", ...report.notes.map((note) => `- ${inertDiagnostic(note)}`), "");
   return `${lines.join("\n")}\n`;
 }
 
@@ -229,13 +546,30 @@ export async function runDeployment(options = {}) {
     return readRenderJson(["deploys", "list", serviceId, "--confirm", "-o", "json"]);
   }
 
-  async function boundedLogs(serviceId, type, start) {
+  async function readRenderLogs(args, attempts = 3) {
+    let lastFailure = "log read failed";
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      const result = await render(args);
+      if (result.code === 0) {
+        try {
+          return normalizeLogRecords(parseJsonValues(result.stdout));
+        } catch (error) {
+          lastFailure = error.message;
+        }
+      } else {
+        lastFailure = `Render CLI exited ${result.code}`;
+      }
+      if (attempt < attempts) await sleep(attempt * 1_000);
+    }
+    throw new DeploymentStop(lastFailure, "RENDER_LOG_READ_FAILED");
+  }
+
+  async function boundedLogs(serviceId, type, start, attempts = 3) {
     try {
-      const value = await readRenderJson([
+      return await readRenderLogs([
         "logs", "--resources", serviceId, "--start", start, "--limit", String(MAX_LOG_LINES),
         "--type", type, "--direction", "backward", "--confirm", "-o", "json",
-      ]);
-      return logEntries(value);
+      ], attempts);
     } catch {
       return [];
     }
@@ -263,8 +597,8 @@ export async function runDeployment(options = {}) {
       error: deploy ? deployError(deploy) : "",
       createdAt: deployTimestamp(deploy, "createdAt", "startedAt"),
       finishedAt: deployTimestamp(deploy, "finishedAt", "updatedAt"),
-      buildLogs,
-      runtimeLogs,
+      buildLogs: buildLogs.slice(0, MAX_LOG_LINES).map(logDiagnostic),
+      runtimeLogs: runtimeLogs.slice(0, MAX_LOG_LINES).map(logDiagnostic),
     });
   }
 
@@ -339,10 +673,7 @@ export async function runDeployment(options = {}) {
       worker: { name: "gcd-social-worker", id: requireValue(env, "RENDER_WORKER_SERVICE_ID", /^srv-[a-z0-9]+$/) },
       scheduler: { name: "gcd-social-scheduler", id: requireValue(env, "RENDER_SCHEDULER_SERVICE_ID", /^crn-[a-z0-9]+$/) },
     };
-    const healthUrl = new URL(requireValue(env, "RENDER_API_HEALTH_URL"));
-    if (healthUrl.protocol !== "https:" || healthUrl.username || healthUrl.password || healthUrl.search || healthUrl.hash) {
-      throw new DeploymentStop("RENDER_API_HEALTH_URL must be a credential-free HTTPS URL", "CONFIGURATION_ERROR");
-    }
+    const healthUrl = validateApiHealthUrl(requireValue(env, "RENDER_API_HEALTH_URL"));
 
     const workspaceSelection = await render(["workspace", "set", workspaceId, "--confirm", "-o", "json"]);
     if (workspaceSelection.code !== 0) {
@@ -397,7 +728,7 @@ export async function runDeployment(options = {}) {
           signal: AbortSignal.timeout(10_000),
           headers: { accept: "application/json" },
         });
-        if (response.ok) {
+        if (await apiHealthResponseMatches(response, targetSha)) {
           healthVerified = true;
           break;
         }
@@ -410,18 +741,29 @@ export async function runDeployment(options = {}) {
       await collectEvidence(services.api);
       throw new DeploymentStop("API /healthz verification failed", "API_HEALTH_FAILED");
     }
-    report.notes.push("API /healthz passed bounded verification.");
+    report.notes.push("API /healthz proved the expected GCD API, durable state, and TARGET_SHA.");
 
     const workerResult = await deployService(services.worker);
-    const workerLogs = await boundedLogs(services.worker.id, "app", workerResult.stageStartedAt);
-    const workerText = workerLogs.join("\n");
-    const crashPattern = /\b(?:fatal|panic|uncaught|crash(?:ed|ing)?|exited with (?:code|status) [1-9])\b/i;
-    const startupPattern = /\[worker\] gcd-social-worker started|\[worker\] polling brief queue/i;
-    if (crashPattern.test(workerText) || !startupPattern.test(workerText)) {
-      await collectEvidence(services.worker, workerResult.deploy);
-      throw new DeploymentStop("worker startup verification failed", "WORKER_STARTUP_FAILED");
+    let workerReady = null;
+    for (let attempt = 1; attempt <= WORKER_READY_ATTEMPTS; attempt += 1) {
+      const workerLogs = await boundedLogs(services.worker.id, "app", workerResult.stageStartedAt, 1);
+      workerReady = selectWorkerReadiness(workerLogs, targetSha);
+      if (workerReady) break;
+      if (attempt < WORKER_READY_ATTEMPTS) await sleep(WORKER_READY_INTERVAL_MS);
     }
-    report.notes.push("Worker reached live state and emitted the expected bounded startup/polling signal.");
+    if (!workerReady) {
+      await collectEvidence(services.worker, workerResult.deploy);
+      throw new DeploymentStop("worker did not emit exact TARGET_SHA readiness", "WORKER_READINESS_FAILED");
+    }
+    await sleep(WORKER_STABILIZATION_MS);
+    const stabilizationLogs = await boundedLogs(services.worker.id, "app", workerReady.timestamp, 1);
+    try {
+      assertWorkerStabilized(stabilizationLogs, workerReady, targetSha);
+    } catch (error) {
+      await collectEvidence(services.worker, workerResult.deploy);
+      throw error;
+    }
+    report.notes.push("Worker emitted exact TARGET_SHA readiness and passed a bounded 10-second stabilization observation.");
 
     await deployService(services.scheduler);
 

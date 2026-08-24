@@ -26,16 +26,18 @@ for (const file of sourceFiles) {
   for (const match of text.matchAll(/\b(?:num|requireEnv)\(\s*["']([A-Z][A-Z0-9_]*)["']/g)) record(match[1], file);
 }
 
-const testOrProcessOnly = new Set([
+const platformOrTestOnly = new Set([
   "LANG",
   "PATH",
   "PHASE0A_DISPOSABLE_POSTGRES",
   "PHASE0A_POSTGRES_ADMIN_URL",
+  "RENDER_GIT_COMMIT",
+  "RENDER_INSTANCE_ID",
   "TMPDIR",
   "TZ",
 ]);
 const missing = [...readBySource]
-  .filter(([name]) => !declared.has(name) && !testOrProcessOnly.has(name))
+  .filter(([name]) => !declared.has(name) && !platformOrTestOnly.has(name))
   .map(([name, files]) => `${name} (${[...files].join(", ")})`);
 
 if (missing.length) {

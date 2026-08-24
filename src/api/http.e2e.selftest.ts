@@ -123,53 +123,58 @@ function startApi(
   databaseUrl: string,
   port: number,
   consoleToken: string,
+  renderCommit: string | null = "2".repeat(40),
 ): ChildCapture {
   const networkGuard = [
     `const marker=${JSON.stringify(OUTBOUND_FETCH_MARKER)};`,
     "globalThis.fetch=async()=>{process.stderr.write(marker+'\\n');throw new Error(marker);};",
   ].join("");
+  const childEnv: NodeJS.ProcessEnv = {
+    // Deliberately do not inherit the parent environment wholesale: the
+    // validation child receives only runtime basics plus explicit test config.
+    PATH: process.env.PATH ?? "",
+    LANG: process.env.LANG ?? "C",
+    TZ: process.env.TZ ?? "UTC",
+    TMPDIR: process.env.TMPDIR ?? "/tmp",
+    NODE_ENV: "production",
+    RENDER_INSTANCE_ID: "http-e2e-instance",
+    NODE_OPTIONS: "",
+    PORT: String(port),
+    API_BIND_HOST: "127.0.0.1",
+    DATABASE_URL: databaseUrl,
+    CONSOLE_TOKEN: consoleToken,
+    AUTONOMY_PHASE: "A",
+    ACTIVE_PLATFORMS: "instagram,facebook",
+    PUBLIC_BASE_URL: "",
+    ANTHROPIC_API_KEY: "",
+    OPENAI_API_KEY: "",
+    IMAGEGEN_API_KEY: "",
+    FAL_KEY: "",
+    FAL_API_KEY: "",
+    APPROVAL_CHANNEL_WEBHOOK: "",
+    SLACK_WEBHOOK_URL: "",
+    IG_USER_ID: "",
+    IG_ACCESS_TOKEN: "",
+    FB_PAGE_ID: "",
+    FB_PAGE_ACCESS_TOKEN: "",
+    GOOGLE_ACCESS_TOKEN: "",
+    GOOGLE_REFRESH_TOKEN: "",
+    GOOGLE_CLIENT_ID: "",
+    GOOGLE_CLIENT_SECRET: "",
+    GBP_ACCOUNT_ID: "",
+    GBP_LOCATION_ID: "",
+    IG_GRAPH_HOST: "graph.instagram.com",
+    GRAPH_VERSION: "v25.0",
+  };
+  if (renderCommit !== null) childEnv.RENDER_GIT_COMMIT = renderCommit;
+
   const child = spawn(process.execPath, [
     "--import",
     `data:text/javascript,${encodeURIComponent(networkGuard)}`,
     serverEntrypoint,
   ], {
     cwd: process.cwd(),
-    env: {
-      // Deliberately do not inherit the parent environment wholesale: the
-      // validation child receives only runtime basics plus explicit test config.
-      PATH: process.env.PATH ?? "",
-      LANG: process.env.LANG ?? "C",
-      TZ: process.env.TZ ?? "UTC",
-      TMPDIR: process.env.TMPDIR ?? "/tmp",
-      NODE_ENV: "production",
-      NODE_OPTIONS: "",
-      PORT: String(port),
-      API_BIND_HOST: "127.0.0.1",
-      DATABASE_URL: databaseUrl,
-      CONSOLE_TOKEN: consoleToken,
-      AUTONOMY_PHASE: "A",
-      ACTIVE_PLATFORMS: "instagram,facebook",
-      PUBLIC_BASE_URL: "",
-      ANTHROPIC_API_KEY: "",
-      OPENAI_API_KEY: "",
-      IMAGEGEN_API_KEY: "",
-      FAL_KEY: "",
-      FAL_API_KEY: "",
-      APPROVAL_CHANNEL_WEBHOOK: "",
-      SLACK_WEBHOOK_URL: "",
-      IG_USER_ID: "",
-      IG_ACCESS_TOKEN: "",
-      FB_PAGE_ID: "",
-      FB_PAGE_ACCESS_TOKEN: "",
-      GOOGLE_ACCESS_TOKEN: "",
-      GOOGLE_REFRESH_TOKEN: "",
-      GOOGLE_CLIENT_ID: "",
-      GOOGLE_CLIENT_SECRET: "",
-      GBP_ACCOUNT_ID: "",
-      GBP_LOCATION_ID: "",
-      IG_GRAPH_HOST: "graph.instagram.com",
-      GRAPH_VERSION: "v25.0",
-    },
+    env: childEnv,
     stdio: ["ignore", "pipe", "pipe"],
   });
 
@@ -214,6 +219,14 @@ async function stopApi(child: ChildProcess): Promise<void> {
   await Promise.race([
     once(child, "exit"),
     new Promise((resolve) => setTimeout(resolve, 2_000)),
+  ]);
+}
+
+async function waitForExit(child: ChildProcess, timeoutMs = TEST_TIMEOUT_MS): Promise<boolean> {
+  if (child.exitCode !== null) return true;
+  return Promise.race([
+    once(child, "exit").then(() => true),
+    new Promise<boolean>((resolve) => setTimeout(() => resolve(false), timeoutMs)),
   ]);
 }
 
@@ -350,6 +363,24 @@ async function main(): Promise<void> {
   const wrongConsoleToken = `wrong-console-${randomBytes(12).toString("hex")}`;
   const badApprovalToken = `bad-approval-${randomBytes(12).toString("hex")}`;
   const malformedMarker = `malformed-${randomBytes(12).toString("hex")}`;
+  const missingIdentityPort = await reservePort();
+  const missingIdentityCapture = startApi(
+    serverEntrypoint,
+    databaseUrl,
+    missingIdentityPort,
+    consoleToken,
+    null,
+  );
+  const missingIdentityExited = await waitForExit(missingIdentityCapture.child);
+  check(
+    "production API refuses to bind without Render commit identity",
+    missingIdentityExited
+      && missingIdentityCapture.child.exitCode === 1
+      && missingIdentityCapture.output().includes("RENDER_GIT_COMMIT is required")
+      && !missingIdentityCapture.output().includes(`listening on 127.0.0.1:${missingIdentityPort}`),
+  );
+  await stopApi(missingIdentityCapture.child);
+
   const port = await reservePort();
   const baseUrl = `http://127.0.0.1:${port}`;
   const capture = startApi(serverEntrypoint, databaseUrl, port, consoleToken);
@@ -370,7 +401,11 @@ async function main(): Promise<void> {
     check("actual compiled API health route returns 200", health.status === 200);
     check(
       "health reports production Phase A with durable PostgreSQL state",
-      healthJson?.status === "ok" && healthJson.autonomyPhase === "A" && healthJson.state === "postgres",
+      healthJson?.status === "ok"
+        && healthJson.service === "gcd-social-api"
+        && healthJson.autonomyPhase === "A"
+        && healthJson.state === "postgres"
+        && healthJson.commit === "2".repeat(40),
     );
     check("JSON security headers are present", securityHeadersArePresent(health, "json"));
 

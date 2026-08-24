@@ -2,7 +2,7 @@
 
 ## Health and observability
 
-- `GET /healthz` proves the API process can respond and reports configured state mode. API startup requires and probes PostgreSQL, but each health request does not perform a new database or provider probe.
+- Until this remediation is deployed, compare `GET https://gcd-social-api.onrender.com/healthz` with read-only Render deploy metadata because the recorded live Phase 0A response does not include commit identity. After deployment, the endpoint proves the expected API process/release can respond only when its JSON includes `status: "ok"`, `service: "gcd-social-api"`, `state: "postgres"`, and the expected full Render commit; startup then fails closed when `RENDER_GIT_COMMIT` is missing or malformed. Startup requires and probes PostgreSQL, but each health request does not perform a new database or provider probe.
 - Authenticated `/console/state` summarizes queues, latest brief, token-health estimates, and recent events. Authenticated `/console/stream` polls the events table every 1.5 seconds and emits SSE heartbeats. Use `Authorization: Bearer <CONSOLE_TOKEN>` or `x-console-token`; do not put the secret in a URL.
 - Render logs are the only checked-in log destination. The code has no metrics backend, structured trace correlation beyond event `run_id`, alert destination outside its Slack webhook messages, or dead-letter queue.
 - Diagnostics call live Meta/Google APIs. They now require `CONSOLE_TOKEN`, use a process-local 20/minute limit, and have request/operation time bounds, but still must not be used as casual health checks or without an identified environment and authority.
@@ -43,10 +43,10 @@ For a no-migration release after cutover:
 1. Require the complete `CI` workflow to pass for the exact `main` push. A manual CI run is diagnostic only.
 2. After the serialized slot is acquired, require the CI-tested `TARGET_SHA` to equal freshly fetched current `origin/main`. A stale result reports `SUPERSEDED RELEASE — NO DEPLOYMENT` before any Render command. Then derive the API's actual `LIVE_SHA`, validate repository ancestry, and compare `LIVE_SHA..TARGET_SHA`; if all three services already report the target, stop successfully without another deploy.
 3. If any `state/migrations/**` path changed, stop at `CONTROLLED MIGRATION ROLLOUT REQUIRED`. Do not trigger API, worker, scheduler, or an automatic migration. Plan a separately authorized rollout with a backup, reviewed locks/data effects, stopped incompatible consumers, and exactly one migration runner.
-4. Otherwise deploy the API once at `TARGET_SHA`, wait for Render `live`, and verify `/healthz` with bounded retries.
-5. Deploy the worker once, wait for `live`, and require bounded recent logs to show its started/polling signal without an obvious crash.
+4. Otherwise deploy the API once at `TARGET_SHA`, wait for Render `live`, and use at most 12 attempts to verify the non-redirecting, credential-free exact GCD `/healthz` URL returns JSON for `gcd-social-api`, PostgreSQL state, and `commit: TARGET_SHA`.
+5. Deploy the worker once, wait for `live`, and poll bounded Render CLI JSON logs for its single structured `TARGET_SHA` ready event. Generic started/polling text and old commits do not qualify. After the event, observe 10 seconds and require the authoritative ready-instance evidence to remain unambiguous and free of process-level fatal/crash/restart signals; missing, malformed, conflicting, or saturated evidence stops the release.
 6. Deploy the scheduler once only after the worker passes, then require all three live deploy records to report `TARGET_SHA`. Do not manually execute the cron as a deployment smoke test.
-7. On failure, use the redacted `$GITHUB_STEP_SUMMARY` first, then explicitly authorized Render MCP read operations if more context is needed. Do not loop redeploy attempts.
+7. On failure, use the bounded, layered-redacted, Markdown-inert `$GITHUB_STEP_SUMMARY` first, then explicitly authorized Render MCP read operations if more context is needed. The summary is not public-safe, and a failed or ambiguous readiness check never permits scheduler deployment. Do not loop redeploy attempts.
 
 The controller does not implement rollback or migration execution. Application rollback and forward-only database repair/restore remain separate, explicitly authorized procedures. The exact GitHub secret/variables and the no-dual-authority native auto-deploy cutover are in [Deployment control](DEPLOYMENT.md).
 

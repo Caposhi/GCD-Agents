@@ -41,8 +41,8 @@ Any result stops the workflow with `CONTROLLED MIGRATION ROLLOUT REQUIRED`, repo
 For an ordinary release, the controller makes one exact-SHA, wait-for-completion attempt per service, strictly in this order:
 
 1. API; stop if its Render deploy does not reach `live`.
-2. `/healthz`; require one successful credential-free HTTPS response within 12 bounded attempts.
-3. Worker; require Render `live`, then bounded application logs containing the expected worker started/polling signal and no obvious crash pattern.
+2. API health; within 12 bounded attempts require a non-redirecting JSON response from exactly `https://gcd-social-api.onrender.com/healthz`. The required fields are `status: "ok"`, `service: "gcd-social-api"`, `state: "postgres"`, and `commit: TARGET_SHA`. HTTPS, the exact origin/path, no credentials/query/fragment, JSON content type, bounded body, valid JSON, and HTTP success are all mandatory.
+3. Worker; require Render `live`, then poll bounded recent Render CLI JSON logs up to 12 times at five-second intervals for exactly one target marker: `[worker] ready {"service":"gcd-social-worker","commit":"<TARGET_SHA>","instance":"<Render instance ID>","state":"postgres"}`; `instance` is JSON `null` when Render supplies no instance ID. Generic started/polling messages are not readiness, and old-commit events cannot qualify. After readiness, wait 10 seconds and re-read the bounded window from that event; the authoritative event must remain present, with no ambiguous restart, unknown replacement instance, or ready-instance fatal/panic/uncaught/crash/nonzero-exit evidence. Empty, malformed, conflicting, or saturated critical log windows fail closed.
 4. Scheduler; require Render `live` only. Deployment does not run the cron job.
 5. Re-read all three live deploys and require their commit to equal `TARGET_SHA`.
 
@@ -50,7 +50,7 @@ No service deploys concurrently. Application deploy failures are not retried. Re
 
 ## Failure evidence and recovery limits
 
-The controller always writes a human-readable `$GITHUB_STEP_SUMMARY`. For a service-stage failure it records service name/ID, `LIVE_SHA`, `TARGET_SHA`, `CURRENT_MAIN_SHA`, deploy ID/status/error, timestamps, and at most 100 recent build plus 100 recent application log entries from a bounded 30-minute window. Render/API/token families, Authorization/Bearer values, Slack webhooks, OAuth/JWT values, credentialed/database URLs, query credentials, secret assignments, and email addresses are redacted; lines are length-bounded. Stage fields and logs pass through the sanitizer before Markdown output. Raw CLI stdout/stderr and raw production logs are neither echoed nor uploaded, and Phase 0D creates no diagnostic artifact because production logs can contain unpublished or customer-influenced data. Malformed CLI JSON fails closed and is not copied to the summary.
+The controller always writes a human-readable `$GITHUB_STEP_SUMMARY`. For a service-stage failure it records service name/ID, `LIVE_SHA`, `TARGET_SHA`, `CURRENT_MAIN_SHA`, deploy ID/status/error, timestamps, and at most 100 recent build plus 100 recent application log entries from a bounded 30-minute window. Valid diagnostic JSON is recursively redacted by exact case-insensitive secret-bearing keys, then a defensive fallback redacts mixed/escaped JSON, authorization values, Slack webhooks, OAuth/JWT values, credentialed/database/cache URLs, query credentials, secret assignments, and email addresses; lines are length-bounded. Every untrusted summary value then passes through the same inert renderer, which numeric-entity encodes Markdown/HTML punctuation inside trusted static `<code>` markup. Raw CLI stdout/stderr and raw production logs are neither echoed nor uploaded, and Phase 0D creates no diagnostic artifact because production logs can contain unpublished or customer-influenced data. Sanitization never makes production logs public-safe; malformed CLI JSON fails closed and is not copied to the summary.
 
 A failed release stops at its current stage. Investigation may inspect the GitHub summary and then use Render MCP read operations. Re-running a failed workflow is an explicit operator action, not an automatic redeploy loop. The automatic controller also refuses a diverged or rollback target because it requires `LIVE_SHA` to be an ancestor of `TARGET_SHA`. An application rollback therefore remains a separately authorized manual release decision. Database migrations are forward-only; neither an application rollback nor a database restore can undo posts, Slack messages, provider calls, or spend.
 
@@ -68,7 +68,7 @@ Create these only during an explicitly authorized cutover. Prefer the `productio
 | `production` environment variable | `RENDER_API_HEALTH_URL` | `https://gcd-social-api.onrender.com/healthz` |
 | Repository variable | `RENDER_DEPLOY_AUTOMATION_ENABLED` | `false` until every native auto-deploy is verified off; then exactly `true` |
 
-The enable gate must be repository-scoped because the provenance job evaluates it before entering the protected environment; an environment-only gate is unavailable there and will fail closed. The API key is not an application runtime variable and must not be copied into Render service environments. Repository/environment variables are non-secret identifiers only.
+The enable gate must be repository-scoped because the provenance job evaluates it before entering the protected environment; an environment-only gate is unavailable there and will fail closed. `RENDER_API_HEALTH_URL` cannot select another destination: the controller accepts only the exact reviewed value shown above. The API key is not an application runtime variable and must not be copied into Render service environments. Repository/environment variables are non-secret identifiers only.
 
 ## Native auto-deploy cutover
 
@@ -91,7 +91,7 @@ Do not perform this piecemeal while GitHub deployment automation is enabled. The
    Dashboard alternative: open each API, worker, and scheduler service, choose **Settings → Auto-Deploy → Off**, and save.
 4. Verify all three returned service records by ID show `autoDeploy: "no"` and `autoDeployTrigger: "off"`. If any update or verification fails, leave the GitHub gate false and finish/reconcile the Render change first.
 5. Reconfirm no Render deploy is in progress and no migration release is pending. Set `RENDER_DEPLOY_AUTOMATION_ENABLED=true` only after all three native settings are off.
-6. Either re-run the last deployment workflow that was refused solely by the false gate or wait for the next eligible `main` push. Observe API health, worker startup evidence, scheduler artifact state, and the final three-SHA check.
+6. Either re-run the last deployment workflow that was refused solely by the false gate or wait for the next eligible `main` push. Observe exact target-bound API health, worker readiness plus its 10-second stabilization window, scheduler artifact state, and the final three-SHA check.
 
 Render's exact-commit CLI deploy does not disable native auto-deploy, which is why the cutover is a separate explicit control step. `render.yaml` intentionally does not change the live auto-deploy field in Phase 0D; do not synchronize a Blueprint as a substitute for the verified cutover.
 

@@ -13,6 +13,7 @@
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { config } from "../harness/config.js";
 import { initState, stateEnabled, enqueueBrief, getApproval, decideApproval, getMedia, recentEvents, consoleSnapshot, verifyApprovalToken } from "../harness/state.js";
+import { buildApiHealthDocument } from "../harness/renderIdentity.js";
 import { credsFromEnv } from "../harness/creds.js";
 import { effectiveIgToken, igTokenStatus, validatedIgGraphHost } from "../harness/igToken.js";
 import { getGoogleAccessToken, googleOAuthConfigured } from "../harness/googleToken.js";
@@ -367,12 +368,14 @@ const server = createServer({
     const path = url.pathname;
 
     if (req.method === "GET" && path === "/healthz") {
-      return json(res, 200, {
-        status: "ok",
-        service: "gcd-social-api",
-        autonomyPhase: config.autonomyPhase,
-        state: stateEnabled() ? "postgres" : "ephemeral",
-      });
+      try {
+        return json(res, 200, buildApiHealthDocument(
+          config.autonomyPhase,
+          stateEnabled() ? "postgres" : "ephemeral",
+        ));
+      } catch {
+        return json(res, 503, { status: "unavailable", service: "gcd-social-api" });
+      }
     }
 
     // Read-only credential diagnostic for the Instagram/Facebook auth setup.
@@ -545,6 +548,9 @@ const server = createServer({
 });
 
 async function main(): Promise<void> {
+  // Render-owned commit identity is part of the production health contract.
+  // Resolve it before binding so a missing/malformed identity fails closed.
+  buildApiHealthDocument(config.autonomyPhase, "postgres");
   await initState({ requireDurable: true });
   server.listen(config.port, config.apiBindHost, () => {
     console.log(

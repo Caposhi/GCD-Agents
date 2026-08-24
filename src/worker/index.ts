@@ -32,6 +32,8 @@ import { toPostPackages, summarize, FinalPackage } from "../harness/packageMap.j
 import { credsFromEnv } from "../harness/creds.js";
 import { getCurrentIgToken } from "../harness/igToken.js";
 import { getGoogleAccessToken } from "../harness/googleToken.js";
+import { buildWorkerReadinessMarker } from "../harness/renderIdentity.js";
+import { runWorkerStartup } from "./startup.js";
 
 let running = true;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -45,6 +47,10 @@ async function igTokenTick(): Promise<void> {
   } catch (err) {
     console.error("[ig-token] tick error:", (err as Error).message);
   }
+}
+
+async function initializeIgToken(): Promise<void> {
+  await getCurrentIgToken(Date.now());
 }
 
 async function processBrief(id: string, brief: any): Promise<void> {
@@ -149,16 +155,30 @@ async function loop(): Promise<void> {
 async function main(): Promise<void> {
   // A worker-local Map cannot share briefs or approvals with the API process.
   // Refuse startup unless the durable backend is configured and reachable.
-  await initState({ requireDurable: true });
-  console.log("[worker] gcd-social-worker started");
-  console.log(`[worker] autonomy phase: ${config.autonomyPhase} · posting requires approval: ${postingRequiresApproval()}`);
-  console.log(`[worker] state backend: ${stateEnabled() ? "postgres" : "ephemeral"}`);
-  if (config.activePlatforms.includes("instagram")) {
-    await igTokenTick(); // seed/refresh the IG token only when Instagram is active
-    tokenTimer = setInterval(() => void igTokenTick(), TOKEN_REFRESH_INTERVAL_MS);
-  }
-  console.log("[worker] polling brief queue…");
-  await loop();
+  await runWorkerStartup({
+    initializeState: async () => {
+      await initState({ requireDurable: true });
+      console.log(`[worker] autonomy phase: ${config.autonomyPhase} · posting requires approval: ${postingRequiresApproval()}`);
+      const state = stateEnabled() ? "postgres" as const : "ephemeral" as const;
+      console.log(`[worker] state backend: ${state}`);
+      return state;
+    },
+    initializeRequiredServices: async () => {
+      if (config.activePlatforms.includes("instagram")) {
+        // Unexpected initialization failures must prevent readiness. Recurring
+        // refresh failures remain caught and surfaced by igTokenTick.
+        await initializeIgToken();
+      }
+    },
+    buildReadiness: (state) => buildWorkerReadinessMarker(state),
+    startRecurringServices: () => {
+      if (config.activePlatforms.includes("instagram")) {
+        tokenTimer = setInterval(() => void igTokenTick(), TOKEN_REFRESH_INTERVAL_MS);
+      }
+    },
+    emitReadiness: (marker) => console.log(marker),
+    consumeQueue: () => loop(),
+  });
 }
 
 for (const sig of ["SIGINT", "SIGTERM"] as const) {

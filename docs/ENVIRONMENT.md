@@ -13,6 +13,8 @@
 | `PUBLIC_BASE_URL` | Approval/media URL origin | Production approval delivery requires a public root HTTPS origin; generated-media hosting requires a root HTTPS origin in every mode. No credentials, path, query, or fragment; new media URLs use this exact origin |
 | `ACTIVE_PLATFORMS` | Comma list of `instagram,facebook,gbp`; invalid/empty selection falls back to all | Set explicitly to avoid unintended provider attempts |
 | `AUTONOMY_PHASE` | A/B/C parser; invalid defaults A | Every value now uses the same durable exact-payload gate; keep A until an explicitly authorized later phase exists |
+| `RENDER_GIT_COMMIT` | Render-injected full commit identity for production API health and worker readiness | Required and validated in production; do not set it manually in `.env.example` or `render.yaml` |
+| `RENDER_INSTANCE_ID` | Optional Render-injected API/worker runtime correlation identity; exposed only in the worker readiness marker | Non-secret and format-validated by both processes when present; do not set it manually in `.env.example` or `render.yaml` |
 
 ## Model, image, and harness
 
@@ -65,6 +67,6 @@ The checked-in Blueprint keeps `ANTHROPIC_API_KEY`, `IMAGEGEN_API_KEY`, and `APP
 
 ## GitHub production deployment configuration
 
-The separate GitHub `production` environment should hold secret `RENDER_API_KEY` and non-secret variables `RENDER_WORKSPACE_ID`, `RENDER_API_SERVICE_ID`, `RENDER_WORKER_SERVICE_ID`, `RENDER_SCHEDULER_SERVICE_ID`, and `RENDER_API_HEALTH_URL`. Repository variable `RENDER_DEPLOY_AUTOMATION_ENABLED` is deliberately outside the environment because the provenance job checks it before the deployment job enters that environment. The exact values and cutover order are in [Deployment control](DEPLOYMENT.md). The enable variable must remain `false` until all three Render native auto-deploy settings are verified off; only the exact string `true` permits the controller to continue.
+The separate GitHub `production` environment should hold secret `RENDER_API_KEY` and non-secret variables `RENDER_WORKSPACE_ID`, `RENDER_API_SERVICE_ID`, `RENDER_WORKER_SERVICE_ID`, `RENDER_SCHEDULER_SERVICE_ID`, and `RENDER_API_HEALTH_URL`. The last variable is not a free-form destination: the controller accepts only `https://gcd-social-api.onrender.com/healthz`. Repository variable `RENDER_DEPLOY_AUTOMATION_ENABLED` is deliberately outside the environment because the provenance job checks it before the deployment job enters that environment. The exact values and cutover order are in [Deployment control](DEPLOYMENT.md). The enable variable must remain `false` until all three Render native auto-deploy settings are verified off; only the exact string `true` permits the controller to continue.
 
 These names are control-plane inputs read by GitHub workflow/controller code, not application runtime reads. `RENDER_API_KEY` must exist only as a GitHub secret, must never be echoed, and must not be placed in Render service env, `.env`, documentation values, or fixtures.
