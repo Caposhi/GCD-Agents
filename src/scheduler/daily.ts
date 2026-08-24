@@ -13,7 +13,7 @@ import { initState, enqueueBrief, closeState, stateEnabled } from "../harness/st
 import { briefForDate } from "../harness/contentCalendar.js";
 
 async function main(): Promise<void> {
-  await initState();
+  await initState({ requireDurable: true });
   if (!stateEnabled()) {
     // No DATABASE_URL → an in-memory enqueue would vanish when this short-lived
     // cron process exits. Refuse loudly rather than silently no-op.

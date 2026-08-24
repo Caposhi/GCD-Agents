@@ -11,14 +11,20 @@
  *    real agents. Still never publishes — it stops at the built requests.
  */
 
-import { AgentRunner, Brief, runBrief } from "./orchestrator.js";
+import { AgentRunner, Brief, ImageResolver, runBrief } from "./orchestrator.js";
 import { FinalPackage, toPostPackages } from "./packageMap.js";
 import {
   buildGbpLocalPost,
   buildIgCreateContainer,
   buildFacebookPost,
   PlatformCredentials,
+  PublicationTarget,
 } from "../mcp/posting-tool/index.js";
+export {
+  clearSimulatedDryRunEnvironment,
+  prepareSimulatedDryRunEnvironment,
+  SIMULATED_DRYRUN_ENV_KEYS,
+} from "./dryrunEnv.js";
 
 const DUMMY_CREDS: PlatformCredentials = {
   igUserId: "IG_ID",
@@ -26,6 +32,14 @@ const DUMMY_CREDS: PlatformCredentials = {
   gbpAccountId: "ACCT",
   gbpLocationId: "LOC",
   graphVersion: "v25.0",
+  igGraphHost: "graph.instagram.com",
+};
+
+/** Explicit non-live destinations; simulated mode works after env scrub. */
+export const DUMMY_PUBLICATION_TARGETS: Record<"instagram" | "facebook" | "gbp", PublicationTarget> = {
+  instagram: { accountId: "IG_ID", apiHost: "graph.instagram.com", apiVersion: "v25.0" },
+  facebook: { accountId: "FB_ID", apiHost: "graph.facebook.com", apiVersion: "v25.0" },
+  gbp: { accountId: "ACCT", locationId: "LOC", apiHost: "mybusiness.googleapis.com", apiVersion: "v4" },
 };
 
 export interface DryRunReport {
@@ -59,9 +73,18 @@ function buildRequestFor(pkg: any): { method: string; url: string } {
   }
 }
 
-/** runner omitted => runBrief uses the default live SDK runner. */
-export async function runDryRun(brief: Brief, runner?: AgentRunner): Promise<DryRunReport> {
-  const outcome = await runBrief(brief, runner ? { runner } : {});
+/** runner omitted => runBrief uses the default live SDK + image resolver. */
+export async function runDryRun(
+  brief: Brief,
+  runner?: AgentRunner,
+  imageResolver?: ImageResolver,
+  publicationTargets?: Partial<Record<"instagram" | "facebook" | "gbp", PublicationTarget>>,
+): Promise<DryRunReport> {
+  const outcome = await runBrief(brief, {
+    ...(runner ? { runner } : {}),
+    ...(imageResolver ? { imageResolver } : {}),
+    ...(publicationTargets ? { publicationTargets } : {}),
+  });
 
   if (outcome.status !== "awaiting_approval") {
     return {
@@ -105,6 +128,16 @@ export async function runDryRun(brief: Brief, runner?: AgentRunner): Promise<Dry
   };
 }
 
+/** Empty request arrays are failures; Array#every alone would pass vacuously. */
+export function dryRunReportPasses(report: DryRunReport): boolean {
+  return report.status === "awaiting_approval" &&
+    report.verdict === "PASS" &&
+    report.postCount > 0 &&
+    report.builtRequests.length === report.postCount &&
+    report.builtRequests.length > 0 &&
+    report.builtRequests.every((request) => request.valid);
+}
+
 // ---- simulated runner (representative agent outputs) ----
 
 const SIM: Record<string, any> = {
@@ -114,9 +147,9 @@ const SIM: Record<string, any> = {
     { platform: "facebook", lang: "en", body: "Dealer-level care for your European car, without the dealer markup. Book your next service with our team.", cta: "Book online", char_count: 105 },
     { platform: "gbp", lang: "en", body: "European car repair in Doral done the right way. Oil, brakes, and diagnostics by specialists who know your BMW, Mercedes, or Audi.", cta: "Book", char_count: 130 },
   ],
-  image: { url: "https://img.gcd.example/brake-fluid.jpg", model: "fal-ai/ideogram/v3", contentType: "text-graphic", width: 1080, height: 1350, alt_text_en: "Navy graphic: 'Brake fluid flush — book online' with the German Car Depot logo.", alt_text_es: "Gráfico azul marino: 'Cambio de líquido de frenos — reserva en línea'." },
+  image: { contentType: "text-graphic", prompt: "A premium German Car Depot brake-service graphic.", width: 1080, height: 1350, in_image_text: ["BRAKE SERVICE", "BOOK ONLINE", "German Car Depot", "GermanCarDepot.com"], alt_text_en: "Navy graphic: 'Brake service — book online' with the German Car Depot logo.", alt_text_es: "Gráfico azul marino: 'Servicio de frenos — reserva en línea'." },
   "hashtag-seo-timing": [
-    { platform: "instagram", hashtags: ["#bmwrepair", "#doral", "#europeancarservice"], keywords: ["BMW service Doral"], recommended_time: "09:00 ET" },
+    { platform: "instagram", hashtags: ["#bmwrepair", "#hollywoodfl", "#europeancarservice", "#germancar", "#brakeservice", "#autocare", "#broward", "#germancardepot"], keywords: ["BMW service Hollywood"], recommended_time: "09:00 ET" },
     { platform: "facebook", hashtags: [], keywords: ["European car repair Miami"], recommended_time: "12:00 ET" },
     { platform: "gbp", hashtags: [], keywords: ["European car repair in Doral"], recommended_time: "08:00 ET" },
   ],
@@ -132,34 +165,14 @@ export function simulatedRunner(): AgentRunner {
   return async (name: string) => SIM[name] ?? {};
 }
 
-// CLI: npm run dryrun
-const isMain = process.argv[1]?.endsWith("dryrun.js");
-if (isMain) {
-  const live = process.argv.includes("--live");
-  // Real posts pass approvedFacts via /triggers; the dry run relies on the
-  // stored defaults (config/approved-facts.json) merged by the orchestrator.
-  const brief: Brief = {
-    goal: "Promote routine European-car maintenance; encourage booking online",
-  };
-  // live: no runner → real SDK agents (needs ANTHROPIC_API_KEY + fal). Never posts.
-  runDryRun(brief, live ? undefined : simulatedRunner())
-    .then((report) => {
-      console.log(`=== GCD-SOCIAL dry run (${live ? "LIVE — real agents, no posting" : "simulated"}) ===`);
-      console.log(JSON.stringify(report, null, 2));
-      if (report.status === "escalated" && report.criticFindings?.length) {
-        console.log("\nWhy the critic failed it:");
-        report.criticFindings.forEach((f) => console.log(`  • [${f.section}] ${f.issue} → ${f.exact_fix} (${f.owning_subagent})`));
-      }
-      const allValid = report.builtRequests.every((r) => r.valid);
-      console.log(
-        allValid && report.status === "awaiting_approval"
-          ? "\nDRY RUN OK ✅ (no posting performed)"
-          : "\nDRY RUN ISSUES ⚠️ — see above",
-      );
-      process.exit(allValid ? 0 : 1);
-    })
-    .catch((err) => {
-      console.error("dry run error:", err);
-      process.exit(1);
-    });
-}
+/** Offline-only stand-in for a runtime-generated, inspected, hosted JPEG. */
+export const simulatedInspectedImageResolver: ImageResolver = async (specification) => ({
+  ...specification,
+  url: `https://img.gcd.example/media/00000000-0000-4000-8000-000000000002-${"a".repeat(64)}.jpg`,
+  contentSha256: "a".repeat(64),
+  model: "offline-fixture",
+  aiGenerated: true,
+  qcFailed: false,
+  qc: { ok: true, issues: [], readText: specification?.in_image_text ?? [], attempts: 1, errored: false },
+  inspection: { status: "passed", attempts: 1, readText: specification?.in_image_text ?? [] },
+});

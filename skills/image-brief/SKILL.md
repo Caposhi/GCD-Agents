@@ -5,7 +5,7 @@ description: How GCD-SOCIAL plans and generates on-brand images. Defines logo/as
 
 # Image Brief
 
-Produces brand-consistent imagery for GCD social posts. One coherent image (or set) per package — favor one strong image over many drafts. Pair every image with meaningful alt text. Read `brand-voice` for identity; full color values are in `assets/brand/brand-tokens.json`.
+Produces brand-consistent imagery for GCD social posts. The current runtime accepts one coherent image per package and shares it across active platforms. Pair it with meaningful alt text. Read `brand-voice` for identity; full color values are in `assets/brand/brand-tokens.json`.
 
 ## Brand assets (source of truth)
 - **Logo:** `assets/brand/GCD LOGO 2026.svg` — royal-blue wordmark ("GERMAN CAR DEPOT") on the lemondrop-yellow disc.
@@ -32,25 +32,32 @@ Route by what the image needs (cost-aware; see `model-routing`):
 - **Graphic/illustrative** (simple branded backgrounds, icons) → whatever renders clean flat shapes in palette.
 Prefer real GCD photography when available over generated photoreal of the shop/team; never imply a generated image is a real photo of GCD's actual location, staff, or a specific customer car.
 
-## Per-platform sizing (confirm details in `platform-specs`)
-| Platform | Primary size | Ratio | Notes |
-|---|---|---|---|
-| Instagram feed | 1080×1350 | 4:5 | portrait wins reach; 1080×1080 1:1 also fine. **JPEG.** |
-| Instagram Stories/Reels cover | 1080×1920 | 9:16 | keep text in safe center |
-| Facebook feed | 1080×1350 or 1200×630 | 4:5 / 1.91:1 | |
-| Google Business Profile | 1200×900 | 4:3 | clean, literal, local; no heavy text overlay |
+## Runtime-enforced shared feed profiles
+
+The image agent may request exactly one of the four reviewed feed profiles below. Any other/malformed model size is normalized to `1080×1350`. Runtime parses the returned PNG/JPEG header before decode and rejects it unless the dimensions are an approved profile and exactly match the normalized request; the broader safety ceilings are 4,096 pixels on either side and 16 million pixels total. All active providers share that one inspected JPEG, so there is no separate crop/rendition per platform. The current flow does not support the `1080×1920` Stories/Reels-cover profile.
+
+| Approved size | Ratio | Typical use |
+|---|---|---|
+| 1080×1350 | 4:5 | Default; Instagram/Facebook portrait feed |
+| 1080×1080 | 1:1 | Instagram/Facebook square feed |
+| 1200×900 | 4:3 | GBP/feed landscape |
+| 1200×630 | 1.91:1 | Facebook/link landscape |
 
 ## Honesty & safety
 - Nothing misleading: don't fabricate a promotion, a price on a graphic, a fake award, or a "before/after" that didn't happen.
-- No real license plates, no identifiable customers without permission.
+- No identifiable people/features, readable license plates or VINs, contact/customer documents, or unsafe shop practices.
 - In-image claims follow the same Claims rules as copy (`brand-voice`): no "best/guaranteed" except the POMG slogan.
+
+## Runtime media boundary
+
+The image agent returns a specification only. Runtime discards any model-authored URL, QC result, hosted flag, digest, or provenance, then calls the configured generator. The returned URL is an untrusted intermediate: only direct HTTPS `fal.media` hosts without credentials, fragments, nonstandard ports, or redirects are accepted. Downloads are limited to 30 seconds and 20 MiB, and the input header must exactly match the normalized approved profile before decode. Image content must decode; bytes are converted at deterministic JPEG quality 90, output over 5 MiB is rejected, and the output header is revalidated against that same profile before storage/hash binding. Mandatory vision inspection must return the strict `{readText, garbled, unsafe, issues}` shape, and production refuses an injected inspector runner. Inspector errors/malformed output, garbled text, identifiable people/features, readable plates/VIN/contact/customer documents, unsafe shop practice, materially misleading imagery, or exhausted attempts fail closed without approval. Initial generation and every critic-requested revision use this gate. Only passing JPEG bytes are stored at a content-addressed application URL containing their SHA-256; runtime sets the AI provenance.
 
 ## Alt text (required)
 Every image ships with concise, meaningful alt text describing what's shown (and any in-image text), in the post's language(s). Example: "Navy graphic with the German Car Depot logo and the text 'Brake fluid flush — book online.'"
 
 ## Image pre-publish checklist (the critic runs this)
 1. On-brand palette (navy/royal + lemondrop), logo used per rules, not recolored/distorted?
-2. Correct aspect ratio/format for the platform (IG = JPEG)?
-3. In-image text correct, legible, contrast-safe — no garbled text?
-4. Nothing misleading; claims compliant; no plates/identifiable people without consent?
+2. Runtime quality-90 JPEG conversion/output cap passed, and did both input and output headers exactly match the normalized approved feed profile? Confirm visually that the one shared composition works on every active platform; no separate crop is produced.
+3. Strict runtime inspection passed; in-image text is transcribed, correct, legible, and contrast-safe — no garbled text or inspector error?
+4. Nothing unsafe or misleading; claims compliant; no identifiable people/features, readable plates/VIN/contact/customer documents, unsafe shop practice, or material misrepresentation?
 5. Meaningful alt text present (both languages where applicable)?

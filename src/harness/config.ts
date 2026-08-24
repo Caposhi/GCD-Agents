@@ -16,6 +16,7 @@ function num(name: string, fallback: number): number {
 export interface Config {
   nodeEnv: string;
   port: number;
+  apiBindHost: string | undefined;
   databaseUrl: string | undefined;
   anthropicApiKey: string | undefined;
   imagegenApiKey: string | undefined;
@@ -46,11 +47,15 @@ function parsePlatforms(raw: string | undefined): ActivePlatform[] {
 export const config: Config = {
   nodeEnv: process.env.NODE_ENV ?? "development",
   port: num("PORT", 3000),
+  // Optional local/test bind restriction. Render leaves this unset so its web
+  // service listens on the platform-required wildcard interface.
+  apiBindHost: process.env.API_BIND_HOST?.trim() || undefined,
   databaseUrl: process.env.DATABASE_URL || undefined,
   anthropicApiKey: process.env.ANTHROPIC_API_KEY || undefined,
   imagegenApiKey: process.env.IMAGEGEN_API_KEY || undefined,
   approvalChannelWebhook: process.env.APPROVAL_CHANNEL_WEBHOOK || undefined,
-  // Public URL of the web service (for approval links in Slack). e.g. https://gcd-social-api.onrender.com
+  // Public root HTTPS origin for approval links and content-addressed media.
+  // Example: https://gcd-social-api.onrender.com
   publicBaseUrl: process.env.PUBLIC_BASE_URL || undefined,
   autonomyPhase: parsePhase(process.env.AUTONOMY_PHASE),
   // Which platforms the loop produces/publishes. Set ACTIVE_PLATFORMS=instagram,facebook

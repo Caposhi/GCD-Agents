@@ -3,16 +3,31 @@
  * queue, runs the manager loop, routes the package to the human approval gate,
  * and — ONLY on recorded approval — publishes via the posting tool.
  *
- * The Phase-A guarantee is structural: publishing goes through
- * publishApprovedPackage → assertPublishAllowed, which throws unless approval
- * is recorded. The worker passes `approved` derived solely from waitForApproval.
+ * The Phase-A guarantee is structural: the exact provider-bound PostPackage[]
+ * is stored and hash-bound before review. Publishing reloads that stored
+ * subject and publishApprovedPackage verifies live durable approval plus an
+ * exact item match immediately before every provider call.
  */
 
 import { config } from "../harness/config.js";
-import { initState, stateEnabled, closeState, claimNextBrief, completeBrief, setApprovalStatus, recordEvent } from "../harness/state.js";
-import { requestApproval, waitForApproval, postingRequiresApproval, notifyEscalation } from "../harness/hitl.js";
+import {
+  initState,
+  stateEnabled,
+  closeState,
+  claimNextBrief,
+  completeBrief,
+  setApprovalStatus,
+  recordEvent,
+} from "../harness/state.js";
+import {
+  assertPublishAllowed,
+  requestApproval,
+  waitForApproval,
+  postingRequiresApproval,
+  notifyEscalation,
+} from "../harness/hitl.js";
 import { runBrief } from "../harness/orchestrator.js";
-import { publishApprovedPackage, PlatformCredentials } from "../mcp/posting-tool/index.js";
+import { publishApprovedPackage, PlatformCredentials, PostPackage } from "../mcp/posting-tool/index.js";
 import { toPostPackages, summarize, FinalPackage } from "../harness/packageMap.js";
 import { credsFromEnv } from "../harness/creds.js";
 import { getCurrentIgToken } from "../harness/igToken.js";
@@ -45,7 +60,11 @@ async function processBrief(id: string, brief: any): Promise<void> {
 
   // awaiting_approval → route to the human gate.
   const pkg = outcome.package as FinalPackage;
-  const handle = await requestApproval({ summary: summarize(pkg), packageFormatted: pkg });
+  // All externally visible transformations already happened in
+  // buildFinalPackage before the final critic. toPostPackages only validates
+  // review/provider parity and clones that stored canonical array.
+  const providerPayloads = toPostPackages(pkg);
+  const handle = await requestApproval({ summary: summarize(pkg), packageFormatted: providerPayloads });
   console.log(`[worker] brief ${id} awaiting approval (id=${handle.id})`);
   const decision = await waitForApproval(handle.id);
 
@@ -55,26 +74,38 @@ async function processBrief(id: string, brief: any): Promise<void> {
     return;
   }
 
-  // APPROVED → publish (gated by assertPublishAllowed inside the tool).
-  const approved = true;
+  // APPROVED → publish only the canonical subject reloaded from approval
+  // storage. The posting tool re-loads and re-verifies it before every call.
+  // Re-resolve live durable authorization before even acquiring platform
+  // tokens. Each actual provider attempt repeats this check inside its guard.
+  const approval = await assertPublishAllowed<PostPackage[]>(handle.id);
+  const approvedPayloads = approval.subject;
   const creds = credsFromEnv();
-  // Use the auto-refreshed IG token (DB-backed) rather than the possibly-stale env value.
-  const liveIgToken = await getCurrentIgToken(Date.now());
-  if (liveIgToken) creds.igAccessToken = liveIgToken;
-  // Fresh Google token for GBP (auto-refreshed); harmless if GBP isn't active.
-  try {
-    const g = await getGoogleAccessToken();
-    if (g) creds.googleAccessToken = g;
-  } catch (err) {
-    console.error("[gbp] Google token refresh failed:", (err as Error).message);
+  if (approvedPayloads.some((payload) => payload.platform === "instagram")) {
+    // Use the auto-refreshed IG token (DB-backed) rather than the possibly-stale env value.
+    const liveIgToken = await getCurrentIgToken(Date.now());
+    if (liveIgToken) creds.igAccessToken = liveIgToken;
   }
-  const pkgs = toPostPackages(pkg);
-  const results = [];
-  for (const pkg of pkgs) {
+  if (approvedPayloads.some((payload) => payload.platform === "gbp")) {
+    // Acquire a fresh Google token only when this exact approval includes GBP.
     try {
-      results.push(await publishApprovedPackage(pkg, approved, creds));
+      const googleAccessToken = await getGoogleAccessToken();
+      if (googleAccessToken) creds.googleAccessToken = googleAccessToken;
     } catch (err) {
-      results.push({ platform: pkg.platform, ok: false, error: (err as Error).message });
+      console.error("[gbp] Google token refresh failed:", (err as Error).message);
+    }
+  }
+  const results = [];
+  for (let packageIndex = 0; packageIndex < approvedPayloads.length; packageIndex++) {
+    const approvedPayload = approvedPayloads[packageIndex]!;
+    try {
+      results.push(await publishApprovedPackage(
+        approvedPayload,
+        { approvalId: handle.id, packageIndex },
+        creds,
+      ));
+    } catch (err) {
+      results.push({ platform: approvedPayload.platform, ok: false, error: (err as Error).message });
     }
   }
   const allOk = results.length > 0 && results.every((r) => r.ok);
@@ -116,12 +147,16 @@ async function loop(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  await initState();
+  // A worker-local Map cannot share briefs or approvals with the API process.
+  // Refuse startup unless the durable backend is configured and reachable.
+  await initState({ requireDurable: true });
   console.log("[worker] gcd-social-worker started");
   console.log(`[worker] autonomy phase: ${config.autonomyPhase} · posting requires approval: ${postingRequiresApproval()}`);
   console.log(`[worker] state backend: ${stateEnabled() ? "postgres" : "ephemeral"}`);
-  await igTokenTick(); // seed/refresh the IG token at startup
-  tokenTimer = setInterval(() => void igTokenTick(), TOKEN_REFRESH_INTERVAL_MS);
+  if (config.activePlatforms.includes("instagram")) {
+    await igTokenTick(); // seed/refresh the IG token only when Instagram is active
+    tokenTimer = setInterval(() => void igTokenTick(), TOKEN_REFRESH_INTERVAL_MS);
+  }
   console.log("[worker] polling brief queue…");
   await loop();
 }

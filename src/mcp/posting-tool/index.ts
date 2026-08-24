@@ -7,27 +7,40 @@
  * tokens at runtime. Default provider is native (GBP/IG/FB direct APIs).
  */
 
-import { assertPublishAllowed } from "../../harness/hitl.js";
-import { NativePostingProvider } from "./native/provider.js";
-import { PostPackage, PlatformCredentials, PostingProvider, PublishResult } from "./types.js";
+import { publishNativeApprovedPackage } from "./native/provider.js";
+import {
+  PostPackage,
+  PlatformCredentials,
+  PublicationAuthorization,
+  PublishResult,
+} from "./types.js";
 
 export * from "./types.js";
 export { NativePostingProvider } from "./native/provider.js";
-export { buildGbpLocalPost, buildIgCreateContainer, buildIgPublish, buildFacebookPost } from "./native/requests.js";
-
-const defaultProvider: PostingProvider = new NativePostingProvider();
+export { buildGbpLocalPost, buildIgCreateContainer, buildIgContainerStatus, buildIgPublish, buildFacebookPost } from "./native/requests.js";
+export { matchExactPublicationPackage } from "./integrity.js";
+export {
+  assertRuntimeTargetMatches,
+  assertValidPostPackage,
+  assertValidSocialPostSubject,
+  mediaUrlMatchesContentSha256,
+  publicationTargetsFromEnv,
+  validatePostPackage,
+  validatePublicationTarget,
+  validateSocialPostSubject,
+} from "./validation.js";
 
 /**
- * Publish an approved package. `approved` MUST be the result of a recorded human
- * approval for this exact package. The gate is checked before anything else.
+ * Publish one exact item from an approved multi-platform subject. The caller's
+ * package is treated only as an expected value: the provider receives the
+ * immutable canonical copy reloaded from current approval state. A fabricated
+ * boolean, approval for another payload, expired/revoked approval, changed
+ * package, or wrong index is rejected before provider IO.
  */
 export async function publishApprovedPackage(
   pkg: PostPackage,
-  approved: boolean,
+  authorization: PublicationAuthorization,
   creds: PlatformCredentials,
-  provider: PostingProvider = defaultProvider,
 ): Promise<PublishResult> {
-  // Guardrail: cannot proceed without explicit human approval in Phase A.
-  assertPublishAllowed(approved);
-  return provider.publish(pkg, creds);
+  return publishNativeApprovedPackage(pkg, authorization, creds);
 }

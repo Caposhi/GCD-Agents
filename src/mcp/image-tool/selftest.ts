@@ -6,6 +6,7 @@
 import { buildFalRequest, modelFor } from "./fal/models.js";
 import { generateImage } from "./index.js";
 import { ImageProvider } from "./types.js";
+import { falRedirectPolicyForSelfTest } from "./fal/provider.js";
 
 let failures = 0;
 function check(name: string, cond: boolean): void {
@@ -23,6 +24,7 @@ const r = buildFalRequest({ contentType: "text-graphic", prompt: "Brake fluid fl
 check("fal url", r.url === "https://fal.run/fal-ai/ideogram/v3");
 check("fal prompt", r.body?.prompt === "Brake fluid flush — book online");
 check("fal image_size", JSON.stringify(r.body?.image_size) === JSON.stringify({ width: 1080, height: 1350 }));
+check("fal credential-bearing POST refuses redirects", falRedirectPolicyForSelfTest() === "error");
 
 // missing prompt guard
 let threw = false;

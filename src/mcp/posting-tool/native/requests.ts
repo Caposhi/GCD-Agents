@@ -6,10 +6,7 @@
  */
 
 import { BuiltRequest, PostPackage, PlatformCredentials } from "../types.js";
-
-const DEFAULT_GRAPH = "v25.0";
-const DEFAULT_IG_HOST = "graph.instagram.com"; // Instagram-Login path
-const FB_HOST = "graph.facebook.com";
+import { assertRuntimeTargetMatches } from "../validation.js";
 
 function requireCred<T>(value: T | undefined, name: string): T {
   if (value === undefined || value === "") {
@@ -22,13 +19,14 @@ function requireCred<T>(value: T | undefined, name: string): T {
 
 /** POST .../v4/accounts/{acct}/locations/{loc}/localPosts */
 export function buildGbpLocalPost(pkg: PostPackage, creds: PlatformCredentials): BuiltRequest {
-  const acct = requireCred(creds.gbpAccountId, "gbpAccountId");
-  const loc = requireCred(creds.gbpLocationId, "gbpLocationId");
+  const target = assertRuntimeTargetMatches(pkg, creds);
+  const acct = encodeURIComponent(target.accountId);
+  const loc = encodeURIComponent(requireCred(target.locationId, "target.locationId"));
 
   const body: Record<string, unknown> = {
-    languageCode: pkg.languageCode ?? "en-US",
+    languageCode: pkg.languageCode,
     summary: pkg.text,
-    topicType: pkg.gbp?.topicType ?? "STANDARD",
+    topicType: pkg.gbp!.topicType,
   };
   if (pkg.gbp?.callToAction) {
     body.callToAction = {
@@ -42,7 +40,7 @@ export function buildGbpLocalPost(pkg: PostPackage, creds: PlatformCredentials):
   }
   return {
     method: "POST",
-    url: `https://mybusiness.googleapis.com/v4/accounts/${acct}/locations/${loc}/localPosts`,
+    url: `https://${target.apiHost}/${target.apiVersion}/accounts/${acct}/locations/${loc}/localPosts`,
     body,
     step: "gbp:localPost",
   };
@@ -52,9 +50,8 @@ export function buildGbpLocalPost(pkg: PostPackage, creds: PlatformCredentials):
 
 /** Step 1: POST /<IG_ID>/media (single image). */
 export function buildIgCreateContainer(pkg: PostPackage, creds: PlatformCredentials): BuiltRequest {
-  const ig = requireCred(creds.igUserId, "igUserId");
-  const ver = creds.graphVersion ?? DEFAULT_GRAPH;
-  const host = creds.igGraphHost ?? DEFAULT_IG_HOST;
+  const target = assertRuntimeTargetMatches(pkg, creds);
+  const ig = encodeURIComponent(target.accountId);
   const img = pkg.images?.[0];
   requireCred(img, "images[0] (Instagram requires a public JPEG image)");
 
@@ -66,31 +63,29 @@ export function buildIgCreateContainer(pkg: PostPackage, creds: PlatformCredenti
   if (img!.aiGenerated) body.is_ai_generated = true; // honesty disclosure
   return {
     method: "POST",
-    url: `https://${host}/${ver}/${ig}/media`,
+    url: `https://${target.apiHost}/${target.apiVersion}/${ig}/media`,
     body,
     step: "ig:createContainer",
   };
 }
 
 /** Step 1.5: GET /<container-id>?fields=status_code — poll until FINISHED before publishing. */
-export function buildIgContainerStatus(containerId: string, creds: PlatformCredentials): BuiltRequest {
-  const ver = creds.graphVersion ?? DEFAULT_GRAPH;
-  const host = creds.igGraphHost ?? DEFAULT_IG_HOST;
+export function buildIgContainerStatus(containerId: string, pkg: PostPackage, creds: PlatformCredentials): BuiltRequest {
+  const target = assertRuntimeTargetMatches(pkg, creds);
   return {
     method: "GET",
-    url: `https://${host}/${ver}/${requireCred(containerId, "containerId")}?fields=status_code`,
+    url: `https://${target.apiHost}/${target.apiVersion}/${encodeURIComponent(requireCred(containerId, "containerId"))}?fields=status_code`,
     step: "ig:status",
   };
 }
 
 /** Step 2: POST /<IG_ID>/media_publish with the container id. */
-export function buildIgPublish(containerId: string, creds: PlatformCredentials): BuiltRequest {
-  const ig = requireCred(creds.igUserId, "igUserId");
-  const ver = creds.graphVersion ?? DEFAULT_GRAPH;
-  const host = creds.igGraphHost ?? DEFAULT_IG_HOST;
+export function buildIgPublish(containerId: string, pkg: PostPackage, creds: PlatformCredentials): BuiltRequest {
+  const target = assertRuntimeTargetMatches(pkg, creds);
+  const ig = encodeURIComponent(target.accountId);
   return {
     method: "POST",
-    url: `https://${host}/${ver}/${ig}/media_publish`,
+    url: `https://${target.apiHost}/${target.apiVersion}/${ig}/media_publish`,
     body: { creation_id: requireCred(containerId, "containerId") },
     step: "ig:publish",
   };
@@ -100,8 +95,8 @@ export function buildIgPublish(containerId: string, creds: PlatformCredentials):
 
 /** POST /<PAGE_ID>/feed (text/link) or /<PAGE_ID>/photos (single image). */
 export function buildFacebookPost(pkg: PostPackage, creds: PlatformCredentials): BuiltRequest {
-  const page = requireCred(creds.fbPageId, "fbPageId");
-  const ver = creds.graphVersion ?? DEFAULT_GRAPH;
+  const target = assertRuntimeTargetMatches(pkg, creds);
+  const page = encodeURIComponent(target.accountId);
   const hasImage = !!pkg.images?.[0];
 
   const body: Record<string, unknown> = {};
@@ -118,7 +113,7 @@ export function buildFacebookPost(pkg: PostPackage, creds: PlatformCredentials):
   }
   return {
     method: "POST",
-    url: `https://${FB_HOST}/${ver}/${page}/${hasImage ? "photos" : "feed"}`,
+    url: `https://${target.apiHost}/${target.apiVersion}/${page}/${hasImage ? "photos" : "feed"}`,
     body,
     step: hasImage ? "fb:photos" : "fb:feed",
   };

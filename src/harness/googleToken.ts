@@ -33,7 +33,10 @@ export function googleOAuthConfigured(): boolean {
 let cached: { token: string; expiresAt: number } | undefined;
 
 /** Fresh Google access token: refresh-flow first, static env fallback. */
-export async function getGoogleAccessToken(nowMs: number = Date.now()): Promise<string | undefined> {
+export async function getGoogleAccessToken(
+  nowMs: number = Date.now(),
+  operationSignal?: AbortSignal,
+): Promise<string | undefined> {
   const c = creds();
   if (!googleOAuthConfigured()) return c.accessToken;
   if (cached && cached.expiresAt - nowMs > 60_000) return cached.token;
@@ -48,6 +51,11 @@ export async function getGoogleAccessToken(nowMs: number = Date.now()): Promise<
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body,
+    // Do not replay OAuth secrets in the POST body to a redirect target.
+    redirect: "error",
+    signal: operationSignal
+      ? AbortSignal.any([operationSignal, AbortSignal.timeout(10_000)])
+      : AbortSignal.timeout(10_000),
   });
   const text = await res.text();
   if (!res.ok) throw new Error(`google token refresh -> ${res.status}: ${text.slice(0, 200)}`);

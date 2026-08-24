@@ -1,12 +1,13 @@
 /**
  * Instagram-Login access-token lifecycle.
  *
- * Tokens on the graph.instagram.com path are "long-lived" but cap at 60 days —
- * Meta provides no never-expires option (only Facebook Page tokens get that). This
- * module keeps the IG token fresh automatically so posting never silently breaks:
+ * Tokens on the graph.instagram.com path are treated as expiring and refreshed
+ * by this module. Facebook-login Page-token lifecycle is not managed here and
+ * must be verified/rotated operationally. This module keeps the Instagram-login
+ * token fresh automatically so posting does not silently break:
  * it persists the live token in Postgres (session_state) and proactively calls
- * Instagram's refresh endpoint well before expiry. The Facebook-Login path
- * (graph.facebook.com Page tokens) does not expire, so refresh is skipped there.
+ * Instagram's refresh endpoint well before its estimated expiry. Refresh is
+ * skipped on the Facebook-login path because it uses a different token flow.
  *
  * Operator override: changing IG_ACCESS_TOKEN in the environment re-seeds the
  * store — a freshly minted token always wins over a stale persisted one.
@@ -17,6 +18,13 @@
 
 import { loadSessionState, saveSessionState } from "./state.js";
 import { config } from "./config.js";
+import { approvalWebhookRequestInit, validateApprovalChannelWebhook } from "./hitl.js";
+import { sanitizeSlackSummaryText } from "./packageMap.js";
+import {
+  DEFAULT_IG_API_HOST,
+  FACEBOOK_API_HOST,
+  IG_API_HOSTS,
+} from "../mcp/posting-tool/validation.js";
 
 const STORE_KEY = "cred:ig_access_token";
 const DAY = 24 * 60 * 60 * 1000;
@@ -33,36 +41,48 @@ interface StoredToken {
   envSeed: string; // the env value we seeded from — lets us detect a manual rotation
 }
 
-function igHost(): string {
-  return process.env.IG_GRAPH_HOST || "graph.instagram.com";
+/** Resolve only the two exact Meta Graph hosts admitted by publication. */
+export function validatedIgGraphHost(value = process.env.IG_GRAPH_HOST): string {
+  const host = value?.trim() || DEFAULT_IG_API_HOST;
+  if (!IG_API_HOSTS.has(host)) {
+    throw new Error(
+      `BLOCKED: IG_GRAPH_HOST must be exactly ${DEFAULT_IG_API_HOST} or ${FACEBOOK_API_HOST}`,
+    );
+  }
+  return host;
 }
 
-/** Only the Instagram-Login path uses expiring tokens; FB-Login Page tokens don't. */
+/** Only the Instagram-login path is managed by this refresh implementation. */
 function isIgLoginPath(): boolean {
-  return igHost().includes("instagram.com");
+  return validatedIgGraphHost() === DEFAULT_IG_API_HOST;
 }
 
 /** Page the human via the Slack approval channel when self-healing can't heal. */
 async function postAlert(text: string): Promise<void> {
+  const safeText = sanitizeSlackSummaryText(text.slice(0, 1_500));
   const hook = config.approvalChannelWebhook;
   if (!hook) {
-    console.warn(`[ig-token] ALERT (no APPROVAL_CHANNEL_WEBHOOK): ${text}`);
+    console.warn(`[ig-token] ALERT (no APPROVAL_CHANNEL_WEBHOOK): ${safeText}`);
     return;
   }
   try {
-    await fetch(hook, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ text: `*GCD-SOCIAL — Instagram token alert*\n${text}` }),
-    });
+    const webhookUrl = validateApprovalChannelWebhook(hook, config.nodeEnv) as string;
+    await fetch(webhookUrl, approvalWebhookRequestInit({
+      text: `*GCD-SOCIAL — Instagram token alert*\n\`${safeText}\``,
+    }));
   } catch (err) {
     console.error("[ig-token] alert post failed:", (err as Error).message);
   }
 }
 
 async function callRefresh(current: string): Promise<{ token: string; expiresIn: number }> {
-  const url = `https://${igHost()}/refresh_access_token?grant_type=ig_refresh_token&access_token=${encodeURIComponent(current)}`;
-  const res = await fetch(url);
+  if (!isIgLoginPath()) throw new Error("BLOCKED: Instagram refresh is only supported on graph.instagram.com");
+  const url = `https://${DEFAULT_IG_API_HOST}/refresh_access_token?grant_type=ig_refresh_token&access_token=${encodeURIComponent(current)}`;
+  const res = await fetch(url, {
+    // A redirect could replay the token-bearing query to another origin.
+    redirect: "error",
+    signal: AbortSignal.timeout(30_000),
+  });
   const text = await res.text();
   if (!res.ok) throw new Error(`ig refresh -> ${res.status}: ${text.slice(0, 200)}`);
   const json = JSON.parse(text);
@@ -77,7 +97,7 @@ async function callRefresh(current: string): Promise<{ token: string; expiresIn:
  */
 export async function getCurrentIgToken(nowMs: number): Promise<string | undefined> {
   const envToken = process.env.IG_ACCESS_TOKEN || undefined;
-  if (!isIgLoginPath()) return envToken; // FB-Login Page token: never expires, nothing to refresh
+  if (!isIgLoginPath()) return envToken; // Facebook-login lifecycle is managed outside this module
 
   let stored = await loadSessionState<StoredToken>(STORE_KEY).catch(() => undefined);
 
@@ -125,7 +145,7 @@ export async function effectiveIgToken(): Promise<{ token?: string; source: "db-
 
 /** Read-only snapshot for diagnostics. Never returns the token value. */
 export async function igTokenStatus(nowMs: number): Promise<unknown> {
-  if (!isIgLoginPath()) return { path: "facebook-login", refresh: "not needed (page token never expires)" };
+  if (!isIgLoginPath()) return { path: "facebook-login", refresh: "not managed; verify provider expiry/rotation" };
   const stored = await loadSessionState<StoredToken>(STORE_KEY).catch(() => undefined);
   if (!stored) return { path: "instagram-login", store: "empty (worker seeds from env on first tick)" };
   return {
