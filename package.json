@@ -19,8 +19,11 @@
     "test:image": "node dist/mcp/image-tool/selftest.js",
     "test:orchestrator": "node dist/harness/orchestrator.selftest.js",
     "test:gate": "node dist/harness/gate.selftest.js",
-    "dryrun": "node dist/harness/dryrun.js",
-    "dryrun:live": "node dist/harness/dryrun.js --live"
+    "test:api": "node dist/api/security.selftest.js",
+    "test:postgres": "node dist/harness/postgres.integration.selftest.js",
+    "test:http-e2e": "node dist/api/http.e2e.selftest.js",
+    "dryrun": "node dist/harness/dryrun.cli.js",
+    "dryrun:live": "node dist/harness/dryrun.cli.js --live"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.106.0",

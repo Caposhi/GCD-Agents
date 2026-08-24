@@ -8,7 +8,7 @@
  * publish, which keeps the Phase-A guarantee structural.
  *
  * The subagent runner is injectable so the loop is unit-testable offline
- * (see orchestrator.selftest.ts). The default runner uses the Claude Agent SDK.
+ * (see orchestrator.selftest.ts). The default runner uses Anthropic Messages.
  */
 
 import { readFile } from "node:fs/promises";
@@ -20,30 +20,118 @@ import { CostTracker } from "./cost.js";
 import { runAgent } from "./sdk.js";
 import { withRetry } from "./retry.js";
 import { saveSessionState, saveMedia, recordEvent } from "./state.js";
-import { buildFinalPackage } from "./packageMap.js";
+import { buildFinalPackage, FinalPackage, validateFinalPackage } from "./packageMap.js";
 import { generateImage } from "../mcp/image-tool/index.js";
 import { inspectImageText } from "./imageQc.js";
+import type { PublicationTarget } from "../mcp/posting-tool/index.js";
+import {
+  mediaUrlMatchesContentSha256,
+  publicationTargetsFromEnv,
+  validatePublicationTarget,
+} from "../mcp/posting-tool/validation.js";
+import {
+  assertPlatformSafePublicationJpeg,
+  publicationImageDimensions,
+  validateGeneratedImageHeader,
+} from "./mediaPolicy.js";
 
-/**
- * Instagram only accepts JPEG, and fal's Ideogram returns PNG — so fetch the
- * generated image, transcode to JPEG, store it, and return a public URL served
- * by our web service. Returns null (keep the original URL) if we can't host it.
- */
-async function transcodeAndHost(srcUrl: string): Promise<{ url: string; jpeg: Buffer } | null> {
-  if (!config.publicBaseUrl) return null;
+export {
+  assertPlatformSafePublicationJpeg,
+  publicationImageDimensions,
+  validateGeneratedImageHeader,
+} from "./mediaPolicy.js";
+export type { GeneratedImageHeader } from "./mediaPolicy.js";
+
+const MAX_IMAGE_DOWNLOAD_BYTES = 20 * 1024 * 1024;
+const IMAGE_DOWNLOAD_TIMEOUT_MS = 30_000;
+
+/** Only URLs returned by the configured fal adapter may be fetched. */
+export function isTrustedGeneratedImageUrl(raw: string): boolean {
   try {
-    const resp = await fetch(srcUrl);
-    if (!resp.ok) return null;
-    const buf = Buffer.from(await resp.arrayBuffer());
-    const { Jimp, JimpMime } = await import("jimp");
-    const img = await Jimp.read(buf);
-    const jpeg = (await img.getBuffer(JimpMime.jpeg)) as Buffer;
-    const id = await saveMedia("image/jpeg", jpeg);
-    return { url: `${config.publicBaseUrl.replace(/\/$/, "")}/media/${id}.jpg`, jpeg };
-  } catch (e) {
-    console.warn(`[image] JPEG transcode/host failed: ${(e as Error).message}`);
-    return null;
+    const url = new URL(raw);
+    return url.protocol === "https:"
+      && url.port === ""
+      && url.username === ""
+      && url.password === ""
+      && url.hash === ""
+      && (url.hostname === "fal.media" || url.hostname.endsWith(".fal.media"));
+  } catch {
+    return false;
   }
+}
+
+/** Fetch bounded trusted bytes and transcode before any image can be hosted. */
+async function fetchGeneratedJpeg(
+  srcUrl: string,
+  expectedDimensions: { width: number; height: number },
+): Promise<Buffer> {
+  if (!isTrustedGeneratedImageUrl(srcUrl)) throw new Error("image provider returned a URL outside the trusted fal.media policy");
+  const resp = await fetch(srcUrl, {
+    signal: AbortSignal.timeout(IMAGE_DOWNLOAD_TIMEOUT_MS),
+    // Do not let fetch contact an unvalidated redirect target. If fal changes
+    // its delivery topology, update the explicit host policy after review.
+    redirect: "error",
+  });
+  if (!resp.ok) throw new Error(`image download returned ${resp.status}`);
+  if (!isTrustedGeneratedImageUrl(resp.url)) throw new Error("image download redirected outside the trusted fal.media policy");
+  const contentType = resp.headers.get("content-type")?.toLowerCase() ?? "";
+  if (!contentType.startsWith("image/")) throw new Error(`image download returned unexpected content type ${contentType || "unknown"}`);
+  const declaredSize = Number(resp.headers.get("content-length") ?? "0");
+  if (Number.isFinite(declaredSize) && declaredSize > MAX_IMAGE_DOWNLOAD_BYTES) throw new Error("image download exceeds the 20 MiB limit");
+  if (!resp.body) throw new Error("image download returned no response body");
+  const reader = resp.body.getReader();
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalBytes += value.byteLength;
+      if (totalBytes > MAX_IMAGE_DOWNLOAD_BYTES) {
+        await reader.cancel("image download exceeds the 20 MiB limit");
+        throw new Error("image download exceeds the 20 MiB limit");
+      }
+      chunks.push(Buffer.from(value));
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  if (totalBytes === 0) throw new Error("image download is empty");
+  const bytes = Buffer.concat(chunks, totalBytes);
+  const header = validateGeneratedImageHeader(bytes);
+  if (header.width !== expectedDimensions.width || header.height !== expectedDimensions.height) {
+    throw new Error(
+      `image provider returned ${header.width}x${header.height}; expected ${expectedDimensions.width}x${expectedDimensions.height}`,
+    );
+  }
+  const { Jimp, JimpMime } = await import("jimp");
+  const image = await Jimp.read(bytes);
+  const output = (await image.getBuffer(JimpMime.jpeg, { quality: 90 })) as Buffer;
+  const outputHeader = assertPlatformSafePublicationJpeg(output);
+  if (outputHeader.width !== expectedDimensions.width || outputHeader.height !== expectedDimensions.height) {
+    throw new Error(
+      `transcoded image is ${outputHeader.width}x${outputHeader.height}; expected ${expectedDimensions.width}x${expectedDimensions.height}`,
+    );
+  }
+  return output;
+}
+
+async function hostInspectedJpeg(jpeg: Buffer): Promise<{ url: string; contentSha256: string }> {
+  if (!config.publicBaseUrl) throw new Error("PUBLIC_BASE_URL is required to host inspected publication media");
+  const base = new URL(config.publicBaseUrl);
+  if (
+    base.protocol !== "https:"
+    || base.pathname !== "/"
+    || base.search
+    || base.hash
+    || base.username
+    || base.password
+  ) throw new Error("PUBLIC_BASE_URL must be a root https origin for publication media");
+  const { id, contentSha256 } = await saveMedia("image/jpeg", jpeg);
+  return {
+    url: `${base.origin}/media/${id}-${contentSha256}.jpg`,
+    contentSha256,
+  };
 }
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -89,6 +177,10 @@ export interface RunOptions {
   sessionId?: string;
   /** Correlates live events for the console "live game view". */
   runId?: string;
+  /** Offline-test seam. Production callers must use the default resolver. */
+  imageResolver?: ImageResolver;
+  /** Offline seam; production derives these non-secret destinations from env. */
+  publicationTargets?: Partial<Record<Platform, PublicationTarget>>;
 }
 
 export interface RunOutcome {
@@ -165,6 +257,14 @@ function emit(runId: string | undefined, kind: string, message: string, extra: {
   void recordEvent({ runId, kind, message, agent: extra.agent, data: extra.data }).catch(() => {});
 }
 
+function deepFreeze<T>(value: T): T {
+  if (value && typeof value === "object" && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const child of Object.values(value as Record<string, unknown>)) deepFreeze(child);
+  }
+  return value;
+}
+
 function makeSdkRunner(cost: CostTracker, runId?: string): AgentRunner {
   return async (agentName, input) => {
     const def = await loadAgent(agentName);
@@ -186,35 +286,68 @@ function makeSdkRunner(cost: CostTracker, runId?: string): AgentRunner {
 }
 
 /**
- * The image subagent authors the prompt; we generate the actual image in code
- * (deterministic tool use). Mutates `image` to add a real URL when the fal key
- * is configured and the agent supplied a prompt.
+ * The image subagent authors a specification; runtime code returns a new,
+ * allowlisted and inspected publication-media record. Model-owned URL/QC fields
+ * are never copied into that record.
  */
 const MAX_IMAGE_ATTEMPTS = 3;
 
+export type ImageResolver = (imageSpecification: any, runId?: string) => Promise<any>;
+
 async function resolveImage(image: any, runId?: string): Promise<any> {
-  if (!config.imagegenApiKey || !image || image.url) return image;
-  const basePrompt = image.prompt || image.image_prompt || image.description;
-  if (!basePrompt) return image;
-  const expected: string[] = Array.isArray(image.in_image_text)
-    ? image.in_image_text.map(String)
-    : Array.isArray(image.inImageText)
-      ? image.inImageText.map(String)
-      : [];
-  const ct = image.contentType || "text-graphic";
-  const width = image.width || 1080;
-  const height = image.height || 1350;
+  // The model authors a specification only. Never trust URL/QC/provenance
+  // fields returned in model JSON; construct the resolved object from an
+  // explicit allowlist and from inspection results produced in this function.
+  const safe = {
+    contentType: image?.contentType ?? image?.content_type,
+    prompt: textValue(image?.prompt ?? image?.image_prompt ?? image?.description),
+    width: publicationImageDimensions(image?.width, image?.height).width,
+    height: publicationImageDimensions(image?.width, image?.height).height,
+    in_image_text: Array.isArray(image?.in_image_text)
+      ? image.in_image_text.map(String)
+      : Array.isArray(image?.inImageText)
+        ? image.inImageText.map(String)
+        : [],
+    alt_text_en: textValue(image?.alt_text_en ?? image?.altEn),
+    alt_text_es: textValue(image?.alt_text_es ?? image?.altEs),
+  };
+  const fail = (issue: string, attempts = 0) => ({
+    ...safe,
+    aiGenerated: true,
+    qcFailed: true,
+    qc: { ok: false, issues: [issue], readText: [], attempts, errored: true },
+  });
+
+  if (!image) return fail("image agent returned no image specification");
+  const basePrompt = safe.prompt;
+  if (!basePrompt) {
+    const issue = image?.url
+      ? "model-returned media URL rejected: image agents may provide specifications only"
+      : "image specification has no generation prompt";
+    return fail(issue);
+  }
+  if (!config.imagegenApiKey) return fail("IMAGEGEN_API_KEY is unavailable; ungenerated or model-returned media cannot be approved");
+  if (!config.publicBaseUrl) return fail("PUBLIC_BASE_URL is unavailable; generated media cannot be inspected and hosted");
+  try {
+    if (new URL(config.publicBaseUrl).protocol !== "https:") return fail("PUBLIC_BASE_URL must use https for publication media");
+  } catch {
+    return fail("PUBLIC_BASE_URL is invalid; generated media cannot be hosted");
+  }
+  const expected = safe.in_image_text;
+  const ct = image.contentType === "photoreal" || image.contentType === "graphic-vector" ? image.contentType : "text-graphic";
+  const { width, height } = publicationImageDimensions(safe.width, safe.height);
 
   let lastIssues: string[] = [];
-  const rejected: Array<{ url: string; issues: string[] }> = [];
+  let attempts = 0;
   for (let attempt = 1; attempt <= MAX_IMAGE_ATTEMPTS; attempt++) {
-    // On a retry, hard-constrain the prompt to ONLY the intended words.
+    attempts = attempt;
+    // On a retry, hard-constrain the prompt and remove the prior QC defect.
     const prompt =
       attempt === 1
         ? basePrompt
-        : `${basePrompt}\n\nCRITICAL FIX: the previous render had garbled/illegible text (${lastIssues.join("; ") || "unreadable text"}). ` +
-          `Render ONLY these exact words — large, sharp, and perfectly legible — with NO other text: no body paragraphs, no second call-to-action, no license-plate text. ` +
-          `Allowed text: ${expected.length ? expected.map((t) => `"${t}"`).join(", ") : "the kicker, the headline, one CTA button, the wordmark, and the URL only"}.`;
+        : `${basePrompt}\n\nCRITICAL FIX: the previous render failed publication QC (${lastIssues.join("; ") || "visual inspection failure"}). ` +
+          `Remove every reported privacy, safety, or misleading element. Render ONLY these exact words — large, sharp, and perfectly legible — with NO other text: no body paragraphs, no second call-to-action, no license-plate text. ` +
+          `Allowed text: ${expected.length ? expected.map((t: string) => `"${t}"`).join(", ") : "the kicker, the headline, one CTA button, the wordmark, and the URL only"}.`;
     try {
       console.log(`[image] generating via fal (${ct})… attempt ${attempt}/${MAX_IMAGE_ATTEMPTS}`);
       const gen = await generateImage({ contentType: ct, prompt, width, height }, config.imagegenApiKey);
@@ -222,57 +355,70 @@ async function resolveImage(image: any, runId?: string): Promise<any> {
         console.warn(`[image] generation failed: ${gen.error}`);
         break;
       }
-      const hosted = await transcodeAndHost(gen.url);
-      image.url = hosted?.url ?? gen.url;
-      image.model = gen.model;
-      console.log(`[image] ✓ ${gen.model} → ${image.url}${hosted ? " (transcoded JPEG)" : ""}`);
-
-      // Can only inspect what we can host as JPEG bytes. Without PUBLIC_BASE_URL
-      // (offline/dev), skip QC rather than block.
-      if (!hosted?.jpeg) {
-        image.qcFailed = false;
-        return image;
-      }
-
-      const qc = await inspectImageText(hosted.jpeg.toString("base64"), expected);
-      image.qc = { ok: qc.ok, issues: qc.issues, readText: qc.readText, attempts: attempt, errored: qc.errored };
+      const jpeg = await fetchGeneratedJpeg(gen.url, { width, height });
+      const qc = await inspectImageText(jpeg.toString("base64"), expected);
       if (qc.ok) {
-        image.qcFailed = false;
-        if (rejected.length) image.rejected = rejected;
-        emit(runId, "image:qc", `image legibility QC passed (attempt ${attempt})`, { agent: "image" });
-        return image;
+        const hosted = await hostInspectedJpeg(jpeg);
+        emit(runId, "image:qc", `image publication QC passed (attempt ${attempt})`, { agent: "image" });
+        console.log(`[image] ✓ ${gen.model} → ${hosted.url} (inspected + transcoded JPEG)`);
+        return {
+          ...safe,
+          ...hosted,
+          model: gen.model,
+          aiGenerated: true,
+          qcFailed: false,
+          qc: { ok: true, issues: [], readText: qc.readText, attempts: attempt, errored: false },
+          inspection: { status: "passed", attempts: attempt, readText: qc.readText },
+        };
       }
-      rejected.push({ url: image.url, issues: qc.issues });
       lastIssues = qc.issues;
-      console.warn(`[image] legibility QC FAILED attempt ${attempt}: ${qc.issues.join("; ")}`);
-      emit(runId, "image:qc", `image legibility QC FAILED (attempt ${attempt}): ${qc.issues.join("; ")}`, {
+      console.warn(`[image] publication QC FAILED attempt ${attempt}: ${qc.issues.join("; ")}`);
+      emit(runId, "image:qc", `image publication QC FAILED (attempt ${attempt}): ${qc.issues.join("; ")}`, {
         agent: "image",
         data: { issues: qc.issues },
       });
     } catch (e) {
-      console.warn(`[image] error: ${(e as Error).message}`);
+      const issue = (e as Error).message;
+      lastIssues = [issue];
+      console.warn(`[image] error: ${issue}`);
       break;
     }
   }
-  // Exhausted attempts without a clean, legible render → flag for the hard gate.
-  image.qcFailed = true;
-  if (rejected.length) image.rejected = rejected;
-  return image;
+  return fail(lastIssues.join("; ") || "image generation or inspection failed", attempts);
+}
+
+function textValue(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed || undefined;
+}
+
+function resolvedImagePolicyFailure(image: any): string | undefined {
+  if (
+    image?.url
+    && mediaUrlMatchesContentSha256(image.url, image.contentSha256)
+    && !image?.qcFailed
+    && image?.inspection?.status === "passed"
+    && image?.aiGenerated === true
+  ) {
+    return undefined;
+  }
+  const reported = Array.isArray(image?.qc?.issues)
+    ? image.qc.issues.map(String).filter(Boolean).join("; ")
+    : "";
+  return reported || "missing inspected publication media";
 }
 
 // --- assembly ---
 
-function findingsFor(critique: any, owner: string): any[] {
-  return (critique?.findings ?? []).filter((f: any) => f?.owning_subagent === owner);
-}
-
 /** Normalize a critic finding's free-form owner to a canonical agent id. */
-function ownerOf(f: any): "copywriter" | "image" | "hashtag-seo-timing" | null {
+function ownerOf(f: any): "copywriter" | "image" | "hashtag-seo-timing" | "platform-formatter" | null {
   const s = String(f?.owning_subagent ?? "").toLowerCase();
   if (s.includes("copy") || s.includes("writer")) return "copywriter";
   if (s.includes("image") || s.includes("paint") || s.includes("graphic")) return "image";
   if (s.includes("hashtag") || s.includes("seo") || s.includes("tag") || s.includes("schedul") || s.includes("timing"))
     return "hashtag-seo-timing";
+  if (s.includes("format") || s.includes("platform")) return "platform-formatter";
   return null;
 }
 
@@ -292,6 +438,28 @@ function assemble(copy: any, image: any, tags: any): unknown {
   }));
 }
 
+function approvedFactUrls(facts: Record<string, unknown>): string[] {
+  const urls: string[] = [];
+  for (const value of Object.values(facts)) {
+    if (typeof value !== "string") continue;
+    try {
+      const url = new URL(value);
+      if (url.protocol === "https:") urls.push(url.toString());
+    } catch {
+      /* Non-URL approved facts are expected. */
+    }
+  }
+  return [...new Set(urls)].sort();
+}
+
+function deterministicOwner(issue: string): "copywriter" | "image" | "hashtag-seo-timing" | "platform-formatter" {
+  const normalized = issue.toLowerCase();
+  if (normalized.includes("hashtag")) return "hashtag-seo-timing";
+  if (normalized.includes("image") || normalized.includes("media") || normalized.includes("alt text")) return "image";
+  if (normalized.includes("cover active platforms") || normalized.includes("no provider payload")) return "copywriter";
+  return "platform-formatter";
+}
+
 // --- the loop ---
 
 /**
@@ -299,16 +467,58 @@ function assemble(copy: any, image: any, tags: any): unknown {
  * escalation. Never publishes.
  */
 export async function runBrief(brief: Brief, opts: RunOptions = {}): Promise<RunOutcome> {
+  if (
+    config.nodeEnv === "production"
+    && (opts.runner !== undefined || opts.imageResolver !== undefined || opts.publicationTargets !== undefined)
+  ) {
+    throw new Error("BLOCKED: offline orchestration seams are disabled in production");
+  }
   const cost = new CostTracker();
   const maxCycles = opts.maxCritiqueCycles ?? 3;
-  const sessionId = opts.sessionId ?? `brief-${brief.goal.slice(0, 40)}`;
+  const inputGoal = typeof brief?.goal === "string" ? brief.goal : String(brief?.goal ?? "");
+  const sessionId = opts.sessionId ?? `brief-${inputGoal.slice(0, 40)}`;
   const runId = opts.runId ?? sessionId;
   const runner = opts.runner ?? makeSdkRunner(cost, runId);
-  emit(runId, "brief:start", `running brief: ${brief.goal}`, { data: { goal: brief.goal } });
+  emit(runId, "brief:start", `running brief: ${inputGoal}`, { data: { goal: inputGoal } });
 
-  // Merge stored approved facts as defaults (brief can override per-run).
-  const defaults = await loadApprovedFacts();
-  brief = { ...brief, approvedFacts: { ...defaults, ...(brief.approvedFacts || {}) } };
+  // Only the checked-in canonical fact file is trusted. Caller-supplied
+  // approvedFacts is deliberately discarded even for internal callers. Other
+  // scheduler-authored context (theme/make/service/dayIndex/etc.) remains part
+  // of the brief for legacy calendar compatibility.
+  const trustedFacts = await loadApprovedFacts();
+  const { approvedFacts: _discardedApprovedFacts, ...briefContext } = brief as Brief & Record<string, unknown>;
+  brief = deepFreeze(JSON.parse(JSON.stringify({
+    ...briefContext,
+    goal: inputGoal,
+    approvedFacts: trustedFacts,
+  })) as Brief);
+
+  const platforms = config.activePlatforms;
+  let publicationTargets: Record<Platform, PublicationTarget>;
+  try {
+    if (opts.publicationTargets) {
+      publicationTargets = {} as Record<Platform, PublicationTarget>;
+      for (const platform of platforms) {
+        const target = opts.publicationTargets[platform];
+        const validation = validatePublicationTarget(platform, target);
+        if (!validation.ok) throw new Error(validation.issues.join("; "));
+        publicationTargets[platform] = Object.freeze(JSON.parse(JSON.stringify(target)) as PublicationTarget);
+      }
+      publicationTargets = Object.freeze(publicationTargets);
+    } else {
+      publicationTargets = publicationTargetsFromEnv(platforms);
+    }
+  } catch (err) {
+    const outcome: RunOutcome = {
+      status: "escalated",
+      critique: { cycles: 0, finalVerdict: "FAIL", history: [] },
+      escalation: `Publication target binding failed before canonicalization: ${(err as Error).message}`,
+      costUsd: cost.totalUsd,
+    };
+    emit(runId, "brief:escalated", "publication target binding failed — not shipping", { data: { error: (err as Error).message } });
+    await safeRecord(sessionId, outcome);
+    return outcome;
+  }
 
   // 1. Analytics readout (best-effort; never blocks).
   let analytics: any = null;
@@ -319,28 +529,80 @@ export async function runBrief(brief: Brief, opts: RunOptions = {}): Promise<Run
   }
 
   // 2. Fan out independent work in parallel (scoped to active platforms).
-  const platforms = config.activePlatforms;
   let [copy, image, tags] = await Promise.all([
     runner("copywriter", { brief, analytics, platforms }),
     runner("image", { brief, platforms }),
     runner("hashtag-seo-timing", { brief, analytics, platforms }),
   ]);
-  image = await resolveImage(image, runId);
+  const imageResolver = opts.imageResolver ?? resolveImage;
+  image = await imageResolver(image, runId);
   if (image?.url) emit(runId, "image:done", "image generated", { agent: "image", data: { url: image.url, model: image.model } });
 
-  // 3–4. Critique loop (evaluator-optimizer), capped.
+  // An image URL without runtime-produced inspection provenance is never a
+  // publication candidate, including when supplied by an injected resolver.
+  const initialImageFailure = resolvedImagePolicyFailure(image);
+  if (initialImageFailure) {
+    const outcome: RunOutcome = {
+      status: "escalated",
+      critique: { cycles: 0, finalVerdict: "FAIL", history: [] },
+      escalation: `Image failed required generation/QC policy: ${initialImageFailure}`,
+      costUsd: cost.totalUsd,
+    };
+    emit(runId, "brief:escalated", "image failed required generation/QC policy — not shipping", { data: { issues: initialImageFailure } });
+    await safeRecord(sessionId, outcome);
+    return outcome;
+  }
+
+  // 3–4. Formatter → canonical provider payload → deterministic checks →
+  // final critic. This complete sequence runs on every revision cycle.
   const history: any[] = [];
   let verdict: "PASS" | "FAIL" = "FAIL";
   let cycles = 0;
+  let pkg: FinalPackage | undefined;
+  let formatterFeedback: any[] | undefined;
+  let lastValidationIssues: string[] = [];
+  const bookingUrl = typeof trustedFacts.bookingUrl === "string" ? trustedFacts.bookingUrl : undefined;
+  const allowedCtaUrls = approvedFactUrls(trustedFacts);
 
   for (let attempt = 1; attempt <= maxCycles; attempt++) {
     cycles = attempt;
-    const candidate = assemble(copy, image, tags);
-    // The critic needs the brief's approved facts to verify claims (else every
-    // claim reads as unsubstantiated). Pass them in.
-    const critique = await runner("brand-compliance-critic", { candidate, brief });
+    const assembled = assemble(copy, image, tags);
+    const formatted = await runner("platform-formatter", {
+      candidate: assembled,
+      platforms,
+      brief,
+      ...(formatterFeedback?.length ? { feedback: formatterFeedback } : {}),
+    });
+    pkg = deepFreeze(buildFinalPackage(copy, formatted, image, tags, {
+      activePlatforms: platforms,
+      publicationTargets,
+      bookingUrl,
+      approvedCtaUrls: allowedCtaUrls,
+    }));
+    const validation = validateFinalPackage(pkg);
+    lastValidationIssues = validation.issues;
+    // The critic evaluates the exact review subject and provider-bound content;
+    // no formatting or content mapping follows a passing verdict.
+    const critic = await runner("brand-compliance-critic", {
+      candidate: pkg,
+      providerPayloads: pkg.providerPayloads,
+      deterministicValidation: validation,
+      brief,
+    });
+    const deterministicFindings = validation.issues.map((issue) => ({
+      section: "deterministic-validation",
+      issue,
+      exact_fix: issue,
+      owning_subagent: deterministicOwner(issue),
+    }));
+    const critique = {
+      ...critic,
+      verdict: critic?.verdict === "PASS" && validation.ok ? "PASS" : "FAIL",
+      findings: [...deterministicFindings, ...(Array.isArray(critic?.findings) ? critic.findings : [])],
+      deterministicValidation: validation,
+    };
     history.push(critique);
-    verdict = critique?.verdict === "PASS" ? "PASS" : "FAIL";
+    verdict = critique.verdict;
     emit(runId, "critic:verdict", `critic ${verdict} (cycle ${attempt})`, { agent: "brand-compliance-critic", data: { verdict, cycle: attempt } });
     if (verdict === "PASS") break;
     if (attempt === maxCycles) break; // out of cycles → escalate below
@@ -356,17 +618,32 @@ export async function runBrief(brief: Brief, opts: RunOptions = {}): Promise<Run
       copy = await runner("copywriter", { brief, analytics, platforms, feedback: grouped.copywriter });
     if (grouped.image) {
       image = await runner("image", { brief, platforms, feedback: grouped.image });
-      image = await resolveImage(image, runId);
+      image = await imageResolver(image, runId);
+      const revisedImageFailure = resolvedImagePolicyFailure(image);
+      if (revisedImageFailure) {
+        const outcome: RunOutcome = {
+          status: "escalated",
+          critique: { cycles, finalVerdict: "FAIL", history },
+          escalation: `Revised image failed required generation/QC policy: ${revisedImageFailure}`,
+          costUsd: cost.totalUsd,
+        };
+        emit(runId, "brief:escalated", "revised image failed required generation/QC policy — not shipping", {
+          data: { issues: revisedImageFailure, cycle: attempt },
+        });
+        await safeRecord(sessionId, outcome);
+        return outcome;
+      }
     }
     if (grouped["hashtag-seo-timing"])
       tags = await runner("hashtag-seo-timing", { brief, analytics, platforms, feedback: grouped["hashtag-seo-timing"] });
+    formatterFeedback = grouped["platform-formatter"];
   }
 
   if (verdict !== "PASS") {
     const outcome: RunOutcome = {
       status: "escalated",
       critique: { cycles, finalVerdict: "FAIL", history },
-      escalation: `Failed critique after ${cycles} cycle(s); not shipping a failing package.`,
+      escalation: `Failed final-package validation/critique after ${cycles} cycle(s); not shipping a failing package.${lastValidationIssues.length ? ` Deterministic issues: ${lastValidationIssues.join("; ")}` : ""}`,
       costUsd: cost.totalUsd,
     };
     emit(runId, "brief:escalated", `escalated after ${cycles} cycle(s)`, { data: { cycles } });
@@ -374,44 +651,14 @@ export async function runBrief(brief: Brief, opts: RunOptions = {}): Promise<Run
     return outcome;
   }
 
-  // Hard legibility gate: a garbled image can NEVER pass QC into a live post.
-  // The text-only critic can't see pixels, so this code-level guard is authoritative.
-  if (image?.qcFailed) {
-    const outcome: RunOutcome = {
-      status: "escalated",
-      critique: { cycles, finalVerdict: "FAIL", history },
-      escalation: `Image failed legibility QC after ${MAX_IMAGE_ATTEMPTS} attempts: ${image?.qc?.issues?.join("; ") || "garbled/illegible text"}`,
-      costUsd: cost.totalUsd,
-    };
-    emit(runId, "brief:escalated", "image failed legibility QC — not shipping", { data: { issues: image?.qc?.issues } });
-    await safeRecord(sessionId, outcome);
-    return outcome;
-  }
-
-  // 5. Format to platform conventions, then build the CANONICAL package in code
-  //    (don't trust one agent to carry everything), then stop at approval.
-  const candidate = assemble(copy, image, tags);
-  const formatted = await runner("platform-formatter", { candidate, platforms });
-  const pkg = buildFinalPackage(copy, formatted, image, tags);
-  // Safety net: only ship posts for active platforms.
-  pkg.platforms = pkg.platforms.filter((p) => config.activePlatforms.includes(p.platform));
-
-  // Give the GBP post a "Book" button → the approved SteerCRM booking URL,
-  // unless the copywriter/formatter already supplied a CTA.
-  const bookingUrl = (brief.approvedFacts as any)?.bookingUrl;
-  if (bookingUrl) {
-    const gbpPost = pkg.platforms.find((p) => p.platform === "gbp");
-    if (gbpPost && !gbpPost.cta?.url) gbpPost.cta = { actionType: "BOOK", url: String(bookingUrl) };
-  }
-
   const outcome: RunOutcome = {
     status: "awaiting_approval",
-    package: pkg,
+    package: pkg!,
     critique: { cycles, finalVerdict: "PASS", history },
     costUsd: cost.totalUsd,
   };
   emit(runId, "brief:awaiting_approval", "package ready — awaiting approval", {
-    data: { postCount: pkg.platforms.length, platforms: pkg.platforms.map((p) => p.platform) },
+    data: { postCount: pkg!.platforms.length, platforms: pkg!.platforms.map((p) => p.platform) },
   });
   await safeRecord(sessionId, outcome);
   return outcome;

@@ -5,9 +5,27 @@
 
 export type Platform = "gbp" | "instagram" | "facebook";
 
+/**
+ * Non-secret, approval-bound provider destination. Credentials authenticate a
+ * request; this object says exactly which account/location and API endpoint
+ * the approved bytes are allowed to reach.
+ */
+export interface PublicationTarget {
+  /** IG user id, Facebook Page id, or GBP account id. */
+  accountId: string;
+  /** GBP only. */
+  locationId?: string;
+  /** Bare, lower-case hostname (never a URL and never a credential). */
+  apiHost: string;
+  /** Exact provider API version used to build the request. */
+  apiVersion: string;
+}
+
 /** A single image attached to a post. Must be a public, JPEG URL for Instagram. */
 export interface PostImage {
   url: string; // publicly reachable at publish time
+  /** SHA-256 of the inspected JPEG bytes addressed by `url`. */
+  contentSha256: string;
   altText?: string;
   aiGenerated?: boolean; // honesty: true when the image was AI-generated (IG is_ai_generated)
 }
@@ -17,6 +35,7 @@ export type GbpActionType = "BOOK" | "ORDER" | "SHOP" | "LEARN_MORE" | "SIGN_UP"
 
 export interface PostPackage {
   platform: Platform;
+  target: PublicationTarget;
   /** Post body / caption / summary. */
   text: string;
   languageCode?: string; // e.g. "en-US" | "es"
@@ -31,8 +50,16 @@ export interface PostPackage {
     link?: string;
     scheduledPublishTime?: number; // unix seconds, 10min–30d out
   };
-  /** Optional caller-supplied idempotency key (else derived). */
-  idempotencyKey?: string;
+}
+
+/**
+ * Identifies one item inside a hash-bound `social-post-packages/v1` approval
+ * subject. This is an identifier, not an authorization secret: the posting
+ * tool resolves and verifies current approval state immediately before IO.
+ */
+export interface PublicationAuthorization {
+  approvalId: string;
+  packageIndex: number;
 }
 
 /** A built HTTP request — pure data, so request construction is unit-testable without network. */
@@ -68,7 +95,16 @@ export interface PlatformCredentials {
   graphVersion?: string; // e.g. "v25.0"
 }
 
+/**
+ * Fresh durable authorization check supplied by the posting-tool boundary.
+ * Providers MUST await this immediately before every provider HTTP attempt,
+ * including reads, retries, and the final step of a multi-request flow.
+ */
+export interface PublicationGuard {
+  beforeMutation(): Promise<void>;
+}
+
 export interface PostingProvider {
   readonly name: string;
-  publish(pkg: PostPackage, creds: PlatformCredentials): Promise<PublishResult>;
+  publish(pkg: PostPackage, creds: PlatformCredentials, guard: PublicationGuard): Promise<PublishResult>;
 }

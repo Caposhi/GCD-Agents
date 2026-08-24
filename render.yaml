@@ -27,11 +27,9 @@ services:
         fromDatabase:
           name: gcd-social-db
           property: connectionString
-      - key: ANTHROPIC_API_KEY
-        sync: false          # set in dashboard
       - key: CONSOLE_TOKEN
-        sync: false          # required to protect /console/*
-      # Native publishing credentials (no aggregator). All set in dashboard.
+        sync: false          # required to protect /triggers, /diag/*, and /console/*
+      # Provider credentials retained on the API only for authenticated diagnostics.
       - key: IG_USER_ID                 # Instagram user id (graph.instagram.com)
         sync: false
       - key: IG_ACCESS_TOKEN            # Instagram user token (Instagram-Login path)
@@ -56,11 +54,9 @@ services:
         sync: false
       - key: GBP_LOCATION_ID
         sync: false
-      - key: APPROVAL_CHANNEL_WEBHOOK   # Slack incoming webhook; no email fallback in current source
-        sync: false
       - key: AUTONOMY_PHASE
         value: A             # A = approval assertion. Worker currently waits for approval in every phase.
-      - key: PUBLIC_BASE_URL            # web service URL, for Slack approval links
+      - key: PUBLIC_BASE_URL            # public root HTTPS origin for approval links + immutable media
         value: https://gcd-social-api.onrender.com
       - key: ACTIVE_PLATFORMS           # IG+FB while GBP API access is pending; add gbp when approved
         value: instagram,facebook

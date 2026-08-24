@@ -11,6 +11,12 @@ import { buildFalRequest } from "./models.js";
 interface HttpError extends Error {
   status?: number;
 }
+const FAL_REDIRECT_POLICY = "error" as const;
+
+/** Fixed-input offline probe for the credential-bearing request policy. */
+export function falRedirectPolicyForSelfTest(): "error" {
+  return FAL_REDIRECT_POLICY;
+}
 
 const retryableStatus = (err: unknown) => {
   const s = (err as HttpError)?.status;
@@ -36,6 +42,8 @@ export class FalImageProvider implements ImageProvider {
             method: "POST",
             headers: { "content-type": "application/json", authorization: `Key ${apiKey}` },
             body: JSON.stringify(built.body),
+            redirect: FAL_REDIRECT_POLICY,
+            signal: AbortSignal.timeout(120_000),
           });
           const text = await res.text();
           if (!res.ok) {
