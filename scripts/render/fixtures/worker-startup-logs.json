@@ -1,0 +1,14 @@
+[
+  {
+    "id": "log-worker-ready",
+    "timestamp": "2026-08-24T13:01:00Z",
+    "message": "[worker] ready {\"service\":\"gcd-social-worker\",\"commit\":\"2222222222222222222222222222222222222222\",\"instance\":\"instance-target\",\"state\":\"postgres\"}",
+    "labels": [{ "name": "instance", "value": "instance-target" }]
+  },
+  {
+    "id": "log-worker-running",
+    "timestamp": "2026-08-24T13:01:04Z",
+    "message": "[worker] running brief: fixture-goal",
+    "labels": [{ "name": "instance", "value": "instance-target" }]
+  }
+]

@@ -1,10 +1,11 @@
 # Integrations
 
-External state was not accessed during the 2026-08-22 Phase 0A work. Repository support does not prove production configuration, migration, API approval, scopes, ownership, or current behavior.
+Read-only Render production discovery was completed on 2026-08-24; no external setting, secret, database row, deployment, scheduler execution, approval, or provider state was changed. Repository support and bounded metadata inspection still do not prove provider scopes, account ownership, backups, or current publishing behavior.
 
 | System | Direction/responsibility | Credentials/identifiers | Failure/cost boundary | Owner |
 |---|---|---|---|---|
-| Render | API, worker, scheduler, PostgreSQL | Team/service/DB access; dashboard env | Deploy, runtime, scheduling, logs, backups | Assign privately |
+| Render | API, worker, scheduler, PostgreSQL; CLI deployment target; MCP diagnosis | GitHub `RENDER_API_KEY`; non-secret workspace/service IDs; interactive OAuth for MCP | Native auto-deploy currently on; after cutover GitHub serializes exact-SHA releases; deploy/runtime/log/backup risk | Assign privately |
+| GitHub Actions | Pull-request/main CI and disabled-until-cutover production controller | `production` environment secret/variables | CI supply chain; deployment authority after successful main CI only | Repository owner |
 | PostgreSQL | Queues, hash-bound approvals/decisions, content-addressed media, events, sessions/tokens | `DATABASE_URL` | API/worker/scheduler fail startup when absent, unreachable, or missing migration-005 approval/media schema/constraints/triggers; offline memory mode cannot publish | Assign privately |
 | Anthropic | Copy, image prompt, SEO, final-package critic, text/privacy/safety/material-integrity vision QC | `ANTHROPIC_API_KEY`, configured model IDs | Cost/data egress; failures retry; missing/malformed/errored QC fails closed | Budget/technical owner |
 | fal.ai | Image generation | `IMAGEGEN_API_KEY`, model slugs | Cost and hosted-media dependency | Creative/technical owner |
@@ -14,6 +15,12 @@ External state was not accessed during the 2026-08-22 Phase 0A work. Repository 
 | Google Business Profile | Local posts and OAuth refresh | Approval-bound account/location/fixed host/version; runtime OAuth credentials | Live post creation; API access approval required; refresh attempted only for an approved GBP payload | Business profile owner |
 | gcd-arcade | Reads console manifest/state/SSE | `CONSOLE_TOKEN` counterpart | Operational telemetry disclosure | Both repository owners |
 | Public website/booking service | Approved facts and CTA URL | Public URLs/capability identifier | Customer-facing link correctness | Business owner |
+
+## Render control planes
+
+GitHub Actions and interactive Codex use different Render integrations. The production workflow uses reviewed Render CLI 2.22.0 non-interactively with JSON output, explicit confirmation, exact commit SHAs, and `--wait`. It never uses deploy hooks. A Codex task may use the official Render MCP for explicitly scoped read operations such as service/deploy/log/metric/PostgreSQL metadata inspection. MCP write tools are not self-authorizing; deployment, configuration/environment mutation, production SQL, and restart operations still require explicit authority.
+
+The exact GitHub configuration, migration stop, serial order, recognized-pattern-redacted failure report, and native-auto-deploy cutover live in [Deployment control](DEPLOYMENT.md). Render CLI exact-commit deploys do not themselves disable native auto-deploy, so the two authorities must be cut over explicitly.
 
 ## Native publishing boundaries
 

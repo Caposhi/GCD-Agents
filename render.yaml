@@ -1,6 +1,8 @@
 # GCD-SOCIAL — Render Blueprint
 # Web service (trigger/webhook receiver) + background worker (long-running orchestration) + Postgres.
 # NOTE: set all real secrets in the Render dashboard or as a secret group, NOT here. This file is committed.
+# Phase 0D intentionally does not change live auto-deploy. Follow docs/DEPLOYMENT.md to disable
+# native auto-deploy on all three services before enabling the GitHub deployment controller.
 
 databases:
   - name: gcd-social-db

@@ -2,17 +2,17 @@
 
 GCD-Agents is the repository for GCD-SOCIAL, a Node.js/TypeScript system that generates, reviews, queues, and conditionally publishes social posts for German Car Depot. The repository root is the only active application tree. The deployed shape declared in `render.yaml` is an HTTP API, a long-running orchestration worker, a daily scheduler, and PostgreSQL.
 
-**Verified repository status (2026-08-22):** Phase 0A hardens the existing deterministic orchestration and publishing flow without adding a new runtime, platform, UI, analytics, experiment, or learning system. Source now builds the exact provider-bound payload—including its non-secret destination and content-addressed media digest—before critique and approval, binds approval to its canonical SHA-256, stores only a hash of the expiring decision token, supports revocation, re-reads/revalidates approval at posting entry, and repeats the live approval, destination, and hosted-media checks immediately before every provider HTTP attempt, including reads and retries. The actual migration runner passed fresh and seeded-upgrade validation in disposable loopback PostgreSQL 16.15 (86 assertions), and the compiled production-mode API passed a localhost-only, outbound-denied HTTP suite (53 assertions). No Render/provider account, production database, shared/production migration, live Render setting, or deployment was accessed or changed during this work; isolated local validation is not evidence that Phase 0A has been rolled out.
+**Verified handoff status (2026-08-24):** Phase 0A and its production discovery are complete. Read-only Render inspection confirmed production at commit `30d06f95f32c46f9952bc63f0bc34a6040d40a09` in workspace `tea-d4fkclpr0fns73abmnh0`, with API `srv-d8u0qtpo3t8c73c5o44g`, worker `srv-d8u0qtpo3t8c73c5o440`, scheduler `crn-d8ulb4rtqb8s73bdjctg`, and PostgreSQL `dpg-d8u0qaho3t8c73c5nj40-a`. The rollout exposed a real ordering failure: native concurrent auto-deploy started the worker before API migration 005 completed, so the worker crashed twice on the missing `approval_decisions` table and recovered only after migration. Phase 0D therefore adds comprehensive GitHub CI and a separate, initially disabled, exact-SHA Render deployment controller that stops on migration changes and otherwise serializes API → health → worker → scheduler. No Phase 0B functionality is included, and this Phase 0D source change does not alter Render settings, deploy, migrate, create GitHub configuration, or contact publishing providers.
 
 ## If you have to take over today
 
-1. Confirm the Render API, worker, scheduler, and PostgreSQL service identities; do not infer production state from `render.yaml` alone.
-2. Check `GET /healthz`, then inspect Render logs and database queue counts. Health is liveness/config state, not a database or provider probe.
+1. Confirm the Render identities above against current read-only service records; do not infer production state from `render.yaml` alone.
+2. Until this remediation is deployed, compare `GET https://gcd-social-api.onrender.com/healthz` with read-only Render deploy metadata because the recorded live Phase 0A response does not include commit identity. After deployment, require JSON identifying `gcd-social-api`, PostgreSQL state, and the expected full Render commit, then inspect Render logs and database queue counts. API startup proves the durable-state prerequisites, but each health request is not a new database or provider probe.
 3. Confirm `AUTONOMY_PHASE=A`, verify `ACTIVE_PLATFORMS`, and suspend the daily scheduler and worker if approval or publishing integrity is uncertain. The code now keeps the approval gate active in every parsed autonomy phase, but Phase A remains the only approved operating mode.
 4. Review pending/running `brief_queue` rows, pending approvals, recent events, failed outcomes, token-refresh alerts, and the most recent platform post IDs externally. A Phase 0A rollout deliberately revokes legacy pending/approved approval rows; drain or reject them and arrange fresh review rather than trying to preserve old links.
 5. Set a strong nonempty `CONSOLE_TOKEN` before starting the API. It is the transitional shared secret for `/triggers`, `/diag/*`, and `/console/*`; send it as `Authorization: Bearer ...` or `x-console-token`, never in a query string.
 6. Never approve a package merely to test the pipeline. Use offline self-tests and dedicated platform test accounts.
-7. Read [Operations](docs/OPERATIONS.md), [Security and continuity](docs/SECURITY_AND_CONTINUITY.md), and [Status](docs/STATUS.md) before changing production state.
+7. Read [Deployment control](docs/DEPLOYMENT.md), [Operations](docs/OPERATIONS.md), [Security and continuity](docs/SECURITY_AND_CONTINUITY.md), and [Status](docs/STATUS.md) before changing production state.
 
 ## Active repository map
 
@@ -29,6 +29,9 @@ GCD-Agents is the repository for GCD-SOCIAL, a Node.js/TypeScript system that ge
 | `prompts/MASTER_PROMPT.md` | Dormant/experimental | Loaded by an unused manager-turn harness, not by the production worker loop |
 | `config/approved-facts.json` | Active business facts | Authoritative `approvedFacts` replacement for copywriter/formatter/critic calls; contains public identifiers but no enforced provenance/freshness metadata |
 | `assets/brand/` | Active assets | Brand tokens and raster-in-SVG artwork |
+| `.github/workflows/ci.yml` | Active control | Pull-request/main CI, PostgreSQL integration, AgentShield, and workflow validation |
+| `.github/workflows/deploy-production.yml` | Disabled pending cutover | Serialized exact-SHA production controller gated by `RENDER_DEPLOY_AUTOMATION_ENABLED` |
+| `scripts/ci/`, `scripts/render/` | Active validation/control | Repository checks, Render controller, and offline fixture tests |
 | `vendor/` | Pinned reference only | ECC license/provenance and non-executed reference content |
 | `docs/archive/` | Historical only | Superseded plans and cross-repository prompts |
 
@@ -38,6 +41,11 @@ The tracked `.DS_Store` is generated OS metadata and should be removed in a sepa
 
 ```mermaid
 flowchart LR
+  PR["Pull request / main push"] --> CI["GitHub CI"]
+  CI -->|"successful main push + enabled gate"| DC["GitHub Render controller"]
+  DC -->|"exact SHA, sequential"| A
+  DC --> W
+  DC --> S
   S["Render daily cron"] -->|"enqueue brief"| D[("PostgreSQL")]
   H["Authenticated HTTP caller"] -->|"POST /triggers"| A["API service"]
   A --> D
@@ -75,7 +83,7 @@ The scheduler fires at 09:00 Eastern during daylight time and 08:00 during stand
 
 ## HTTP and trust surface
 
-- `GET /healthz`: public liveness/config summary.
+- `GET /healthz`: public application/release identity and configured-state summary. Once this remediation is deployed, a healthy production response includes `status: "ok"`, `service: "gcd-social-api"`, `state: "postgres"`, and the exact full `RENDER_GIT_COMMIT`; the recorded live Phase 0A response predates that commit field. It is not a per-request database or provider probe.
 - `GET /diag/ig` and `/diag/gbp`: require `CONSOLE_TOKEN`, are limited to 20 requests/minute by the API process, and have bounded provider/request time. They still make live provider calls and expose operational identifiers/status without returning token values.
 - `POST /triggers`: requires `CONSOLE_TOKEN`, is limited to 5 requests/minute, requires `application/json`, and accepts only `{ "goal": <nonempty string of at most 2,000 characters> }`. Unknown fields, including caller-supplied facts, are rejected; bodies are limited to 16 KiB with a 10-second read timeout. The server also applies 10-second header/complete-request receive deadlines with one-second expiry-scan granularity, and early body-bearing authentication/content-type rejections close their socket without draining unread bytes.
 - `GET /approvals/:id?token=...` and `POST /approvals/:id/decision`: transitional token-gated human review for UUID-shaped IDs. Both routes consume a process-local 300 requests/minute direct-socket bucket and a 30 requests/minute direct-socket-plus-approval-UUID bucket. The page verifies the bound hash and shows every package field—including destination and media digest—plus authoritative canonical JSON, hash, and both expiries; responses use no-store, no-referrer, framing/content restrictions, and a narrow CSP. Only the token hash is stored, but the token still appears in the Slack/browser URL and expires after 24 hours by default. The separately bounded publication authorization also expires after 24 hours by default and can be revoked, although no HTTP revocation endpoint is provided. Decision forms require URL-encoded bodies under the shared 16-KiB/10-second bounds.
@@ -88,6 +96,7 @@ Bearer and `x-console-token` headers are both supported; if `CONSOLE_TOKEN` is a
 
 - Every publishing path requires a durable approval ID plus package index. A fabricated boolean or guard, empty/malformed/duplicate-platform subject, mismatched payload/destination/media, wrong index/type, non-approved state, expired authorization, revoked approval, or changed stored payload fails closed before provider I/O. The complete subject is revalidated before creation, decision, durable load, and publication. No `AUTONOMY_PHASE` value disables this gate.
 - API, worker, and scheduler entry points require durable PostgreSQL state, probe connectivity, the migration-005 approval/media columns, both approval integrity constraints, and four integrity triggers before starting, and fail when `DATABASE_URL` is absent, unreachable, or incompatible. Explicit in-memory state remains only for offline harness/self-test paths that do not request durable state; even an ephemeral approved subject cannot cross the publication boundary.
+- Once this remediation is deployed in production, the API and worker require Render's full `RENDER_GIT_COMMIT` identity. The API refuses startup without it, and the worker emits one structured ready event only after durable state and required startup initialization have completed; missing or malformed identity fails closed before health/readiness can be asserted.
 - The worker starts its 12-hour Instagram token tick only when Instagram is in `ACTIVE_PLATFORMS`. The default Instagram-login path persists/refreshes that token in PostgreSQL; the alternate Facebook-login host uses the environment token and is not refreshed by this module. After approval it calls the current-token helper only when the exact approved array contains Instagram, and attempts Google OAuth refresh only when that array contains GBP; unrelated platform token acquisition is skipped.
 - Production `runBrief` rejects injected agent-runner, image-resolver, and publication-target seams, and production vision QC rejects an injected inspector runner. Those seams remain available only to offline tests/simulated dry-run; the simulated CLI scrubs sensitive environment values, forces `NODE_ENV=test`, and injects canned fixtures before loading configuration-bearing modules.
 - Agent `tools:` frontmatter is descriptive only. Current model calls have no tools and receive only the agent Markdown body plus input JSON. Referenced `skills/` are not automatically injected.
@@ -111,7 +120,12 @@ npm run test:image
 npm run test:orchestrator
 npm run test:gate
 npm run test:api
+npm run test:render-identity
 npm run dryrun
+npm run test:deployment-controller
+npm run check:markdown-links
+npm run check:env-coverage
+npm run scan:sensitive
 ```
 
 The PostgreSQL and bound-server suites are intentionally opt-in. Against a uniquely disposable loopback PostgreSQL server/database only, run `PHASE0A_DISPOSABLE_POSTGRES=1 PHASE0A_POSTGRES_ADMIN_URL='postgresql://<test-user>:<test-password>@127.0.0.1:<port>/postgres' npm run test:postgres`, then run `DATABASE_URL='postgresql://<test-user>:<test-password>@127.0.0.1:<port>/<migrated-disposable-db>' npm run test:http-e2e`. The first command creates and removes its own random databases; the second requires a separate migrated non-default database and starts the compiled API bound to `127.0.0.1` with outbound fetch denied.
@@ -120,7 +134,9 @@ Do not run `dryrun:live`, diagnostics, migrations, the scheduler, the worker, or
 
 ## Deployment, recovery, and rollback
 
-`render.yaml` declares PostgreSQL plus API, worker, and scheduler services. The API applies migrations in `preDeployCommand`; migrations are forward-only. The checked-in API service has no Anthropic or approval-webhook secret because it does not use them; provider credentials remain there only for authenticated diagnostics, while model/image/Slack approval work stays on the worker. This is checked-in least-privilege intent, not proof of live Render settings. Phase 0A adds `005_approval_integrity.sql`. It revokes legacy pending/approved rows that lack the new canonical hash/token hash, enforces a NULL deprecated plaintext-token column, and requires every bound Phase0A subject's canonical/legacy copies to be nonnull and equal without backfilling unbound historical rows. It also adds append-only decisions/guarded approval transitions, backfills every media row's byte digest, and blocks media content/id updates and deletion. The runner executes the file in one transaction; migration 005 uses a 10-second lock-acquisition deadline and a five-minute per-statement deadline so an unexpected blocker fails predeploy instead of hanging. Coordinated shutdown of the legacy worker/scheduler before migration 005 is a hard rollout gate because the legacy publication binary does not honor the new `revoked_at` protection. Back up first, drain/reject outstanding approvals, assess the actual approval/media table volume and locks, keep the legacy processes stopped, and use exactly one migration runner/process to apply migration 005. Only after it succeeds may the compatible API/worker/scheduler start and carried work receive fresh reviews. New processes refuse an unmigrated schema. A timeout is a stop-and-investigate signal, not permission to loop retries. Application rollback cannot safely resume the legacy publisher, resurrect revoked approval links, delete immutable media, or undo platform posts, Slack messages, model/image spend, or database migrations.
+`render.yaml` declares PostgreSQL plus API, worker, and scheduler services. The API applies migrations in `preDeployCommand`; migrations are forward-only. Native Render auto-deploy is still enabled on the three live services and must remain the only authority until the explicit cutover. The GitHub deployment workflow is disabled unless `RENDER_DEPLOY_AUTOMATION_ENABLED` is exactly `true`; after cutover it accepts only the successful same-repository `CI` result for a `main` push and, after acquiring the serialized release slot, requires that result's `TARGET_SHA` still equal current `origin/main`. A superseded result touches no Render service. The controller derives `LIVE_SHA` from the API's current live deploy, performs no deployment when all three services already report the target, compares `LIVE_SHA..TARGET_SHA`, blocks every release that changes `state/migrations/**`, and otherwise deploys API, worker, and scheduler sequentially. It pins health to the exact GCD URL and target commit, transport-bounds health collection to 4,096 bytes plus a one-byte overflow probe under the same 10-second abort, requires the worker's target-bound structured ready event plus a 10-second stabilization observation before the scheduler, and verifies final SHAs. Failure evidence receives recursive JSON redaction, recognized-form fallback redaction—including private percent-encoded detection and reviewed assignment separators—and Markdown-inert rendering; this defense in depth is not proof against arbitrary future secret syntax, so summaries remain non-public operational evidence. The controller never runs a production migration directly. See [Deployment control](docs/DEPLOYMENT.md) for the GitHub contract, cutover order, and rollback limits.
+
+The checked-in API service has no Anthropic or approval-webhook secret because it does not use them; provider credentials remain there only for authenticated diagnostics, while model/image/Slack approval work stays on the worker. Phase 0A migration 005 is already part of the current production commit, but future migration-bearing releases still require a separately authorized, exactly-one-runner rollout. A timeout is a stop-and-investigate signal, not permission to loop retries. Application rollback cannot safely resurrect revoked approval links, delete immutable media, or undo platform posts, Slack messages, model/image spend, or database migrations.
 
 No checked-in backup job, restore drill, queue reaper, media/event retention task, or posting reconciliation job was found. Detailed procedures and honest limitations are in [Operations](docs/OPERATIONS.md).
 
@@ -134,9 +150,11 @@ No checked-in backup job, restore drill, queue reaper, media/event retention tas
 - Wire skill content into model calls or stop claiming it is automatically loaded.
 - Add real scorecard/proposal persistence or remove dormant schema/promises.
 - Verify production provider scopes, IDs, account ownership, the exact approval-bound destinations, Render settings, backups, and actual platform behavior.
+- Restrict the production PostgreSQL external allowlist from the discovered `0.0.0.0/0` in a separate authorized security change.
+- Observe the scheduler's next normal production execution; do not trigger it manually merely to close the discovery gap.
 
 ## Documentation source of truth
 
-Executable source, migrations, tests, and checked-in configuration define behavior. This README is the zero-context handoff. Current runbooks are [Architecture](docs/ARCHITECTURE.md), [Operations](docs/OPERATIONS.md), [Integrations](docs/INTEGRATIONS.md), [Data model](docs/DATA_MODEL.md), [Environment](docs/ENVIRONMENT.md), [Security and continuity](docs/SECURITY_AND_CONTINUITY.md), [Testing](docs/TESTING.md), and [Status](docs/STATUS.md). Historical plans are indexed in [the archive](docs/archive/README.md).
+Executable source, migrations, tests, and checked-in configuration define behavior. This README is the zero-context handoff. Current runbooks are [Architecture](docs/ARCHITECTURE.md), [Deployment control](docs/DEPLOYMENT.md), [Operations](docs/OPERATIONS.md), [Integrations](docs/INTEGRATIONS.md), [Data model](docs/DATA_MODEL.md), [Environment](docs/ENVIRONMENT.md), [Security and continuity](docs/SECURITY_AND_CONTINUITY.md), [Testing](docs/TESTING.md), and [Status](docs/STATUS.md). Historical plans are indexed in [the archive](docs/archive/README.md).
 
 **Documentation is part of every change.** The binding acceptance rule is in [AGENTS.md](AGENTS.md).

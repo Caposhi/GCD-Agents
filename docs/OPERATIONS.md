@@ -2,7 +2,7 @@
 
 ## Health and observability
 
-- `GET /healthz` proves the API process can respond and reports configured state mode. API startup requires and probes PostgreSQL, but each health request does not perform a new database or provider probe.
+- Until this remediation is deployed, compare `GET https://gcd-social-api.onrender.com/healthz` with read-only Render deploy metadata because the recorded live Phase 0A response does not include commit identity. After deployment, the endpoint proves the expected API process/release can respond only when its JSON includes `status: "ok"`, `service: "gcd-social-api"`, `state: "postgres"`, and the expected full Render commit; startup then fails closed when `RENDER_GIT_COMMIT` is missing or malformed. Startup requires and probes PostgreSQL, but each health request does not perform a new database or provider probe.
 - Authenticated `/console/state` summarizes queues, latest brief, token-health estimates, and recent events. Authenticated `/console/stream` polls the events table every 1.5 seconds and emits SSE heartbeats. Use `Authorization: Bearer <CONSOLE_TOKEN>` or `x-console-token`; do not put the secret in a URL.
 - Render logs are the only checked-in log destination. The code has no metrics backend, structured trace correlation beyond event `run_id`, alert destination outside its Slack webhook messages, or dead-letter queue.
 - Diagnostics call live Meta/Google APIs. They now require `CONSOLE_TOKEN`, use a process-local 20/minute limit, and have request/operation time bounds, but still must not be used as casual health checks or without an identified environment and authority.
@@ -36,14 +36,19 @@ Daily: API/worker/scheduler status, pending/running/failed briefs, pending/expir
 
 ## Deployment
 
-1. Identify the Render Blueprint instance, branch, database, and all external accounts.
-2. Back up PostgreSQL and review/test new migration SQL against a disposable local database, including the media-table digest scan/backfill and lock duration.
-3. For Phase 0A, stop the legacy scheduler and worker as a hard rollout gate before migration; that publication binary ignores `revoked_at` and must not coexist with or restart against migration 005. Drain/reject every outstanding approval. `005_approval_integrity.sql` revokes legacy pending/approved rows without the new hash binding, clears and constrains the deprecated plaintext-token column to NULL, and requires nonnull equal legacy/canonical copies for bound Phase0A subjects without backfilling unbound historical artifacts. It makes decision/revocation metadata and subject bytes immutable, backfills media byte digests, blocks media id/MIME/bytes/digest changes, and rejects every media deletion; old approval links must not survive rollout. Its transaction-local 10-second lock timeout and five-minute per-statement timeout turn unexpected contention or table size into a failed predeploy; investigate the blocker/size instead of retrying automatically.
-4. Run build, typecheck, the offline self-tests (including API-security tests), simulated dry run, dependency/security scans, and documentation validation.
-5. Using exactly one migration runner/process, apply migration 005 before starting the compatible API/worker/scheduler; do not allow concurrent predeploy migration runners. The API predeploy normally applies migrations, and all three new entry points deliberately fail their approval/media column, approval-constraint, and trigger probes against an unmigrated or partially migrated database. Do not try to backfill approval hashes/tokens.
-6. Verify API liveness and database queue reads without invoking diagnostics or manual triggers unless authorized. Confirm missing/invalid `CONSOLE_TOKEN` fails protected routes and that Arcade sends a supported header.
-7. Confirm the scheduler and worker only after database, canonical facts, public root HTTPS media/review origin, exact Slack webhook, active-platform credentials, and approval-bound target IDs/host/version checks. The checked-in API service intentionally lacks the worker-only Anthropic/image/approval-webhook secrets but retains provider credentials for authenticated diagnostics; verify live Render service scope rather than assuming the Blueprint was applied. Issue new review links for any carried work.
-8. Observe the next authorized test approval lifecycle and reconcile provider results. This runbook does not assert that deployment or migration has occurred.
+Phase 0A is live at the production commit recorded in the root README. The native concurrent rollout produced a real worker-before-migration crash, so future unattended releases must use the controller in [Deployment control](DEPLOYMENT.md) after its explicit cutover. Until then, keep `RENDER_DEPLOY_AUTOMATION_ENABLED=false` and leave native auto-deploy as the sole authority.
+
+For a no-migration release after cutover:
+
+1. Require the complete `CI` workflow to pass for the exact `main` push. A manual CI run is diagnostic only.
+2. After the serialized slot is acquired, require the CI-tested `TARGET_SHA` to equal freshly fetched current `origin/main`. A stale result reports `SUPERSEDED RELEASE — NO DEPLOYMENT` before any Render command. Then derive the API's actual `LIVE_SHA`, validate repository ancestry, and compare `LIVE_SHA..TARGET_SHA`; if all three services already report the target, stop successfully without another deploy.
+3. If any `state/migrations/**` path changed, stop at `CONTROLLED MIGRATION ROLLOUT REQUIRED`. Do not trigger API, worker, scheduler, or an automatic migration. Plan a separately authorized rollout with a backup, reviewed locks/data effects, stopped incompatible consumers, and exactly one migration runner.
+4. Otherwise deploy the API once at `TARGET_SHA`, wait for Render `live`, and use at most 12 attempts to verify the non-redirecting, credential-free exact GCD `/healthz` URL returns JSON for `gcd-social-api`, PostgreSQL state, and `commit: TARGET_SHA`. Each attempt keeps the existing 10-second abort across fetch and body read, rejects invalid/zero/oversized Content-Length before consumption, independently enforces a 4,096-byte BYOB stream limit with one overflow-probe byte and immediate cancellation, and fails on an empty/non-byte stream, stream error, or malformed UTF-8.
+5. Deploy the worker once, wait for `live`, and poll bounded Render CLI JSON logs for its single structured `TARGET_SHA` ready event. Generic started/polling text and old commits do not qualify. After the event, observe 10 seconds and require the authoritative ready-instance evidence to remain unambiguous and free of process-level fatal/crash/restart signals; missing, malformed, conflicting, or saturated evidence stops the release.
+6. Deploy the scheduler once only after the worker passes, then require all three live deploy records to report `TARGET_SHA`. Do not manually execute the cron as a deployment smoke test.
+7. On failure, use the bounded, Markdown-inert `$GITHUB_STEP_SUMMARY` first, then explicitly authorized Render MCP read operations if more context is needed. Its recursive JSON and recognized-pattern fallback redaction—including private percent-encoded detection and reviewed `=>`/`->` assignments—is defense in depth, not universal secret-syntax coverage; the summary remains sensitive and not public-safe. A failed or ambiguous readiness check never permits scheduler deployment. Do not loop redeploy attempts.
+
+The controller does not implement rollback or migration execution. Application rollback and forward-only database repair/restore remain separate, explicitly authorized procedures. The exact GitHub secret/variables and the no-dual-authority native auto-deploy cutover are in [Deployment control](DEPLOYMENT.md).
 
 ## Backup, restore, and rollback
 
@@ -61,3 +66,5 @@ Application rollback selects a prior release/commit. SQL migrations are forward-
 - Approval review still uses a URL bearer token and a generic `human` actor label; revocation has no operator-facing route.
 - Control-plane authentication shares one secret and uses per-process, direct-socket rate limits rather than distributed identity-aware enforcement.
 - Checked-in facts are authoritative against caller override, but have no enforced source/confidence/freshness/last-review metadata; define that contract before Phase 0B.
+- Production PostgreSQL external access was discovered as `0.0.0.0/0`; remediation is a separate security change.
+- The scheduler artifact was live at discovery, but its first scheduled execution had not yet been observed.
