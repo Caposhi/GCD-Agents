@@ -2,9 +2,23 @@
 
 ## Current status and authority
 
-Phase 0D adds the deployment-control foundation only; it does not begin Phase 0B. Production discovery on 2026-08-24 confirmed workspace `tea-d4fkclpr0fns73abmnh0`, API `srv-d8u0qtpo3t8c73c5o44g`, worker `srv-d8u0qtpo3t8c73c5o440`, scheduler `crn-d8ulb4rtqb8s73bdjctg`, and PostgreSQL `dpg-d8u0qaho3t8c73c5nj40-a`. All three services followed `main` with native auto-deploy on; the API live commit was `30d06f95f32c46f9952bc63f0bc34a6040d40a09`, its health path was `/healthz`, and its pre-deploy command was `npm run migrate`. Discovery was read-only.
+Phase 0D is merged and production-deployed; it does not begin Phase 0B. Read-only verification at 2026-08-24 21:32 UTC confirmed workspace `tea-d4fkclpr0fns73abmnh0`, API `srv-d8u0qtpo3t8c73c5o44g`, worker `srv-d8u0qtpo3t8c73c5o440`, scheduler `crn-d8ulb4rtqb8s73bdjctg`, and PostgreSQL `dpg-d8u0qaho3t8c73c5nj40-a`. API, worker, and scheduler were live at `10098de73667797120da8c7dfa4da83f336ff6ba`; no deploy was in progress. The exact `/healthz` identity and worker readiness marker passed, and no recent error/critical logs were observed.
 
-The Phase 0A rollout proved that concurrent native deployments are unsafe: the worker started before migration 005 completed, crashed because `approval_decisions` did not exist, and recovered only after the API migration finished. After the controlled cutover below, `.github/workflows/deploy-production.yml` is intended to be the single unattended deployment authority. Until cutover, native Render auto-deploy remains authoritative and the GitHub controller must remain disabled.
+### Current cutover status
+
+| Capability | State |
+|---|---|
+| Phase 0D controller source | **Implemented** and merged in PR #34 |
+| Current controller source in production | **Deployed** through the previous native Render mechanism |
+| GitHub `production` environment | **Configured** with secret name, five non-secret variables, and `main` restriction |
+| Render native auto-deploy | **Off** for API, worker, and scheduler (`autoDeploy: no`, `autoDeployTrigger: off`) |
+| GitHub repository enable gate | **Disabled**: `RENDER_DEPLOY_AUTOMATION_ENABLED=false` |
+| GitHub controller as production authority | **Not enabled; not proven in production** |
+| Current unattended deployment authorities | **Zero, intentionally** |
+
+The next separately authorized operation is to reverify this zero-authority/no-in-flight state, set the GitHub gate to exactly `true`, prove the already-current/no-deployment path if possible, and then prove one harmless migration-free release. Never re-enable Render native auto-deploy while GitHub control is enabled.
+
+The Phase 0A rollout proved that concurrent native deployments are unsafe: the worker started before migration 005 completed, failed twice because `approval_decisions` did not exist, and recovered after the API migration finished. Schema-dependent services must not be released concurrently with their migration authority.
 
 An interactive Codex task may use the official Render MCP for read-only service discovery, deploy history/details, bounded logs, metrics, and PostgreSQL metadata. MCP availability does not authorize a deploy, configuration/environment change, production SQL, approval decision, or publishing action. Those writes still require explicit authority under `AGENTS.md`. GitHub Actions uses the pinned Render CLI non-interactively instead of MCP.
 
@@ -38,6 +52,8 @@ git diff --name-only "$LIVE_SHA..$TARGET_SHA" -- 'state/migrations/**'
 
 Any result stops the workflow with `CONTROLLED MIGRATION ROLLOUT REQUIRED`, reports both SHAs and every changed migration path, and triggers no API, worker, scheduler, or migration action. A separately authorized migration workflow is not part of Phase 0D. The API's existing `npm run migrate` pre-deploy remains in place for ordinary releases with no new or changed migration and should find nothing pending. Exactly one migration runner remains the invariant.
 
+For every separately authorized migration rollout: stop the worker and scheduler; take a backup; drain or revoke old/incompatible approvals; assess actual table and media volume, data changes, locks, and deadlines; run exactly one migration runner/process; investigate any timeout or partial result rather than retrying blindly; start only compatible services after confirmed success; and issue fresh approvals after migration. Do not allow another service pre-deploy or operator session to become a second migration authority.
+
 For an ordinary release, the controller makes one exact-SHA, wait-for-completion attempt per service, strictly in this order:
 
 1. API; stop if its Render deploy does not reach `live`.
@@ -56,7 +72,7 @@ A failed release stops at its current stage. Investigation may inspect the GitHu
 
 ## GitHub configuration contract
 
-Create these only during an explicitly authorized cutover. Prefer the `production` GitHub environment, restrict its deployment branch to `main`, and add required reviewers if operational latency permits.
+The following configuration was verified present read-only on 2026-08-24. The secret value was not retrieved. Any future change still requires explicit authorization.
 
 | Scope | Name | Required value |
 |---|---|---|
@@ -66,37 +82,40 @@ Create these only during an explicitly authorized cutover. Prefer the `productio
 | `production` environment variable | `RENDER_WORKER_SERVICE_ID` | `srv-d8u0qtpo3t8c73c5o440` |
 | `production` environment variable | `RENDER_SCHEDULER_SERVICE_ID` | `crn-d8ulb4rtqb8s73bdjctg` |
 | `production` environment variable | `RENDER_API_HEALTH_URL` | `https://gcd-social-api.onrender.com/healthz` |
-| Repository variable | `RENDER_DEPLOY_AUTOMATION_ENABLED` | `false` until every native auto-deploy is verified off; then exactly `true` |
+| Repository variable | `RENDER_DEPLOY_AUTOMATION_ENABLED` | currently `false`; next cutover step sets exactly `true` only after immediate re-verification |
 
 The enable gate must be repository-scoped because the provenance job evaluates it before entering the protected environment; an environment-only gate is unavailable there and will fail closed. `RENDER_API_HEALTH_URL` cannot select another destination: the controller accepts only the exact reviewed value shown above. The API key is not an application runtime variable and must not be copied into Render service environments. Repository/environment variables are non-secret identifiers only.
 
-## Native auto-deploy cutover
+## Deployment-authority cutover
 
-Do not perform this piecemeal while GitHub deployment automation is enabled. The safe order deliberately permits a short period with neither authority active; it never permits both.
+The safe sequence never permits dual authority. Steps 1–7 are complete; steps 8–10 remain:
 
-1. Merge and validate the CI/deployment foundation while `RENDER_DEPLOY_AUTOMATION_ENABLED=false`. The disabled production workflow is expected to refuse any qualifying run.
-2. Create the `production` environment, its secret and five non-secret identifier/health variables, plus the repository-level enable variable above. Keep the gate false. Confirm the key works with read-only CLI operations in the intended workspace.
-3. Install the same reviewed CLI version locally or use each service's Render Dashboard. CLI procedure:
+1. Merge and validate Phase 0D with the GitHub gate false. **Complete.**
+2. Deploy Phase 0D through the previous native Render path. **Complete.**
+3. Create/restrict the GitHub `production` environment. **Complete.**
+4. Configure the secret name and five non-secret variables without exposing the key. **Complete.**
+5. Keep the repository enable gate false. **Complete/current.**
+6. Turn native Render auto-deploy off on all three services. **Complete.**
+7. Verify all three settings off and no deployment/migration in flight. **Complete at the verification time above; recheck immediately before step 8.**
+8. Under explicit authorization, set `RENDER_DEPLOY_AUTOMATION_ENABLED=true`. **Not done.**
+9. Prove the controller against the already-current/no-deploy route if possible. **Not done.**
+10. Prove one harmless migration-free real release, including exact API health, target-bound worker readiness/stabilization, scheduler artifact, and final three-SHA equality. **Not done.**
 
-   ```bash
-   export RENDER_API_KEY='<from approved secret manager>'
-   export RENDER_CLI_CONFIG_PATH='<temporary local path>'
-   render workspace set tea-d4fkclpr0fns73abmnh0 --confirm -o json
-   render services update srv-d8u0qtpo3t8c73c5o44g --auto-deploy=false --confirm -o json
-   render services update srv-d8u0qtpo3t8c73c5o440 --auto-deploy=false --confirm -o json
-   render services update crn-d8ulb4rtqb8s73bdjctg --auto-deploy=false --confirm -o json
-   render services --confirm -o json
-   ```
-
-   Dashboard alternative: open each API, worker, and scheduler service, choose **Settings → Auto-Deploy → Off**, and save.
-4. Verify all three returned service records by ID show `autoDeploy: "no"` and `autoDeployTrigger: "off"`. If any update or verification fails, leave the GitHub gate false and finish/reconcile the Render change first.
-5. Reconfirm no Render deploy is in progress and no migration release is pending. Set `RENDER_DEPLOY_AUTOMATION_ENABLED=true` only after all three native settings are off.
-6. Either re-run the last deployment workflow that was refused solely by the false gate or wait for the next eligible `main` push. Observe exact target-bound API health, worker readiness plus its 10-second stabilization window, scheduler artifact state, and the final three-SHA check.
-
-Render's exact-commit CLI deploy does not disable native auto-deploy, which is why the cutover is a separate explicit control step. `render.yaml` intentionally does not change the live auto-deploy field in Phase 0D; do not synchronize a Blueprint as a substitute for the verified cutover.
+If any prerequisite changes, stop rather than enabling the second authority. Render's exact-commit CLI deploy does not disable native auto-deploy. Do not synchronize the Blueprint or re-enable a native setting as a substitute for the controlled proof.
 
 ## Recorded follow-ups
 
 - Production PostgreSQL currently exposes external access through `0.0.0.0/0`. Restricting it is a separate security change; Phase 0D does not alter database networking.
-- The Phase 0A scheduler artifact deployed successfully, but its first scheduled execution had not completed at discovery time. Do not manually run production cron merely to close this observation gap.
+- A normal scheduler execution succeeded on 2026-08-24 before Phase 0D deployed. The current Phase 0D scheduler artifact is live, but its next normal scheduled execution has not yet been observed. Do not manually run production cron merely to close this gap.
 - Review and deliberately update the pinned Render CLI and actionlint versions/checksums; never float either download.
+
+## Release engineering lessons
+
+- A process marked `live` is not worker readiness. The required order is durable state initialization → mandatory initialization → release identity validation → readiness emission → queue consumption.
+- Worker readiness binds service, full commit, optional instance identity, and PostgreSQL state. API health binds application plus release identity at exactly `https://gcd-social-api.onrender.com/healthz`.
+- The health body is bounded during transport: 4,096 accepted bytes plus one overflow probe byte, with cancellation and fatal UTF-8 handling.
+- Diagnostic redaction recursively understands structured JSON and reviewed realistic fallback/encoded secret forms. Decoded attacker content is detection-only and is never emitted.
+- Runtime-controlled GitHub summary values are rendered Markdown/HTML inert.
+- Independent adversarial review is a release gate, not optional polish:
+
+  `IMPLEMENT → REAL CI → INDEPENDENT ADVERSARIAL REVIEW → SURGICAL REMEDIATION → EXACT-HEAD CI → FOCUSED RE-REVIEW → HUMAN MERGE CHECKPOINT → PRODUCTION VERIFICATION → SEPARATE AUTHORITY CUTOVER`

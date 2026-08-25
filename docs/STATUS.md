@@ -1,50 +1,69 @@
 # Current status
 
-**As of:** 2026-08-24
-**Evidence:** Phase 0A production discovery, read-only Render service/database metadata, current source/migrations/configuration, Phase 0D GitHub workflows/controller fixtures, and offline validation recorded below. No production setting, secret, database row, deployment, scheduler execution, approval, or provider state was changed by Phase 0D.
+**Verified:** 2026-08-24 21:32 UTC
 
-## Verified
+**Evidence:** current source/Git history; read-only GitHub PR, workflow, environment, secret-name, variable, and branch-policy metadata; read-only Render workspace/service/deploy/log/metric/PostgreSQL metadata; and the public bounded API health endpoint. No secret value was retrieved.
 
-- Active root: repository root; `package.json` declares Node 22 as the runtime engine.
-- Declared runtime: Render API, worker, daily scheduler, and PostgreSQL.
-- Five migrations create eight domain tables plus `_migrations`; migration 005 is part of the current production commit.
-- Production discovery confirmed workspace `tea-d4fkclpr0fns73abmnh0`, API `srv-d8u0qtpo3t8c73c5o44g`, worker `srv-d8u0qtpo3t8c73c5o440`, scheduler `crn-d8ulb4rtqb8s73bdjctg`, PostgreSQL `dpg-d8u0qaho3t8c73c5nj40-a`, and API live commit `30d06f95f32c46f9952bc63f0bc34a6040d40a09`.
-- Comprehensive `CI` runs on pull requests and `main`, using Node 22, the canonical offline suites, the existing disposable PostgreSQL harness on both PostgreSQL 16 compatibility and PostgreSQL 18 production parity, dependency/security/repository checks, gating AgentShield with always-uploaded JSON evidence, and actionlint/YAML validation.
-- The separate production workflow is serialized and initially disabled. It admits only the exact successful same-repository `CI` result for a `main` push, rejects stale results after the concurrency wait before any Render command, and once explicitly cut over derives `LIVE_SHA`, handles already-current production without redeploy, blocks migration changes, and performs exact-SHA API → exact-origin/target-identity health → target-bound worker readiness/10-second stabilization → scheduler → final-SHA sequencing. Health body collection uses a 4,096-byte BYOB limit plus one overflow-probe byte under the existing 10-second abort. Its bounded diagnostics use recursive JSON plus recognized-form fallback redaction—including private percent-encoded detection and reviewed assignment separators—and a single Markdown-inert renderer; this remains defense in depth rather than universal secret-syntax coverage.
-- Native publishing implementations exist for Instagram, Facebook, and GBP.
-- Phase 0A source protects trigger/diagnostic/console routes with the existing `CONSOLE_TOKEN`, bounded input/operations, and process-local rate limits; UUID-shaped approval review/decision routes use a 300/minute direct-socket global bucket plus 30/minute per direct-socket+approval UUID.
-- Exact provider content, non-secret destination, and media byte digest are constructed/validated before the final critic, then canonically hash-bound to an expiring/revocable approval. The complete subject must be nonempty, strict-valid item by item, and unique by platform before creation/decision, on durable load, and throughout publication. The posting tool validates at entry and its unforgeable native guard revalidates durable current approval/exact payload, the whole subject, runtime destination, hosted-media digest, and live 5-MiB/JPEG/allowed-profile policy immediately before every provider HTTP attempt, including reads, polls, retries, and multi-step requests; no autonomy phase or boolean bypass remains.
-- Caller-supplied facts/media trust is removed from the publication path. Runtime image acquisition normalizes to four exact shared-feed profiles, requires input/output header parity, emits quality-90 JPEG under 5 MiB, and applies fail-closed QC to initial and revised artifacts.
-- API, worker, and scheduler entry points require durable PostgreSQL connectivity plus migration-005 approval/media columns, both approval integrity constraints, and four integrity triggers before starting; offline in-memory state remains only for harness/self-tests and cannot publish.
-- Worker approval delivery requires an exact HTTPS Slack webhook in every environment; production also validates the public HTTPS review origin. Delivery is bounded/non-redirecting, and failed/uncertain notification must produce confirmed revocation or a composite error requiring reconciliation.
-- Deterministic orchestration, image generation/QC on initial and revised images, platform-gated token refresh/acquisition, content-addressed public passing media, and Arcade console feed remain in source. The still-image platform flow and one-locale GBP behavior are preserved, but new approved packages require target and media-digest fields.
-- Historical phase/build/Arcade prompts were separated from current operations.
+## Current snapshot
 
-## Material risks and incomplete features
+| Item | Verified state |
+|---|---|
+| Repository `main` | `10098de73667797120da8c7dfa4da83f336ff6ba` |
+| API | `srv-d8u0qtpo3t8c73c5o44g`, live at `10098de…`; exact service/PostgreSQL/commit health passed |
+| Worker | `srv-d8u0qtpo3t8c73c5o440`, live at `10098de…`; exact target-bound PostgreSQL readiness observed |
+| Scheduler | `crn-d8ulb4rtqb8s73bdjctg`, live artifact at `10098de…` |
+| PostgreSQL | `dpg-d8u0qaho3t8c73c5nj40-a`, PostgreSQL 18, available; external allowlist `0.0.0.0/0` |
+| Deploy activity | None in progress at verification time; no recent error/critical logs observed |
+| Native Render auto-deploy | Off on all three services (`autoDeploy: no`, `autoDeployTrigger: off`) |
+| GitHub production environment | Present; secret name `RENDER_API_KEY`, five expected non-secret variables, `main` restriction |
+| GitHub automation gate | `RENDER_DEPLOY_AUTOMATION_ENABLED=false` |
+| Deployment authority | **Safe zero-unattended-authority window** |
 
-1. Approval review still transports a bearer token in Slack/browser URL history and records only a generic `human` label; revocation has no HTTP/operator UI.
-2. Control routes share one secret, and their in-process direct-socket rate limits are not distributed, identity-aware, or trusted-proxy-aware.
-3. Default Instagram-login tokens remain plaintext in PostgreSQL `session_state`; alternate Facebook-login token lifecycle and provider/error-data redaction need review.
-4. No durable provider idempotency key/operation ledger or reconciliation.
-5. Worker crashes can strand running briefs; no lease/reaper.
-6. Events, approvals, and packages have no retention policy/task; migration 005 deliberately blocks every media deletion, so retention requires a reviewed forward migration.
-7. Agent skill-loading/tool claims do not match runtime wiring; the master manager prompt is dormant.
-8. Autonomy B/C, analytics access, scorecard writes, and self-improvement proposal writes remain incomplete and were intentionally not expanded in Phase 0A.
-9. Native Render auto-deploy is still enabled on API, worker, and scheduler. GitHub deployment automation must remain false until all three native settings are verified off.
-10. Checked-in facts override caller input but lack enforced source, confidence, freshness, and last-review metadata; define that research-reference contract before Phase 0B.
-11. Production PostgreSQL external access is currently `0.0.0.0/0`; networking remediation is a separate security follow-up.
-12. A generated `.DS_Store` remains tracked despite `.gitignore` and was preserved as an unrelated user change.
-13. The scheduler artifact was live, but its first scheduled execution had not yet been observed during discovery.
-14. External target ownership, provider host/version behavior, owners, scopes, billing, backups, and platform state remain unverified.
+Production API pre-deploy logs for the current release showed migrations 001–005 already applied. No SQL was run during this verification. A normal scheduler run succeeded on 2026-08-24 before Phase 0D deployed; a normal execution of the current scheduler SHA remains unobserved.
 
-## Immediate follow-ups
+## Phase state
 
-Keep the GitHub deployment gate false until its secret/variables and `production` environment are configured, all three native Render auto-deploy settings are turned off and verified, and no migration rollout is pending. Restrict PostgreSQL external networking in a separate authorized change and observe the next normal scheduler run without manually triggering it. Then replace transitional shared-secret/token-URL mechanisms, encrypt persisted provider tokens, implement publish idempotency/reconciliation and stale-brief recovery, reconcile prompt/skill loading claims, design media/data retention and backup drills, define fact provenance/freshness before Phase 0B, and verify external ownership/configuration before expanding autonomy.
+- **Complete and deployed:** Phase 0A Integrity Hardening, PR #33, merge `30d06f95f32c46f9952bc63f0bc34a6040d40a09`.
+- **Complete, merged, and deployed:** Phase 0D CI and Deployment Control Foundation, PR #34, merge `10098de73667797120da8c7dfa4da83f336ff6ba`.
+- **Current:** Phase 0D.1 deployment-authority cutover/proof.
+- **Not begun:** Phase 0B Content Intelligence runtime.
 
-## Validation results
+Phase 0D is **implemented** and its GitHub/Render identifiers are **configured**. It is not **enabled** and has not been **proven in production** as the deployment authority. These states are not interchangeable.
 
-Phase 0D validation passed under Node 22.23.2: `npm ci` installed 105 locked packages; typecheck and build passed; posting (52), image (10), orchestrator (81), gate (56), API (51), and Render identity/worker-startup offline suites passed; and the simulated dry run stayed offline. The deployment-controller suite passed literal-gate, stale-ordering, ancestry/migration-range, already-current, strict service sequencing, Render-CLI-format adjacent/sequential JSON parsing, target-bound readiness, bounded polling and stabilization, old/malformed/ambiguous/replacement/crash log rejection, and fail-closed state handling. Its direct P2 regressions passed exact health identity through small and exact-4,096-byte streams, a canceled one-byte overflow, a lazy 1-MiB source stopped at 4,097 bytes, false-small/absent/oversized/malformed Content-Length, multibyte and fatal malformed UTF-8, body errors, abort, and missing/non-byte streams. Recursive JSON redaction, recognized percent-encoded credentials, `=>`/`->` assignment forms, harmless tokenizer/encoded-markup controls, bounded output, and final-summary Markdown/HTML neutralization also passed. Disposable loopback PostgreSQL 16.15 and 18.6 containers each reused the actual Phase 0A harness: all 86 integration assertions per version passed (fresh 12, upgrade 33, durable 41), including the deliberate lock timeout and exactly-one-runner migration behavior. The dedicated production-mode compiled API then passed all 54 localhost HTTP assertions on each version, including refusal to bind without Render commit identity, with outbound fetch denied. Both containers and their databases were removed afterward.
+## Next exact checkpoint
 
-`npm audit --omit=dev` found zero vulnerabilities; pinned AgentShield 1.4.0 scored A/100 with zero findings across its nine scoped files. Pinned actionlint 1.7.12 passed after its official Linux archive checksum was verified; both workflows and `render.yaml` parsed. All local targets across 42 current Markdown files resolved, all 35 active/test process-variable reads were covered by the 27 runtime declarations or explicit operating-system/Render-platform/disposable-test classifications, and the safe-output credential/PII scan passed across 104 active tracked text files. `git diff --check`, whole-document reread, and complete diff review passed.
+Under separate explicit authorization: immediately reverify current `main`, all three live SHAs, all three native settings off, gate false, GitHub configuration, and no deployment/migration in flight; then set the GitHub gate to exactly `true`, prove the already-current/no-deploy route if possible, and prove one harmless migration-free release. Stop on any discrepancy. Never re-enable Render native auto-deploy while the GitHub gate is true.
 
-Earlier read-only Render MCP inspection verified the supplied resource metadata, native auto-deploy state, health/schedule/command fields, and PostgreSQL external allowlist. This remediation performs no Render query or change, production SQL, live diagnostic, model/image request, Slack message, social-provider request, production migration, approval decision, post, deployment, GitHub configuration change, or secret creation. Its authorized source commit/push and draft-PR CI observation do not alter production. The disposable tests and earlier read-only metadata do not establish backup/restore readiness, provider ownership/scopes, live publishing behavior, or a successful future cutover; those remain explicit gates.
+## Material unresolved risks
+
+1. No durable provider operation ledger/idempotency or provider reconciliation; timeout/crash/retry can leave unknown or duplicate publication outcomes.
+2. No worker lease/reaper; a crash can strand a `running` brief.
+3. Production PostgreSQL external access is open to `0.0.0.0/0`.
+4. Default-path Instagram tokens persist plaintext in `session_state`.
+5. Approval uses a bearer URL and generic `human` label; control routes share one secret and process-local direct-socket rate limits.
+6. No complete retention program, backup policy evidence, or restore drill; migration 005 intentionally blocks media deletion.
+7. External provider ownership, scopes, review status, versions, quotas, billing, backup, and recovery details remain outside repository verification.
+8. A current-SHA normal scheduler run is not yet observed.
+9. Checked-in facts lack the Phase 0B source/provenance/confidence/freshness/conflict contract.
+
+## Not implemented
+
+- durable provider-operation state/reconciliation and exactly-once guarantees;
+- brief leases and stale-work recovery;
+- authenticated reviewer/control identities or operator revocation UI;
+- encrypted provider-token persistence;
+- runtime `AgentRegistry`, skill/reference injection, or research retrieval;
+- the target six-stage Content Intelligence reasoning architecture;
+- durable fact/evidence records, performance ingestion, active scorecard writes, hypothesis tracking, or governed improvement proposal generation;
+- autonomy B/C behavior; every parsed phase still requires the Phase A approval gate; and
+- browser-based video editing.
+
+## CI and production observation
+
+PR #34's exact reviewed head passed Node 22 offline quality gates, PostgreSQL 16 integration, PostgreSQL 18 integration, AgentShield 1.4.0, and workflow/YAML validation. After merge, the production workflow's authorization job failed closed because the gate was false, and the deploy job was skipped; this was the intended disabled-state behavior, not a controller release proof.
+
+The current production release was then observed live on all three services through Render's previous native auto-deploy path. API pre-deploy completed with all migrations already recorded, API health returned the exact Phase 0D SHA, and the worker emitted the exact ready marker. This proves current application deployment/health, not GitHub controller authority. See [Testing](TESTING.md) for deterministic coverage and [Deployment control](DEPLOYMENT.md) for release semantics.
+
+## Local workspace note
+
+The tracked `.DS_Store` has a pre-existing local modification and is intentionally preserved and excluded from this documentation change. `.gitignore` already blocks future copies. Remove the tracked file only in a separate explicitly authorized cleanup.

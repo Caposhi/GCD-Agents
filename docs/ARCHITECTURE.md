@@ -1,6 +1,16 @@
 # Architecture
 
-Verified against the repository and read-only Render service metadata on 2026-08-24. Phase 0A is the current production commit; Phase 0D adds CI/deployment control without Phase 0B functionality or a production mutation.
+Verified against source plus read-only GitHub and Render state on 2026-08-24. Phase 0A and Phase 0D are both deployed at `10098de73667797120da8c7dfa4da83f336ff6ba`. Phase 0B has not begun.
+
+## Product architecture principle
+
+The destination is the GCD Content Intelligence Platform / Content OS, not merely a scheduler. It should build an organic automotive media engine for qualified reach, followers, repeat viewing, affinity, retention, engagement, GCD authority, and local dominance, with attribution, leads, and revenue optimized later. Humans continue to film; external editing remains the V1 production path.
+
+> Research gives us the prior. GCD empirical performance becomes the posterior.
+
+Agents should reason. Deterministic services should retrieve, validate, mutate, store, enforce, and publish. Evidence collection may be automatic; changes to prompts, skills, production process, agent behavior, or publishing rules remain governed. Automotive truth, safety, privacy, and approval integrity are hard rules. The system must never fabricate diagnosis, failure/repair evidence, customer facts, or shop evidence, and should prefer real GCD evidence over generic decoration.
+
+## Current production architecture
 
 ## Runtime ownership
 
@@ -12,7 +22,7 @@ The repository root builds one TypeScript project into `dist/`. Render declares 
 
 Pull requests and `main` pushes enter `.github/workflows/ci.yml`. A production release can begin only from a successful, push-originated workflow named `CI` on this exact repository's `main`, only after the exact-string repository variable gate is enabled, and only inside the serialized GitHub `production` environment. The triggering run supplies `TARGET_SHA`; no dispatch input or artifact does. After the release concurrency slot has been acquired and `origin/main` refreshed, `scripts/render/deployment-controller.mjs` requires `TARGET_SHA` to equal current main before any Render command. A stale result is reported as superseded with no deployment. The controller then derives the actual API `LIVE_SHA`, verifies both commits in fetched repository history, performs no deployment when all three services already report the target, and checks `LIVE_SHA..TARGET_SHA` for `state/migrations/**` before any deploy. Migration changes stop for a separately controlled rollout. Otherwise it performs API → exact public health → worker → target-bound readiness and stabilization → scheduler → all-service SHA verification, one service at a time. Health must come without redirect from the exact checked-in GCD URL and report the expected service, PostgreSQL state, and `TARGET_SHA`. A present Content-Length is an early rejection hint only; the controller independently counts a nonempty BYOB byte stream into a 4,097-byte buffer, cancels on the one-byte overflow probe, uses fatal UTF-8 decoding, and carries the same 10-second abort through fetch and body read. The worker's single structured ready event is emitted immediately before queue consumption after durable state and required initialization, and the controller then observes bounded logs for 10 seconds before permitting the scheduler.
 
-Native Render auto-deploy is still active until an external cutover and cannot coexist with the enabled GitHub controller. Render CLI is the GitHub machine interface; Render MCP is a read-oriented interactive diagnostic interface unless an operator separately authorizes a write. See [Deployment control](DEPLOYMENT.md).
+Native Render auto-deploy is off on all three services. The GitHub controller is configured but its repository gate is false, so production is intentionally in a zero-unattended-authority window. Render CLI is the GitHub machine interface; Render MCP is a read-oriented interactive diagnostic interface unless an operator separately authorizes a write. See [Deployment control](DEPLOYMENT.md).
 
 ## Orchestration lifecycle
 
@@ -31,6 +41,21 @@ Native Render auto-deploy is still active until an external cutover and cannot c
 The orchestrator loads each `agents/<name>.md`, strips YAML frontmatter, extracts only `model`, and sends the Markdown body plus JSON input to Anthropic. Frontmatter `tools` is not enforced. Agent text says to load skills, but the SDK call registers no tools and does not append `skills/*` content. Skills remain authoritative human specifications only to the extent their rules are repeated in the actual agent body or code.
 
 `prompts/MASTER_PROMPT.md` is loaded only by `runManagerTurn` in `agentLoop.ts`, which has no package script or worker caller. The production worker does not invoke an Opus manager agent. Autonomy phases B/C and self-improvement are therefore partial scaffolding rather than complete runtime features.
+
+## Target Content Intelligence architecture
+
+The earlier research named roughly 22 conceptual specialists. That is not a requirement for 22 production model calls. Phase 0B should converge on about six primary reasoning stages:
+
+1. strategy-concept;
+2. automotive-truth;
+3. hook-story-script;
+4. production-direction;
+5. packaging-adaptation; and
+6. final-critic.
+
+Other specialists should generally become deterministic services, policy/rule modules, reference material, or optional invocations. Science and evidence should be represented deterministically where possible. Phase 0B must add an `AgentRegistry`, real skill/reference injection, research/reference retrieval, deterministic validation around every agent output, and structured evidence capture. None of those target components is implemented today.
+
+Before that expansion, define the fact/evidence contract described in [Roadmap](ROADMAP.md). A content-performance correlation must never become an automotive fact or causal truth merely because it performed well.
 
 ## Trust boundaries
 
