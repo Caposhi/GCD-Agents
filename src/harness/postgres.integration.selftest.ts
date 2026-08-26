@@ -1046,52 +1046,68 @@ async function assertOwnershipAndRecovery(pool: PgPool, databaseUrl: string): Pr
   check("durable", "durable state is re-enabled for the ownership/recovery suite", stateEnabled());
 
   // --- ownership contention across two real dedicated sessions ---
-  const first = await WorkerOwnership.acquire({
-    connect: () => connectOwnershipClient(databaseUrl),
-    sleep: async () => {},
-    log: () => {},
-  });
-  check("durable", "a dedicated session acquires the worker ownership advisory lock", first.isOwner);
+  // Every acquisition below is tracked so a failed check can never leave a
+  // polling session connected: an open connection would block DROP DATABASE
+  // during cleanup and turn an assertion failure into a hung job.
+  const heldForCleanup: { release(): Promise<void> }[] = [];
+  const pollDelay = (): Promise<void> => new Promise<void>((r) => { setTimeout(r, 10); });
+  try {
+    const first = await WorkerOwnership.acquire({
+      connect: () => connectOwnershipClient(databaseUrl),
+      sleep: pollDelay,
+      log: () => {},
+    });
+    heldForCleanup.push(first);
+    check("durable", "a dedicated session acquires the worker ownership advisory lock", first.isOwner);
 
-  let secondAcquired = false;
-  let polls = 0;
-  const second = WorkerOwnership.acquire({
-    connect: () => connectOwnershipClient(databaseUrl),
-    log: () => {},
-    sleep: async () => {
-      polls += 1;
-      // Release only after the waiter has genuinely failed to acquire twice.
-      if (polls === 2) await first.release();
-      await new Promise((r) => setTimeout(r, 20));
-    },
-  }).then((owned) => { secondAcquired = true; return owned; });
+    // Deterministic contention: the waiter cannot possibly succeed before the
+    // holder releases, and the holder releases only on a fixed poll count. No
+    // wall-clock assumption, so slower CI I/O cannot make this flaky.
+    const RELEASE_ON_POLL = 3;
+    let polls = 0;
+    let acquiredOnPoll = -1;
+    const secondOwned = await WorkerOwnership.acquire({
+      connect: () => connectOwnershipClient(databaseUrl),
+      log: () => {},
+      sleep: async () => {
+        polls += 1;
+        if (polls === RELEASE_ON_POLL) await first.release();
+        await pollDelay();
+      },
+    }).then((owned) => { acquiredOnPoll = polls; return owned; });
+    heldForCleanup.push(secondOwned);
+    check(
+      "durable",
+      "a second session repeatedly fails to acquire while the first session holds the lock",
+      polls >= RELEASE_ON_POLL,
+    );
+    check(
+      "durable",
+      "the waiter acquires only after the holder's session ends",
+      acquiredOnPoll >= RELEASE_ON_POLL && secondOwned.isOwner,
+    );
+    await secondOwned.release();
 
-  await new Promise((r) => setTimeout(r, 60));
-  check(
-    "durable",
-    "a second session cannot acquire the lock while the first session holds it",
-    polls >= 1 && (!secondAcquired || polls >= 2),
-  );
-  const secondOwned = await second;
-  check("durable", "the waiter acquires only after the holder's session ends", secondAcquired && polls >= 2);
-  await secondOwned.release();
-
-  // Session death (not a clean unlock) must also release the lock, which is the
-  // property that makes SIGKILL, OOM and host loss recoverable without a TTL.
-  const abrupt = await connectOwnershipClient(databaseUrl);
-  const taken = await abrupt.query(
-    "SELECT pg_try_advisory_lock($1::int, $2::int) AS acquired",
-    [1_889_446_263, 889_784_911],
-  );
-  check("durable", "a raw session can take the ownership lock", taken.rows[0]?.acquired === true);
-  await abrupt.end();
-  const afterDeath = await WorkerOwnership.acquire({
-    connect: () => connectOwnershipClient(databaseUrl),
-    sleep: async () => {},
-    log: () => {},
-  });
-  check("durable", "ending the holding session releases the advisory lock automatically", afterDeath.isOwner);
-  await afterDeath.release();
+    // Session death (not a clean unlock) must also release the lock, which is
+    // the property that makes SIGKILL, OOM and host loss recoverable with no TTL.
+    const abrupt = await connectOwnershipClient(databaseUrl);
+    const taken = await abrupt.query(
+      "SELECT pg_try_advisory_lock($1::int, $2::int) AS acquired",
+      [1_889_446_263, 889_784_911],
+    );
+    check("durable", "a raw session can take the ownership lock", taken.rows[0]?.acquired === true);
+    await abrupt.end();
+    const afterDeath = await WorkerOwnership.acquire({
+      connect: () => connectOwnershipClient(databaseUrl),
+      sleep: pollDelay,
+      log: () => {},
+    });
+    heldForCleanup.push(afterDeath);
+    check("durable", "ending the holding session releases the advisory lock automatically", afterDeath.isOwner);
+    await afterDeath.release();
+  } finally {
+    for (const owned of heldForCleanup) await owned.release().catch(() => {});
+  }
 
   // --- recovery writes satisfy the live schema constraints ---
   const runId = (await pool.query(
