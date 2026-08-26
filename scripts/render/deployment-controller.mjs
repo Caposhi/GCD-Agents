@@ -9,13 +9,25 @@ const execFileAsync = promisify(execFile);
 const SHA_PATTERN = /^[0-9a-f]{40}$/;
 const MAX_COMMAND_BYTES = 4 * 1024 * 1024;
 const MAX_LOG_LINES = 100;
+// Readiness polling reads a much wider slice than failure diagnostics do. The
+// diagnostic bound exists to keep production log text out of the step summary;
+// this one only feeds an in-memory marker search, so a burst of old-worker
+// output during Render's deploy overlap can never push the target marker out of
+// the page we inspect.
+const MAX_READINESS_LOG_LINES = 400;
 const MAX_LOG_CHARS = 500;
 const MAX_DIAGNOSTIC_INPUT_CHARS = 20_000;
 export const MAX_HEALTH_BODY_BYTES = 4_096;
 const EXPECTED_API_HEALTH_ORIGIN = "https://gcd-social-api.onrender.com";
 const EXPECTED_API_HEALTH_PATH = "/healthz";
 const WORKER_READY_PREFIX = "[worker] ready ";
-const WORKER_READY_ATTEMPTS = 12;
+// Render background-worker deploys are zero-downtime: the new instance starts,
+// and only about 60 seconds later does the old instance receive SIGTERM, after
+// which it still gets its shutdown grace. The new worker holds off readiness
+// until it acquires exclusive ownership, which cannot happen until the old
+// worker's PostgreSQL session ends, so legitimate readiness can land well past
+// the ~55s this window used to allow. Bounded and fail-closed, just wider.
+const WORKER_READY_ATTEMPTS = 60;
 const WORKER_READY_INTERVAL_MS = 5_000;
 const WORKER_STABILIZATION_MS = 10_000;
 
@@ -283,12 +295,17 @@ function instanceLabel(entry) {
   return { instanceId: values[0] ?? "", valid: true };
 }
 
-export function normalizeLogRecords(values) {
+/**
+ * `bound` must match the line limit the read actually requested. Keeping one
+ * extra entry is deliberate: it is what lets strictLogWindow see that the page
+ * was saturated and fail closed rather than silently judging a partial view.
+ */
+export function normalizeLogRecords(values, bound = MAX_LOG_LINES) {
   const entries = values.flatMap((value) => {
     const array = arrayPayload(value);
     return array.length ? array : [value];
   });
-  return entries.slice(0, MAX_LOG_LINES + 1).map((entry) => {
+  return entries.slice(0, bound + 1).map((entry) => {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
       return { id: "", timestamp: "", message: "[malformed log record]", instanceId: "", metadataValid: false };
     }
@@ -474,9 +491,17 @@ const INSTANCE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
 const RFC3339_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
 const CRASH_PATTERN = /^\s*(?:==>\s*)?(?:\[worker\]\s+(?:fatal|panic|uncaught(?:exception)?|unhandledrejection|crash(?:ed|ing)?)(?::|\b)|(?:fatal|panic|uncaught(?:\s+(?:exception|error)|exception)?|unhandledrejection)(?::|\b)|(?:(?:process|instance|worker)\s+)?(?:exited|exit)(?:\s+with)?\s+(?:code|status)\s+[1-9]\d*\b|(?:(?:process|instance|worker)\s+)?crashed\b)/i;
 
-function strictLogWindow(records) {
+/**
+ * A saturated window is ambiguous, because the marker we need may lie beyond
+ * the page we were given. The bound must therefore match the limit the caller
+ * actually requested: readiness polling reads a wider page than diagnostics do,
+ * and judging it against the narrower diagnostic bound would reject a perfectly
+ * healthy release whenever the previous instance happened to be chatty during
+ * Render's deploy overlap.
+ */
+function strictLogWindow(records, bound = MAX_LOG_LINES) {
   if (!records.length) throw new DeploymentStop("worker logs are missing", "WORKER_LOGS_AMBIGUOUS");
-  if (records.length >= MAX_LOG_LINES) {
+  if (records.length >= bound) {
     throw new DeploymentStop("worker log window reached its safety bound", "WORKER_LOGS_AMBIGUOUS");
   }
   const byId = new Map();
@@ -533,9 +558,9 @@ function parseWorkerReadyRecord(record) {
   };
 }
 
-export function selectWorkerReadiness(records, targetSha) {
+export function selectWorkerReadiness(records, targetSha, bound = MAX_READINESS_LOG_LINES) {
   if (!records.length) return null;
-  const window = strictLogWindow(records);
+  const window = strictLogWindow(records, bound);
   const markers = window.map(parseWorkerReadyRecord).filter(Boolean);
   const targetMarkers = markers.filter((marker) => marker.commit === targetSha);
   if (!targetMarkers.length) return null;
@@ -545,8 +570,8 @@ export function selectWorkerReadiness(records, targetSha) {
   return targetMarkers[0];
 }
 
-export function assertWorkerStabilized(records, ready, targetSha) {
-  const window = strictLogWindow(records);
+export function assertWorkerStabilized(records, ready, targetSha, bound = MAX_READINESS_LOG_LINES) {
+  const window = strictLogWindow(records, bound);
   const markers = window.map(parseWorkerReadyRecord).filter(Boolean);
   const authoritative = markers.find((marker) => marker.id === ready.id && marker.commit === targetSha);
   if (!authoritative) {
@@ -681,13 +706,13 @@ export async function runDeployment(options = {}) {
     return readRenderJson(["deploys", "list", serviceId, "--confirm", "-o", "json"]);
   }
 
-  async function readRenderLogs(args, attempts = 3) {
+  async function readRenderLogs(args, attempts = 3, bound = MAX_LOG_LINES) {
     let lastFailure = "log read failed";
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
       const result = await render(args);
       if (result.code === 0) {
         try {
-          return normalizeLogRecords(parseJsonValues(result.stdout));
+          return normalizeLogRecords(parseJsonValues(result.stdout), bound);
         } catch (error) {
           lastFailure = error.message;
         }
@@ -699,12 +724,12 @@ export async function runDeployment(options = {}) {
     throw new DeploymentStop(lastFailure, "RENDER_LOG_READ_FAILED");
   }
 
-  async function boundedLogs(serviceId, type, start, attempts = 3) {
+  async function boundedLogs(serviceId, type, start, attempts = 3, limit = MAX_LOG_LINES) {
     try {
       return await readRenderLogs([
-        "logs", "--resources", serviceId, "--start", start, "--limit", String(MAX_LOG_LINES),
+        "logs", "--resources", serviceId, "--start", start, "--limit", String(limit),
         "--type", type, "--direction", "backward", "--confirm", "-o", "json",
-      ], attempts);
+      ], attempts, limit);
     } catch {
       return [];
     }
@@ -882,7 +907,9 @@ export async function runDeployment(options = {}) {
     const workerResult = await deployService(services.worker);
     let workerReady = null;
     for (let attempt = 1; attempt <= WORKER_READY_ATTEMPTS; attempt += 1) {
-      const workerLogs = await boundedLogs(services.worker.id, "app", workerResult.stageStartedAt, 1);
+      const workerLogs = await boundedLogs(
+        services.worker.id, "app", workerResult.stageStartedAt, 1, MAX_READINESS_LOG_LINES,
+      );
       workerReady = selectWorkerReadiness(workerLogs, targetSha);
       if (workerReady) break;
       if (attempt < WORKER_READY_ATTEMPTS) await sleep(WORKER_READY_INTERVAL_MS);
@@ -892,7 +919,9 @@ export async function runDeployment(options = {}) {
       throw new DeploymentStop("worker did not emit exact TARGET_SHA readiness", "WORKER_READINESS_FAILED");
     }
     await sleep(WORKER_STABILIZATION_MS);
-    const stabilizationLogs = await boundedLogs(services.worker.id, "app", workerReady.timestamp, 1);
+    const stabilizationLogs = await boundedLogs(
+      services.worker.id, "app", workerReady.timestamp, 1, MAX_READINESS_LOG_LINES,
+    );
     try {
       assertWorkerStabilized(stabilizationLogs, workerReady, targetSha);
     } catch (error) {

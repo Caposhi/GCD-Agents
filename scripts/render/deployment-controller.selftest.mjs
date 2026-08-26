@@ -747,7 +747,26 @@ for (const sample of markdownSamples) {
   const saturated = normalizeLogRecords([[...Array.from({ length: 100 }, (_, index) => (
     logRecord(`log-${index}`, `ordinary log ${index}`, { timestamp: `2026-08-24T13:03:${String(index % 60).padStart(2, "0")}Z` })
   ))]]);
-  assert.throws(() => selectWorkerReadiness(saturated, targetSha),
+  // A window saturated against the bound it was READ with stays ambiguous: the
+  // marker may lie beyond the page. The bound is now a parameter so readiness
+  // polling (wider page) and diagnostics (narrow page) each judge their own.
+  assert.throws(() => selectWorkerReadiness(saturated, targetSha, 100),
+    (error) => error?.code === "WORKER_LOGS_AMBIGUOUS");
+  // The same 100 records are NOT ambiguous for a readiness read that requested
+  // 400 lines — this is what stops a chatty previous instance from failing an
+  // otherwise healthy release during Render's deploy overlap.
+  assert.equal(selectWorkerReadiness(saturated, targetSha), null);
+  // 250 lines of previous-instance chatter plus the target marker: readable at
+  // the readiness bound, ambiguous at the diagnostic one.
+  const chattyOverlap = normalizeLogRecords([[
+    ...Array.from({ length: 250 }, (_, index) => logRecord(`log-overlap-${index}`, `previous instance line ${index}`, {
+      instance: "instance-previous",
+      timestamp: "2026-08-24T13:02:00Z",
+    })),
+    readyLog(),
+  ]], 400);
+  assert.equal(selectWorkerReadiness(chattyOverlap, targetSha)?.commit, targetSha);
+  assert.throws(() => selectWorkerReadiness(chattyOverlap, targetSha, 100),
     (error) => error?.code === "WORKER_LOGS_AMBIGUOUS");
   const saturatedBeforeValidation = normalizeLogRecords([[
     null,
@@ -755,7 +774,15 @@ for (const sample of markdownSamples) {
     ...Array.from({ length: 98 }, (_, index) => logRecord(`log-valid-${index}`, `ordinary log ${index}`)),
   ]]);
   assert.equal(saturatedBeforeValidation.length, 100);
-  assert.throws(() => selectWorkerReadiness(saturatedBeforeValidation, targetSha),
+  assert.throws(() => selectWorkerReadiness(saturatedBeforeValidation, targetSha, 100),
+    (error) => error?.code === "WORKER_LOGS_AMBIGUOUS");
+
+  // The wider readiness bound is still a bound: saturating it fails closed too.
+  const saturatedReadinessWindow = normalizeLogRecords([[
+    readyLog(targetSha, { id: "log-ready-among-400" }),
+    ...Array.from({ length: 400 }, (_, index) => logRecord(`log-wide-${index}`, `ordinary log ${index}`)),
+  ]], 400);
+  assert.throws(() => selectWorkerReadiness(saturatedReadinessWindow, targetSha),
     (error) => error?.code === "WORKER_LOGS_AMBIGUOUS");
 }
 
@@ -837,11 +864,82 @@ const startedOnlyFailure = await expectWorkerGateFailure(
   [[logRecord("log-started-only", "[worker] gcd-social-worker started")]],
   "WORKER_READINESS_FAILED",
 );
-assert.equal(maximumWorkerAppReadsForOneWindow(startedOnlyFailure.calls), 12);
-assert.equal(startedOnlyFailure.sleeps.filter((duration) => duration === 5_000).length, 11);
+// The readiness window is bounded at 60 five-second attempts (~5 minutes).
+// It is wider than the old ~55s because a new worker withholds readiness until
+// it acquires exclusive ownership, which cannot happen until Render SIGTERMs
+// the previous instance ~60s after the new one starts and that instance then
+// finishes its shutdown grace. Wider, still bounded, still fail-closed.
+const READINESS_ATTEMPTS = 60;
+assert.equal(maximumWorkerAppReadsForOneWindow(startedOnlyFailure.calls), READINESS_ATTEMPTS);
+assert.equal(
+  startedOnlyFailure.sleeps.filter((duration) => duration === 5_000).length,
+  READINESS_ATTEMPTS - 1,
+);
 const missingReadyFailure = await expectWorkerGateFailure([[]], "WORKER_READINESS_FAILED");
-assert.equal(maximumWorkerAppReadsForOneWindow(missingReadyFailure.calls), 12);
-assert.equal(missingReadyFailure.sleeps.filter((duration) => duration === 5_000).length, 11);
+assert.equal(maximumWorkerAppReadsForOneWindow(missingReadyFailure.calls), READINESS_ATTEMPTS);
+assert.equal(
+  missingReadyFailure.sleeps.filter((duration) => duration === 5_000).length,
+  READINESS_ATTEMPTS - 1,
+);
+
+// Readiness that only appears after the old worker releases ownership — about
+// 90 seconds in, i.e. past the previous 55-second bound — must still succeed.
+{
+  const lateBatches = [];
+  for (let attempt = 0; attempt < 18; attempt += 1) {
+    lateBatches.push([logRecord(`log-old-chatter-${attempt}`, "[worker] gcd-social-worker started", {
+      instance: "instance-previous",
+    })]);
+  }
+  lateBatches.push([readyLog()]);
+  const { calls, render } = createRenderFixture({ workerLogBatches: lateBatches });
+  const { git } = createGitFixture();
+  const sleeps = [];
+  const report = await runDeployment({
+    env: baseEnv(), render, git,
+    fetchFn: async () => healthResponse(),
+    sleep: async (duration) => { sleeps.push(duration); },
+    writeSummary: async () => {},
+  });
+  assert.equal(report.result, "success");
+  // 18 polls before readiness ≈ 90s of waiting, comfortably past the old bound.
+  assert.ok(sleeps.filter((duration) => duration === 5_000).length >= 18);
+  assert.deepEqual(createCalls(calls).map((args) => args[2]), [ids.api, ids.worker, ids.scheduler]);
+}
+
+// A previous instance's readiness marker is emitted at LIVE_SHA and must never
+// satisfy the gate, no matter how long the window is.
+await expectWorkerGateFailure([[readyLog(oldSha, { id: "log-live-ready", instance: "instance-previous" })]],
+  "WORKER_READINESS_FAILED");
+
+// High old-worker log volume must not hide the target readiness marker: the
+// readiness read uses a wider line bound than failure diagnostics do.
+{
+  const chatter = [];
+  for (let line = 0; line < 250; line += 1) {
+    chatter.push(logRecord(`log-chatter-${line}`, `[worker] running brief ${line}`, {
+      instance: "instance-previous",
+      timestamp: "2026-08-24T13:02:00Z",
+    }));
+  }
+  const saturated = [...chatter, readyLog()];
+  const { calls, render } = createRenderFixture({ workerLogBatches: [saturated, saturated] });
+  const { git } = createGitFixture();
+  const report = await runDeployment({
+    env: baseEnv(), render, git,
+    fetchFn: async () => healthResponse(),
+    sleep: async () => {},
+    writeSummary: async () => {},
+  });
+  assert.equal(report.result, "success");
+  const readinessRead = createCalls(calls).length >= 0
+    && calls.find((args) => args[0] === "logs" && args.includes(ids.worker));
+  assert.ok(readinessRead, "the readiness poll must read worker application logs");
+  assert.ok(
+    readinessRead.includes("400"),
+    "readiness polling must request the wider readiness line bound, not the 100-line diagnostic bound",
+  );
+}
 await expectWorkerGateFailure(
   [[readyLog(oldSha, { id: "log-old-only", instance: "instance-old" })]],
   "WORKER_READINESS_FAILED",

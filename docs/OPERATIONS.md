@@ -36,7 +36,7 @@ Daily: API/worker/scheduler status, pending/running/failed briefs, pending/expir
 
 ## Deployment
 
-Phase 0A and Phase 0D are live at the production commit recorded in [Status](STATUS.md). Native Render auto-deploy is off for API, worker, and scheduler; GitHub automation is configured but the repository gate remains false. This is an intentional zero-unattended-authority window. The next authorized operation is controller enablement and controlled proof—not restoration of native auto-deploy. The Phase 0A worker-before-migration incident is why no migration-bearing release may use the ordinary controller path.
+Phase 0A and Phase 0D are live at the production commit recorded in [Status](STATUS.md). Native Render auto-deploy is off for API, worker, and scheduler; GitHub automation is configured but the repository gate remains false. This is an intentional zero-unattended-authority window. The worker-ownership and recovery change is implemented in PR but **not deployed**, so production still runs a worker with none of the protections above; until it is live, any manual worker restart needs a quiescent queue. The next authorized operation is controller enablement and controlled proof—not restoration of native auto-deploy. The Phase 0A worker-before-migration incident is why no migration-bearing release may use the ordinary controller path.
 
 For a no-migration release after cutover:
 
@@ -56,9 +56,36 @@ No repository-owned backup automation or restore drill was found. Verify Render 
 
 Application rollback selects a prior release/commit. SQL migrations are forward-only; use a forward repair or verified restore. Migration 005 cannot be safely paired with code that expects mutable/deletable media or the old approval schema. After restoring, keep worker/scheduler stopped until briefs, approvals, media digests/URLs, token state, events, destinations, and already-created platform posts are reconciled.
 
+## Brief lifecycle
+
+`brief_queue.status` is `pending → running → done|failed`. `running` is a single opaque state that spans orchestration, a human approval wait of up to 24 hours, and the provider publish loop, and `claimNextBrief` only ever selects `pending`. Nothing reclaims a `running` row, so before the ownership change an interrupted worker stranded its brief permanently and silently — see the August 10 incident in [Status](STATUS.md).
+
+Implemented in PR, **not yet live in production**:
+
+1. **Exclusive ownership.** The worker holds a session-level advisory lock on a dedicated PostgreSQL connection for its whole lifetime. Render zero-downtime deploys keep the old worker alive for roughly a minute after the new one starts, so a new instance waits — reconciling nothing, emitting no readiness, consuming nothing — until the previous session ends and the lock is free.
+2. **Ownership as a side-effect fence.** Losing the lock or entering shutdown blocks approval creation, credential acquisition, and every provider attempt, including between platforms. A worker that no longer owns the queue may only run its shutdown path.
+3. **Recovery, refuse-don't-resume.** Once ownership is held, every remaining `running` brief provably has no live owner and is classified from its durable phase markers, then terminalized. Nothing is resumed, retried, or returned to `pending`, and recovery issues no provider request.
+4. **Coordinated shutdown.** SIGTERM stops claiming and signals the active brief, which unwinds through its own path; the handler awaits it for a bounded window, then closes ordinary state and releases ownership last. If the window expires nothing is guessed at — session death releases the lock and the next exclusive owner reconciles.
+
+### Reconciliation runbook
+
+`brief:reconciled_stranded` records the classification. Act on it as follows:
+
+| Classification | Provider state | Operator action |
+|---|---|---|
+| `interrupted_before_approval` | No mutation possible | None; the brief may be re-enqueued as new work |
+| `interrupted_awaiting_approval` | No mutation possible | None; the approval was revoked, so issue a fresh brief if the content is still wanted |
+| `uncertain_provider_outcome` | **Unknown** | Check the named platform for a post matching the run before issuing any new approval. Never re-run the brief first |
+| `partial_known_publication` | Partly published | `knownProviderPostIds` lists what did publish; decide manually whether to publish the remaining platforms as new work |
+| `publication_complete_unrecorded` | Fully published | None; results were reconstructed from the markers |
+
+`requiresProviderReconciliation: true` in the outcome always means a human must look at the platform. Automatic retry is refused by design.
+
 ## Known recovery gaps
 
-- No stale-running-brief reaper or worker lease.
+- Interruption during a provider attempt still yields an outcome the system cannot resolve on its own: recovery guarantees you are told and that nothing retries, but a human must reconcile against the platform. Closing that residual requires the provider operation ledger in [Roadmap](ROADMAP.md).
+- `withRetry` re-issues a timed-out provider call up to five times, so a lost response after a provider success remains an independent double-post vector unrelated to restarts.
+- No stale-running-brief reaper or worker lease is needed for a single-instance worker now that ownership plus startup recovery is in place; a lease would be required again only for multi-instance operation.
 - No durable publish idempotency/reconciliation ledger.
 - No event/approval retention process; migration 005 deliberately prevents media-row deletion, so media retention needs a reviewed forward migration.
 - No automated database/provider end-to-end health probe.

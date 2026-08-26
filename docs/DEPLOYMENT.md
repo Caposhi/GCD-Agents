@@ -58,7 +58,7 @@ For an ordinary release, the controller makes one exact-SHA, wait-for-completion
 
 1. API; stop if its Render deploy does not reach `live`.
 2. API health; within 12 bounded attempts require a non-redirecting JSON response from exactly `https://gcd-social-api.onrender.com/healthz`. The required fields are `status: "ok"`, `service: "gcd-social-api"`, `state: "postgres"`, and `commit: TARGET_SHA`. HTTPS, the exact origin/path, no credentials/query/fragment, JSON content type, valid JSON, and HTTP success are mandatory. The same 10-second abort covers fetch and body read. A present Content-Length must be decimal, nonzero, and at most 4,096 bytes, but it is only an early rejection hint: the controller independently requires a nonempty BYOB byte stream, collects through a fixed 4,097-byte buffer, cancels as soon as the one-byte overflow probe arrives, and decodes the accepted bytes with fatal UTF-8 handling. Missing/non-byte-readable bodies, invalid length metadata, stream errors, aborts, malformed UTF-8, and empty bodies fail closed.
-3. Worker; require Render `live`, then poll bounded recent Render CLI JSON logs up to 12 times at five-second intervals for exactly one target marker: `[worker] ready {"service":"gcd-social-worker","commit":"<TARGET_SHA>","instance":"<Render instance ID>","state":"postgres"}`; `instance` is JSON `null` when Render supplies no instance ID. Generic started/polling messages are not readiness, and old-commit events cannot qualify. After readiness, wait 10 seconds and re-read the bounded window from that event; the authoritative event must remain present, with no ambiguous restart, unknown replacement instance, or ready-instance fatal/panic/uncaught/crash/nonzero-exit evidence. Empty, malformed, conflicting, or saturated critical log windows fail closed.
+3. Worker; require Render `live`, then poll bounded recent Render CLI JSON logs up to 60 times at five-second intervals (about five minutes) for exactly one target marker: `[worker] ready {"service":"gcd-social-worker","commit":"<TARGET_SHA>","instance":"<Render instance ID>","state":"postgres"}`; `instance` is JSON `null` when Render supplies no instance ID. Generic started/polling messages are not readiness, and old-commit events cannot qualify. After readiness, wait 10 seconds and re-read the bounded window from that event; the authoritative event must remain present, with no ambiguous restart, unknown replacement instance, or ready-instance fatal/panic/uncaught/crash/nonzero-exit evidence. Empty, malformed, conflicting, or saturated critical log windows fail closed.
 4. Scheduler; require Render `live` only. Deployment does not run the cron job.
 5. Re-read all three live deploys and require their commit to equal `TARGET_SHA`.
 
@@ -102,6 +102,34 @@ The safe sequence never permits dual authority. Steps 1–7 are complete; steps 
 10. Prove one harmless migration-free real release, including exact API health, target-bound worker readiness/stabilization, scheduler artifact, and final three-SHA equality. **Not done.**
 
 If any prerequisite changes, stop rather than enabling the second authority. Render's exact-commit CLI deploy does not disable native auto-deploy. Do not synchronize the Blueprint or re-enable a native setting as a substitute for the controlled proof.
+
+## Worker ownership and the readiness window
+
+Implemented in PR, **not live in production**.
+
+Render background-worker deploys are zero-downtime: the new instance starts, is considered started, and only about 60 seconds later does the old instance receive SIGTERM, after which it still gets its shutdown grace. Old and new therefore overlap legitimately, and a new worker starting does **not** mean a `running` brief is abandoned.
+
+The worker now holds a PostgreSQL session-level advisory lock for its lifetime and withholds recovery, readiness, and queue consumption until it acquires it. Readiness consequently cannot appear until the previous instance's session ends, which is routinely later than the old ~55-second readiness window allowed. The window is therefore widened to 60 attempts at five-second intervals.
+
+The window was widened, never weakened. Exact `TARGET_SHA` equality, instance correlation, malformed-marker rejection, the ten-second stabilization observation, crash/restart detection, and fail-closed behaviour at the bound are all unchanged. A previous instance's marker is emitted at `LIVE_SHA` and can never satisfy the target check, which is what makes waiting longer safe rather than permissive.
+
+Two related saturation fixes were required. Readiness reads now request a wider line bound (400) than failure diagnostics (100), which stay narrow so production log text does not reach the step summary; and the ambiguity guard is judged against the bound the read actually requested. Without both, a chatty previous instance during the overlap would have failed an otherwise healthy release — the log normalizer capped every window at 101 records regardless of the requested limit, so raising the CLI limit alone would have had no effect.
+
+Readiness now asserts four things at once: durable state initialized, exclusive ownership held, abandoned work reconciled, and required initialization complete. It must never be emitted before ownership and reconciliation succeed.
+
+## First production release of the ownership fix
+
+The live worker at `10098de73667797120da8c7dfa4da83f336ff6ba` does not take the lock, so the lock cannot fence it. The GitHub controller also cannot perform this release while `RENDER_DEPLOY_AUTOMATION_ENABLED=false`, and that gate must stay false until the protected worker is already live. **The first release is therefore a separately authorized, manually controlled Render release.** It is not part of the implementing PR and has not been performed.
+
+1. Merge to `main` with exact-head CI green.
+2. Reconcile the stale August 10 row under its own explicit production authorization, so no unexplained `running` row remains for the reconciler's first firing to act on as a deployment side effect.
+3. Read-only preflight: zero `running` briefs; zero pending approvals or other unsafe in-flight work; no deployment in progress; far from the 13:00 UTC scheduler window; no manual trigger expected.
+4. Keep Render native auto-deploy **off** and the GitHub gate **false**.
+5. One-time manual sequential release to the same target SHA: API → verify exact health → worker → verify ownership acquisition, reconciliation, and readiness → scheduler → verify all three report the target SHA.
+6. That bootstrap enables no automatic authority.
+7. Perform a second controlled worker redeploy once both old and new versions contain ownership code, and observe the new instance waiting, the old instance shutting down, ownership transferring only afterwards, and readiness appearing only after that.
+8. Only once production protection is proven may the GitHub deployment gate be considered for enablement.
+9. Then prove the controller's already-current/no-op path, followed by a harmless migration-free real GitHub-controlled release.
 
 ## Recorded follow-ups
 

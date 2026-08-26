@@ -725,6 +725,126 @@ export async function recordEvent(e: EventInput): Promise<void> {
 }
 
 /**
+ * Safety-critical sibling of recordEvent, deliberately a separate function.
+ *
+ * recordEvent above is best-effort telemetry and its callers swallow failures;
+ * that contract stays true so nobody has to reason about which call sites may
+ * drop writes. These markers are recovery state, not telemetry: a later worker
+ * classifies interrupted work purely from them, so a silently dropped marker
+ * would make an already-published brief look like it never reached a provider.
+ *
+ * Callers MUST await this and MUST NOT swallow the rejection. No external side
+ * effect may begin unless its preceding marker committed.
+ */
+export async function recordDurablePhaseEvent(e: EventInput): Promise<void> {
+  if (!enabled || !pool) {
+    // Offline/self-test state keeps the same append semantics, but production
+    // durability is enforced by the worker requiring durable state at startup.
+    eventMem.push({
+      id: ++eventMemSeq,
+      runId: e.runId,
+      kind: e.kind,
+      agent: e.agent,
+      message: e.message,
+      data: e.data,
+      createdAt: new Date().toISOString(),
+    });
+    if (eventMem.length > 500) eventMem.shift();
+    return;
+  }
+  const res = await pool.query(
+    `INSERT INTO events (run_id, kind, agent, message, data) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+    [e.runId ?? null, e.kind, e.agent ?? null, e.message, e.data === undefined ? null : JSON.stringify(e.data)],
+  );
+  if (res.rowCount !== 1) throw new Error(`durable phase event ${e.kind} was not persisted`);
+}
+
+export interface RunningBriefRow {
+  id: string;
+  brief: any;
+  claimedAt?: string;
+}
+
+/**
+ * Briefs still marked running. Only meaningful to a process that already holds
+ * exclusive worker ownership — otherwise a row here may belong to a live peer
+ * that Render has not shut down yet.
+ */
+export async function listRunningBriefs(): Promise<RunningBriefRow[]> {
+  if (!enabled || !pool) {
+    return [...briefMem.values()]
+      .filter((row) => row.status === "running")
+      .map((row) => ({ id: row.id, brief: row.brief }));
+  }
+  const res = await pool.query(
+    `SELECT id, brief, claimed_at FROM brief_queue WHERE status='running' ORDER BY created_at`,
+  );
+  return res.rows.map((row: any) => ({
+    id: row.id as string,
+    brief: row.brief,
+    claimedAt: row.claimed_at ? new Date(row.claimed_at).toISOString() : undefined,
+  }));
+}
+
+/** Durable phase history for one run, oldest first. */
+export async function eventsForRun(runId: string, limit = 500): Promise<EventRow[]> {
+  if (!enabled || !pool) {
+    return eventMem.filter((e) => e.runId === runId).slice(0, limit);
+  }
+  const res = await pool.query(
+    `SELECT id, run_id AS "runId", kind, agent, message, data, created_at AS "createdAt"
+     FROM events WHERE run_id=$1 ORDER BY id ASC LIMIT $2`,
+    [runId, Math.min(limit, 2_000)],
+  );
+  return res.rows as EventRow[];
+}
+
+/**
+ * Pending, unrevoked approvals.
+ *
+ * Only safe to call at startup, after ownership is acquired and before queue
+ * consumption begins: at that instant this owner has created no approvals, so
+ * every row returned predates it. Combined with the caller's marker check, an
+ * approval this or any live worker is waiting on can never be swept.
+ */
+export async function listRevocablePendingApprovals(): Promise<string[]> {
+  if (!enabled || !pool) {
+    return [...approvalMem.entries()]
+      .filter(([, row]) => row.status === "pending" && !row.revokedAt)
+      .map(([id]) => id);
+  }
+  const res = await pool.query(
+    `SELECT id FROM approval_queue
+     WHERE status='pending' AND revoked_at IS NULL
+     ORDER BY created_at`,
+  );
+  return res.rows.map((row: any) => row.id as string);
+}
+
+/** Run ids referenced by any brief:approval_requested marker. */
+export async function runIdsWithApprovalMarker(approvalIds: string[]): Promise<Set<string>> {
+  const wanted = new Set(approvalIds);
+  const found = new Set<string>();
+  if (wanted.size === 0) return found;
+  if (!enabled || !pool) {
+    for (const e of eventMem) {
+      if (e.kind !== "brief:approval_requested") continue;
+      const approvalId = (e.data as any)?.approvalId;
+      if (typeof approvalId === "string" && wanted.has(approvalId)) found.add(approvalId);
+    }
+    return found;
+  }
+  const res = await pool.query(
+    `SELECT DISTINCT data->>'approvalId' AS approval_id
+     FROM events
+     WHERE kind='brief:approval_requested' AND data->>'approvalId' = ANY($1::text[])`,
+    [[...wanted]],
+  );
+  for (const row of res.rows) if (row.approval_id) found.add(row.approval_id as string);
+  return found;
+}
+
+/**
  * Events for either of two callers, oldest-first in the returned array:
  *  - SSE cursor resume (`sinceId` explicitly passed, e.g. 0 for "from the
  *    start"): the next `limit` events after that id — a forward page.

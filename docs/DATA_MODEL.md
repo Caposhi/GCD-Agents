@@ -8,7 +8,7 @@ SQL files under `state/migrations/` are authoritative. `_migrations` records app
 | `approval_queue` | Legacy package columns plus immutable typed canonical subject, SHA-256, hash-only decision token, decision/publication expiries, revocation metadata, human decision/status | Unpublished exact provider content and actor labels; URL token is not retained in plaintext after Phase 0A |
 | `approval_decisions` | One unique, append-only terminal approve/reject record per approval, including subject type/hash and decision metadata | Security/audit metadata; `decided_by` is a label, not authenticated identity |
 | `media` | Generated JPEG bytes plus their SHA-256 | Public content-addressed creative assets; migration 005 blocks id/MIME/bytes/digest changes and every DELETE, so no retention deletion is currently possible |
-| `events` | Monotonic live telemetry and JSON data | Operational activity; no retention task |
+| `events` | Monotonic live telemetry **and durable worker phase markers** | Mixed criticality: most rows are best-effort telemetry, but `brief:approval_requested`, `brief:publish_attempt_started`, `brief:publish_attempt_settled`, `brief:reconciled_stranded`, and `approval:orphan_revoked` are recovery state (see below); no retention task |
 | `session_state` | Arbitrary JSON session state and default Instagram-login token store | Contains the live Instagram-login token and env seed in plaintext when that path is used; critical secret data |
 | `brand_scorecard` | Intended quality/performance history | Schema exists; active worker does not write it |
 | `self_improvement_proposals` | Intended proposal lineage | Schema exists; active worker does not write it |
@@ -16,7 +16,23 @@ SQL files under `state/migrations/` are authoritative. `_migrations` records app
 
 ## Relationships and invariants
 
-Brief and approval records are related only through worker memory/outcome, not a foreign key. Events correlate by free-text `run_id`. A social-post approval subject is a nonempty exact multi-platform `PostPackage[]`; every item must pass strict validation and each platform may appear only once. Each item binds non-secret `target` account/location/host/version fields, and each image binds a public content-addressed URL plus `contentSha256`; credentials/tokens are excluded. Media is referenced without a database foreign key. `approval_decisions.approval_id` has a restrictive foreign key to `approval_queue`. Session state is keyed text and can mix benign state with credentials.
+Brief and approval records have no foreign key. Until the worker-ownership change (implemented in PR, **not yet live in production**) their only link was a worker log line, so no process or operator could tell from the database which approval belonged to which brief. `brief:approval_requested` now records `{approvalId, packageCount}` against the brief's `run_id`, making that linkage durable. Events correlate by free-text `run_id`.
+
+### Durable phase markers (safety state, not telemetry)
+
+`recordEvent` remains best-effort telemetry whose callers may swallow failures. `recordDurablePhaseEvent` is a separate primitive over the same table whose failure **must** propagate, because interrupted work is classified purely from these rows:
+
+| Marker | Data | Meaning |
+|---|---|---|
+| `brief:approval_requested` | `approvalId`, `packageCount` | An approval exists and is bound to this brief |
+| `brief:publish_attempt_started` | `approvalId`, `packageIndex`, `platform` | Committed **before** the provider request; its presence without a settled sibling means the provider outcome is unknown |
+| `brief:publish_attempt_settled` | `approvalId`, `packageIndex`, `platform`, `ok`, `providerPostId?`, bounded `error?` | The attempt's outcome is known |
+| `brief:reconciled_stranded` | full recovery outcome | An interrupted brief was terminalized |
+| `approval:orphan_revoked` | `approvalId` | A pending approval with no owning brief marker was revoked |
+
+The governing invariant is that **no external side effect may begin unless its preceding marker has durably committed**. A dropped marker would make an already-published brief indistinguishable from one that never reached a provider, so these three call sites must never be converted back to the fire-and-forget pattern used elsewhere. Marker error text is bounded to 300 characters so provider response bodies do not accumulate in durable state.
+
+Worker exclusivity is enforced by a PostgreSQL **session-level advisory lock** on key `(1889446263, 889784911)`, derived from the namespace `gcd-social:worker-ownership:v1`. It is runtime state rather than schema, held on a dedicated connection for the worker's lifetime, and released automatically when that session ends. Do not reuse that key for anything else. A social-post approval subject is a nonempty exact multi-platform `PostPackage[]`; every item must pass strict validation and each platform may appear only once. Each item binds non-secret `target` account/location/host/version fields, and each image binds a public content-addressed URL plus `contentSha256`; credentials/tokens are excluded. Media is referenced without a database foreign key. `approval_decisions.approval_id` has a restrictive foreign key to `approval_queue`. Session state is keyed text and can mix benign state with credentials.
 
 Only a pending, unrevoked approval with a valid unexpired decision token and intact subject hash may transition through the decision function. The PostgreSQL conditional update and unique decision row ensure concurrent/double decisions cannot both win. The browser records `decided_by="human"`, not an authenticated identity. Decision-token and publication-authorization lifetimes are separate and default to 24 hours; revocation blocks pending decisions or a previously approved authorization. There is currently no HTTP revocation route.
 

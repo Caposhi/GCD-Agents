@@ -39,6 +39,24 @@ import {
   stateEnabled,
   verifyApprovalToken,
 } from "./state.js";
+import {
+  completeBrief,
+  setApprovalStatus,
+  recordDurablePhaseEvent,
+  listRunningBriefs,
+  listRevocablePendingApprovals,
+  runIdsWithApprovalMarker,
+  eventsForRun,
+} from "./state.js";
+import { WorkerOwnership, connectOwnershipClient } from "./workerOwnership.js";
+import {
+  reconcileAbandonedWork,
+  sweepOrphanApprovals,
+  RecoveryDeps,
+  PHASE_APPROVAL_REQUESTED,
+  PHASE_PUBLISH_ATTEMPT_STARTED,
+  PHASE_RECONCILED,
+} from "./briefRecovery.js";
 import { publishApprovedPackage } from "../mcp/posting-tool/index.js";
 import type { PostPackage } from "../mcp/posting-tool/types.js";
 
@@ -1012,6 +1030,157 @@ async function assertDurableBehavior(pool: PgPool, databaseUrl: string): Promise
   await closeState();
 }
 
+/**
+ * Exclusive worker ownership and interrupted-brief recovery against real
+ * PostgreSQL. The advisory-lock semantics that make startup recovery safe —
+ * session scope and automatic release on session death — cannot be proven by
+ * an in-memory double, so they are proven here.
+ */
+async function assertOwnershipAndRecovery(pool: PgPool, databaseUrl: string): Promise<void> {
+  // --- ownership contention across two real dedicated sessions ---
+  const first = await WorkerOwnership.acquire({
+    connect: () => connectOwnershipClient(databaseUrl),
+    sleep: async () => {},
+    log: () => {},
+  });
+  check("durable", "a dedicated session acquires the worker ownership advisory lock", first.isOwner);
+
+  let secondAcquired = false;
+  let polls = 0;
+  const second = WorkerOwnership.acquire({
+    connect: () => connectOwnershipClient(databaseUrl),
+    log: () => {},
+    sleep: async () => {
+      polls += 1;
+      // Release only after the waiter has genuinely failed to acquire twice.
+      if (polls === 2) await first.release();
+      await new Promise((r) => setTimeout(r, 20));
+    },
+  }).then((owned) => { secondAcquired = true; return owned; });
+
+  await new Promise((r) => setTimeout(r, 60));
+  check(
+    "durable",
+    "a second session cannot acquire the lock while the first session holds it",
+    polls >= 1 && (!secondAcquired || polls >= 2),
+  );
+  const secondOwned = await second;
+  check("durable", "the waiter acquires only after the holder's session ends", secondAcquired && polls >= 2);
+  await secondOwned.release();
+
+  // Session death (not a clean unlock) must also release the lock, which is the
+  // property that makes SIGKILL, OOM and host loss recoverable without a TTL.
+  const abrupt = await connectOwnershipClient(databaseUrl);
+  const taken = await abrupt.query(
+    "SELECT pg_try_advisory_lock($1::int, $2::int) AS acquired",
+    [1_889_446_263, 889_784_911],
+  );
+  check("durable", "a raw session can take the ownership lock", taken.rows[0]?.acquired === true);
+  await abrupt.end();
+  const afterDeath = await WorkerOwnership.acquire({
+    connect: () => connectOwnershipClient(databaseUrl),
+    sleep: async () => {},
+    log: () => {},
+  });
+  check("durable", "ending the holding session releases the advisory lock automatically", afterDeath.isOwner);
+  await afterDeath.release();
+
+  // --- recovery writes satisfy the live schema constraints ---
+  const runId = (await pool.query(
+    `INSERT INTO brief_queue (brief, status, claimed_at) VALUES ($1, 'running', now()) RETURNING id`,
+    [JSON.stringify({ goal: "recovery integration fixture" })],
+  )).rows[0].id as string;
+  const approvalId = (await pool.query(
+    `INSERT INTO approval_queue (platform, package, summary, package_formatted, status, subject_type,
+                                 subject_payload, payload_sha256, approval_token_hash,
+                                 token_expires_at, authorization_expires_at)
+     VALUES ('multi', $1, 'recovery fixture', $1, 'pending', 'recovery-fixture/v1', $1, $2, $3,
+             now() + interval '1 day', now() + interval '1 day')
+     RETURNING id`,
+    [JSON.stringify([{ platform: "facebook" }]), sha256Text("recovery-fixture"), sha256Text("token")],
+  )).rows[0].id as string;
+
+  await recordDurablePhaseEvent({
+    runId, kind: PHASE_APPROVAL_REQUESTED, message: "approval requested", data: { approvalId, packageCount: 1 },
+  });
+  await recordDurablePhaseEvent({
+    runId,
+    kind: PHASE_PUBLISH_ATTEMPT_STARTED,
+    message: "provider attempt starting",
+    data: { approvalId, packageIndex: 0, platform: "facebook" },
+  });
+  check(
+    "durable",
+    "durable phase markers are readable back for their run",
+    (await eventsForRun(runId)).length === 2,
+  );
+  check(
+    "durable",
+    "an approval marker links its approval id back to a run",
+    (await runIdsWithApprovalMarker([approvalId])).has(approvalId),
+  );
+  check(
+    "durable",
+    "a running brief is visible to the owner's recovery scan",
+    (await listRunningBriefs()).some((row) => row.id === runId),
+  );
+
+  const escalations: string[] = [];
+  const providerCalls: string[] = [];
+  const recoveryDeps: RecoveryDeps = {
+    eventsForRun,
+    recordDurablePhaseEvent,
+    completeBrief,
+    revokeApproval,
+    setApprovalStatus,
+    notifyEscalation: async (_goal, reason) => { escalations.push(reason); },
+    listRunningBriefs,
+    listRevocablePendingApprovals,
+    runIdsWithApprovalMarker,
+    log: () => {},
+  };
+  const results = await reconcileAbandonedWork(recoveryDeps);
+  check("durable", "recovery classifies a started-but-unsettled attempt as uncertain",
+    results.some((r) => r.runId === runId && r.classification === "uncertain_provider_outcome"));
+  check("durable", "recovery makes no provider request", providerCalls.length === 0);
+
+  const recovered = await pool.query(`SELECT status, outcome FROM brief_queue WHERE id=$1`, [runId]);
+  check("durable", "recovery writes a terminal failed status accepted by the 002 status constraint",
+    recovered.rows[0].status === "failed");
+  check("durable", "recovery never returns a brief to pending", recovered.rows[0].status !== "pending");
+  check("durable", "the recovery outcome flags required provider reconciliation",
+    recovered.rows[0].outcome?.requiresProviderReconciliation === true);
+  check("durable", "the recovery outcome preserves the approval linkage",
+    recovered.rows[0].outcome?.approvalId === approvalId);
+  check("durable", "an uncertain outcome is escalated", escalations.some((r) => r.includes("uncertain")));
+
+  const audit = await pool.query(`SELECT count(*)::int AS count FROM events WHERE run_id=$1 AND kind=$2`,
+    [runId, PHASE_RECONCILED]);
+  check("durable", "recovery appends a durable reconciliation audit event", audit.rows[0].count === 1);
+
+  const revokedRow = await pool.query(
+    `SELECT revoked_at, revoked_by FROM approval_queue WHERE id=$1`, [approvalId],
+  );
+  check("durable", "recovery revokes the interrupted brief's approval", revokedRow.rows[0].revoked_at !== null);
+  check("durable", "the revocation records the worker as its actor",
+    String(revokedRow.rows[0].revoked_by).startsWith("worker:"));
+
+  // --- orphan sweep against real rows ---
+  const orphanId = (await pool.query(
+    `INSERT INTO approval_queue (platform, package, summary, package_formatted, status, subject_type,
+                                 subject_payload, payload_sha256, approval_token_hash,
+                                 token_expires_at, authorization_expires_at)
+     VALUES ('multi', $1, 'orphan fixture', $1, 'pending', 'recovery-fixture/v1', $1, $2, $3,
+             now() + interval '1 day', now() + interval '1 day')
+     RETURNING id`,
+    [JSON.stringify([{ platform: "facebook" }]), sha256Text("orphan-fixture"), sha256Text("orphan-token")],
+  )).rows[0].id as string;
+  const swept = await sweepOrphanApprovals(recoveryDeps);
+  check("durable", "an approval with no owning marker is swept", swept.includes(orphanId));
+  const sweptRow = await pool.query(`SELECT revoked_at FROM approval_queue WHERE id=$1`, [orphanId]);
+  check("durable", "the swept orphan approval is durably revoked", sweptRow.rows[0].revoked_at !== null);
+}
+
 async function createDatabase(admin: PgPool, database: string): Promise<void> {
   if (!/^gcd_phase0a_(fresh|upgrade)_[a-z0-9_]+$/.test(database)) {
     throw new Error(`refusing unexpected disposable database name: ${database}`);
@@ -1074,6 +1243,7 @@ async function main(): Promise<void> {
       await assertSchemaObjects(freshPool, "fresh");
       await assertStartupProbe(freshUrl, "fresh");
       await assertDurableBehavior(freshPool, freshUrl);
+      await assertOwnershipAndRecovery(freshPool, freshUrl);
     } finally {
       await closeState();
       await freshPool.end();
