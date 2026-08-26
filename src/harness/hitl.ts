@@ -332,6 +332,12 @@ export function formatEscalationNotification(goal: string, reason: string, runId
 export interface WaitOptions {
   timeoutMs?: number;
   pollMs?: number;
+  /**
+   * Aborted on shutdown or ownership loss. Without it this call can block a
+   * process for up to 24 hours, so SIGTERM could never unwind the active brief
+   * and the brief was stranded on every deploy.
+   */
+  signal?: AbortSignal;
 }
 
 /**
@@ -343,11 +349,15 @@ export interface WaitOptions {
 export async function waitForApproval(
   id: string,
   opts: WaitOptions = {},
-): Promise<"approved" | "rejected" | "expired" | "revoked" | "timeout"> {
+): Promise<"approved" | "rejected" | "expired" | "revoked" | "timeout" | "aborted"> {
   const timeoutMs = opts.timeoutMs ?? 24 * 60 * 60 * 1000; // 24h default
   const pollMs = opts.pollMs ?? 15_000;
   const deadline = Date.now() + timeoutMs;
+  const signal = opts.signal;
   for (;;) {
+    // Checked before the read so an already-aborted wait costs no query, and
+    // again after the sleep so shutdown is observed within one poll interval.
+    if (signal?.aborted) return "aborted";
     const row = await getApproval(id);
     if (row?.revokedAt) return "revoked";
     if (
@@ -359,8 +369,23 @@ export async function waitForApproval(
     if (row?.status === "rejected") return "rejected";
     if (row?.tokenExpiresAt && Date.parse(row.tokenExpiresAt) <= Date.now()) return "expired";
     if (Date.now() >= deadline) return "timeout";
-    await new Promise((r) => setTimeout(r, pollMs));
+    await sleepUntilAborted(pollMs, signal);
   }
+}
+
+/** Sleeps, but wakes immediately when the shutdown/ownership signal fires. */
+function sleepUntilAborted(ms: number, signal?: AbortSignal): Promise<void> {
+  if (!signal) return new Promise((resolve) => setTimeout(resolve, ms));
+  if (signal.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    const timer = setTimeout(finish, ms);
+    function finish(): void {
+      clearTimeout(timer);
+      signal!.removeEventListener("abort", finish);
+      resolve();
+    }
+    signal.addEventListener("abort", finish, { once: true });
+  });
 }
 
 /**

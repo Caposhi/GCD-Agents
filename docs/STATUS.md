@@ -34,10 +34,18 @@ Phase 0D is **implemented** and its GitHub/Render identifiers are **configured**
 
 Under separate explicit authorization: immediately reverify current `main`, all three live SHAs, all three native settings off, gate false, GitHub configuration, and no deployment/migration in flight; then set the GitHub gate to exactly `true`, prove the already-current/no-deploy route if possible, and prove one harmless migration-free release. Stop on any discrepancy. Never re-enable Render native auto-deploy while the GitHub gate is true.
 
+## Verified production incident — worker lifecycle interruption
+
+Brief `c5e53afe-2657-4e11-811d-53ce5e793245` was enqueued 2026-08-10 13:01:22Z, claimed at 13:01:29Z, and reached `brief:awaiting_approval` at 13:07:29Z. No later event exists and it is still `running`. Its approval `08ab5c07-4d36-4b66-810a-9856dae4ca5d` was approved by a human at 2026-08-11 12:39:01Z — inside the 24-hour wait — and later revoked by migration 005 on 2026-08-24 15:50:41Z as a legacy non-hash-bound row.
+
+Root cause: the worker process was gone before the approval landed, so nothing was waiting. Publication is only reachable after `waitForApproval` returns `approved`, so no provider request occurred; the approval never left `approved` for `posted`/`failed`, and no publish event exists. The human approved a post that never published, and nothing alerted.
+
+This is the second incident in the same family as the Phase 0A worker/migration-005 race: **worker lifecycle versus durable state**. The row remains unmodified; its reconciliation is a separately authorized production write, and direct account history for Instagram, Facebook, and GBP on 2026-08-11 should be checked for the Mini Cooper check-engine content first — public search was inconclusive and is not sufficient evidence.
+
 ## Material unresolved risks
 
 1. No durable provider operation ledger/idempotency or provider reconciliation; timeout/crash/retry can leave unknown or duplicate publication outcomes.
-2. No worker lease/reaper; a crash can strand a `running` brief.
+2. Worker interruption stranding is addressed by exclusive ownership plus startup recovery — **implemented in PR, not yet live in production**. Until that release, any worker restart can still strand a `running` brief silently, and the deployment controller cannot detect it.
 3. Production PostgreSQL external access is open to `0.0.0.0/0`.
 4. Default-path Instagram tokens persist plaintext in `session_state`.
 5. Approval uses a bearer URL and generic `human` label; control routes share one secret and process-local direct-socket rate limits.

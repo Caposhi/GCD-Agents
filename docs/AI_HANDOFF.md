@@ -78,7 +78,7 @@ Stop if any prerequisite differs. Never re-enable native Render auto-deploy whil
 
 ## 9. Outstanding risks
 
-Highest priority: no durable provider idempotency/reconciliation; no worker lease/reaper; PostgreSQL external access open to `0.0.0.0/0`; plaintext persisted Instagram token; bearer approval URL and generic reviewer identity; one shared control secret with process-local rate limits; no retention/restore drill; and unverified provider ownership/scopes/version/backup facts. Current skills are not injected, scorecard/proposal tables are unwritten, and no empirical learning runtime exists.
+Highest priority: no durable provider idempotency/reconciliation; worker-interruption recovery is implemented in PR but **not yet live in production**; PostgreSQL external access open to `0.0.0.0/0`; plaintext persisted Instagram token; bearer approval URL and generic reviewer identity; one shared control secret with process-local rate limits; no retention/restore drill; and unverified provider ownership/scopes/version/backup facts. Current skills are not injected, scorecard/proposal tables are unwritten, and no empirical learning runtime exists.
 
 ## 10. Content Intelligence target architecture
 
@@ -88,7 +88,11 @@ Use about six primary reasoning stages—strategy-concept, automotive-truth, hoo
 
 Phase 0A's native concurrent rollout started the worker before the API's migration 005 completed. The worker failed twice because `approval_decisions` did not exist, then recovered after migration. Schema-dependent consumers must not race their migration authority.
 
-“Live process” is not readiness. Readiness means durable state initialized → mandatory initialization completed → runtime identity validated → readiness emitted → queue consumption. Health must prove application and exact release identity at a deterministic destination, with transport-time body bounds. Diagnostics need structured and realistic fallback secret detection, decoded attacker content must never be emitted, and runtime-controlled GitHub summary values must be inert.
+**A durable status without durable phase detail is not recoverable state.** `brief_queue.status='running'` recorded that work had started but nothing about how far it got, so an interrupted brief could not be classified — only guessed at — and was stranded silently. The fix was not a timer but durable phase markers committed before each side effect, plus an ownership predicate that says when acting on them is safe.
+
+**Process start is not exclusivity.** Render zero-downtime worker deploys keep the old instance alive for roughly a minute after the new one starts, so “I just booted” never implies “the running brief is abandoned”. Exclusive ownership must be established, not assumed; a session-level advisory lock provides it and releases automatically on session death, which no lease table can match.
+
+“Live process” is not readiness. Readiness means durable state initialized → exclusive worker ownership acquired → abandoned work reconciled → mandatory initialization completed → runtime identity validated → readiness emitted → queue consumption. Health must prove application and exact release identity at a deterministic destination, with transport-time body bounds. Diagnostics need structured and realistic fallback secret detection, decoded attacker content must never be emitted, and runtime-controlled GitHub summary values must be inert.
 
 Reusable release practice:
 

@@ -39,6 +39,26 @@ import {
   stateEnabled,
   verifyApprovalToken,
 } from "./state.js";
+import {
+  CLAIM_PENDING_BRIEF_SQL,
+  completeBrief,
+  setApprovalStatus,
+  recordDurablePhaseEvent,
+  listRunningBriefs,
+  listRevocablePendingApprovals,
+  approvalIdsWithOwningBriefMarker,
+  eventsForRun,
+  phaseMarkersForRun,
+} from "./state.js";
+import { WorkerOwnership, OwnershipLostError, connectOwnershipClient } from "./workerOwnership.js";
+import {
+  reconcileAbandonedWork,
+  sweepOrphanApprovals,
+  RecoveryDeps,
+  PHASE_APPROVAL_REQUESTED,
+  PHASE_PUBLISH_ATTEMPT_STARTED,
+  PHASE_RECONCILED,
+} from "./briefRecovery.js";
 import { publishApprovedPackage } from "../mcp/posting-tool/index.js";
 import type { PostPackage } from "../mcp/posting-tool/types.js";
 
@@ -1012,6 +1032,245 @@ async function assertDurableBehavior(pool: PgPool, databaseUrl: string): Promise
   await closeState();
 }
 
+/**
+ * Exclusive worker ownership and interrupted-brief recovery against real
+ * PostgreSQL. The advisory-lock semantics that make startup recovery safe —
+ * session scope and automatic release on session death — cannot be proven by
+ * an in-memory double, so they are proven here.
+ */
+async function assertOwnershipAndRecovery(pool: PgPool, databaseUrl: string): Promise<void> {
+  // assertDurableBehavior closes durable state on the way out. Re-open it, and
+  // prove it: without this the recovery helpers below would silently exercise
+  // the in-memory fallback and assert nothing about real PostgreSQL.
+  await closeState();
+  config.databaseUrl = databaseUrl;
+  await initState({ requireDurable: true });
+  check("durable", "durable state is re-enabled for the ownership/recovery suite", stateEnabled());
+
+  // --- ownership contention across two real dedicated sessions ---
+  // Every acquisition below is tracked so a failed check can never leave a
+  // polling session connected: an open connection would block DROP DATABASE
+  // during cleanup and turn an assertion failure into a hung job.
+  const heldForCleanup: { release(): Promise<void> }[] = [];
+  const pollDelay = (): Promise<void> => new Promise<void>((r) => { setTimeout(r, 10); });
+  try {
+    const first = await WorkerOwnership.acquire({
+      connect: () => connectOwnershipClient(databaseUrl),
+      sleep: pollDelay,
+      log: () => {},
+    });
+    heldForCleanup.push(first);
+    check("durable", "a dedicated session acquires the worker ownership advisory lock", first.isOwner);
+
+    // Deterministic contention: the waiter cannot possibly succeed before the
+    // holder releases, and the holder releases only on a fixed poll count. No
+    // wall-clock assumption, so slower CI I/O cannot make this flaky.
+    const RELEASE_ON_POLL = 3;
+    let polls = 0;
+    let acquiredOnPoll = -1;
+    const secondOwned = await WorkerOwnership.acquire({
+      connect: () => connectOwnershipClient(databaseUrl),
+      log: () => {},
+      sleep: async () => {
+        polls += 1;
+        if (polls === RELEASE_ON_POLL) await first.release();
+        await pollDelay();
+      },
+    }).then((owned) => { acquiredOnPoll = polls; return owned; });
+    heldForCleanup.push(secondOwned);
+    check(
+      "durable",
+      "a second session repeatedly fails to acquire while the first session holds the lock",
+      polls >= RELEASE_ON_POLL,
+    );
+    check(
+      "durable",
+      "the waiter acquires only after the holder's session ends",
+      acquiredOnPoll >= RELEASE_ON_POLL && secondOwned.isOwner,
+    );
+    await secondOwned.release();
+
+    // Session death (not a clean unlock) must also release the lock, which is
+    // the property that makes SIGKILL, OOM and host loss recoverable with no TTL.
+    const abrupt = await connectOwnershipClient(databaseUrl);
+    const taken = await abrupt.query(
+      "SELECT pg_try_advisory_lock($1::int, $2::int) AS acquired",
+      [1_889_446_263, 889_784_911],
+    );
+    check("durable", "a raw session can take the ownership lock", taken.rows[0]?.acquired === true);
+    await abrupt.end();
+    const afterDeath = await WorkerOwnership.acquire({
+      connect: () => connectOwnershipClient(databaseUrl),
+      sleep: pollDelay,
+      log: () => {},
+    });
+    heldForCleanup.push(afterDeath);
+    check("durable", "ending the holding session releases the advisory lock automatically", afterDeath.isOwner);
+    await afterDeath.release();
+  } finally {
+    for (const owned of heldForCleanup) await owned.release().catch(() => {});
+  }
+
+  // --- the claim is fenced to the ownership session -------------------------
+  // The race this closes: barrier passes, ownership connection dies, successor
+  // acquires and finishes startup recovery, and only THEN the old claim commits
+  // -- producing a running row nothing will ever reconcile. Running the claim on
+  // the ownership session makes that impossible, because a dead session cannot
+  // commit.
+  {
+    const owned = await WorkerOwnership.acquire({
+      connect: () => connectOwnershipClient(databaseUrl),
+      sleep: pollDelay,
+      log: () => {},
+    });
+    try {
+      const pendingId = (await pool.query(
+        `INSERT INTO brief_queue (brief, status) VALUES ($1, 'pending') RETURNING id`,
+        [JSON.stringify({ goal: "claim fencing fixture" })],
+      )).rows[0].id as string;
+
+      const claimed = await owned.claimPendingBrief(CLAIM_PENDING_BRIEF_SQL);
+      check("durable", "the ownership session can claim a pending brief",
+        claimed?.id === pendingId);
+      const afterClaim = await pool.query(`SELECT status FROM brief_queue WHERE id=$1`, [pendingId]);
+      check("durable", "a claim committed by the owner marks the brief running",
+        afterClaim.rows[0].status === "running");
+      await pool.query(`UPDATE brief_queue SET status='failed', outcome='{}'::jsonb WHERE id=$1`, [pendingId]);
+
+      // Now kill the ownership session server-side and prove a claim cannot
+      // commit afterwards.
+      const secondId = (await pool.query(
+        `INSERT INTO brief_queue (brief, status) VALUES ($1, 'pending') RETURNING id`,
+        [JSON.stringify({ goal: "claim after session death" })],
+      )).rows[0].id as string;
+
+      // Identify the owning backend by the advisory lock itself, not by its
+      // last statement text, so the kill is deterministic.
+      const backend = await pool.query(
+        `SELECT pid FROM pg_locks
+         WHERE locktype='advisory' AND granted AND classid=$1 AND objid=$2`,
+        [1_889_446_263, 889_784_911],
+      );
+      check("durable", "the ownership advisory lock is visible in pg_locks", backend.rows.length === 1);
+      await pool.query(`SELECT pg_terminate_backend($1)`, [backend.rows[0].pid]);
+      // Give PostgreSQL a moment to actually tear the backend down.
+      await new Promise((r) => setTimeout(r, 200));
+
+      let refused = false;
+      try {
+        await owned.claimPendingBrief(CLAIM_PENDING_BRIEF_SQL);
+      } catch (err) {
+        refused = true;
+        check("durable", "a claim on a dead ownership session fails rather than committing",
+          err instanceof OwnershipLostError || err instanceof Error);
+      }
+      check("durable", "the claim after ownership-session death did not succeed", refused);
+      const afterDeath = await pool.query(`SELECT status FROM brief_queue WHERE id=$1`, [secondId]);
+      check("durable", "the brief stays pending, so a successor can still claim it",
+        afterDeath.rows[0].status === "pending");
+      check("durable", "the terminated session no longer reports ownership", !owned.isOwner);
+      await pool.query(`DELETE FROM brief_queue WHERE id=$1`, [secondId]);
+    } finally {
+      await owned.release().catch(() => {});
+    }
+  }
+
+  // --- recovery writes satisfy the live schema constraints ---
+  const runId = (await pool.query(
+    `INSERT INTO brief_queue (brief, status, claimed_at) VALUES ($1, 'running', now()) RETURNING id`,
+    [JSON.stringify({ goal: "recovery integration fixture" })],
+  )).rows[0].id as string;
+  const approvalId = (await pool.query(
+    `INSERT INTO approval_queue (platform, package, summary, package_formatted, status, subject_type,
+                                 subject_payload, payload_sha256, approval_token_hash,
+                                 token_expires_at, authorization_expires_at)
+     VALUES ('multi', $1, 'recovery fixture', $1, 'pending', 'recovery-fixture/v1', $1, $2, $3,
+             now() + interval '1 day', now() + interval '1 day')
+     RETURNING id`,
+    [JSON.stringify([{ platform: "facebook" }]), sha256Text("recovery-fixture"), sha256Text("token")],
+  )).rows[0].id as string;
+
+  await recordDurablePhaseEvent({
+    runId, kind: PHASE_APPROVAL_REQUESTED, message: "approval requested", data: { approvalId, packageCount: 1 },
+  });
+  await recordDurablePhaseEvent({
+    runId,
+    kind: PHASE_PUBLISH_ATTEMPT_STARTED,
+    message: "provider attempt starting",
+    data: { approvalId, packageIndex: 0, platform: "facebook" },
+  });
+  check(
+    "durable",
+    "durable phase markers are readable back for their run",
+    (await eventsForRun(runId)).length === 2,
+  );
+  check(
+    "durable",
+    "an approval marker links its approval id back to a run",
+    (await approvalIdsWithOwningBriefMarker([approvalId])).has(approvalId),
+  );
+  check(
+    "durable",
+    "a running brief is visible to the owner's recovery scan",
+    (await listRunningBriefs()).some((row) => row.id === runId),
+  );
+
+  const escalations: string[] = [];
+  const providerCalls: string[] = [];
+  const recoveryDeps: RecoveryDeps = {
+    phaseMarkersForRun,
+    recordDurablePhaseEvent,
+    completeBrief,
+    revokeApproval,
+    setApprovalStatus,
+    notifyEscalation: async (_goal, reason) => { escalations.push(reason); },
+    listRunningBriefs,
+    listRevocablePendingApprovals,
+    approvalIdsWithOwningBriefMarker,
+    log: () => {},
+  };
+  const results = await reconcileAbandonedWork(recoveryDeps);
+  check("durable", "recovery classifies a started-but-unsettled attempt as uncertain",
+    results.some((r) => r.runId === runId && r.classification === "uncertain_provider_outcome"));
+  check("durable", "recovery makes no provider request", providerCalls.length === 0);
+
+  const recovered = await pool.query(`SELECT status, outcome FROM brief_queue WHERE id=$1`, [runId]);
+  check("durable", "recovery writes a terminal failed status accepted by the 002 status constraint",
+    recovered.rows[0].status === "failed");
+  check("durable", "recovery never returns a brief to pending", recovered.rows[0].status !== "pending");
+  check("durable", "the recovery outcome flags required provider reconciliation",
+    recovered.rows[0].outcome?.requiresProviderReconciliation === true);
+  check("durable", "the recovery outcome preserves the approval linkage",
+    recovered.rows[0].outcome?.approvalId === approvalId);
+  check("durable", "an uncertain outcome is escalated", escalations.some((r) => r.includes("uncertain")));
+
+  const audit = await pool.query(`SELECT count(*)::int AS count FROM events WHERE run_id=$1 AND kind=$2`,
+    [runId, PHASE_RECONCILED]);
+  check("durable", "recovery appends a durable reconciliation audit event", audit.rows[0].count === 1);
+
+  const revokedRow = await pool.query(
+    `SELECT revoked_at, revoked_by FROM approval_queue WHERE id=$1`, [approvalId],
+  );
+  check("durable", "recovery revokes the interrupted brief's approval", revokedRow.rows[0].revoked_at !== null);
+  check("durable", "the revocation records the worker as its actor",
+    String(revokedRow.rows[0].revoked_by).startsWith("worker:"));
+
+  // --- orphan sweep against real rows ---
+  const orphanId = (await pool.query(
+    `INSERT INTO approval_queue (platform, package, summary, package_formatted, status, subject_type,
+                                 subject_payload, payload_sha256, approval_token_hash,
+                                 token_expires_at, authorization_expires_at)
+     VALUES ('multi', $1, 'orphan fixture', $1, 'pending', 'recovery-fixture/v1', $1, $2, $3,
+             now() + interval '1 day', now() + interval '1 day')
+     RETURNING id`,
+    [JSON.stringify([{ platform: "facebook" }]), sha256Text("orphan-fixture"), sha256Text("orphan-token")],
+  )).rows[0].id as string;
+  const swept = await sweepOrphanApprovals(recoveryDeps);
+  check("durable", "an approval with no owning marker is swept", swept.includes(orphanId));
+  const sweptRow = await pool.query(`SELECT revoked_at FROM approval_queue WHERE id=$1`, [orphanId]);
+  check("durable", "the swept orphan approval is durably revoked", sweptRow.rows[0].revoked_at !== null);
+}
+
 async function createDatabase(admin: PgPool, database: string): Promise<void> {
   if (!/^gcd_phase0a_(fresh|upgrade)_[a-z0-9_]+$/.test(database)) {
     throw new Error(`refusing unexpected disposable database name: ${database}`);
@@ -1074,6 +1333,7 @@ async function main(): Promise<void> {
       await assertSchemaObjects(freshPool, "fresh");
       await assertStartupProbe(freshUrl, "fresh");
       await assertDurableBehavior(freshPool, freshUrl);
+      await assertOwnershipAndRecovery(freshPool, freshUrl);
     } finally {
       await closeState();
       await freshPool.end();

@@ -30,7 +30,7 @@ Keep these changes separable unless a reviewed design shows they must be atomic.
 
 1. **Durable provider operation ledger and idempotency.** Model at least `not_attempted`, `attempted`, `provider_accepted`, `result_unknown`, `published`, `reconciled`, and `failed_safely`. Prevent timeout/crash/retry ambiguity from becoming duplicate posts.
 2. **Provider reconciliation.** Reconcile internal intent/result records with provider-side post identities and safely resolve unknown outcomes before another attempt.
-3. **Worker lease/reaper.** Add lease ownership, renewal, expiry, and stale-`running` recovery instead of permanently stranding briefs after a crash.
+3. **Worker lease/reaper — superseded for single-instance operation.** Exclusive ownership plus startup recovery (implemented in PR, not yet live) removes the stranding failure without a lease. A time-based lease was rejected on correctness: a brief legitimately sits in `running` for up to 24 hours awaiting a human, so no expiry can distinguish a crash from a wait. Re-open this item only if the worker is ever scaled beyond one instance.
 4. **PostgreSQL network restriction.** Remove the currently verified `0.0.0.0/0` external allowlist after confirming all required access paths.
 5. **Provider-token lifecycle.** Encrypt or move the plaintext default Instagram token/session state, define rotation/expiry/recovery, and review log/outcome redaction.
 6. **Control and approval identity.** Replace the shared `CONSOLE_TOKEN`, process-local direct-socket limits, generic reviewer label, and bearer token in browser/Slack URL history with scoped authenticated identities and a safer review/revocation flow.
