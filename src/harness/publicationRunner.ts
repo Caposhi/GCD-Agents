@@ -23,6 +23,7 @@ import {
   boundedErrorText,
   PHASE_PUBLISH_ATTEMPT_STARTED,
   PHASE_PUBLISH_ATTEMPT_SETTLED,
+  PHASE_PUBLISH_ATTEMPT_ABANDONED,
 } from "./briefRecovery.js";
 
 export interface PublicationDeps {
@@ -36,6 +37,8 @@ export interface PublicationDeps {
   recordDurablePhaseEvent(e: { runId?: string; kind: string; message: string; data?: unknown }): Promise<void>;
   /** Throws when ownership was lost or shutdown was requested. */
   assertSideEffectAllowed(operation: string): void;
+  /** False once ownership is gone; gates the abandonment marker below. */
+  ownershipHeld?: () => boolean;
 }
 
 export interface PublicationContext {
@@ -89,6 +92,33 @@ export async function runPublication(
         error: new PhaseMarkerPersistenceError(PHASE_PUBLISH_ATTEMPT_STARTED, err, packageIndex),
         results,
       };
+    }
+
+    // Second barrier. Committing the started marker is a database round trip
+    // that can take seconds, and ownership can be lost inside that window. One
+    // check before the marker is not enough: the provider request must be
+    // guarded by a check taken as late as possible before it is issued.
+    try {
+      deps.assertSideEffectAllowed(`provider request for ${platform}`);
+    } catch (err) {
+      // The started marker is durable and is deliberately left in place -- it
+      // is the truthful record that an attempt was opened. When ownership is
+      // still held we can additionally prove the provider was never called, so
+      // recovery can classify precisely instead of conservatively.
+      if (deps.ownershipHeld?.() === true) {
+        try {
+          await deps.recordDurablePhaseEvent({
+            runId: ctx.runId,
+            kind: PHASE_PUBLISH_ATTEMPT_ABANDONED,
+            message: `provider attempt abandoned before contact for ${platform}`,
+            data: { approvalId: ctx.approvalId, packageIndex, platform, reason: "side_effects_blocked" },
+          });
+        } catch {
+          // Without the abandonment marker recovery falls back to treating the
+          // attempt as an unknown outcome, which is the safe direction.
+        }
+      }
+      return { kind: "interrupted", error: err as Error, results };
     }
 
     let result: any;

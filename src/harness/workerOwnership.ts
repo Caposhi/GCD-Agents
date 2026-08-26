@@ -53,18 +53,37 @@ export function ownershipKeyMatchesNamespace(namespace = WORKER_OWNERSHIP_NAMESP
 
 const ACQUIRE_POLL_MS = 2_000;
 const HEARTBEAT_INTERVAL_MS = 15_000;
+/**
+ * Client-side deadline for every ownership-session statement.
+ *
+ * A server-side statement_timeout cannot help when the connection is
+ * blackholed: the cancellation never reaches us and the promise would hang for
+ * the OS TCP timeout, during which `lost` stays false and side-effect barriers
+ * keep passing. Both bounds are therefore applied, and blowing the client-side
+ * one destroys the socket so no statement is left alive behind us.
+ */
+const OWNERSHIP_STATEMENT_TIMEOUT_MS = 5_000;
+/** Server-side bound, set on the session; kept above the client bound. */
+const OWNERSHIP_SERVER_STATEMENT_TIMEOUT_MS = 8_000;
 /** Log while waiting so a blocked handover is visible in Render logs. */
 const WAITING_LOG_INTERVAL_MS = 30_000;
 
 export type OwnershipLostReason =
   | "connection_error"
   | "heartbeat_failed"
+  | "heartbeat_timeout"
   | "released";
 
 export interface OwnershipClient {
   query(sql: string, values?: unknown[]): Promise<{ rows: any[] }>;
   end(): Promise<void>;
   on(event: "error", listener: (err: Error) => void): unknown;
+  /**
+   * Tears the socket down immediately, without waiting for a server reply.
+   * Required so a timed-out statement cannot outlive the deadline that
+   * declared ownership lost.
+   */
+  destroy?(): void;
 }
 
 export interface WorkerOwnershipOptions {
@@ -76,6 +95,7 @@ export interface WorkerOwnershipOptions {
   onLost?: (reason: OwnershipLostReason, error?: Error) => void;
   acquirePollMs?: number;
   heartbeatIntervalMs?: number;
+  statementTimeoutMs?: number;
   waitingLogIntervalMs?: number;
   log?: (message: string) => void;
   now?: () => number;
@@ -109,15 +129,18 @@ export class WorkerOwnership {
   private readonly controller = new AbortController();
   private readonly onLost: ((reason: OwnershipLostReason, error?: Error) => void) | undefined;
   private readonly heartbeatIntervalMs: number;
+  private readonly statementTimeoutMs: number;
   private readonly log: (message: string) => void;
 
   private constructor(
     client: OwnershipClient,
     onLost: ((reason: OwnershipLostReason, error?: Error) => void) | undefined,
     heartbeatIntervalMs: number,
+    statementTimeoutMs: number,
     log: (message: string) => void,
   ) {
     this.client = client;
+    this.statementTimeoutMs = statementTimeoutMs;
     this.onLost = onLost;
     this.heartbeatIntervalMs = heartbeatIntervalMs;
     this.log = log;
@@ -163,6 +186,7 @@ export class WorkerOwnership {
             client,
             options.onLost,
             options.heartbeatIntervalMs ?? HEARTBEAT_INTERVAL_MS,
+            options.statementTimeoutMs ?? OWNERSHIP_STATEMENT_TIMEOUT_MS,
             log,
           );
           log(`[worker] exclusive ownership acquired after ${now() - startedAt}ms`);
@@ -209,7 +233,82 @@ export class WorkerOwnership {
   }
 
   /**
-   * Periodic liveness probe on the dedicated session. Any error means the
+   * Runs one statement on the ownership session under a hard client-side
+   * deadline. Blowing the deadline destroys the socket, which both ends the
+   * server-side statement and guarantees PostgreSQL releases the advisory lock
+   * rather than leaving a half-open session that still appears to own it.
+   */
+  private async ownedStatement(
+    sql: string,
+    values?: unknown[],
+    failureReason: OwnershipLostReason = "connection_error",
+  ): Promise<{ rows: any[] }> {
+    const client = this.client;
+    if (!client) throw new OwnershipLostError(this.lostReason ?? "released", "ownership session is closed");
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await new Promise<{ rows: any[] }>((resolve, reject) => {
+        timer = setTimeout(() => {
+          const timeout = new Error(`ownership statement exceeded ${this.statementTimeoutMs}ms`);
+          this.markLost("heartbeat_timeout", timeout);
+          // Do not await: the socket may be blackholed, which is the case this
+          // deadline exists for.
+          try {
+            client.destroy?.();
+          } catch {
+            /* destroy is best effort */
+          }
+          void client.end?.().catch(() => {});
+          reject(timeout);
+        }, this.statementTimeoutMs);
+        (timer as unknown as { unref?: () => void }).unref?.();
+        client.query(sql, values).then(resolve, (err) => {
+          // Any failure on this session is treated as ownership loss. The only
+          // statements it ever runs are the try-lock, the heartbeat, the claim
+          // and the unlock, so there is no benign failure mode worth keeping
+          // ownership for -- and a terminated backend surfaces here rather than
+          // through the error listener when a statement was already in flight.
+          this.markLost(failureReason, err instanceof Error ? err : new Error(String(err)));
+          reject(err);
+        });
+      });
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Atomically claims the oldest pending brief ON THE OWNERSHIP SESSION.
+   *
+   * This is the fence for the claim itself. Claiming through the shared pool
+   * left a race: the barrier could pass, the ownership connection could then
+   * die and release the lock, a successor could acquire and finish its startup
+   * reconciliation, and only afterwards would the old process's claim commit —
+   * creating a fresh `running` row that the successor had already swept past
+   * and that nothing would ever reconcile.
+   *
+   * Running the claim here closes it by construction: the UPDATE and the
+   * advisory lock live in the same session, so if the session dies the claim
+   * cannot commit, and if the claim commits the session was still the exclusive
+   * owner at commit time. FOR UPDATE SKIP LOCKED is preserved.
+   *
+   * Deliberately the only application statement this class runs. Ownership is
+   * not a general state repository; everything else uses the shared pool.
+   */
+  async claimPendingBrief(sql: string): Promise<{ id: string; brief: any } | null> {
+    this.assertOwned("brief claim");
+    const res = await this.ownedStatement(sql);
+    const row = res.rows[0];
+    if (!row) return null;
+    // Re-check after the commit: a claim that raced ownership loss must not be
+    // handed to the caller even though PostgreSQL accepted it.
+    this.assertOwned("brief claim commit");
+    return { id: row.id as string, brief: row.brief };
+  }
+
+  /**
+   * Periodic liveness probe on the dedicated session, under the same hard
+   * deadline as every other ownership statement. Any error or timeout means the
    * session may be gone, which means PostgreSQL may already have released the
    * lock to another instance, so we must stop immediately.
    */
@@ -218,14 +317,15 @@ export class WorkerOwnership {
     this.client?.on("error", (err) => this.markLost("connection_error", err));
     this.heartbeat = setInterval(() => {
       void (async () => {
-        const client = this.client;
-        if (!client || this.lost) return;
+        if (!this.client || this.lost) return;
         try {
-          const res = await client.query("SELECT 1 AS ok");
+          const res = await this.ownedStatement("SELECT 1 AS ok", undefined, "heartbeat_failed");
           if (res.rows[0]?.ok !== 1) {
             this.markLost("heartbeat_failed", new Error("ownership heartbeat returned no row"));
           }
         } catch (err) {
+          // ownedStatement already marked loss on timeout; this covers the
+          // ordinary query-error path.
           this.markLost("heartbeat_failed", err instanceof Error ? err : new Error(String(err)));
         }
       })();
@@ -293,5 +393,16 @@ export async function connectOwnershipClient(connectionString: string): Promise<
     keepAlive: true,
   });
   await client.connect();
-  return client as unknown as OwnershipClient;
+  // Server-side bound, kept above the client-side deadline so an ordinary slow
+  // statement surfaces as a PostgreSQL error rather than a socket teardown.
+  // pg_try_advisory_lock is nonblocking and the claim is SKIP LOCKED, so no
+  // ownership statement legitimately needs an unbounded timeout.
+  await client.query(`SET statement_timeout = ${OWNERSHIP_SERVER_STATEMENT_TIMEOUT_MS}`);
+  const owned = client as unknown as OwnershipClient;
+  owned.destroy = () => {
+    const stream = (client as unknown as { connection?: { stream?: { destroy?: () => void } } })
+      .connection?.stream;
+    stream?.destroy?.();
+  };
+  return owned;
 }

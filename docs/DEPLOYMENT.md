@@ -113,7 +113,13 @@ The worker now holds a PostgreSQL session-level advisory lock for its lifetime a
 
 The window was widened, never weakened. Exact `TARGET_SHA` equality, instance correlation, malformed-marker rejection, the ten-second stabilization observation, crash/restart detection, and fail-closed behaviour at the bound are all unchanged. A previous instance's marker is emitted at `LIVE_SHA` and can never satisfy the target check, which is what makes waiting longer safe rather than permissive.
 
-Two related saturation fixes were required. Readiness reads now request a wider line bound (400) than failure diagnostics (100), which stay narrow so production log text does not reach the step summary; and the ambiguity guard is judged against the bound the read actually requested. Without both, a chatty previous instance during the overlap would have failed an otherwise healthy release — the log normalizer capped every window at 101 records regardless of the requested limit, so raising the CLI limit alone would have had no effect.
+Requesting a page size is not a guarantee of receiving one, so the controller never treats "I asked for 400" as "400 were observable". Render's log API returns `{logs, hasMore, nextStartTime, …}`; when `hasMore` or a continuation cursor is present it is authoritative and decides truncation. When no such metadata is present the controller cannot prove the page was complete, so a page that came back at least as large as the requested limit is treated as possibly truncated. Both paths resolve to *unknown*, never to *marker absent*.
+
+Truncation is handled differently in the two places it matters. During readiness polling a truncated page is indeterminate: the controller keeps polling and, if every page was truncated, fails closed at the bound with `WORKER_READINESS_TRUNCATED` rather than reporting a missing marker. During stabilization it fails closed immediately, because a partial page there could hide crash or restart evidence.
+
+**Operational limitation, recorded deliberately:** if the Render CLI emits a bare log array with no `hasMore` and no cursor, the controller's only truncation signal is the page-size heuristic. That is conservative — it can fail a healthy release, never pass an unproven one — but it is a heuristic. A filtered readiness query or explicit cursor traversal should replace it once the CLI's exact JSON contract has been verified against the real binary.
+
+Two related saturation fixes were also required. Readiness reads now request a wider line bound (400) than failure diagnostics (100), which stay narrow so production log text does not reach the step summary; and the ambiguity guard is judged against the bound the read actually requested. Without both, a chatty previous instance during the overlap would have failed an otherwise healthy release — the log normalizer capped every window at 101 records regardless of the requested limit, so raising the CLI limit alone would have had no effect.
 
 Readiness now asserts four things at once: durable state initialized, exclusive ownership held, abandoned work reconciled, and required initialization complete. It must never be emitted before ownership and reconciliation succeed.
 
@@ -123,7 +129,9 @@ The live worker at `10098de73667797120da8c7dfa4da83f336ff6ba` does not take the 
 
 1. Merge to `main` with exact-head CI green.
 2. Reconcile the stale August 10 row under its own explicit production authorization, so no unexplained `running` row remains for the reconciler's first firing to act on as a deployment side effect.
-3. Read-only preflight: zero `running` briefs; zero pending approvals or other unsafe in-flight work; no deployment in progress; far from the 13:00 UTC scheduler window; no manual trigger expected.
+3. Read-only preflight: zero `running` briefs; **zero pending approvals**; no deployment in progress; far from the 13:00 UTC scheduler window; no manual trigger expected.
+
+   Zero pending approvals is required specifically because approvals created before this change carry no `brief:approval_requested` marker. The startup orphan sweep revokes pending approvals with no owning brief marker, so a pre-existing pending approval is indistinguishable from an orphan and would be revoked on the new worker's first boot. Draining them first makes that sweep a no-op instead of a surprise.
 4. Keep Render native auto-deploy **off** and the GitHub gate **false**.
 5. One-time manual sequential release to the same target SHA: API → verify exact health → worker → verify ownership acquisition, reconciliation, and readiness → scheduler → verify all three report the target SHA.
 6. That bootstrap enables no automatic authority.

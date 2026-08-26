@@ -28,6 +28,15 @@ import type { EventRow } from "./state.js";
 export const PHASE_APPROVAL_REQUESTED = "brief:approval_requested";
 export const PHASE_PUBLISH_ATTEMPT_STARTED = "brief:publish_attempt_started";
 export const PHASE_PUBLISH_ATTEMPT_SETTLED = "brief:publish_attempt_settled";
+/**
+ * Proves an opened attempt never reached the provider.
+ *
+ * Written only when ownership is still held at the moment the provider request
+ * is refused, so it is a positive proof of non-contact rather than an absence.
+ * Without it a started marker with no settled sibling is correctly, but only
+ * conservatively, classified as an unknown outcome.
+ */
+export const PHASE_PUBLISH_ATTEMPT_ABANDONED = "brief:publish_attempt_abandoned";
 export const PHASE_RECONCILED = "brief:reconciled_stranded";
 export const PHASE_ORPHAN_APPROVAL_REVOKED = "approval:orphan_revoked";
 
@@ -133,6 +142,7 @@ export function classifyInterruptedBrief(events: EventRow[]): RecoveryClassifica
   let packageCount: number | undefined;
   const startedByIndex = new Map<number, UnsettledAttempt>();
   const settledByIndex = new Map<number, SettledAttempt>();
+  const abandonedIndexes = new Set<number>();
 
   for (const event of events) {
     const data = markerData(event);
@@ -145,6 +155,8 @@ export function classifyInterruptedBrief(events: EventRow[]): RecoveryClassifica
         packageIndex: data.packageIndex,
         platform: typeof data.platform === "string" ? data.platform : "unknown",
       });
+    } else if (event.kind === PHASE_PUBLISH_ATTEMPT_ABANDONED) {
+      if (Number.isSafeInteger(data.packageIndex)) abandonedIndexes.add(data.packageIndex);
     } else if (event.kind === PHASE_PUBLISH_ATTEMPT_SETTLED) {
       if (!Number.isSafeInteger(data.packageIndex)) continue;
       settledByIndex.set(data.packageIndex, {
@@ -159,7 +171,8 @@ export function classifyInterruptedBrief(events: EventRow[]): RecoveryClassifica
 
   const settled = [...settledByIndex.values()].sort((a, b) => a.packageIndex - b.packageIndex);
   const unsettled = [...startedByIndex.values()]
-    .filter((attempt) => !settledByIndex.has(attempt.packageIndex))
+    .filter((attempt) => !settledByIndex.has(attempt.packageIndex)
+      && !abandonedIndexes.has(attempt.packageIndex))
     .sort((a, b) => a.packageIndex - b.packageIndex);
   const knownProviderPostIds = settled
     .filter((attempt) => attempt.ok && attempt.providerPostId)
@@ -172,7 +185,9 @@ export function classifyInterruptedBrief(events: EventRow[]): RecoveryClassifica
   const unattemptedPackageIndexes: number[] = [];
   if (packageCount !== undefined) {
     for (let index = 0; index < packageCount; index += 1) {
-      if (!startedByIndex.has(index)) unattemptedPackageIndexes.push(index);
+      if (!startedByIndex.has(index) || abandonedIndexes.has(index)) {
+        unattemptedPackageIndexes.push(index);
+      }
     }
   }
 
@@ -202,7 +217,8 @@ export function classifyInterruptedBrief(events: EventRow[]): RecoveryClassifica
   // An approval exists and a human may still act on it, but nothing is
   // listening. Revoking is what stops a later click authorizing a post that
   // will never publish — the exact August 10 failure shape.
-  if (startedByIndex.size === 0) {
+  const contactedIndexes = [...startedByIndex.keys()].filter((index) => !abandonedIndexes.has(index));
+  if (contactedIndexes.length === 0) {
     return {
       ...base,
       classification: "interrupted_awaiting_approval",
@@ -261,7 +277,8 @@ export function classifyInterruptedBrief(events: EventRow[]): RecoveryClassifica
 }
 
 export interface RecoveryDeps {
-  eventsForRun(runId: string): Promise<EventRow[]>;
+  /** Safety markers only; must not silently truncate. */
+  phaseMarkersForRun(runId: string): Promise<EventRow[]>;
   recordDurablePhaseEvent(e: { runId?: string; kind: string; message: string; data?: unknown }): Promise<void>;
   completeBrief(id: string, status: "done" | "failed", outcome: unknown): Promise<void>;
   revokeApproval(id: string, revokedBy: string, reason: string): Promise<{ ok: boolean; reason?: string }>;
@@ -269,7 +286,7 @@ export interface RecoveryDeps {
   notifyEscalation(goal: string, reason: string, runId: string): Promise<void>;
   listRunningBriefs(): Promise<{ id: string; brief: any; claimedAt?: string }[]>;
   listRevocablePendingApprovals(): Promise<string[]>;
-  runIdsWithApprovalMarker(approvalIds: string[]): Promise<Set<string>>;
+  approvalIdsWithOwningBriefMarker(approvalIds: string[]): Promise<Set<string>>;
   log?: (message: string) => void;
   nowIso?: () => string;
 }
@@ -296,7 +313,7 @@ export async function terminalizeInterruptedBrief(
 ): Promise<RecoveryResult> {
   const log = deps.log ?? ((message: string) => console.log(message));
   const nowIso = deps.nowIso ?? (() => new Date().toISOString());
-  const events = await deps.eventsForRun(runId);
+  const events = await deps.phaseMarkersForRun(runId);
   const verdict = classifyInterruptedBrief(events);
 
   let revoked: boolean | undefined;
@@ -432,7 +449,7 @@ export async function sweepOrphanApprovals(deps: RecoveryDeps): Promise<string[]
   const log = deps.log ?? ((message: string) => console.log(message));
   const pending = await deps.listRevocablePendingApprovals();
   if (pending.length === 0) return [];
-  const linked = await deps.runIdsWithApprovalMarker(pending);
+  const linked = await deps.approvalIdsWithOwningBriefMarker(pending);
   const orphans = pending.filter((id) => !linked.has(id));
   const revoked: string[] = [];
   for (const approvalId of orphans) {

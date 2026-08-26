@@ -10,6 +10,7 @@ import {
   MAX_HEALTH_BODY_BYTES,
   normalizeDeploys,
   normalizeLogRecords,
+  logPageTruncation,
   parseJsonValues,
   renderSummary,
   runDeployment,
@@ -784,6 +785,86 @@ for (const sample of markdownSamples) {
   ]], 400);
   assert.throws(() => selectWorkerReadiness(saturatedReadinessWindow, targetSha),
     (error) => error?.code === "WORKER_LOGS_AMBIGUOUS");
+}
+
+// --- upstream log pagination / truncation -----------------------------------
+// The controller must never assume that asking for N records yields N records.
+// Render's log API returns {logs, hasMore, nextStartTime}; hasMore is
+// authoritative when present, and its absence falls back to "a full page may
+// have been cut off", never to "the marker is absent".
+{
+  assert.deepEqual(logPageTruncation([{ logs: [], hasMore: true }], 0, 400),
+    { truncated: true, proof: "hasMore" });
+  assert.deepEqual(logPageTruncation([{ logs: [], hasMore: false }], 399, 400),
+    { truncated: false, proof: "hasMore" });
+  // hasMore wins over the count heuristic in both directions.
+  assert.deepEqual(logPageTruncation([{ logs: [], hasMore: false }], 400, 400),
+    { truncated: false, proof: "hasMore" });
+  assert.deepEqual(logPageTruncation([{ logs: [], nextStartTime: "2026-08-24T13:00:00Z" }], 1, 400),
+    { truncated: true, proof: "nextStartTime" });
+  // No metadata at all: a full page is treated as possibly truncated.
+  assert.deepEqual(logPageTruncation([[]], 400, 400), { truncated: true, proof: "saturated" });
+  assert.deepEqual(logPageTruncation([[]], 12, 400), { truncated: false, proof: "none" });
+}
+
+function logPage(records, extra = {}) {
+  return [{ logs: records, ...extra }];
+}
+
+// A page the provider says is incomplete cannot prove readiness is absent, so
+// the controller keeps polling and then fails closed at the bound with a
+// distinct code rather than reporting "no readiness marker".
+{
+  const { calls, render } = createRenderFixture({
+    workerLogBatches: [logPage([logRecord("log-noise", "[worker] booting")], { hasMore: true })],
+  });
+  const { git } = createGitFixture();
+  await expectStop(() => runDeployment({
+    env: baseEnv(), render, git,
+    fetchFn: async () => healthResponse(),
+    sleep: async () => {},
+    writeSummary: async () => {},
+  }), "WORKER_READINESS_TRUNCATED");
+  assert.deepEqual(createCalls(calls).map((args) => args[2]), [ids.api, ids.worker]);
+}
+
+// Truncated pages followed by a complete page containing the target marker must
+// still succeed: truncation is indeterminate, not fatal, during polling.
+{
+  const { calls, render } = createRenderFixture({
+    workerLogBatches: [
+      logPage([logRecord("log-noise-1", "[worker] booting")], { hasMore: true }),
+      logPage([logRecord("log-noise-2", "[worker] waiting for ownership")], { hasMore: true }),
+      logPage([readyLog()], { hasMore: false }),
+    ],
+  });
+  const { git } = createGitFixture();
+  const report = await runDeployment({
+    env: baseEnv(), render, git,
+    fetchFn: async () => healthResponse(),
+    sleep: async () => {},
+    writeSummary: async () => {},
+  });
+  assert.equal(report.result, "success");
+  assert.deepEqual(createCalls(calls).map((args) => args[2]), [ids.api, ids.worker, ids.scheduler]);
+}
+
+// Stabilization is different: an incomplete page there means crash/restart
+// evidence may be hidden, so it fails closed immediately.
+{
+  const { render } = createRenderFixture({
+    workerLogBatches: [
+      logPage([readyLog()], { hasMore: false }),
+      logPage([readyLog()], { hasMore: true }),
+    ],
+  });
+  const { git } = createGitFixture();
+  await expectStop(() => runDeployment({
+    env: baseEnv(), render, git,
+    fetchFn: async () => healthResponse(),
+    sleep: async () => {},
+    writeSummary: async () => {},
+  }), "WORKER_LOGS_TRUNCATED");
 }
 
 // The repository gate accepts the literal string true only and touches neither Git nor Render otherwise.

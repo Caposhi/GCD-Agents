@@ -40,15 +40,17 @@ import {
   verifyApprovalToken,
 } from "./state.js";
 import {
+  CLAIM_PENDING_BRIEF_SQL,
   completeBrief,
   setApprovalStatus,
   recordDurablePhaseEvent,
   listRunningBriefs,
   listRevocablePendingApprovals,
-  runIdsWithApprovalMarker,
+  approvalIdsWithOwningBriefMarker,
   eventsForRun,
+  phaseMarkersForRun,
 } from "./state.js";
-import { WorkerOwnership, connectOwnershipClient } from "./workerOwnership.js";
+import { WorkerOwnership, OwnershipLostError, connectOwnershipClient } from "./workerOwnership.js";
 import {
   reconcileAbandonedWork,
   sweepOrphanApprovals,
@@ -1109,6 +1111,70 @@ async function assertOwnershipAndRecovery(pool: PgPool, databaseUrl: string): Pr
     for (const owned of heldForCleanup) await owned.release().catch(() => {});
   }
 
+  // --- the claim is fenced to the ownership session -------------------------
+  // The race this closes: barrier passes, ownership connection dies, successor
+  // acquires and finishes startup recovery, and only THEN the old claim commits
+  // -- producing a running row nothing will ever reconcile. Running the claim on
+  // the ownership session makes that impossible, because a dead session cannot
+  // commit.
+  {
+    const owned = await WorkerOwnership.acquire({
+      connect: () => connectOwnershipClient(databaseUrl),
+      sleep: pollDelay,
+      log: () => {},
+    });
+    try {
+      const pendingId = (await pool.query(
+        `INSERT INTO brief_queue (brief, status) VALUES ($1, 'pending') RETURNING id`,
+        [JSON.stringify({ goal: "claim fencing fixture" })],
+      )).rows[0].id as string;
+
+      const claimed = await owned.claimPendingBrief(CLAIM_PENDING_BRIEF_SQL);
+      check("durable", "the ownership session can claim a pending brief",
+        claimed?.id === pendingId);
+      const afterClaim = await pool.query(`SELECT status FROM brief_queue WHERE id=$1`, [pendingId]);
+      check("durable", "a claim committed by the owner marks the brief running",
+        afterClaim.rows[0].status === "running");
+      await pool.query(`UPDATE brief_queue SET status='failed', outcome='{}'::jsonb WHERE id=$1`, [pendingId]);
+
+      // Now kill the ownership session server-side and prove a claim cannot
+      // commit afterwards.
+      const secondId = (await pool.query(
+        `INSERT INTO brief_queue (brief, status) VALUES ($1, 'pending') RETURNING id`,
+        [JSON.stringify({ goal: "claim after session death" })],
+      )).rows[0].id as string;
+
+      // Identify the owning backend by the advisory lock itself, not by its
+      // last statement text, so the kill is deterministic.
+      const backend = await pool.query(
+        `SELECT pid FROM pg_locks
+         WHERE locktype='advisory' AND granted AND classid=$1 AND objid=$2`,
+        [1_889_446_263, 889_784_911],
+      );
+      check("durable", "the ownership advisory lock is visible in pg_locks", backend.rows.length === 1);
+      await pool.query(`SELECT pg_terminate_backend($1)`, [backend.rows[0].pid]);
+      // Give PostgreSQL a moment to actually tear the backend down.
+      await new Promise((r) => setTimeout(r, 200));
+
+      let refused = false;
+      try {
+        await owned.claimPendingBrief(CLAIM_PENDING_BRIEF_SQL);
+      } catch (err) {
+        refused = true;
+        check("durable", "a claim on a dead ownership session fails rather than committing",
+          err instanceof OwnershipLostError || err instanceof Error);
+      }
+      check("durable", "the claim after ownership-session death did not succeed", refused);
+      const afterDeath = await pool.query(`SELECT status FROM brief_queue WHERE id=$1`, [secondId]);
+      check("durable", "the brief stays pending, so a successor can still claim it",
+        afterDeath.rows[0].status === "pending");
+      check("durable", "the terminated session no longer reports ownership", !owned.isOwner);
+      await pool.query(`DELETE FROM brief_queue WHERE id=$1`, [secondId]);
+    } finally {
+      await owned.release().catch(() => {});
+    }
+  }
+
   // --- recovery writes satisfy the live schema constraints ---
   const runId = (await pool.query(
     `INSERT INTO brief_queue (brief, status, claimed_at) VALUES ($1, 'running', now()) RETURNING id`,
@@ -1141,7 +1207,7 @@ async function assertOwnershipAndRecovery(pool: PgPool, databaseUrl: string): Pr
   check(
     "durable",
     "an approval marker links its approval id back to a run",
-    (await runIdsWithApprovalMarker([approvalId])).has(approvalId),
+    (await approvalIdsWithOwningBriefMarker([approvalId])).has(approvalId),
   );
   check(
     "durable",
@@ -1152,7 +1218,7 @@ async function assertOwnershipAndRecovery(pool: PgPool, databaseUrl: string): Pr
   const escalations: string[] = [];
   const providerCalls: string[] = [];
   const recoveryDeps: RecoveryDeps = {
-    eventsForRun,
+    phaseMarkersForRun,
     recordDurablePhaseEvent,
     completeBrief,
     revokeApproval,
@@ -1160,7 +1226,7 @@ async function assertOwnershipAndRecovery(pool: PgPool, databaseUrl: string): Pr
     notifyEscalation: async (_goal, reason) => { escalations.push(reason); },
     listRunningBriefs,
     listRevocablePendingApprovals,
-    runIdsWithApprovalMarker,
+    approvalIdsWithOwningBriefMarker,
     log: () => {},
   };
   const results = await reconcileAbandonedWork(recoveryDeps);

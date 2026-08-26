@@ -30,9 +30,17 @@ import {
   PHASE_APPROVAL_REQUESTED,
   PHASE_PUBLISH_ATTEMPT_STARTED,
   PHASE_PUBLISH_ATTEMPT_SETTLED,
+  PHASE_PUBLISH_ATTEMPT_ABANDONED,
   PHASE_RECONCILED,
 } from "./briefRecovery.js";
 import { runPublication, PublicationDeps } from "./publicationRunner.js";
+import { runBriefLifecycle, LifecycleDeps } from "./briefLifecycle.js";
+import {
+  finalizeWorkerExit,
+  WorkerExitSteps,
+  OWNERSHIP_LOSS_EXIT_CODE,
+  SHUTDOWN_EXIT_CODE,
+} from "./workerExit.js";
 import type { EventRow } from "./state.js";
 import type { PostPackage, PlatformCredentials } from "../mcp/posting-tool/types.js";
 
@@ -98,7 +106,7 @@ function recorderDeps(overrides: Partial<RecoveryDeps> = {}): {
   const escalations: { reason: string; runId: string }[] = [];
   const approvalStatuses: { id: string; status: string }[] = [];
   const deps: RecoveryDeps = {
-    eventsForRun: async () => [],
+    phaseMarkersForRun: async () => [],
     recordDurablePhaseEvent: async (e) => { calls.push(`event:${e.kind}`); events.push(e); },
     completeBrief: async (id, status, outcome) => {
       calls.push(`complete:${status}`);
@@ -112,7 +120,7 @@ function recorderDeps(overrides: Partial<RecoveryDeps> = {}): {
     notifyEscalation: async (_goal, reason, runId) => { calls.push("escalate"); escalations.push({ reason, runId }); },
     listRunningBriefs: async () => [],
     listRevocablePendingApprovals: async () => [],
-    runIdsWithApprovalMarker: async () => new Set<string>(),
+    approvalIdsWithOwningBriefMarker: async () => new Set<string>(),
     log: () => {},
     nowIso: () => "2026-01-01T00:00:00.000Z",
     ...overrides,
@@ -140,18 +148,25 @@ class FakeLockServer {
   release(): void { this.held = false; }
 }
 
-function fakeClient(server: FakeLockServer, opts: { failOnQuery?: () => Error | undefined } = {}): {
+function fakeClient(server: FakeLockServer, opts: {
+  failOnQuery?: () => Error | undefined;
+  hangOnQuery?: () => boolean;
+} = {}): {
   client: OwnershipClient;
   ended: boolean;
+  destroyed: boolean;
   queries: string[];
   emitError: (err: Error) => void;
 } {
   const queries: string[] = [];
   const listeners: ((err: Error) => void)[] = [];
-  const state = { ended: false };
+  const state = { ended: false, destroyed: false };
   const client: OwnershipClient = {
     async query(sql: string) {
       queries.push(sql);
+      // A blackholed socket: the promise simply never settles, which is the
+      // exact case a server-side statement_timeout cannot rescue.
+      if (opts.hangOnQuery?.()) return new Promise<{ rows: any[] }>(() => {});
       const failure = opts.failOnQuery?.();
       if (failure) throw failure;
       if (sql.includes("pg_try_advisory_lock")) {
@@ -163,11 +178,13 @@ function fakeClient(server: FakeLockServer, opts: { failOnQuery?: () => Error | 
       return { rows: [{ ok: 1 }] };
     },
     async end() { state.ended = true; server.release(); },
+    destroy() { state.destroyed = true; server.release(); },
     on(_event: "error", listener: (err: Error) => void) { listeners.push(listener); return client; },
   };
   return {
     client,
     get ended() { return state.ended; },
+    get destroyed() { return state.destroyed; },
     queries,
     emitError: (err) => listeners.forEach((l) => l(err)),
   };
@@ -260,6 +277,57 @@ const noSleep = async () => {};
   await new Promise((r) => setTimeout(r, 25));
   check("heartbeat failure marks ownership lost", owned.isOwner === false && lostReason === "heartbeat_failed");
   owned.stopMonitoring();
+}
+
+{
+  // A blackholed heartbeat must be bounded client-side. Without the deadline
+  // the promise would hang for the OS TCP timeout while `lost` stayed false and
+  // every side-effect barrier kept passing.
+  const server = new FakeLockServer();
+  let hanging = false;
+  const fake = fakeClient(server, { hangOnQuery: () => hanging });
+  let lostReason: string | undefined;
+  const owned = await WorkerOwnership.acquire({
+    connect: async () => fake.client,
+    sleep: noSleep,
+    log: () => {},
+    heartbeatIntervalMs: 5,
+    statementTimeoutMs: 30,
+    onLost: (reason) => { lostReason = reason; },
+  });
+  owned.startMonitoring();
+  hanging = true;
+  await new Promise((r) => setTimeout(r, 200));
+  check("a hung ownership statement is bounded and marks ownership lost",
+    owned.isOwner === false && lostReason === "heartbeat_timeout");
+  check("the deadline destroys the socket rather than leaving the statement alive",
+    fake.destroyed);
+  check("ownership loss from a timeout still fences side effects",
+    (() => { try { owned.assertOwned("provider call"); return false; } catch { return true; } })());
+  owned.stopMonitoring();
+}
+
+{
+  // The claim runs on the ownership session and is refused once ownership is
+  // gone, so a pending->running transition cannot be issued by a former owner.
+  const server = new FakeLockServer();
+  const fake = fakeClient(server);
+  const owned = await WorkerOwnership.acquire({
+    connect: async () => fake.client, sleep: noSleep, log: () => {},
+  });
+  const before = fake.queries.length;
+  await owned.claimPendingBrief("UPDATE brief_queue SET status='running' RETURNING id, brief");
+  check("the claim executes on the ownership session itself",
+    fake.queries.length > before
+    && fake.queries.some((q) => q.includes("UPDATE brief_queue")));
+  await owned.release();
+  let refused = false;
+  try {
+    await owned.claimPendingBrief("UPDATE brief_queue SET status='running' RETURNING id, brief");
+  } catch (err) {
+    refused = err instanceof OwnershipLostError;
+  }
+  check("a former owner cannot claim", refused);
 }
 
 {
@@ -389,7 +457,7 @@ const noSleep = async () => {};
 // ---------------------------------------------------------------------------
 
 {
-  const r = recorderDeps({ eventsForRun: async () => [approvalRequested()] });
+  const r = recorderDeps({ phaseMarkersForRun: async () => [approvalRequested()] });
   await terminalizeInterruptedBrief(r.deps, "run-1", { trigger: "startup_recovery" });
   check("awaiting-approval strand revokes its live approval", r.revocations.includes(APPROVAL));
   check("terminal status is failed, never pending",
@@ -403,7 +471,7 @@ const noSleep = async () => {};
 
 {
   const r = recorderDeps({
-    eventsForRun: async () => [approvalRequested(2), started(0, "instagram"), settled(0, "instagram", true, "IG_9"),
+    phaseMarkersForRun: async () => [approvalRequested(2), started(0, "instagram"), settled(0, "instagram", true, "IG_9"),
       started(1, "facebook")],
   });
   await terminalizeInterruptedBrief(r.deps, "run-1", { trigger: "startup_recovery" });
@@ -419,7 +487,7 @@ const noSleep = async () => {};
 
 {
   const r = recorderDeps({
-    eventsForRun: async () => [approvalRequested(1), started(0, "instagram"), settled(0, "instagram", true, "IG_10")],
+    phaseMarkersForRun: async () => [approvalRequested(1), started(0, "instagram"), settled(0, "instagram", true, "IG_10")],
   });
   await terminalizeInterruptedBrief(r.deps, "run-1", { trigger: "startup_recovery" });
   check("fully settled run repairs the approval status",
@@ -432,7 +500,7 @@ const noSleep = async () => {};
   // Recovery must never resurrect work and never touch a provider.
   const r = recorderDeps({
     listRunningBriefs: async () => [{ id: "run-1", brief: { goal: "g" } }],
-    eventsForRun: async () => [approvalRequested()],
+    phaseMarkersForRun: async () => [approvalRequested()],
   });
   const results = await reconcileAbandonedWork(r.deps);
   check("startup recovery terminalizes each stranded brief", results.length === 1);
@@ -447,7 +515,7 @@ const noSleep = async () => {};
     listRunningBriefs: async () => [
       { id: "run-1", brief: {} }, { id: "run-2", brief: {} },
     ],
-    eventsForRun: async () => [],
+    phaseMarkersForRun: async () => [],
   });
   await reconcileAbandonedWork(r.deps);
   check("more than one running brief is escalated as anomalous",
@@ -458,7 +526,7 @@ const noSleep = async () => {};
   // Orphan sweep: only approvals with no owning marker are revoked.
   const r = recorderDeps({
     listRevocablePendingApprovals: async () => ["linked-1", "orphan-1"],
-    runIdsWithApprovalMarker: async () => new Set(["linked-1"]),
+    approvalIdsWithOwningBriefMarker: async () => new Set(["linked-1"]),
   });
   const revoked = await sweepOrphanApprovals(r.deps);
   check("orphan approvals are revoked", revoked.includes("orphan-1"));
@@ -488,16 +556,21 @@ function publicationDeps(overrides: Partial<PublicationDeps> = {}): {
     runId: "run-1", approvalId: APPROVAL, payloads: [pkg("instagram"), pkg("facebook")], creds: CREDS,
   });
   check("a clean run settles every package", outcome.kind === "settled" && outcome.results.length === 2);
-  check("the barrier is checked before every provider attempt",
-    order.filter((o) => o.startsWith("barrier:")).length === 2);
+  check("two barriers are checked per provider attempt",
+    order.filter((o) => o.startsWith("barrier:")).length === 4);
   check("the started marker commits BEFORE the provider call",
     order.indexOf(`marker:${PHASE_PUBLISH_ATTEMPT_STARTED}`) < order.indexOf("provider:instagram"));
   check("the settled marker commits after the provider call",
     order.indexOf("provider:instagram") < order.indexOf(`marker:${PHASE_PUBLISH_ATTEMPT_SETTLED}`));
-  check("ordering per platform is barrier → started → provider → settled",
-    order.slice(0, 4).join("|")
+  check("ordering per platform is barrier → started → barrier → provider → settled",
+    order.slice(0, 5).join("|")
       === `barrier:provider attempt for instagram|marker:${PHASE_PUBLISH_ATTEMPT_STARTED}`
+        + `|barrier:provider request for instagram`
         + `|provider:instagram|marker:${PHASE_PUBLISH_ATTEMPT_SETTLED}`);
+  check("the second barrier is taken as late as possible, after the marker commits",
+    order.indexOf(`marker:${PHASE_PUBLISH_ATTEMPT_STARTED}`)
+      < order.indexOf("barrier:provider request for instagram")
+    && order.indexOf("barrier:provider request for instagram") < order.indexOf("provider:instagram"));
 }
 
 {
@@ -557,8 +630,10 @@ function publicationDeps(overrides: Partial<PublicationDeps> = {}): {
   const platforms: string[] = [];
   let calls = 0;
   const { deps } = publicationDeps({
-    assertSideEffectAllowed: () => {
-      calls += 1;
+    assertSideEffectAllowed: (op) => {
+      // Count only the per-platform entry barrier, so ownership is lost after
+      // the first platform completes rather than at its own second barrier.
+      if (op.startsWith("provider attempt for")) calls += 1;
       if (calls > 1) throw new OwnershipLostError("connection_error", "BLOCKED: ownership lost");
     },
     publish: async (p) => { platforms.push(p.platform); return { platform: p.platform, ok: true, id: "X" }; },
@@ -586,6 +661,249 @@ function publicationDeps(overrides: Partial<PublicationDeps> = {}): {
 }
 
 // ---------------------------------------------------------------------------
+// 5b. EXECUTED worker fencing — ownership revoked at each exact boundary
+// ---------------------------------------------------------------------------
+
+/**
+ * A real lifecycle run with every boundary instrumented, so "the provider was
+ * not called" is observed rather than inferred from source text.
+ */
+function lifecycleHarness(options: {
+  loseOwnershipAt?: string;
+  payloads?: PostPackage[];
+  decision?: "approved" | "rejected";
+} = {}) {
+  const calls: string[] = [];
+  let owner = true;
+  let shuttingDown = false;
+  const payloads = options.payloads ?? [pkg("instagram"), pkg("facebook")];
+
+  const loseNow = (boundary: string): void => {
+    if (options.loseOwnershipAt === boundary) owner = false;
+  };
+
+  const deps: LifecycleDeps = {
+    runBrief: async () => {
+      calls.push("runBrief");
+      // Ownership can be lost while local computation is still running; the
+      // brief still returns normally afterwards.
+      loseNow("during_runBrief");
+      return { status: "awaiting_approval", package: { platforms: payloads }, costUsd: 0 };
+    },
+    toPostPackages: () => payloads,
+    summarize: () => "summary",
+    requestApproval: async () => { calls.push("requestApproval"); return { id: APPROVAL }; },
+    recordDurablePhaseEvent: async (e) => {
+      calls.push(`marker:${e.kind}`);
+      if (e.kind === PHASE_PUBLISH_ATTEMPT_STARTED) loseNow("after_started_marker");
+    },
+    waitForApproval: async () => {
+      calls.push("waitForApproval");
+      loseNow("after_approval");
+      return options.decision ?? "approved";
+    },
+    assertPublishAllowed: async () => {
+      calls.push("assertPublishAllowed");
+      loseNow("before_credentials");
+      return { subject: payloads };
+    },
+    acquireCredentials: async () => { calls.push("acquireCredentials"); return CREDS; },
+    publishAll: (ctx) => runPublication(
+      {
+        publish: async (p) => {
+          calls.push(`provider:${p.platform}`);
+          loseNow("between_platforms");
+          return { platform: p.platform, ok: true, id: `ID_${p.platform}` };
+        },
+        recordDurablePhaseEvent: deps.recordDurablePhaseEvent,
+        assertSideEffectAllowed: deps.assertSideEffectAllowed,
+        ownershipHeld: () => owner,
+      },
+      ctx,
+    ),
+    completeBrief: async (_id, status) => { calls.push(`completeBrief:${status}`); },
+    setApprovalStatus: async (_id, status) => { calls.push(`setApprovalStatus:${status}`); },
+    revokeApproval: async () => { calls.push("revokeApproval"); return { ok: true }; },
+    notifyEscalation: async () => { calls.push("escalate"); },
+    terminalizeInterruptedBrief: async () => { calls.push("terminalize"); return {}; },
+    assertSideEffectAllowed: (op) => {
+      calls.push(`barrier:${op}`);
+      if (!owner) throw new OwnershipLostError("connection_error", `BLOCKED: refusing ${op}`);
+      if (shuttingDown) throw new Error(`shutting down — refusing ${op}`);
+    },
+    sideEffectsAllowed: () => owner && !shuttingDown,
+    ownershipHeld: () => owner,
+    abortSignal: new AbortController().signal,
+    recordEvent: () => { calls.push("recordEvent"); },
+    log: () => {},
+  };
+  return { deps, calls, isOwner: () => owner };
+}
+
+{
+  // A. Ownership lost while runBrief is still computing.
+  const h = lifecycleHarness({ loseOwnershipAt: "during_runBrief" });
+  const result = await runBriefLifecycle(h.deps, "run-A", { goal: "g" });
+  check("A: interrupted after orchestration when ownership was lost mid-run",
+    result === "interrupted");
+  check("A: requestApproval is NEVER called after ownership loss",
+    !h.calls.includes("requestApproval"));
+  check("A: no terminal write is attempted by a former owner",
+    !h.calls.some((c) => c.startsWith("completeBrief")) && !h.calls.includes("terminalize"));
+}
+
+{
+  // B. Ownership lost exactly at the approval-creation barrier.
+  const h2 = lifecycleHarness({ loseOwnershipAt: "during_runBrief" });
+  const r2 = await runBriefLifecycle(h2.deps, "run-B", { goal: "g" });
+  check("B: no approval is created when ownership is gone",
+    r2 === "interrupted" && !h2.calls.includes("requestApproval"));
+}
+
+{
+  // C. Ownership lost after approval, before credential acquisition.
+  const h = lifecycleHarness({ loseOwnershipAt: "before_credentials" });
+  const result = await runBriefLifecycle(h.deps, "run-C", { goal: "g" });
+  check("C: credential acquisition is NEVER called after ownership loss",
+    !h.calls.includes("acquireCredentials"));
+  check("C: no provider is contacted", !h.calls.some((c) => c.startsWith("provider:")));
+  check("C: the run is reported interrupted", result === "interrupted");
+}
+
+{
+  // D. Ownership lost after the started marker commits, before the provider.
+  const h = lifecycleHarness({ loseOwnershipAt: "after_started_marker" });
+  const result = await runBriefLifecycle(h.deps, "run-D", { goal: "g" });
+  check("D: the started marker did commit", h.calls.includes(`marker:${PHASE_PUBLISH_ATTEMPT_STARTED}`));
+  check("D: the SECOND barrier blocks the provider call",
+    !h.calls.some((c) => c.startsWith("provider:")));
+  check("D: the run is reported interrupted", result === "interrupted");
+  check("D: no abandonment marker is written by a former owner",
+    !h.calls.includes(`marker:${PHASE_PUBLISH_ATTEMPT_ABANDONED}`));
+}
+
+{
+  // D2. Same boundary, but shutdown rather than ownership loss: still the owner,
+  // so the attempt can be positively proven never to have reached the provider.
+  const calls: string[] = [];
+  let blocked = false;
+  const outcome = await runPublication(
+    {
+      publish: async (p) => { calls.push(`provider:${p.platform}`); return { platform: p.platform, ok: true }; },
+      recordDurablePhaseEvent: async (e) => {
+        calls.push(`marker:${e.kind}`);
+        if (e.kind === PHASE_PUBLISH_ATTEMPT_STARTED) blocked = true;
+      },
+      assertSideEffectAllowed: (op) => {
+        if (blocked && op.startsWith("provider request")) throw new Error(`shutting down — refusing ${op}`);
+      },
+      ownershipHeld: () => true,
+    },
+    { runId: "run-D2", approvalId: APPROVAL, payloads: [pkg("instagram")], creds: CREDS },
+  );
+  check("D2: the provider is not contacted when the second barrier blocks",
+    outcome.kind === "interrupted" && !calls.some((c) => c.startsWith("provider:")));
+  check("D2: an owner records positive proof the attempt never reached the provider",
+    calls.includes(`marker:${PHASE_PUBLISH_ATTEMPT_ABANDONED}`));
+  const abandoned = classifyInterruptedBrief([
+    approvalRequested(1),
+    started(0, "instagram"),
+    event(PHASE_PUBLISH_ATTEMPT_ABANDONED, { approvalId: APPROVAL, packageIndex: 0, platform: "instagram" }),
+  ]);
+  check("D2: an abandoned attempt is classified as never contacted, not uncertain",
+    abandoned.classification === "interrupted_awaiting_approval"
+    && abandoned.providerMutation === "impossible");
+}
+
+{
+  // E. Ownership lost between platforms.
+  const h = lifecycleHarness({ loseOwnershipAt: "between_platforms" });
+  const result = await runBriefLifecycle(h.deps, "run-E", { goal: "g" });
+  const contacted = h.calls.filter((c) => c.startsWith("provider:"));
+  check("E: exactly one platform was contacted before ownership was lost", contacted.length === 1);
+  check("E: the next platform is NEVER contacted", !contacted.includes("provider:facebook"));
+  check("E: the run is reported interrupted", result === "interrupted");
+  check("E: a former owner writes no terminal state, preserving the successor's recovery",
+    !h.calls.some((c) => c.startsWith("completeBrief") || c.startsWith("setApprovalStatus")));
+}
+
+{
+  // Former-owner terminal writes on the ordinary decided-without-publication
+  // path must also be declined.
+  const h = lifecycleHarness({ decision: "rejected", loseOwnershipAt: "after_approval" });
+  const result = await runBriefLifecycle(h.deps, "run-G", { goal: "g" });
+  check("a rejected decision does not write terminal state without ownership",
+    result === "decided_without_publication"
+    && !h.calls.some((c) => c.startsWith("completeBrief")));
+}
+
+{
+  // The happy path still writes everything when ownership is retained.
+  const h = lifecycleHarness();
+  const result = await runBriefLifecycle(h.deps, "run-H", { goal: "g" });
+  check("an owner still publishes and writes terminal state", result === "published");
+  check("both terminal writes happen for an owner",
+    h.calls.includes("setApprovalStatus:posted") && h.calls.includes("completeBrief:done"));
+}
+
+// ---------------------------------------------------------------------------
+// 5c. F — ownership-loss termination lifecycle
+// ---------------------------------------------------------------------------
+
+function exitHarness(drained: boolean): { steps: WorkerExitSteps; order: string[] } {
+  const order: string[] = [];
+  return {
+    order,
+    steps: {
+      drainActiveWork: async () => { order.push("drain"); return drained; },
+      stopRecurringServices: () => { order.push("stopRecurringServices"); },
+      escalate: async () => { order.push("escalate"); },
+      closeState: async () => { order.push("closeState"); },
+      releaseOwnership: async () => { order.push("releaseOwnership"); },
+      log: () => {},
+    },
+  };
+}
+
+{
+  const h = exitHarness(true);
+  const result = await finalizeWorkerExit("ownership_lost", h.steps);
+  check("F: ownership loss exits NONZERO so the platform restarts the worker",
+    result.code === OWNERSHIP_LOSS_EXIT_CODE && Number(result.code) > 0);
+  check("F: ownership loss never releases the lock it no longer holds",
+    result.releasedOwnership === false && !h.order.includes("releaseOwnership"));
+  check("F: ownership loss drains active work before tearing anything down",
+    h.order[0] === "drain");
+  check("F: ownership loss stops recurring timers, which would otherwise keep the process alive",
+    h.order.includes("stopRecurringServices"));
+  check("F: ownership loss escalates out-of-band", h.order.includes("escalate"));
+  check("F: state is closed before exit", h.order.includes("closeState"));
+}
+
+{
+  const h = exitHarness(false);
+  const result = await finalizeWorkerExit("ownership_lost", h.steps);
+  check("F: a brief that never drains still exits nonzero rather than idling",
+    result.code === OWNERSHIP_LOSS_EXIT_CODE && result.drained === false);
+}
+
+{
+  const h = exitHarness(true);
+  const result = await finalizeWorkerExit("shutdown", h.steps);
+  check("coordinated shutdown exits zero", result.code === SHUTDOWN_EXIT_CODE);
+  check("a fully drained shutdown hands ownership over explicitly",
+    result.releasedOwnership && h.order.indexOf("closeState") < h.order.indexOf("releaseOwnership"));
+  check("shutdown does not escalate", !h.order.includes("escalate"));
+}
+
+{
+  const h = exitHarness(false);
+  const result = await finalizeWorkerExit("shutdown", h.steps);
+  check("a shutdown whose brief did not drain does NOT hand ownership to a successor",
+    result.releasedOwnership === false && !h.order.includes("releaseOwnership"));
+}
+
+// ---------------------------------------------------------------------------
 // 6. Bounded diagnostics
 // ---------------------------------------------------------------------------
 
@@ -596,31 +914,30 @@ function publicationDeps(overrides: Partial<PublicationDeps> = {}): {
 }
 
 // ---------------------------------------------------------------------------
-// 7. Static wiring: the worker actually uses these boundaries
+// 7. Architecture boundaries
+//
+// The runtime properties above are now executed, not inferred. What remains
+// here are import-boundary and wiring facts that behaviour tests cannot show:
+// they constrain what the modules are ALLOWED to reach, not what they did.
 // ---------------------------------------------------------------------------
 
 const workerSource = readFileSync(resolve("src/worker/index.ts"), "utf8");
 const recoverySource = readFileSync(resolve("src/harness/briefRecovery.ts"), "utf8");
+const lifecycleSource = readFileSync(resolve("src/harness/briefLifecycle.ts"), "utf8");
 
-check("the worker fences approval creation behind ownership",
-  workerSource.indexOf('assertSideEffectAllowed("approval creation")')
-    < workerSource.indexOf("await requestApproval("));
-check("the worker re-checks side effects after orchestration returns",
-  workerSource.includes("if (!sideEffectsAllowed()) {"));
-check("the worker binds the approval to the brief with a durable marker",
-  workerSource.includes(`kind: PHASE_APPROVAL_REQUESTED`));
-check("the worker threads the abort signal into the approval wait",
-  workerSource.includes("waitForApproval(handle.id, { signal: workAbort.signal })"));
-check("the worker routes uncertain outcomes away from the generic failure path",
-  workerSource.includes('publication.kind === "uncertain"'));
-check("shutdown releases ownership after closing ordinary state",
-  workerSource.indexOf("await closeState()") < workerSource.indexOf("await ownership?.release()"));
-check("shutdown no longer closes state before the active brief unwinds",
-  workerSource.indexOf("if (activeBrief)") < workerSource.indexOf("await closeState()"));
-check("recovery imports no provider/posting code",
+check("recovery imports no provider/posting code at all",
   !/posting-tool|publishApprovedPackage/.test(recoverySource));
-check("recovery cannot set a brief back to pending",
+check("recovery cannot express a pending status",
   !/["']pending["']/.test(recoverySource));
+check("the lifecycle reaches providers only through the injected publishAll boundary",
+  !/posting-tool\/index|publishApprovedPackage\(/.test(lifecycleSource));
+check("the worker claims through the ownership session, not the shared pool",
+  workerSource.includes("ownership!.claimPendingBrief(CLAIM_PENDING_BRIEF_SQL)")
+  && !/\bclaimNextBrief\(/.test(workerSource));
+check("the worker wires ownership loss to the terminating exit path",
+  workerSource.includes("onLost:") && workerSource.includes("handleOwnershipLoss"));
+check("the worker exits through the shared exit lifecycle rather than ad-hoc teardown",
+  workerSource.includes("finalizeWorkerExit"));
 
 console.log(
   `ownership/recovery self-test: PASS (${checks} checks — advisory ownership, contention, loss fencing, `

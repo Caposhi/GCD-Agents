@@ -8,19 +8,25 @@
  * subject and publishApprovedPackage verifies live durable approval plus an
  * exact item match immediately before every provider call.
  *
- * Two lifecycle guarantees sit on top of that:
+ * Three lifecycle guarantees sit on top of that:
  *
  *  - EXCLUSIVE OWNERSHIP. Render zero-downtime deploys keep the old worker
  *    alive while the new one starts, so both can briefly exist. A session-level
  *    advisory lock makes exactly one of them the owner. Ownership gates
- *    recovery, readiness, queue consumption, and every new external side
- *    effect — a worker that has lost the lock is no longer authorized to create
- *    approvals or call providers.
+ *    recovery, readiness, queue consumption, the pending→running claim itself,
+ *    and every new external or terminal write.
  *
  *  - NO SILENT ABANDONMENT. Every phase boundary commits a durable marker
  *    before its side effect, so an interrupted brief can be classified exactly
  *    rather than guessed at, and is always terminalized by someone: by itself
  *    during coordinated shutdown, or by the next exclusive owner at startup.
+ *
+ *  - LOSING OWNERSHIP ENDS THE PROCESS. A worker that no longer owns the queue
+ *    is not merely idle, it is unsafe to keep alive: it must stop, decline all
+ *    writes, and exit nonzero so Render restarts it into the ordinary
+ *    acquisition path. Recurring timers and pooled connections would otherwise
+ *    hold the event loop open and leave a healthy-looking permanently idle
+ *    process behind.
  */
 
 import { config } from "../harness/config.js";
@@ -28,16 +34,16 @@ import {
   initState,
   stateEnabled,
   closeState,
-  claimNextBrief,
   completeBrief,
   setApprovalStatus,
   recordEvent,
   recordDurablePhaseEvent,
   listRunningBriefs,
   listRevocablePendingApprovals,
-  runIdsWithApprovalMarker,
-  eventsForRun,
+  approvalIdsWithOwningBriefMarker,
+  phaseMarkersForRun,
   revokeApproval,
+  CLAIM_PENDING_BRIEF_SQL,
 } from "../harness/state.js";
 import {
   assertPublishAllowed,
@@ -48,7 +54,7 @@ import {
 } from "../harness/hitl.js";
 import { runBrief } from "../harness/orchestrator.js";
 import { publishApprovedPackage, PlatformCredentials, PostPackage } from "../mcp/posting-tool/index.js";
-import { toPostPackages, summarize, FinalPackage } from "../harness/packageMap.js";
+import { toPostPackages, summarize } from "../harness/packageMap.js";
 import { credsFromEnv } from "../harness/creds.js";
 import { getCurrentIgToken } from "../harness/igToken.js";
 import { getGoogleAccessToken } from "../harness/googleToken.js";
@@ -60,27 +66,31 @@ import {
   connectOwnershipClient,
 } from "../harness/workerOwnership.js";
 import { runPublication } from "../harness/publicationRunner.js";
+import { runBriefLifecycle, LifecycleDeps } from "../harness/briefLifecycle.js";
+import {
+  finalizeWorkerExit,
+  WorkerExitMode,
+  WorkerExitSteps,
+  OWNERSHIP_LOSS_DRAIN_MS,
+  SHUTDOWN_DRAIN_MS,
+} from "../harness/workerExit.js";
 import {
   reconcileAbandonedWork,
   sweepOrphanApprovals,
   terminalizeInterruptedBrief,
   boundedErrorText,
-  PhaseMarkerPersistenceError,
-  UncertainProviderOutcomeError,
-  PHASE_APPROVAL_REQUESTED,
   RecoveryDeps,
 } from "../harness/briefRecovery.js";
 
 let running = true;
 let shutdownRequested = false;
+let ownershipLost = false;
 let ownership: WorkerOwnership | undefined;
 let activeBrief: Promise<void> | undefined;
+let exiting = false;
 
 /** Aborted by SIGTERM or by ownership loss; threaded into every waiting path. */
 const workAbort = new AbortController();
-
-/** Bounded so cleanup finishes inside Render's shutdown grace period. */
-const SHUTDOWN_DRAIN_MS = 20_000;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -100,7 +110,7 @@ async function initializeIgToken(): Promise<void> {
 }
 
 const recoveryDeps: RecoveryDeps = {
-  eventsForRun,
+  phaseMarkersForRun,
   recordDurablePhaseEvent,
   completeBrief,
   revokeApproval,
@@ -108,24 +118,8 @@ const recoveryDeps: RecoveryDeps = {
   notifyEscalation,
   listRunningBriefs,
   listRevocablePendingApprovals,
-  runIdsWithApprovalMarker,
+  approvalIdsWithOwningBriefMarker,
 };
-
-/** True only while this process may still create new brief side effects. */
-function sideEffectsAllowed(): boolean {
-  return !shutdownRequested && ownership?.isOwner === true;
-}
-
-/**
- * The side-effect barrier. Called immediately before every boundary that
- * creates durable or external state for a brief. Losing the lock or entering
- * shutdown must stop new provider work at once, not merely at the next brief.
- */
-function assertSideEffectAllowed(operation: string): void {
-  if (!ownership) throw new Error(`BLOCKED: no worker ownership — refusing ${operation}`);
-  ownership.assertOwned(operation);
-  if (shutdownRequested) throw new WorkerShutdownError(operation);
-}
 
 class WorkerShutdownError extends Error {
   constructor(operation: string) {
@@ -134,94 +128,27 @@ class WorkerShutdownError extends Error {
   }
 }
 
-/**
- * Ends an interrupted brief.
- *
- * While ownership is still held, the brief terminalizes itself through the same
- * classifier the next owner would use, so shutdown and startup recovery produce
- * identical durable state. If ownership is already lost we deliberately write
- * NOTHING: another instance may hold the lock and be reconciling this very row,
- * and two writers is exactly what ownership exists to prevent.
- */
-async function unwindInterruptedBrief(id: string, brief: any, stage: string): Promise<void> {
-  if (ownership?.isOwner !== true) {
-    console.error(
-      `[worker] brief ${id} interrupted at ${stage} without ownership — leaving it for the next exclusive owner`,
-    );
-    return;
-  }
-  await terminalizeInterruptedBrief(recoveryDeps, id, {
-    trigger: shutdownRequested ? "worker_shutdown" : "ownership_lost",
-    goal: typeof brief?.goal === "string" ? brief.goal : undefined,
-  });
+/** True only while this process may still create new brief side effects. */
+function sideEffectsAllowed(): boolean {
+  return !shutdownRequested && ownership?.isOwner === true;
 }
 
-async function processBrief(id: string, brief: any): Promise<void> {
-  console.log(`[worker] running brief ${id}: ${brief?.goal ?? "(no goal)"}`);
-  const outcome = await runBrief(brief, { runId: id });
+function ownershipHeld(): boolean {
+  return ownership?.isOwner === true;
+}
 
-  // runBrief performs local model/image computation that is not itself
-  // abortable. Once it returns, no approval may be created and no provider call
-  // may occur unless this process still owns the queue.
-  if (!sideEffectsAllowed()) {
-    await unwindInterruptedBrief(id, brief, "after orchestration");
-    return;
-  }
+/**
+ * The side-effect barrier. Called immediately before every boundary that
+ * creates durable or external state for a brief, and again as late as possible
+ * before each provider request.
+ */
+function assertSideEffectAllowed(operation: string): void {
+  if (!ownership) throw new Error(`BLOCKED: no worker ownership — refusing ${operation}`);
+  ownership.assertOwned(operation);
+  if (shutdownRequested) throw new WorkerShutdownError(operation);
+}
 
-  if (outcome.status === "escalated") {
-    console.log(`[worker] brief ${id} escalated: ${outcome.escalation}`);
-    await notifyEscalation(brief?.goal ?? "(no goal)", outcome.escalation ?? "unknown reason", id);
-    await completeBrief(id, "failed", { reason: outcome.escalation, cost: outcome.costUsd });
-    return;
-  }
-
-  // awaiting_approval → route to the human gate.
-  const pkg = outcome.package as FinalPackage;
-  // All externally visible transformations already happened in
-  // buildFinalPackage before the final critic. toPostPackages only validates
-  // review/provider parity and clones that stored canonical array.
-  const providerPayloads = toPostPackages(pkg);
-  assertSideEffectAllowed("approval creation");
-  const handle = await requestApproval({ summary: summarize(pkg), packageFormatted: providerPayloads });
-
-  // The approval row and its Slack link now exist. If the linking marker does
-  // not commit, no durable record ties this approval to this brief, so recovery
-  // could never classify it and a human could approve something nothing is
-  // waiting for. Revoke it rather than wait.
-  try {
-    await recordDurablePhaseEvent({
-      runId: id,
-      kind: PHASE_APPROVAL_REQUESTED,
-      message: "approval requested and bound to this brief",
-      data: { approvalId: handle.id, packageCount: providerPayloads.length },
-    });
-  } catch (err) {
-    await handleApprovalMarkerFailure(id, brief, handle.id, err, outcome.costUsd);
-    return;
-  }
-
-  console.log(`[worker] brief ${id} awaiting approval (id=${handle.id})`);
-  const decision = await waitForApproval(handle.id, { signal: workAbort.signal });
-
-  if (decision === "aborted") {
-    await unwindInterruptedBrief(id, brief, "awaiting approval");
-    return;
-  }
-
-  if (decision !== "approved") {
-    console.log(`[worker] brief ${id} ${decision} — not publishing`);
-    await completeBrief(id, "done", { decision, cost: outcome.costUsd });
-    return;
-  }
-
-  // APPROVED → publish only the canonical subject reloaded from approval
-  // storage. The posting tool re-loads and re-verifies it before every call.
-  // Re-resolve live durable authorization before even acquiring platform
-  // tokens. Each actual provider attempt repeats this check inside its guard.
-  assertSideEffectAllowed("publication");
-  const approval = await assertPublishAllowed<PostPackage[]>(handle.id);
-  const approvedPayloads = approval.subject;
-  assertSideEffectAllowed("platform credential acquisition");
+async function acquireCredentials(approvedPayloads: PostPackage[]): Promise<PlatformCredentials> {
   const creds = credsFromEnv();
   if (approvedPayloads.some((payload) => payload.platform === "instagram")) {
     // Use the auto-refreshed IG token (DB-backed) rather than the possibly-stale env value.
@@ -237,202 +164,63 @@ async function processBrief(id: string, brief: any): Promise<void> {
       console.error("[gbp] Google token refresh failed:", (err as Error).message);
     }
   }
-
-  const publication = await runPublication(
-    { publish: publishApprovedPackage, recordDurablePhaseEvent, assertSideEffectAllowed },
-    { runId: id, approvalId: handle.id, payloads: approvedPayloads, creds },
-  );
-  if (publication.kind === "uncertain") {
-    await handleUncertainProviderOutcome(id, brief, handle.id, publication.error, publication.results, outcome.costUsd);
-    return;
-  }
-  if (publication.kind === "marker_failure") {
-    await handlePublishMarkerFailure(id, brief, handle.id, publication.error, publication.results, outcome.costUsd);
-    return;
-  }
-  if (publication.kind === "interrupted") {
-    await unwindInterruptedBrief(id, brief, "publication");
-    return;
-  }
-  const results = publication.results;
-
-  const allOk = results.length > 0 && results.every((r) => r.ok);
-  await setApprovalStatus(handle.id, allOk ? "posted" : "failed");
-  await completeBrief(id, allOk ? "done" : "failed", { decision, results, cost: outcome.costUsd });
-  console.log(`[worker] brief ${id} published: ${JSON.stringify(results)}`);
-  void recordEvent({
-    runId: id,
-    kind: allOk ? "brief:published" : "brief:publish_failed",
-    message: allOk ? "published to all platforms" : "one or more platforms failed",
-    data: { results },
-  }).catch(() => {});
+  return creds;
 }
 
-/** Case A: the approval exists but nothing durably links it to this brief. */
-async function handleApprovalMarkerFailure(
-  id: string,
-  brief: any,
-  approvalId: string,
-  err: unknown,
-  costUsd: number | undefined,
-): Promise<void> {
-  const detail = boundedErrorText(err);
-  console.error(`[worker] brief ${id} approval marker did not commit: ${detail}`);
-  let revoked = false;
-  try {
-    const result = await revokeApproval(
-      approvalId,
-      "worker:marker_failure",
-      "Approval could not be durably bound to its brief; submit a new approval request.",
-    );
-    revoked = result.ok;
-  } catch (revokeErr) {
-    console.error(`[worker] revocation after marker failure also failed: ${boundedErrorText(revokeErr)}`);
-  }
-  // Escalate first: if the database is unwritable, Slack is the only channel
-  // that can carry the dangling approval id to a human.
-  await safelyEscalate(
-    brief,
-    `Approval ${approvalId} was created but its durable binding marker failed (${detail}). `
-    + (revoked
-      ? "The approval has been revoked; no publication occurred."
-      : "REVOCATION COULD NOT BE CONFIRMED — revoke it manually; the orphan sweep will also attempt it at next startup."),
-    id,
-  );
-  await safelyTerminalize(id, "failed", {
-    reason: "approval_marker_persistence_failed",
-    approvalId,
-    approvalRevoked: revoked,
-    detail,
-    published: false,
-    providerMutation: "impossible",
-    cost: costUsd,
-  });
-}
-
-/** Case B: a started marker failed, so no provider call was made. */
-async function handlePublishMarkerFailure(
-  id: string,
-  brief: any,
-  approvalId: string,
-  err: PhaseMarkerPersistenceError,
-  results: any[],
-  costUsd: number | undefined,
-): Promise<void> {
-  console.error(`[worker] brief ${id} publish marker failure: ${err.message}`);
-  const priorPublished = results.filter((r) => r.ok);
-  let revoked = false;
-  try {
-    revoked = (await revokeApproval(
-      approvalId,
-      "worker:marker_failure",
-      "A publication safety marker failed to commit; submit a new approval request.",
-    )).ok;
-  } catch {
-    /* reported through escalation below */
-  }
-  await safelyEscalate(
-    brief,
-    `Publication stopped because ${err.marker} did not commit (package ${err.packageIndex ?? "?"}). `
-    + "No provider request was made for that package. "
-    + (priorPublished.length > 0
-      ? `Earlier platforms already published: ${priorPublished.map((r) => `${r.platform}=${r.id ?? "unknown-id"}`).join(", ")}.`
-      : "No platform had published yet."),
-    id,
-  );
-  await safelyTerminalize(id, "failed", {
-    reason: "publish_marker_persistence_failed",
-    approvalId,
-    approvalRevoked: revoked,
-    marker: err.marker,
-    packageIndex: err.packageIndex,
-    results,
-    published: priorPublished.length > 0,
-    providerMutation: priorPublished.length > 0 ? "partial_known" : "impossible",
-    requiresProviderReconciliation: priorPublished.length > 0,
-    cost: costUsd,
-  });
-}
-
-/** Case C: provider succeeded but its settled marker did not commit. */
-async function handleUncertainProviderOutcome(
-  id: string,
-  brief: any,
-  approvalId: string,
-  err: UncertainProviderOutcomeError,
-  results: any[],
-  costUsd: number | undefined,
-): Promise<void> {
-  console.error(`[worker] brief ${id} UNCERTAIN provider outcome: ${err.message}`);
-  let revoked = false;
-  try {
-    revoked = (await revokeApproval(
-      approvalId,
-      "worker:uncertain_outcome",
-      "A provider mutation could not be durably recorded; submit a new approval request after reconciliation.",
-    )).ok;
-  } catch {
-    /* reported through escalation below */
-  }
-  // The provider post id may exist nowhere else if the database is unwritable,
-  // so it must reach a human out-of-band.
-  await safelyEscalate(
-    brief,
-    `UNCERTAIN PROVIDER OUTCOME on ${err.platform} (package ${err.packageIndex}). `
-    + `The provider reported success${err.providerPostId ? ` with post id ${err.providerPostId}` : ""}, `
-    + "but the settled marker did not commit. Remaining platforms were NOT attempted and no automatic retry "
-    + "will occur. Reconcile against the platform before issuing a new approval.",
-    id,
-  );
-  await safelyTerminalize(id, "failed", {
-    reason: "uncertain_provider_outcome",
-    approvalId,
-    approvalRevoked: revoked,
-    platform: err.platform,
-    packageIndex: err.packageIndex,
-    providerPostId: err.providerPostId,
-    results,
-    published: true,
-    providerMutation: "uncertain",
-    requiresProviderReconciliation: true,
-    automaticRetry: "refused",
-    cost: costUsd,
-  });
-}
-
-async function safelyEscalate(brief: any, reason: string, runId: string): Promise<void> {
-  try {
-    await notifyEscalation(brief?.goal ?? "(no goal)", reason, runId);
-  } catch (err) {
-    console.error(`[worker] escalation delivery failed for ${runId}: ${boundedErrorText(err)}`);
-  }
-}
-
-/**
- * Best-effort terminal write for the marker-failure paths. The database may be
- * the thing that is broken; if this also fails, the brief stays `running` and
- * the next exclusive owner reconciles it from the markers that did commit.
- */
-async function safelyTerminalize(id: string, status: "done" | "failed", outcome: unknown): Promise<void> {
-  try {
-    await completeBrief(id, status, outcome);
-  } catch (err) {
-    console.error(
-      `[worker] terminal write failed for ${id} (${boundedErrorText(err)}); `
-      + "leaving it for the next exclusive owner to reconcile",
-    );
-  }
-}
+const lifecycleDeps: LifecycleDeps = {
+  runBrief,
+  toPostPackages,
+  summarize,
+  requestApproval: (req) => requestApproval(req),
+  recordDurablePhaseEvent,
+  waitForApproval,
+  assertPublishAllowed: (id) => assertPublishAllowed<PostPackage[]>(id),
+  acquireCredentials,
+  publishAll: (ctx) => runPublication(
+    {
+      publish: publishApprovedPackage,
+      recordDurablePhaseEvent,
+      assertSideEffectAllowed,
+      ownershipHeld,
+    },
+    ctx,
+  ),
+  completeBrief,
+  setApprovalStatus,
+  revokeApproval,
+  notifyEscalation,
+  terminalizeInterruptedBrief: (runId, goal) => terminalizeInterruptedBrief(recoveryDeps, runId, {
+    trigger: shutdownRequested ? "worker_shutdown" : "ownership_lost",
+    goal,
+  }),
+  assertSideEffectAllowed,
+  sideEffectsAllowed,
+  ownershipHeld,
+  abortSignal: workAbort.signal,
+  recordEvent: (e) => { void recordEvent(e).catch(() => {}); },
+  log: (message) => console.log(message),
+};
 
 async function loop(): Promise<void> {
   while (running) {
     let claimed: { id: string; brief: any } | null = null;
     try {
-      claimed = await claimNextBrief();
+      // Claimed ON the ownership session, so the pending→running transition can
+      // only commit while this process is still the exclusive owner. Claiming
+      // through the shared pool left a window in which a successor could finish
+      // its startup reconciliation before an older claim landed, creating a
+      // fresh running row that nothing would ever reconcile.
+      claimed = await ownership!.claimPendingBrief(CLAIM_PENDING_BRIEF_SQL);
     } catch (err) {
+      if (err instanceof OwnershipLostError) {
+        console.error(`[worker] claim refused: ${err.message}`);
+        running = false;
+        break;
+      }
       console.error("[worker] claim error:", (err as Error).message);
     }
     if (!claimed) {
+      if (!running) break;
       await sleep(10_000);
       continue;
     }
@@ -440,23 +228,32 @@ async function loop(): Promise<void> {
       try {
         if (!config.anthropicApiKey) {
           console.warn("[worker] ANTHROPIC_API_KEY not set — cannot run brief; marking failed");
-          await completeBrief(claimed!.id, "failed", { reason: "no ANTHROPIC_API_KEY" });
+          if (ownershipHeld()) {
+            await completeBrief(claimed!.id, "failed", { reason: "no ANTHROPIC_API_KEY" });
+          }
         } else {
-          await processBrief(claimed!.id, claimed!.brief);
+          await runBriefLifecycle(lifecycleDeps, claimed!.id, claimed!.brief);
         }
       } catch (err) {
         if (err instanceof OwnershipLostError) {
-          // Never write: another owner may already be reconciling this row.
+          // Never write: a successor may already be reconciling this row.
           console.error(`[worker] brief ${claimed!.id} abandoned without ownership: ${err.message}`);
           running = false;
           return;
         }
         if (err instanceof WorkerShutdownError) {
-          await unwindInterruptedBrief(claimed!.id, claimed!.brief, "shutdown boundary");
+          if (ownershipHeld()) {
+            await terminalizeInterruptedBrief(recoveryDeps, claimed!.id, {
+              trigger: "worker_shutdown",
+              goal: typeof claimed!.brief?.goal === "string" ? claimed!.brief.goal : undefined,
+            }).catch(() => {});
+          }
           return;
         }
         console.error(`[worker] brief ${claimed!.id} error:`, (err as Error).message);
-        await completeBrief(claimed!.id, "failed", { reason: (err as Error).message });
+        if (ownershipHeld()) {
+          await completeBrief(claimed!.id, "failed", { reason: (err as Error).message }).catch(() => {});
+        }
       }
     })();
     activeBrief = work;
@@ -485,12 +282,7 @@ async function main(): Promise<void> {
       ownership = await WorkerOwnership.acquire({
         connect: () => connectOwnershipClient(databaseUrl),
         signal: workAbort.signal,
-        onLost: () => {
-          // Stop claiming and wake anything waiting; the active brief unwinds
-          // without writing, because another owner may already have the lock.
-          running = false;
-          workAbort.abort();
-        },
+        onLost: (reason, error) => { void handleOwnershipLoss(reason, error); },
       });
       return ownership;
     },
@@ -517,44 +309,76 @@ async function main(): Promise<void> {
   });
 }
 
+/** Shared cleanup wiring for both exit modes; the ordering lives in workerExit. */
+function exitSteps(): WorkerExitSteps {
+  return {
+    drainActiveWork: async (timeoutMs) => {
+      if (!activeBrief) return true;
+      let drained = false;
+      await Promise.race([
+        activeBrief.then(() => { drained = true; }).catch(() => { drained = true; }),
+        sleep(timeoutMs),
+      ]);
+      return drained;
+    },
+    stopRecurringServices: () => {
+      if (tokenTimer) clearInterval(tokenTimer);
+      ownership?.stopMonitoring();
+    },
+    escalate: async (reason) => {
+      await Promise.race([
+        notifyEscalation("(worker ownership)", reason, "worker-ownership-loss"),
+        sleep(5_000),
+      ]);
+    },
+    closeState: async () => { await Promise.race([closeState(), sleep(5_000)]); },
+    releaseOwnership: async () => { await ownership?.release(); },
+    log: (message) => console.log(message),
+  };
+}
+
+async function finish(mode: WorkerExitMode, reason?: string): Promise<void> {
+  const result = await finalizeWorkerExit(mode, exitSteps(), {
+    reason,
+    drainMs: mode === "ownership_lost" ? OWNERSHIP_LOSS_DRAIN_MS : SHUTDOWN_DRAIN_MS,
+  });
+  process.exit(result.code);
+}
+
 /**
- * Coordinated shutdown.
- *
+ * Ownership loss is terminal for this process. It writes nothing, releases
+ * nothing, and exits nonzero so Render restarts it into acquisition.
+ */
+async function handleOwnershipLoss(reason: string, error?: Error): Promise<void> {
+  if (exiting) return;
+  exiting = true;
+  ownershipLost = true;
+  running = false;
+  console.error(
+    `[worker] OWNERSHIP LOST (${reason}): ${error ? boundedErrorText(error) : "no detail"} — `
+    + "stopping all work and exiting for restart",
+  );
+  workAbort.abort();
+  await finish(
+    "ownership_lost",
+    `Worker lost exclusive ownership (${reason}) and is exiting for restart. `
+    + "Any in-flight brief is left for the next exclusive owner to reconcile.",
+  );
+}
+
+/**
+ * Coordinated shutdown for an expected SIGTERM, while ownership is still held.
  * The handler never finalizes a brief itself — it signals, and the active
- * processBrief unwinds through its own safe path. That keeps exactly one writer
- * for any given brief. Ownership and the database are retained throughout
- * cleanup and released last, so a successor cannot begin reconciling until this
- * process is genuinely finished.
+ * lifecycle unwinds through its own path, keeping exactly one writer per brief.
  */
 async function shutdown(signal: string): Promise<void> {
-  if (shutdownRequested) return;
+  if (exiting || ownershipLost) return;
+  exiting = true;
   shutdownRequested = true;
   running = false;
   console.log(`[worker] received ${signal}, draining`);
   workAbort.abort();
-
-  if (activeBrief) {
-    let drained = false;
-    await Promise.race([
-      activeBrief.then(() => { drained = true; }).catch(() => { drained = true; }),
-      sleep(SHUTDOWN_DRAIN_MS),
-    ]);
-    if (!drained) {
-      // Do not guess at the brief's state from out here. Session death releases
-      // ownership and the next exclusive owner reconciles it from the markers.
-      console.warn(
-        "[worker] active brief did not finish within the drain window; "
-        + "leaving it for the next exclusive owner to reconcile",
-      );
-    }
-  }
-
-  if (tokenTimer) clearInterval(tokenTimer);
-  ownership?.stopMonitoring();
-  await closeState().catch(() => {});
-  await ownership?.release().catch(() => {});
-  console.log(`[worker] shutdown complete after ${signal}`);
-  process.exit(0);
+  await finish("shutdown");
 }
 
 for (const sig of ["SIGINT", "SIGTERM"] as const) {

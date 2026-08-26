@@ -296,6 +296,35 @@ function instanceLabel(entry) {
 }
 
 /**
+ * Whether a log page provably or possibly omitted records.
+ *
+ * Render's log API returns `{logs, hasMore, nextStartTime, nextEndTime}`, so
+ * when `hasMore` is present it is authoritative and we use it. When it is
+ * absent we cannot prove the page was complete, so we fall back to the only
+ * signal available — the page came back at least as large as the limit we
+ * asked for — and treat that as possibly truncated.
+ *
+ * The distinction that matters is "marker absent" versus "marker may have been
+ * cut off". Both fallbacks resolve to the safe direction: unknown, not absent.
+ * We deliberately do NOT assume that requesting N records guarantees N are
+ * observable.
+ */
+export function logPageTruncation(values, observedCount, bound = MAX_LOG_LINES) {
+  for (const value of Array.isArray(values) ? values : [values]) {
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      if (typeof value.hasMore === "boolean") {
+        return { truncated: value.hasMore, proof: "hasMore" };
+      }
+      if (typeof value.nextStartTime === "string" && value.nextStartTime) {
+        return { truncated: true, proof: "nextStartTime" };
+      }
+    }
+  }
+  if (observedCount >= bound) return { truncated: true, proof: "saturated" };
+  return { truncated: false, proof: "none" };
+}
+
+/**
  * `bound` must match the line limit the read actually requested. Keeping one
  * extra entry is deliberate: it is what lets strictLogWindow see that the page
  * was saturated and fail closed rather than silently judging a partial view.
@@ -499,8 +528,11 @@ const CRASH_PATTERN = /^\s*(?:==>\s*)?(?:\[worker\]\s+(?:fatal|panic|uncaught(?:
  * healthy release whenever the previous instance happened to be chatty during
  * Render's deploy overlap.
  */
-function strictLogWindow(records, bound = MAX_LOG_LINES) {
+function strictLogWindow(records, bound = MAX_LOG_LINES, truncated = false) {
   if (!records.length) throw new DeploymentStop("worker logs are missing", "WORKER_LOGS_AMBIGUOUS");
+  if (truncated) {
+    throw new DeploymentStop("worker log page was truncated upstream", "WORKER_LOGS_TRUNCATED");
+  }
   if (records.length >= bound) {
     throw new DeploymentStop("worker log window reached its safety bound", "WORKER_LOGS_AMBIGUOUS");
   }
@@ -558,9 +590,9 @@ function parseWorkerReadyRecord(record) {
   };
 }
 
-export function selectWorkerReadiness(records, targetSha, bound = MAX_READINESS_LOG_LINES) {
-  if (!records.length) return null;
-  const window = strictLogWindow(records, bound);
+export function selectWorkerReadiness(records, targetSha, bound = MAX_READINESS_LOG_LINES, truncated = false) {
+  if (!records.length && !truncated) return null;
+  const window = strictLogWindow(records, bound, truncated);
   const markers = window.map(parseWorkerReadyRecord).filter(Boolean);
   const targetMarkers = markers.filter((marker) => marker.commit === targetSha);
   if (!targetMarkers.length) return null;
@@ -570,8 +602,8 @@ export function selectWorkerReadiness(records, targetSha, bound = MAX_READINESS_
   return targetMarkers[0];
 }
 
-export function assertWorkerStabilized(records, ready, targetSha, bound = MAX_READINESS_LOG_LINES) {
-  const window = strictLogWindow(records, bound);
+export function assertWorkerStabilized(records, ready, targetSha, bound = MAX_READINESS_LOG_LINES, truncated = false) {
+  const window = strictLogWindow(records, bound, truncated);
   const markers = window.map(parseWorkerReadyRecord).filter(Boolean);
   const authoritative = markers.find((marker) => marker.id === ready.id && marker.commit === targetSha);
   if (!authoritative) {
@@ -712,7 +744,12 @@ export async function runDeployment(options = {}) {
       const result = await render(args);
       if (result.code === 0) {
         try {
-          return normalizeLogRecords(parseJsonValues(result.stdout), bound);
+          const values = parseJsonValues(result.stdout);
+          const records = normalizeLogRecords(values, bound);
+          const truncation = logPageTruncation(values, records.length, bound);
+          records.truncated = truncation.truncated;
+          records.truncationProof = truncation.proof;
+          return records;
         } catch (error) {
           lastFailure = error.message;
         }
@@ -731,7 +768,10 @@ export async function runDeployment(options = {}) {
         "--type", type, "--direction", "backward", "--confirm", "-o", "json",
       ], attempts, limit);
     } catch {
-      return [];
+      const empty = [];
+      empty.truncated = false;
+      empty.truncationProof = "none";
+      return empty;
     }
   }
 
@@ -906,24 +946,45 @@ export async function runDeployment(options = {}) {
 
     const workerResult = await deployService(services.worker);
     let workerReady = null;
+    let readinessTruncated = false;
     for (let attempt = 1; attempt <= WORKER_READY_ATTEMPTS; attempt += 1) {
       const workerLogs = await boundedLogs(
         services.worker.id, "app", workerResult.stageStartedAt, 1, MAX_READINESS_LOG_LINES,
       );
-      workerReady = selectWorkerReadiness(workerLogs, targetSha);
+      try {
+        workerReady = selectWorkerReadiness(
+          workerLogs, targetSha, MAX_READINESS_LOG_LINES, workerLogs.truncated === true,
+        );
+      } catch (error) {
+        // A truncated page cannot distinguish "marker absent" from "marker cut
+        // off", so it is indeterminate rather than negative: keep polling and
+        // fail closed at the bound if it never resolves. Every other log
+        // ambiguity still stops the release immediately.
+        if (error?.code !== "WORKER_LOGS_TRUNCATED") throw error;
+        readinessTruncated = true;
+        workerReady = null;
+      }
       if (workerReady) break;
       if (attempt < WORKER_READY_ATTEMPTS) await sleep(WORKER_READY_INTERVAL_MS);
     }
     if (!workerReady) {
       await collectEvidence(services.worker, workerResult.deploy);
-      throw new DeploymentStop("worker did not emit exact TARGET_SHA readiness", "WORKER_READINESS_FAILED");
+      throw readinessTruncated
+        ? new DeploymentStop(
+          "worker readiness could not be proven: every log page was truncated upstream",
+          "WORKER_READINESS_TRUNCATED",
+        )
+        : new DeploymentStop("worker did not emit exact TARGET_SHA readiness", "WORKER_READINESS_FAILED");
     }
     await sleep(WORKER_STABILIZATION_MS);
     const stabilizationLogs = await boundedLogs(
       services.worker.id, "app", workerReady.timestamp, 1, MAX_READINESS_LOG_LINES,
     );
     try {
-      assertWorkerStabilized(stabilizationLogs, workerReady, targetSha);
+      assertWorkerStabilized(
+        stabilizationLogs, workerReady, targetSha,
+        MAX_READINESS_LOG_LINES, stabilizationLogs.truncated === true,
+      );
     } catch (error) {
       await collectEvidence(services.worker, workerResult.deploy);
       throw error;

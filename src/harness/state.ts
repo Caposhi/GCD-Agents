@@ -162,7 +162,26 @@ export async function enqueueBrief(brief: unknown): Promise<string> {
   return res.rows[0].id as string;
 }
 
-/** Atomically claim the oldest pending brief (FOR UPDATE SKIP LOCKED in PG). */
+/**
+ * The atomic pending->running claim.
+ *
+ * Exported so the worker can execute it on the session that holds the worker
+ * ownership advisory lock instead of on the shared pool. Running it there is
+ * what makes "claimed only while still the exclusive owner" true at commit
+ * time rather than merely true at an earlier barrier check.
+ */
+export const CLAIM_PENDING_BRIEF_SQL =
+  `UPDATE brief_queue SET status='running', claimed_at=now()
+     WHERE id = (SELECT id FROM brief_queue WHERE status='pending' ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED)
+     RETURNING id, brief`;
+
+/**
+ * Atomically claim the oldest pending brief (FOR UPDATE SKIP LOCKED in PG).
+ *
+ * Pool-based path, retained for the in-memory/offline fallback and for callers
+ * that are not the owning worker. The production worker claims through its
+ * ownership session instead — see CLAIM_PENDING_BRIEF_SQL.
+ */
 export async function claimNextBrief(): Promise<{ id: string; brief: any } | null> {
   if (!enabled || !pool) {
     for (const row of briefMem.values()) {
@@ -173,11 +192,7 @@ export async function claimNextBrief(): Promise<{ id: string; brief: any } | nul
     }
     return null;
   }
-  const res = await pool.query(
-    `UPDATE brief_queue SET status='running', claimed_at=now()
-     WHERE id = (SELECT id FROM brief_queue WHERE status='pending' ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED)
-     RETURNING id, brief`,
-  );
+  const res = await pool.query(CLAIM_PENDING_BRIEF_SQL);
   if (res.rows.length === 0) return null;
   return { id: res.rows[0].id, brief: res.rows[0].brief };
 }
@@ -786,7 +801,7 @@ export async function listRunningBriefs(): Promise<RunningBriefRow[]> {
   }));
 }
 
-/** Durable phase history for one run, oldest first. */
+/** Durable phase history for one run, oldest first. General-purpose. */
 export async function eventsForRun(runId: string, limit = 500): Promise<EventRow[]> {
   if (!enabled || !pool) {
     return eventMem.filter((e) => e.runId === runId).slice(0, limit);
@@ -796,6 +811,46 @@ export async function eventsForRun(runId: string, limit = 500): Promise<EventRow
      FROM events WHERE run_id=$1 ORDER BY id ASC LIMIT $2`,
     [runId, Math.min(limit, 2_000)],
   );
+  return res.rows as EventRow[];
+}
+
+/** The event kinds recovery classifies from. Nothing else is safety state. */
+export const PHASE_MARKER_KINDS = [
+  "brief:approval_requested",
+  "brief:publish_attempt_started",
+  "brief:publish_attempt_settled",
+  "brief:publish_attempt_abandoned",
+] as const;
+
+const PHASE_MARKER_LIMIT = 1_000;
+
+/**
+ * The safety markers for one run.
+ *
+ * Filtered by kind rather than paging the run's whole event stream: a chatty
+ * run could otherwise push its markers past an "oldest N" window, and a
+ * truncated marker trace does not read as incomplete — it reads as a run that
+ * never requested an approval, i.e. as "no provider mutation was possible".
+ * That is the most dangerous direction a misclassification can go.
+ *
+ * A run has a handful of markers, so the bound is unreachable in practice and
+ * is enforced as an explicit ambiguity error rather than a silent slice.
+ */
+export async function phaseMarkersForRun(runId: string): Promise<EventRow[]> {
+  if (!enabled || !pool) {
+    return eventMem.filter((e) => e.runId === runId
+      && (PHASE_MARKER_KINDS as readonly string[]).includes(e.kind));
+  }
+  const res = await pool.query(
+    `SELECT id, run_id AS "runId", kind, agent, message, data, created_at AS "createdAt"
+     FROM events WHERE run_id=$1 AND kind = ANY($2::text[]) ORDER BY id ASC LIMIT $3`,
+    [runId, [...PHASE_MARKER_KINDS], PHASE_MARKER_LIMIT + 1],
+  );
+  if (res.rows.length > PHASE_MARKER_LIMIT) {
+    throw new Error(
+      `phase marker trace for ${runId} exceeded ${PHASE_MARKER_LIMIT} rows; refusing to classify a truncated trace`,
+    );
+  }
   return res.rows as EventRow[];
 }
 
@@ -821,8 +876,11 @@ export async function listRevocablePendingApprovals(): Promise<string[]> {
   return res.rows.map((row: any) => row.id as string);
 }
 
-/** Run ids referenced by any brief:approval_requested marker. */
-export async function runIdsWithApprovalMarker(approvalIds: string[]): Promise<Set<string>> {
+/**
+ * Of the given approval ids, those that a brief:approval_requested marker
+ * claims. Returns approval ids, not run ids.
+ */
+export async function approvalIdsWithOwningBriefMarker(approvalIds: string[]): Promise<Set<string>> {
   const wanted = new Set(approvalIds);
   const found = new Set<string>();
   if (wanted.size === 0) return found;
