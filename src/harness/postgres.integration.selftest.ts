@@ -1037,6 +1037,14 @@ async function assertDurableBehavior(pool: PgPool, databaseUrl: string): Promise
  * an in-memory double, so they are proven here.
  */
 async function assertOwnershipAndRecovery(pool: PgPool, databaseUrl: string): Promise<void> {
+  // assertDurableBehavior closes durable state on the way out. Re-open it, and
+  // prove it: without this the recovery helpers below would silently exercise
+  // the in-memory fallback and assert nothing about real PostgreSQL.
+  await closeState();
+  config.databaseUrl = databaseUrl;
+  await initState({ requireDurable: true });
+  check("durable", "durable state is re-enabled for the ownership/recovery suite", stateEnabled());
+
   // --- ownership contention across two real dedicated sessions ---
   const first = await WorkerOwnership.acquire({
     connect: () => connectOwnershipClient(databaseUrl),
