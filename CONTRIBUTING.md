@@ -2,7 +2,7 @@
 
 ## Workflow
 
-1. Read `AGENTS.md`, `docs/AI_HANDOFF.md`, `docs/STATUS.md`, and the affected runbook/agent/skill.
+1. Read `AGENTS.md`, `docs/AI_HANDOFF.md`, `docs/STATUS.md`, `docs/ROADMAP.md`, and the affected specialized runbook/agent/skill.
 2. Inspect `git status`; preserve unrelated changes.
 3. Trace behavior through API, worker, scheduler, harness, provider, migration, Render, and prompt/skill callers before editing.
 4. Keep provider calls behind recorded approval and use offline builders/fakes for normal validation.
@@ -28,5 +28,16 @@ Treat prompt/agent/skill changes as behavioral code. Add a self-test or dry-run 
 - Links, credential/PII scan, whitespace check, modified-document reread, and complete diff review pass.
 - `AGENTS.md` documentation acceptance criteria are satisfied.
 - Deployment changes include controller fixture coverage and keep migration-bearing releases fail-closed before any service deploy.
+
+### Roadmap continuity
+
+A change that touches roadmap scope is not complete until:
+
+- `docs/ROADMAP.md` reflects its phase effect — implemented, reordered, blocked, expanded, narrowed, superseded, or completed — using the `AGENTS.md` state vocabulary;
+- `docs/STATUS.md` reflects verified state where applicable, and leaves unverified external state explicitly labelled as unverified rather than silently refreshed;
+- `README.md` is updated when handoff-level behavior changes;
+- `docs/AI_HANDOFF.md` is updated when the current state or the next safe action changes;
+- every affected specialized runbook is updated in the same change; and
+- any reconciliation that genuinely cannot happen in-change — a merge SHA, a live SHA — is recorded as a blocking follow-up before the phase is called complete.
 
 Do not use a live model call, image generation, provider diagnostic, approval, scheduler run, or social post merely as a smoke test.
