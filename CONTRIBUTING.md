@@ -38,6 +38,6 @@ A change that touches roadmap scope is not complete until:
 - `README.md` is updated when handoff-level behavior changes;
 - `docs/AI_HANDOFF.md` is updated when the current state or the next safe action changes;
 - every affected specialized runbook is updated in the same change; and
-- any reconciliation that genuinely cannot happen in-change — a merge SHA, a live SHA — is recorded as a blocking follow-up before the phase is called complete.
+- any reconciliation that genuinely cannot happen in-change is recorded as a follow-up — but only where the merge creates a semantic fact that could not exist beforehand, such as a completed-phase record needing its merge SHA, a phase moving from `IMPLEMENTED` to `MERGED`, or a changed roadmap cursor. A newer `main` hash by itself is not a defect and needs no follow-up; see "Mutable identifiers" in `AGENTS.md`.
 
 Do not use a live model call, image generation, provider diagnostic, approval, scheduler run, or social post merely as a smoke test.
