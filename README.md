@@ -93,7 +93,7 @@ The controller is not yet enabled or production-proven. [Deployment control](doc
 
 ## Publication media normalization
 
-**Implemented; not yet merged or deployed. Fixes an active production blocker** — since 2026-08-25 scheduled briefs failed before reaching approval with `image dimensions 1024x1024 are not an approved cross-platform feed profile`.
+**Merged in PR #38; not deployed and not production-validated. Fixes an active production blocker** — since 2026-08-25 scheduled briefs failed before reaching approval with `image dimensions 1024x1024 are not an approved cross-platform feed profile`. Scheduled posting stays blocked until this release is live.
 
 Image providers guarantee **composition, not exact publication pixels**. fal normalizes a requested `image_size` to its own resolution buckets and may return PNG despite a JPEG request. The pipeline previously asserted the exact publication-profile allowlist against the raw provider download and never resized, so any provider-native size was fatal.
 

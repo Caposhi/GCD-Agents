@@ -36,7 +36,14 @@ This file separates four things that are routinely confused: what is in the repo
 
 Production API pre-deploy logs for that release showed migrations 001–005 already applied.
 
-**The live release is `10098de…`, which is two merges behind `main`** (PR #35 and PR #36; seven commits by `git rev-list`). That is expected and deliberate: PR #35 was documentation-only and PR #36 is merged but not deployed. Do not treat repository `main` and the live SHA as facts that ought to match.
+**The last verified production release is `10098de…` (the Phase 0D merge, PR #34).** Repository `main` has since taken merges that are not in it, and that is expected and deliberate rather than a discrepancy to reconcile:
+
+- **PR #35** — merged; documentation-only, no runtime or deployment effect.
+- **PR #36** — merged; worker ownership and recovery. **Not deployed.**
+- **PR #37** — merged; documentation and roadmap-continuity governance. No runtime or deployment effect.
+- **PR #38** — merged; media publication normalization. **Not deployed.**
+
+Do not treat repository `main` and the live SHA as facts that ought to match. Relative commit distance between them is a dated observation, not durable truth; the semantic list above is what matters.
 
 Every row above marked "not reverified" must be reconfirmed read-only immediately before any production operation. Do not infer any of them from this file, from `render.yaml`, or from the fact that they were true two days ago.
 
@@ -65,7 +72,8 @@ This closes the previously open item requiring observation of a normal scheduled
 | **PR #36 worker ownership and recovery — merge `0828cc9…`** | **`MERGED` — not `DEPLOYED`, not `PRODUCTION-VALIDATED`** |
 | Phase 0B Content Intelligence runtime | `PLANNED` — not begun |
 | Worker lease/reaper | `SUPERSEDED` by ownership plus startup recovery; rationale and re-entry condition in [Roadmap](ROADMAP.md) |
-| Media publication normalization (production blocker) | `IMPLEMENTED` — not `MERGED`, not `DEPLOYED` |
+| PR #37 documentation and roadmap-continuity governance — merge `3bd638f…` | `MERGED`; documentation-only, no runtime or deployment effect |
+| **PR #38 media publication normalization (production blocker) — merge `a6a4316…`** | **`MERGED` — not `DEPLOYED`, not `PRODUCTION-VALIDATED`** |
 
 These states are not interchangeable. In particular: the worker currently running in production does **not** contain the ownership code and does **not** participate in the advisory-lock protocol.
 
@@ -79,7 +87,7 @@ The next operation, under its own explicit authorization, is a **read-only produ
 
 ## Active production incident — scheduled content blocked before approval
 
-**Open. Fix `IMPLEMENTED`, not `MERGED`, not `DEPLOYED`.**
+**Open in production. Fix `MERGED` (PR #38) — not `DEPLOYED`, not `PRODUCTION-VALIDATED`.**
 
 Since 2026-08-25, scheduled briefs have failed before an approval was created, with `image dimensions 1024x1024 are not an approved cross-platform feed profile`. The Land Rover brief and BMW brief `19811e5f-8899-4134-9634-3dd9a9a90827` (2026-08-26) both escalated. Nothing was published and no approval was orphaned — the pipeline failed closed, upstream of the approval gate — but no scheduled content is reaching a reviewer.
 

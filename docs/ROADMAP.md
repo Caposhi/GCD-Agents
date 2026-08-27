@@ -101,9 +101,23 @@ The production worker does not yet run this code and does not participate in the
 
 `docs/ARCHITECTURE.md` should have been in the first list and was not: PR #36 changed worker readiness semantics, the claim path, and runtime ownership while leaving the document that describes them untouched, which left it contradicting three other runbooks. That miss is what the roadmap-continuity and reread rules now exist to prevent.
 
+### PR #37 — documentation governance and roadmap-continuity reconciliation
+
+**State:** `MERGED`. Documentation-only; no runtime, schema, workflow, or deployment effect. **This merge required no production deployment.**
+
+**PR / merge:** PR #37, reviewed head `f7ae95c16e6c1cbaf3924c5ac47f7dd3fdc887c7`, merge `3bd638f632bfb7208e34dd65c9c1646f69998ede`, over base `0828cc91c41c9cd10ad709db30491ada0a52c811`.
+
+**Delivered:** the binding "Roadmap continuity is mandatory" rule in `AGENTS.md` with the ten-state phase vocabulary and the completed-phase record contract; the matching definition-of-done in `CONTRIBUTING.md`; both binding rules surfaced in the root README; the Phase 0D.1 cursor reconciled to one consistent next action across seven documents; and the durable history records for PR #35 and PR #36.
+
+**Schema / migrations:** none. **Production evidence:** not applicable — nothing was deployed.
+
+**Accepted limitation, corrected in a follow-up:** the "Mutable identifiers" rule as first written made reconciling the recorded `main` SHA a *blocking* follow-up. Since every merge moves `main` — including the merge that publishes the fix — that requirement recursed without end. It now scopes post-merge follow-ups to semantic facts that could not exist before merging, and states plainly that a newer `main` hash is not by itself a defect.
+
+**Documents updated at completion:** `AGENTS.md`, `CONTRIBUTING.md`, `README.md`, and `docs/{AI_HANDOFF,ARCHITECTURE,DATA_MODEL,DEPLOYMENT,ENVIRONMENT,OPERATIONS,ROADMAP,SECURITY_AND_CONTINUITY,STATUS,TESTING,credentials-setup}.md`.
+
 ## Production blocker — media publication normalization
 
-**State:** `IMPLEMENTED` — not `MERGED`, not `DEPLOYED`. Tracked here because it fixes an active production outage, and it is ordered **ahead of** the Phase 0D.1 cursor below.
+**State:** `MERGED` in PR #38, merge `a6a4316c20f7dfc45921683b59fc042ad7266087` — **not `DEPLOYED`, not `PRODUCTION-VALIDATED`.** Tracked here because it fixes an active production outage, and it is ordered **ahead of** the Phase 0D.1 cursor below. Scheduled posting stays blocked in production until this release is live.
 
 **Symptom.** From 2026-08-25, scheduled briefs stopped reaching human approval. Slack reported `Content generation failed before an approval was created` and `image dimensions 1024x1024 are not an approved cross-platform feed profile`. The Land Rover brief and BMW brief `19811e5f-8899-4134-9634-3dd9a9a90827` both escalated. Because the image agent routes essentially every branded post to `text-graphic`, this blocked normal scheduled posting outright.
 

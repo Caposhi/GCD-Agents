@@ -56,7 +56,19 @@ Completed-phase records currently live inside `docs/ROADMAP.md`. A separate comp
 
 ### Mutable identifiers
 
-A merge SHA cannot be known before merging, so documentation that names the current `main` SHA, current live SHAs, or the current cursor cannot always be reconciled inside the implementing change. That reconciliation is a **blocking follow-up recorded before the phase is called complete**, and it is the only sanctioned exception to same-change updating under the binding rule above. Prefer describing semantic state and pointing to `docs/STATUS.md` over repeating a mutable SHA in more documents than necessary; label any dated snapshot as a snapshot rather than as mutable current truth.
+Git and GitHub are authoritative for the exact current `main` SHA. Version-controlled documentation cannot be a self-updating pointer to it, because every merge — including the merge that publishes the documentation — changes `main`. `docs/STATUS.md` therefore records a **dated verified repository baseline**, not a live mirror. Read `git rev-parse origin/main` when the exact value matters.
+
+A post-merge documentation follow-up is required only when the merge creates a **semantic fact that could not have existed before it merged**, such as:
+
+- a completed-phase record needing its actual merge SHA;
+- a phase state moving from `IMPLEMENTED` to `MERGED`; or
+- the roadmap cursor changing as a result of the merge.
+
+**A newer `main` hash than the one recorded is normal and is not, by itself, a defect or a blocking follow-up.** Requiring a fresh pull request every time `main` moves would recurse without end, since that pull request would itself move `main`. Do not open follow-up work merely to refresh a recorded SHA.
+
+This is a narrow exception for facts that are genuinely unknowable in-change, and it is not a licence for ordinary documentation drift: same-change documentation remains the normal rule, and everything knowable at authoring time is still updated in the same atomic change.
+
+Historical merge SHAs stay permanently in `docs/ROADMAP.md` phase records. Production and live SHAs may appear in `docs/STATUS.md` only with a freshness or evidence timestamp. Relative commit distance ("N merges behind") is a dated observation, never durable current truth — prefer semantic state such as "PR #36 merged, not deployed". Prefer pointing to `docs/STATUS.md` over repeating a mutable SHA in more documents than necessary, and label any dated snapshot as a snapshot.
 
 ## Required validation
 
