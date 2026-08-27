@@ -579,6 +579,59 @@ async function main(): Promise<void> {
     check("valid review has hardened HTML security headers", securityHeadersArePresent(validReview, "html"));
     check("approval review response never contains provider/model/Slack secrets", !/Bearer\s|hooks\.slack\.com\/services|sk-ant-|fal_key/i.test(validReview.body));
 
+    const approvalCountBeforePreview = (await database.query("SELECT count(*)::int AS n FROM approval_queue")).rows[0].n;
+    const briefCountBeforePreview = (await database.query("SELECT count(*)::int AS n FROM brief_queue")).rows[0].n;
+
+    // Phase 0B.0 preview: authenticated, validated, and inert.
+    {
+      const previewPath = "/console/content-intelligence/preview";
+      const jsonHeaders = { "content-type": "application/json", authorization: `Bearer ${consoleToken}` };
+
+      const unauth = await request(baseUrl, previewPath, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ goal: "Promote a brake fluid flush" }),
+      });
+      check("content-intelligence preview requires the control credential", unauth.status === 401);
+
+      const wrongType = await request(baseUrl, previewPath, {
+        method: "POST",
+        headers: { "content-type": "text/plain", authorization: `Bearer ${consoleToken}` },
+        body: "goal=x",
+      });
+      check("content-intelligence preview rejects a non-JSON content type", wrongType.status === 415);
+
+      const emptyGoal = await request(baseUrl, previewPath, {
+        method: "POST", headers: jsonHeaders, body: JSON.stringify({ goal: "   " }),
+      });
+      check("content-intelligence preview rejects an empty goal", emptyGoal.status === 400);
+
+      const unknownField = await request(baseUrl, previewPath, {
+        method: "POST", headers: jsonHeaders, body: JSON.stringify({ goal: "ok", publish: true }),
+      });
+      check("content-intelligence preview rejects unknown request fields", unknownField.status === 400);
+
+      const ok = await request(baseUrl, previewPath, {
+        method: "POST", headers: jsonHeaders,
+        body: JSON.stringify({ goal: "Promote a brake fluid flush special" }),
+      });
+      const preview = ok.status === 200 ? JSON.parse(ok.body) : null;
+      check("content-intelligence preview returns the six-stage plan",
+        ok.status === 200 && Array.isArray(preview?.stagePlan) && preview.stagePlan.length === 6);
+      check("content-intelligence preview reports execution disabled", preview?.executionDisabled === true);
+      check("content-intelligence preview exposes evidence classes",
+        !!preview?.evidence && typeof preview.evidence.counts === "object"
+          && Array.isArray(preview.evidence.allowedFacts)
+          && Array.isArray(preview.evidence.conflicts)
+          && Array.isArray(preview.evidence.staleEvidence));
+      check("content-intelligence preview has JSON security headers", securityHeadersArePresent(ok, "json"));
+      check("content-intelligence preview created no approval and enqueued no brief",
+        (await database.query("SELECT count(*)::int AS n FROM approval_queue")).rows[0].n === approvalCountBeforePreview
+          && (await database.query("SELECT count(*)::int AS n FROM brief_queue")).rows[0].n === briefCountBeforePreview);
+      check("content-intelligence preview leaked no secret material",
+        !/Bearer\s|hooks\.slack\.com\/services|sk-ant-|fal_key/i.test(ok.body));
+    }
+
     check("no tested route attempted an outbound child-process fetch", !capture.output().includes(OUTBOUND_FETCH_MARKER));
     check("compiled API remained running through the E2E suite", capture.child.exitCode === null);
   } finally {

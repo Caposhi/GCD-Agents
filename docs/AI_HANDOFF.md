@@ -18,11 +18,12 @@ Build German Car Depot's governed Content Intelligence Platform / Content OS: an
 
 - Root `package.json` builds one Node 22 TypeScript project.
 - `src/api/server.ts`: HTTP health, protected control/diagnostic/console routes, approval review/action, and media.
-- `src/worker/index.ts`: exclusive ownership → recovery → queue → deterministic orchestration → approval → native publishing. Ownership, recovery, publication ordering, and exit behavior live in `src/harness/workerOwnership.ts`, `briefRecovery.ts`, `publicationRunner.ts`, `briefLifecycle.ts`, and `workerExit.ts`; startup ordering is in `src/worker/startup.ts`. Current source; not yet the production runtime.
+- `src/worker/index.ts`: exclusive ownership → recovery → queue → deterministic orchestration → approval → native publishing. Ownership, recovery, publication ordering, and exit behavior live in `src/harness/workerOwnership.ts`, `briefRecovery.ts`, `publicationRunner.ts`, `briefLifecycle.ts`, and `workerExit.ts`; startup ordering is in `src/worker/startup.ts`.
 - `src/scheduler/daily.ts`: daily brief enqueue only.
 - `src/harness/orchestrator.ts`: current manager/control flow. It directly invokes current agent prompt bodies; the master-prompt manager is dormant.
+- `src/harness/evidence/`: the Phase 0B.0 evidence contract, pack builder, approved-facts adapter, and the `evidence:sync` operator command. `src/harness/agents/registry.ts`: the six-stage agent registry, asset resolution, and stage planning — **no stage executes**. `src/harness/contentIntelligence.ts`: the deterministic, inert preview those two feed. Implemented, not deployed.
 - `src/mcp/`: imported provider libraries, not standalone MCP servers/model tools.
-- `state/migrations/`: forward-only PostgreSQL authority; migration 005 is applied in production.
+- `state/migrations/`: forward-only PostgreSQL authority. Migration 005 is applied in production. **Migration 006 (`content_evidence`) exists in the repository and is NOT applied to production**, so any release carrying it is migration-bearing.
 - `.github/workflows/ci.yml`: pull-request/`main` CI.
 - `.github/workflows/deploy-production.yml` plus `scripts/render/deployment-controller.mjs`: disabled exact-SHA production controller.
 
@@ -32,10 +33,10 @@ Read [Architecture](ARCHITECTURE.md), [Data model](DATA_MODEL.md), or [Testing](
 
 **These are intentionally different and must not be assumed equal.** [Status](STATUS.md) is authoritative for every exact SHA and for the freshness of each mutable fact; this section states only the semantics.
 
-- **Repository `main` carries the worker ownership and recovery work** (PR #36). Verified by direct Git inspection on 2026-08-26.
-- **Production does not.** The live release predates it, so the worker running today does not take the advisory lock and does not participate in the ownership protocol.
-- The last full read-only production verification was **2026-08-24 21:32 UTC**. Render native auto-deploy was off on all three services, the GitHub `production` environment was configured, and the repository gate `RENDER_DEPLOY_AUTOMATION_ENABLED` was `false` — a deliberate zero-unattended-authority window. **None of those has been reverified since**; treat each as last-verified, not as current truth.
-- A normal scheduled run of the current production SHA **was** observed on 2026-08-25; that item is closed. See [Status](STATUS.md) for the run evidence.
+- **PR #36 (worker ownership and recovery) and PR #38 (media publication normalization) are merged, deployed, and production-validated — operator-reported 2026-08-27.** The manual bootstrap was performed by the operator; no engineering session here has Render or production database access, so this is recorded as reported and was **not independently verified**. The operator reported an approximately 58-second wait for exclusive ownership before readiness, reconciliation of the August 10 stranded brief with `providerMutation = impossible`, and a controlled brief in which a 896x1120 provider render normalized to 1080x1350 and reached a real human approval with nothing published automatically.
+- **Phase 0B.0 is in the repository and is not deployed.** The evidence system, agent registry, and Content Intelligence preview are implemented; migration 006 is not applied to production; the six reasoning stages do not execute.
+- The last full read-only production verification performed *in an engineering session* was **2026-08-24 21:32 UTC**. Render native auto-deploy was off on all three services, the GitHub `production` environment was configured, and the repository gate `RENDER_DEPLOY_AUTOMATION_ENABLED` was `false` — a deliberate zero-unattended-authority window. **None of those has been reverified in a session since**; treat each as last-verified, not as current truth. The operator's bootstrap was a manual Render action and was not expected to change the gate.
+- A normal scheduled run of the then-current production SHA **was** observed on 2026-08-25; that item is closed. See [Status](STATUS.md) for the run evidence.
 - PostgreSQL external access was open to `0.0.0.0/0` at last verification.
 
 Mutable state can change. Reinspect GitHub and Render read-only immediately before any production operation; never infer it from this file, from `docs/STATUS.md` alone once stale, or from `render.yaml`.
@@ -50,37 +51,46 @@ Mutable state can change. Reinspect GitHub and Render read-only immediately befo
 
 **PR #35** — documentation reconciliation and the zero-context handoff set. `MERGED`; documentation-only.
 
-**PR #36 — worker ownership and interrupted-brief recovery.** `MERGED` to `main`, **not `DEPLOYED`, not `PRODUCTION-VALIDATED`.** No migration. Exclusive ownership through a PostgreSQL session-level advisory lock; the `pending → running` claim executed on that ownership session; durable phase markers committed before each side effect; refuse-don't-resume terminalization of abandoned work; a startup orphan-approval sweep; ownership loss as a side-effect fence that ends the process; and readiness redefined to assert four things at once. This is current source and the next production release — not current production runtime.
+**PR #36 — worker ownership and interrupted-brief recovery.** `MERGED` · `DEPLOYED` · `PRODUCTION-VALIDATED` (operator-reported 2026-08-27). No migration. Exclusive ownership through a PostgreSQL session-level advisory lock; the `pending → running` claim executed on that ownership session; durable phase markers committed before each side effect; refuse-don't-resume terminalization of abandoned work; a startup orphan-approval sweep; ownership loss as a side-effect fence that ends the process; and readiness redefined to assert four things at once.
+
+**PR #38 — media publication normalization.** `MERGED` · `DEPLOYED` · `PRODUCTION-VALIDATED` (operator-reported 2026-08-27). No migration. Decode safety and publication profile separated into two distinct byte policies; provider-friendly source render sizes mapped to each publication profile at exactly its aspect ratio; and an off-ratio render — a square 1024x1024 — **refused rather than cropped or stretched**, typed as a deterministic non-retryable media-contract failure. Equality is exact integer cross-multiplication, not a floating-point tolerance.
+
+**PR #37 and PR #39** — roadmap-continuity governance and its post-merge clarification. Documentation-only. PR #37 is `MERGED`; PR #39 was still open at the start of Phase 0B.0.
+
+**Phase 0B.0 — content evidence and agent foundation.** `IMPLEMENTED`, **not `MERGED`, not `DEPLOYED`.** Migration 006, the typed evidence contract with its eight epistemic kinds, the evidence pack that surfaces conflicts instead of resolving them, the deterministic approved-facts projection, the explicit `evidence:sync` operator command, the six-stage agent registry with allowlist-rooted asset loading, and an inert Content Intelligence preview route. **No stage executes and no model call was added.**
 
 ## 6. Current operation in progress
 
-The deployment-authority cutover, Phase 0D.1, is paused safely between authorities: no unattended deployment authority is active as of the last verification.
+**Phase 0B.0 — content evidence and agent registry foundation.** Implemented on `codex/phase-0b-evidence-agent-registry` and proposed as a draft pull request. It adds no model call and executes no reasoning stage; it exists so that the six stages, when they are wired, have a typed evidence substrate and a registry to be wired into.
 
-**PR #36 changed what the cutover must do next.** The ownership fix is merged but not deployed, and the live worker cannot be fenced by a lock it does not take. Enabling the GitHub gate first would grant automated deployment authority to a system whose worker still strands interrupted briefs silently. The ownership fix therefore gets its first production release through a **separately authorized manual Render bootstrap while the gate stays `false`**.
+Two independent tracks remain open, and **neither blocks the other**:
+
+- **Deployment authority (Phase 0D.1).** The manual ownership bootstrap is complete (operator-reported), which was the thing that had to precede it. Enabling `RENDER_DEPLOY_AUTOMATION_ENABLED` and proving the controller path are now eligible, each under its own authorization and its own immediate re-verification.
+- **Phase 0B.** The remaining Content Intelligence build. Its first release is migration-bearing because of migration 006, so it cannot take the ordinary controller path regardless of how the authority track resolves.
 
 See [Deployment control](DEPLOYMENT.md) for exact mechanics and [Roadmap](ROADMAP.md) for the ordered cursor.
 
 ## 7. Next action
 
-Take one action only, and only with explicit authorization. **Do not set the deployment gate.**
+Take one action only, and only with explicit authorization.
 
-1. Read-only reverify current `main`, all three live SHAs, native auto-deploy off on all three services, the GitHub environment and configuration, the gate still `false`, and no deploy or migration in flight. Stop on any discrepancy.
+1. Land Phase 0B.0: review and merge the draft pull request on `codex/phase-0b-evidence-agent-registry`. It is repository-only — no deployment, no migration run, no provider call.
 
-Everything after that is a separately authorized step in its own right, in this order: reconcile the August 10 incident against provider account history; resolve the stale `running` row; perform the manual bootstrap release of the ownership fix with the gate still `false`; verify ownership acquisition, reconciliation, and readiness at that SHA; prove worker handoff with both versions holding the lock; and only then consider enabling `RENDER_DEPLOY_AUTOMATION_ENABLED` and proving the controller path.
+Everything after that is a separately authorized step in its own right. On the **Phase 0B** track: wire the six reasoning stages onto the registry, one stage at a time with its own validation, then plan the migration-bearing first release of migration 006 through the controlled rollout — never the ordinary controller path. On the **deployment authority** track: read-only reverify current `main`, all three live SHAs, native auto-deploy state, the GitHub environment and configuration, and the gate, stopping on any discrepancy; then consider enabling `RENDER_DEPLOY_AUTOMATION_ENABLED` and proving the controller path.
 
-Never re-enable native Render auto-deploy while the GitHub gate is true. Do not combine this cutover with database networking or Phase 0B.
+Never re-enable native Render auto-deploy while the GitHub gate is true. Do not combine the authority cutover with database networking or with the Phase 0B migration release.
 
 ## 8. Roadmap
 
-[Roadmap](ROADMAP.md) is authoritative and binding — see the roadmap-continuity rule in [`AGENTS.md`](../AGENTS.md). After the bootstrap and cutover proof: provider idempotency/operation ledger, provider reconciliation, PostgreSQL network restriction, token lifecycle, control/reviewer identity, retention and backup/restore, the external readiness register, then the Phase 0B evidence contract and runtime. The worker lease/reaper item is superseded and is no longer active work.
+[Roadmap](ROADMAP.md) is authoritative and binding — see the roadmap-continuity rule in [`AGENTS.md`](../AGENTS.md). The Phase 0B evidence contract is now implemented (Phase 0B.0) rather than pending. Remaining: the six reasoning stages on the registry; provider idempotency/operation ledger; provider reconciliation; PostgreSQL network restriction; token lifecycle; control/reviewer identity; retention and backup/restore; the external readiness register; and the deployment-authority cutover proof. The worker lease/reaper item is superseded and is no longer active work.
 
 ## 9. Outstanding risks
 
-Highest priority: no durable provider idempotency, operation ledger, or reconciliation — provider-level `withRetry` can still reissue a request after an ambiguous network outcome, so duplicate publication remains possible. Worker-interruption recovery is **merged but not deployed**, so the stranding failure mode is still live in production. PostgreSQL external access was open to `0.0.0.0/0` at last verification; the default-path Instagram token persists in plaintext; approval uses a bearer URL with a generic reviewer identity; one shared control secret carries process-local rate limits; there is no retention or restore drill; and provider ownership, scopes, versions, and backup facts remain unverified. Current skills are not injected, scorecard/proposal tables are unwritten, and no empirical learning runtime exists.
+Highest priority: no durable provider idempotency, operation ledger, or reconciliation — provider-level `withRetry` can still reissue a request after an ambiguous network outcome, so duplicate publication remains possible. Worker-interruption recovery is deployed (operator-reported 2026-08-27, not independently verified here), so that specific stranding mode should be closed — but a claim recorded as reported is not a claim verified, and it should be reconfirmed before being relied on. PostgreSQL external access was open to `0.0.0.0/0` at last verification; the default-path Instagram token persists in plaintext; approval uses a bearer URL with a generic reviewer identity; one shared control secret carries process-local rate limits; there is no retention or restore drill; and provider ownership, scopes, versions, and backup facts remain unverified. Current skills are not injected, scorecard/proposal tables are unwritten, and no empirical learning runtime exists. Phase 0B.0 adds the evidence substrate but does not populate it: `content_evidence` is empty until an authorized operator runs `evidence:sync`, and the six reasoning stages still do not execute.
 
 ## 10. Content Intelligence target architecture
 
-Use about six primary reasoning stages—strategy-concept, automotive-truth, hook-story-script, production-direction, packaging-adaptation, final-critic—surrounded by deterministic retrieval, evidence, policy, validation, state, and publication services. The roughly 22 researched roles are conceptual capabilities, not 22 mandatory calls. Phase 0B should add `AgentRegistry`, skill/reference injection, retrieval, evidence capture, and deterministic validation. This is target architecture, not current runtime.
+Use about six primary reasoning stages—strategy-concept, automotive-truth, hook-story-script, production-direction, packaging-adaptation, final-critic—surrounded by deterministic retrieval, evidence, policy, validation, state, and publication services. The roughly 22 researched roles are conceptual capabilities, not 22 mandatory calls. Phase 0B.0 added the `AgentRegistry`, its checked-in asset resolution for all six stages, the durable evidence contract, and a deterministic inert preview. Skill/reference injection into live calls, retrieval, evidence capture from real runs, and stage execution remain unbuilt. The six stages are declared and planned; **none of them executes**, so this is still target architecture, not current runtime.
 
 ## 11. Critical historical lessons
 
@@ -131,3 +141,4 @@ Read repository/Git/GitHub and explicitly available read-only infrastructure sta
 - [CI workflow](../.github/workflows/ci.yml)
 - [Production workflow](../.github/workflows/deploy-production.yml)
 - [Migration 005](../state/migrations/005_approval_integrity.sql)
+- [Migration 006](../state/migrations/006_content_evidence.sql)

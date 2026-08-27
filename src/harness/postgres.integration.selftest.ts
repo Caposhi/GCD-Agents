@@ -15,12 +15,15 @@
 
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { copyFile, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import type { Pool as PgPool } from "pg";
 import { config } from "./config.js";
+import { adaptApprovedFactsFile } from "./evidence/approvedFacts.js";
+import { buildEvidencePack } from "./evidence/pack.js";
 import { assertPublishAllowed, SOCIAL_POST_APPROVAL_SUBJECT } from "./hitl.js";
 import { assertPlatformSafePublicationJpeg, MAX_PUBLICATION_JPEG_BYTES } from "./mediaPolicy.js";
 import {
@@ -34,9 +37,12 @@ import {
   hashApprovalSubject,
   hashMediaBytes,
   initState,
+  listContentEvidence,
+  listContentEvidenceRelations,
   revokeApproval,
   saveMedia,
   stateEnabled,
+  syncContentEvidence,
   verifyApprovalToken,
 } from "./state.js";
 import {
@@ -69,6 +75,7 @@ const EXPECTED_MIGRATIONS = [
   "003_media.sql",
   "004_events.sql",
   "005_approval_integrity.sql",
+  "006_content_evidence.sql",
 ] as const;
 const GROUPS = ["fresh", "upgrade", "durable"] as const;
 type Group = typeof GROUPS[number];
@@ -388,6 +395,145 @@ async function assertSchemaObjects(pool: PgPool, group: "fresh" | "upgrade"): Pr
     "media.content_sha256 is a non-null text column",
     mediaColumn.rows[0]?.attnotnull === true && mediaColumn.rows[0]?.data_type === "text",
   );
+}
+
+/**
+ * Phase 0B.0 evidence schema, against the real database.
+ *
+ * The TypeScript contract and the SQL CHECK constraints are deliberately
+ * redundant. These assertions prove the database enforces class separation on
+ * its own, so a future writer that bypasses the application layer still cannot
+ * store a fact without a source or promote a measurement into a truth.
+ */
+async function assertContentEvidenceSchema(
+  pool: PgPool,
+  databaseUrl: string,
+  group: "fresh" | "upgrade",
+): Promise<void> {
+  const rejects = async (label: string, sql: string, values: unknown[] = []): Promise<void> => {
+    let rejected = false;
+    try {
+      await pool.query(sql, values);
+    } catch {
+      rejected = true;
+    }
+    check(group, label, rejected);
+  };
+
+  const base = `INSERT INTO content_evidence (id, kind, claim, subject, source_type`;
+
+  // M. malformed evidence is rejected by the database itself.
+  await rejects(
+    "[evidence] a verified fact without a source is rejected by the database",
+    `${base}) VALUES ('bad-1','verified_automotive_fact','c','s','manufacturer_documentation')`,
+  );
+  await rejects(
+    "[evidence] a verified fact sourced from model inference is rejected",
+    `${base}, source_ref, provenance, reviewed_at)
+       VALUES ('bad-2','verified_automotive_fact','c','s','model_inference','r','p',now())`,
+  );
+  await rejects(
+    "[evidence] an unknown evidence kind is rejected",
+    `${base}) VALUES ('bad-3','wishful_thinking','c','s','repository_config')`,
+  );
+  await rejects(
+    "[evidence] an empty claim is rejected",
+    `${base}) VALUES ('bad-4','creative_hypothesis','   ','s','model_inference')`,
+  );
+  await rejects(
+    "[evidence] confidence outside [0,1] is rejected",
+    `${base}, confidence) VALUES ('bad-5','creative_hypothesis','c','s','model_inference', 2)`,
+  );
+  await rejects(
+    "[evidence] performance evidence from a non-analytics source is rejected",
+    `${base}, observed_at) VALUES ('bad-6','gcd_performance_evidence','c','s','model_inference', now())`,
+  );
+  await rejects(
+    "[evidence] a generalizable observation is rejected",
+    `${base}, observed_at, provenance, generalizable)
+       VALUES ('bad-7','gcd_direct_observation','c','s','gcd_shop_record', now(), 'p', true)`,
+  );
+  await rejects(
+    "[evidence] a certain causal hypothesis is rejected",
+    `${base}, confidence) VALUES ('bad-8','causal_hypothesis','c','s','model_inference', 1)`,
+  );
+  await rejects(
+    "[evidence] a high-confidence unsupported assumption is rejected",
+    `${base}, confidence) VALUES ('bad-9','unsupported_assumption','c','s','unattributed', 0.9)`,
+  );
+  await rejects(
+    "[evidence] superseded without a successor is rejected",
+    `${base}, lifecycle) VALUES ('bad-10','creative_hypothesis','c','s','model_inference','superseded')`,
+  );
+  await rejects(
+    "[evidence] self-supersession is rejected",
+    `${base}, lifecycle, superseded_by_id)
+       VALUES ('bad-11','creative_hypothesis','c','s','model_inference','superseded','bad-11')`,
+  );
+  await rejects(
+    "[evidence] a self-referential relation is rejected",
+    `INSERT INTO content_evidence_relations (from_id, to_id, kind) VALUES ('x','x','supports')`,
+  );
+
+  const relationKinds = await pool.query(
+    `SELECT conname FROM pg_constraint WHERE conname = 'content_evidence_relations_kind_check'`,
+  );
+  check(group, "[evidence] relation-kind constraint exists", relationKinds.rowCount === 1);
+
+  const indexes = await pool.query(
+    `SELECT indexname FROM pg_indexes WHERE tablename = 'content_evidence'`,
+  );
+  const names = indexes.rows.map((r: any) => String(r.indexname));
+  check(
+    group,
+    "[evidence] expected indexes exist",
+    ["content_evidence_kind_lifecycle_idx", "content_evidence_subject_idx",
+      "content_evidence_active_idx", "content_evidence_tags_idx"].every((n) => names.includes(n)),
+  );
+
+  // L. the operator sync is idempotent against the real upsert.
+  await closeState();
+  config.databaseUrl = databaseUrl;
+  await initState({ requireDurable: true });
+  try {
+    const raw = await readFile(resolve(repoRootForEvidence(), "config/approved-facts.json"), "utf8");
+    const adapted = adaptApprovedFactsFile(raw, { reviewedAt: "2026-08-01T00:00:00Z", now: Date.UTC(2026, 7, 27) });
+    const firstRun = await syncContentEvidence(adapted.records);
+    const secondRun = await syncContentEvidence(adapted.records);
+    check(group, "[evidence] first sync inserts every adapted record",
+      firstRun.inserted === adapted.records.length && firstRun.updated === 0);
+    check(group, "[evidence] repeating the sync changes nothing",
+      secondRun.inserted === 0 && secondRun.updated === 0
+        && secondRun.unchanged === adapted.records.length);
+
+    const stored = await listContentEvidence();
+    check(group, "[evidence] stored records round-trip",
+      stored.length === adapted.records.length
+        && stored.every((r) => r.kind === "verified_business_fact"));
+    check(group, "[evidence] provenance survives the database round-trip",
+      stored.every((r) => (r.provenance ?? "").includes(adapted.contentSha256)));
+
+    // A changed claim is an update, not a duplicate row.
+    const mutated = adapted.records.map((r, i) => (i === 0 ? { ...r, claim: `${r.claim} (revised)` } : r));
+    const thirdRun = await syncContentEvidence(mutated);
+    check(group, "[evidence] a changed claim updates exactly one row",
+      thirdRun.updated === 1 && thirdRun.inserted === 0);
+
+    const pack = buildEvidencePack({
+      goal: "integration pack",
+      records: await listContentEvidence(),
+      relations: await listContentEvidenceRelations(),
+      now: Date.UTC(2026, 7, 27),
+    });
+    check(group, "[evidence] a pack built from durable rows exposes citable facts",
+      pack.allowedFacts.length > 0 && pack.unsupportedAssumptions.length === 0);
+  } finally {
+    await closeState();
+  }
+}
+
+function repoRootForEvidence(): string {
+  return resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 }
 
 async function assertStartupProbe(databaseUrl: string, group: "fresh" | "upgrade"): Promise<void> {
@@ -1326,12 +1472,13 @@ async function main(): Promise<void> {
       );
       check(
         "fresh",
-        "runner output confirms all five migrations were applied",
+        "runner output confirms every expected migration was applied",
         EXPECTED_MIGRATIONS.every((name) => freshRun.stdout.includes(`[migrate] applied ${name}`))
           && freshRun.stdout.includes("[migrate] done"),
       );
       await assertSchemaObjects(freshPool, "fresh");
       await assertStartupProbe(freshUrl, "fresh");
+      await assertContentEvidenceSchema(freshPool, freshUrl, "fresh");
       await assertDurableBehavior(freshPool, freshUrl);
       await assertOwnershipAndRecovery(freshPool, freshUrl);
     } finally {
@@ -1366,6 +1513,7 @@ async function main(): Promise<void> {
       await assertLegacyUpgrade(upgradePool, legacy);
       await assertSchemaObjects(upgradePool, "upgrade");
       await assertStartupProbe(upgradeUrl, "upgrade");
+      await assertContentEvidenceSchema(upgradePool, upgradeUrl, "upgrade");
     } finally {
       await closeState();
       await upgradePool.end();

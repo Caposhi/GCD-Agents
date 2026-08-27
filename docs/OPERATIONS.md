@@ -21,6 +21,22 @@ The cron runs at 09:00 EDT or 08:00 EST. One brief generates one package contain
 
 The worker starts the Instagram token tick/timer only when Instagram is active. On the default Instagram-login host it uses the live PostgreSQL-backed refresh path; on the alternate Facebook-login host this module returns the environment token without refreshing it. Once a review is approved, the helper runs only when the approved array includes Instagram, and Google OAuth refresh is attempted only when that array includes GBP. A Google refresh error is logged and the provider path may still use the static fallback token from the environment; no unrelated platform refresh is attempted.
 
+## Content evidence sync (Phase 0B.0 — implemented, not deployed)
+
+`npm run evidence:sync` is the **only** writer of `content_evidence`. It is an explicit operator command, not a startup step and not part of any release: if it ran on boot, every deploy would silently rewrite what the system believes is true, and a bad edit to `config/approved-facts.json` would propagate without anyone deciding to apply it.
+
+```bash
+npm run build
+npm run evidence:sync -- --dry-run   # no database, writes nothing, prints exactly what would change
+npm run evidence:sync                # requires durable PostgreSQL with migration 006 applied
+```
+
+The dry run needs no database at all. The applying run requires durable state and refuses to proceed without it. The sync is idempotent — it compares each field and only writes on a real difference, so a second run reports `inserted=0 updated=0` and every record unchanged. `--reviewed-at=<ISO timestamp>` overrides the review timestamp attributed to the checked-in file; omit it and the current time is used.
+
+`config/approved-facts.json` stays authoritative. The sync is a projection of it, and every record carries provenance naming the file and the exact content sha256 it was derived from, so drift between the file and durable evidence is visible rather than silent. It does not create a second source of truth: the copywriter and critic still read the JSON.
+
+**Do not run this against production in an unauthorized session.** Migration 006 is not applied to production, so there is currently nothing there to sync into. A first production sync is a separately authorized operation that follows the migration rollout below.
+
 ## Routine checks
 
 Daily: API/worker/scheduler status, pending/running/failed briefs, pending/expired/revoked approvals, last events, provider post IDs/results, token-refresh estimates, and Slack delivery. Treat a legacy/missing-hash approval as invalid and issue a fresh review; never repair it by hand. Reconcile any composite notification/revocation error before resuming. Weekly: reconcile platform posts against `brief_queue.outcome`, review model/image costs, verify that the approved destination and runtime IDs/host/version still match, and verify the shared-secret route contract/limits. Do not try to remove media rows: migration 005 deliberately rejects every media DELETE until a future reviewed retention migration exists. Monthly: provider scopes/tokens/billing, Render access, database backups, dependency advisories, canonical approved facts/CTA URLs, fact provenance/freshness, platform/model/API assumptions, and the public booking capability.
@@ -38,7 +54,7 @@ Daily: API/worker/scheduler status, pending/running/failed briefs, pending/expir
 
 Phase 0A and Phase 0D are live at the production commit recorded in [Status](STATUS.md). At the last read-only verification, native Render auto-deploy was off for API, worker, and scheduler and GitHub automation was configured with the repository gate false — an intentional zero-unattended-authority window that must be reconfirmed rather than assumed.
 
-The worker-ownership and recovery change is **merged to `main` in PR #36 (`0828cc9…`) but not deployed**, so production still runs a worker with none of the protections described below. Until that release is live, **any manual worker restart needs a quiescent queue**, and an interrupted brief can still be stranded silently. The next authorized operation is a read-only reverification, followed by the separately authorized manual bootstrap of the ownership fix with the gate still false — **not** controller enablement, and not restoration of native auto-deploy. The Phase 0A worker-before-migration incident is why no migration-bearing release may use the ordinary controller path.
+The worker-ownership and recovery change (PR #36, merge `0828cc9…`) and the media normalization change (PR #38, merge `a6a4316…`) are **merged, deployed, and production-validated — operator-reported 2026-08-27**. That is recorded as reported: the manual bootstrap was performed by the operator, and no engineering session here has Render or production database access to verify it first-hand. Re-verify against `/healthz` before relying on it for a decision. Controller enablement and restoration of native auto-deploy remain separate, individually authorized operations; the gate stays false until then. The Phase 0A worker-before-migration incident is why no migration-bearing release may use the ordinary controller path — and **migration 006 now exists in the repository unapplied**, so the release that first carries Phase 0B.0 is migration-bearing and must take the separately authorized rollout path at step 3 below.
 
 For a no-migration release after cutover:
 
@@ -60,9 +76,9 @@ Application rollback selects a prior release/commit. SQL migrations are forward-
 
 ## Brief lifecycle
 
-`brief_queue.status` is `pending → running → done|failed`. `running` is a single opaque state that spans orchestration, a human approval wait of up to 24 hours, and the provider publish loop, and `claimNextBrief` only ever selects `pending`. **In the release running in production today, nothing reclaims a `running` row**, so an interrupted worker strands its brief permanently and silently — see the August 10 incident in [Status](STATUS.md). That is still true right now; the fix below is merged but not deployed.
+`brief_queue.status` is `pending → running → done|failed`. `running` is a single opaque state that spans orchestration, a human approval wait of up to 24 hours, and the provider publish loop, and `claimNextBrief` only ever selects `pending`. In the release that preceded PR #36, nothing reclaimed a `running` row, so an interrupted worker stranded its brief permanently and silently — see the August 10 incident in [Status](STATUS.md). The behavior below replaces that.
 
-**Merged to `main` in PR #36; not deployed and not production-validated.** The behavior below is current source and describes the next production release, not what the live worker does today:
+**Merged in PR #36; deployed and production-validated — operator-reported 2026-08-27, not independently verified in this engineering session.** The operator reported the new worker waiting approximately 58 seconds for exclusive ownership before emitting readiness, and the August 10 stranded brief being reconciled with `providerMutation = impossible` and no provider replay:
 
 1. **Exclusive ownership.** The worker holds a session-level advisory lock on a dedicated PostgreSQL connection for its whole lifetime. Render zero-downtime deploys keep the old worker alive for roughly a minute after the new one starts, so a new instance waits — reconciling nothing, emitting no readiness, consuming nothing — until the previous session ends and the lock is free.
 2. **Ownership as a side-effect fence.** Losing the lock or entering shutdown blocks approval creation, credential acquisition, and every provider attempt, including between platforms. A worker that no longer owns the queue may only run its shutdown path.
