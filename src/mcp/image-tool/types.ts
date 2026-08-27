@@ -24,11 +24,31 @@ export interface BuiltImageRequest {
   body: Record<string, unknown>;
 }
 
+/**
+ * What the provider actually reported about the asset it produced.
+ *
+ * Every field is optional on purpose. A live 2026-08-27 Ideogram v3 response
+ * carried only `url`, `content_type`, `file_name` and `file_size` — no width or
+ * height at all — so nothing here may be treated as guaranteed. These values
+ * are diagnostic context; the downloaded byte header remains the sole authority
+ * on dimensions and format, and a missing field is never an error.
+ */
+export interface ProviderImageMetadata {
+  contentType?: string;
+  fileName?: string;
+  fileSize?: number;
+  /** Present only when the provider volunteers it; frequently absent. */
+  width?: number;
+  height?: number;
+}
+
 export interface ImageResult {
   ok: boolean;
   url?: string; // hosted image URL returned by the provider
   model?: string;
   error?: string;
+  /** Best-effort provider-reported metadata; never authoritative. */
+  metadata?: ProviderImageMetadata;
 }
 
 export interface ImageProvider {

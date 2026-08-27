@@ -23,14 +23,45 @@ import {
 } from "./packageMap.js";
 import {
   AgentRunner,
+  approvedPublicationProfiles,
+  assertApprovedPublicationProfile,
   assertPlatformSafePublicationJpeg,
   ImageResolver,
   isTrustedGeneratedImageUrl,
+  imageAttemptFailurePolicy,
+  MediaContractError,
+  normalizeToPublicationJpeg,
   parseAgentJson,
+  planPublicationResize,
   publicationImageDimensions,
   runBrief,
   validateGeneratedImageHeader,
 } from "./orchestrator.js";
+import { mediaUrlMatchesContentSha256 } from "../mcp/posting-tool/validation.js";
+import { createHash, randomUUID } from "node:crypto";
+
+/** True when fn throws — used to assert a policy fails closed. */
+function throws(fn: () => unknown): boolean {
+  try {
+    fn();
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+/** Proves an aspect mismatch is typed as deterministic, so it is never retried. */
+async function rejectsWithMediaContractError(
+  bytes: Uint8Array,
+  target: { width: number; height: number },
+): Promise<boolean> {
+  try {
+    await normalizeToPublicationJpeg(bytes, target);
+    return false;
+  } catch (e) {
+    return e instanceof MediaContractError && (e as MediaContractError).retryable === false;
+  }
+}
 
 let failures = 0;
 function check(name: string, cond: boolean): void {
@@ -466,12 +497,24 @@ async function run(): Promise<void> {
     try { validateGeneratedImageHeader(oversize); } catch { oversizeBlocked = true; }
     check("oversize compressed-image header is blocked before decode", oversizeBlocked);
 
+    // A non-profile provider render is no longer blocked at the raw-decode
+    // boundary — that conflation is what rejected valid 4:5 provider output and
+    // blocked scheduled posting. It is blocked at the publication boundary and
+    // by the resize planner instead, which is where it belongs.
     const awkward = Buffer.from(png);
     awkward.writeUInt32BE(512, 16);
     awkward.writeUInt32BE(2_048, 20);
-    let awkwardBlocked = false;
-    try { validateGeneratedImageHeader(awkward); } catch { awkwardBlocked = true; }
-    check("non-platform-safe image ratio is blocked before decode", awkwardBlocked);
+    let awkwardDecodes = false;
+    try { validateGeneratedImageHeader(awkward); awkwardDecodes = true; } catch { awkwardDecodes = false; }
+    check("non-profile provider render is safely decodable (not blocked as a raw input)", awkwardDecodes);
+    check(
+      "non-profile image ratio is still refused as final publication media",
+      throws(() => assertApprovedPublicationProfile(512, 2_048)),
+    );
+    check(
+      "non-profile image ratio is refused by the resize planner rather than cropped",
+      throws(() => planPublicationResize({ width: 512, height: 2_048 }, { width: 1_080, height: 1_350 })),
+    );
     check(
       "model-authored unsupported dimensions normalize to the safe 4:5 feed profile",
       publicationImageDimensions(512, 2_048).width === 1_080
@@ -540,6 +583,129 @@ async function run(): Promise<void> {
     check("simulated dry run preserves non-secret platform selection", fixture.ACTIVE_PLATFORMS === "instagram,facebook,gbp");
     prepareSimulatedDryRunEnvironment(fixture);
     check("simulated dry run forces a non-production config before dynamic import", fixture.NODE_ENV === "test");
+  }
+
+  // --- provider-render normalization (Land Rover / BMW incident) -------------
+  //
+  // Regression cover for the production blocker: Ideogram returns a
+  // provider-native render, not the exact publication profile, and may return
+  // PNG despite a JPEG request. The pipeline must normalize by uniform scale
+  // only, and must refuse to crop a mismatched composition.
+  {
+    const { Jimp, JimpMime } = await import("jimp");
+    const makeImage = async (w: number, h: number, mime: "png" | "jpeg"): Promise<Buffer> => {
+      const img = new Jimp({ width: w, height: h, color: 0x182848ff });
+      // A distinguishable block so a crop would be detectable, not just a resize.
+      for (let x = 0; x < Math.min(40, w); x++) {
+        for (let y = 0; y < Math.min(40, h); y++) img.setPixelColor(0xf8e000ff, x, y);
+      }
+      return (await img.getBuffer(mime === "png" ? JimpMime.png : JimpMime.jpeg)) as Buffer;
+    };
+
+    const target = { width: 1_080, height: 1_350 };
+
+    // A. raw provider-native 896x1120 PNG passes DECODE SAFETY.
+    const incidentSource = await makeImage(896, 1_120, "png");
+    const rawHeader = validateGeneratedImageHeader(incidentSource);
+    check(
+      "A. raw 896x1120 PNG passes decode-safety validation",
+      rawHeader.width === 896 && rawHeader.height === 1_120 && rawHeader.format === "png",
+    );
+
+    // B. the same bytes are NOT acceptable as final publication media.
+    check(
+      "B. raw 896x1120 PNG is rejected as final publication media",
+      throws(() => assertPlatformSafePublicationJpeg(incidentSource)),
+    );
+
+    // C + D. the incident render normalizes to exactly 1080x1350 JPEG.
+    const normalized = await normalizeToPublicationJpeg(incidentSource, target);
+    const normalizedHeader = assertPlatformSafePublicationJpeg(normalized.bytes);
+    check("C. 896x1120 -> 1080x1350 normalization succeeds", normalized.resized);
+    check(
+      "D. normalized artifact is exactly 1080x1350 JPEG",
+      normalizedHeader.format === "jpeg" && normalizedHeader.width === 1_080 && normalizedHeader.height === 1_350,
+    );
+
+    // E. the resize is uniform: one scale factor for both axes, no crop/pad.
+    const uniform = Math.abs(1_080 / 896 - 1_350 / 1_120) < 1e-9;
+    check(
+      "E. resize is a pure uniform scale (no crop, no padding, no distortion)",
+      uniform && Math.abs(normalized.scale - 1_080 / 896) < 1e-9,
+    );
+
+    // F. the size we actually request from fal also normalizes cleanly.
+    const requested = await makeImage(1_024, 1_280, "jpeg");
+    const fromRequested = await normalizeToPublicationJpeg(requested, target);
+    const fromRequestedHeader = assertPlatformSafePublicationJpeg(fromRequested.bytes);
+    check(
+      "F. 1024x1280 -> 1080x1350 normalization succeeds",
+      fromRequestedHeader.width === 1_080 && fromRequestedHeader.height === 1_350,
+    );
+
+    // G. the original failure mode: a 1:1 render must never be cropped into 4:5.
+    const squareSource = await makeImage(1_024, 1_024, "png");
+    let squareError = "";
+    try {
+      await normalizeToPublicationJpeg(squareSource, target);
+    } catch (e) {
+      squareError = (e as Error).message;
+    }
+    check(
+      "G. 1024x1024 -> 1080x1350 is refused rather than cropped",
+      squareError.includes("1024x1024") && squareError.includes("cropping is forbidden"),
+    );
+    check(
+      "G2. aspect refusal is a deterministic, non-retryable media-contract failure",
+      await rejectsWithMediaContractError(squareSource, target),
+    );
+
+    // H. unsafe/malformed input is rejected before any processing.
+    check(
+      "H. malformed image bytes are rejected before processing",
+      throws(() => validateGeneratedImageHeader(Buffer.from("not an image at all", "utf8"))),
+    );
+    check(
+      "H2. oversized dimensions are rejected by the decode-safety bound",
+      throws(() => planPublicationResize({ width: 8_192, height: 10_240 }, target))
+        || throws(() => assertApprovedPublicationProfile(8_192, 10_240)),
+    );
+
+    // I + J + K. QC, hosting, and the digest all see the SAME normalized bytes.
+    const inspected = normalized.bytes;
+    const digest = createHash("sha256").update(inspected).digest("hex");
+    const reDigest = createHash("sha256").update(normalized.bytes).digest("hex");
+    check("I. QC/inspection receives the normalized final bytes, not the raw provider bytes", !inspected.equals(incidentSource));
+    check("J. hosted bytes are identical to the bytes QC inspected", inspected.equals(normalized.bytes));
+    check("K. content digest is computed over exactly those bytes", digest === reDigest);
+    check(
+      "L. approval-bound media URL embeds that exact digest",
+      mediaUrlMatchesContentSha256(`https://media.example.com/media/${randomUUID()}-${digest}.jpg`, digest),
+    );
+
+    // M. the durable publication guard still refuses a non-profile size.
+    const offProfile = await makeImage(1_024, 1_280, "jpeg");
+    check(
+      "M. durable publication guard still rejects an unapproved profile size",
+      throws(() => assertPlatformSafePublicationJpeg(offProfile)),
+    );
+    check(
+      "M2. approved profiles are unchanged (no provider size was added)",
+      JSON.stringify(approvedPublicationProfiles()) === JSON.stringify(["1080x1350", "1080x1080", "1200x900", "1200x630"]),
+    );
+
+    // Q. A deterministic media-contract failure must never trigger another paid
+    // generation; a creative failure keeps its own (QC-driven) retry path.
+    const contractPolicy = imageAttemptFailurePolicy(new MediaContractError("aspect mismatch"));
+    check(
+      "Q. aspect mismatch performs exactly one generation and does not retry",
+      contractPolicy.retry === false && contractPolicy.deterministic === true,
+    );
+    const genericPolicy = imageAttemptFailurePolicy(new Error("image download returned 503"));
+    check(
+      "Q2. a non-contract failure is not mislabelled deterministic",
+      genericPolicy.deterministic === false,
+    );
   }
 
   console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURE(S)`);

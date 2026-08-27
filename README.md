@@ -91,6 +91,19 @@ For migration-free releases the controller deploys API first, verifies exact app
 
 The controller is not yet enabled or production-proven. [Deployment control](docs/DEPLOYMENT.md) is authoritative for the current cutover.
 
+## Publication media normalization
+
+**Implemented; not yet merged or deployed. Fixes an active production blocker** — since 2026-08-25 scheduled briefs failed before reaching approval with `image dimensions 1024x1024 are not an approved cross-platform feed profile`.
+
+Image providers guarantee **composition, not exact publication pixels**. fal normalizes a requested `image_size` to its own resolution buckets and may return PNG despite a JPEG request. The pipeline previously asserted the exact publication-profile allowlist against the raw provider download and never resized, so any provider-native size was fatal.
+
+Two policies are now distinct: **decode safety** governs bytes we will process, **publication profile** governs bytes we will publish. The provider render is an input; the artifact is produced here.
+
+- **Uniform scale only.** Cropping and padding are refused, not unimplemented — cropping 1:1 into 4:5 would cut 20% of the frame through the headline. A mismatched aspect fails closed.
+- **Normalize before approval.** Resize and JPEG transcode happen before QC, hashing, hosting, and approval, so the bytes a reviewer approves are byte-for-byte the bytes that publish. There is no post-approval transformation.
+- **Not retryable.** An aspect mismatch is a deterministic media-contract failure: the request is identical every attempt, so it escalates after exactly one generation instead of burning three.
+- **Policy unchanged.** No provider size was added to the four approved profiles, and the durable publication guard is unchanged in strength.
+
 ## Worker ownership and recovery
 
 **Merged to `main` in PR #36. NOT deployed and NOT production-validated.** This section describes current source and the next production release, not current production runtime. Phase 0D.1 remains paused: Render native auto-deploy stays off and `RENDER_DEPLOY_AUTOMATION_ENABLED` stays `false`, and the first release of this code is a separately authorized manual bootstrap rather than a gate enablement.

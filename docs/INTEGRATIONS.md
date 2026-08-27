@@ -8,7 +8,7 @@ Read-only Render production discovery was completed on 2026-08-24; no external s
 | GitHub Actions | Pull-request/main CI and configured-but-disabled production controller | `production` environment secret/variables | CI supply chain; future deployment authority after exact gate enable and proof | Repository owner |
 | PostgreSQL | Queues, hash-bound approvals/decisions, content-addressed media, events, sessions/tokens | `DATABASE_URL` | API/worker/scheduler fail startup when absent, unreachable, or missing migration-005 approval/media schema/constraints/triggers; offline memory mode cannot publish | Assign privately |
 | Anthropic | Copy, image prompt, SEO, final-package critic, text/privacy/safety/material-integrity vision QC | `ANTHROPIC_API_KEY`, configured model IDs | Cost/data egress; failures retry; missing/malformed/errored QC fails closed | Budget/technical owner |
-| fal.ai | Image generation | `IMAGEGEN_API_KEY`, model slugs | Cost and hosted-media dependency | Creative/technical owner |
+| fal.ai | Image generation | `IMAGEGEN_API_KEY`, model slugs | Cost and hosted-media dependency; returns a provider-native size and format, never a guaranteed publication artifact | Creative/technical owner |
 | Slack incoming webhook | Approval and token-refresh alerts | `APPROVAL_CHANNEL_WEBHOOK` | Every worker approval-delivery flow requires an exact HTTPS `hooks.slack.com/services` URL; transitional URL contains an expiring token, requests use no redirects/10-second attempt bounds, and failed delivery requires confirmed revocation or surfaces a reconciliation error; no email fallback | Approval-channel owner |
 | Instagram Graph | Image publishing and default Instagram-login token refresh | Approval-bound user ID/host/version; runtime token | Live post creation; default-path token stored in env and PostgreSQL, alternate Facebook-login token remains environment-managed; token tick only when Instagram is active | Social account owner |
 | Facebook Pages | Page feed/photo publishing | Approval-bound Page ID/fixed host/version; runtime Page token | Live post creation | Social account owner |
@@ -21,6 +21,19 @@ Read-only Render production discovery was completed on 2026-08-24; no external s
 GitHub Actions and interactive Codex use different Render integrations. The production workflow uses reviewed Render CLI 2.22.0 non-interactively with JSON output, explicit confirmation, exact commit SHAs, and `--wait`. It never uses deploy hooks. A Codex task may use the official Render MCP for explicitly scoped read operations such as service/deploy/log/metric/PostgreSQL metadata inspection. MCP write tools are not self-authorizing; deployment, configuration/environment mutation, production SQL, and restart operations still require explicit authority.
 
 The exact GitHub configuration, migration stop, serial order, recognized-pattern-redacted failure report, and remaining proof steps live in [Deployment control](DEPLOYMENT.md). Render CLI exact-commit deploys do not themselves disable native auto-deploy. Native auto-deploy is now off and the GitHub gate remains false, intentionally leaving zero unattended authorities until the separately authorized proof.
+
+## fal image request contract
+
+**The request is a composition request, not a publication-pixel request.** `image_size` is documented as `ImageSize | Enum` and the custom `{width, height}` object is accepted, but fal normalizes it to its own resolution buckets. One authorized live diagnostic on 2026-08-27 against `fal-ai/ideogram/v3` established the current behavior:
+
+| Requested `image_size` | Returned | Aspect |
+|---|---|---|
+| `{1080, 1350}` (production, pre-fix) | 1024x1024 | **1:1 — wrong** |
+| `{1024, 1280}` (diagnostic) | 896x1120 | 4:5 — correct |
+
+So the requested value decides whether the composition survives, which is why each approved publication profile maps to a reviewed provider-friendly source size with exactly the target's aspect ratio. Only the 4:5 mapping is live-proven; the rest are exact by arithmetic and fail closed otherwise.
+
+That response returned top-level `images` and `seed`, with `images[0]` carrying `url`, `content_type`, `file_name` and `file_size` — and **no `width` or `height` at all**. Provider dimension metadata must therefore never be assumed present, and its absence is not an error; the downloaded byte header is the sole authority on dimensions. The response also reported `content_type: image/png` despite `output_format: "jpeg"`, so **raw provider encoding is not publication-authoritative either**. `output_format: "jpeg"` is retained as advisory. Final dimensions and final encoding are both enforced application-side, before QC, hashing, hosting, and approval.
 
 ## Native publishing boundaries
 

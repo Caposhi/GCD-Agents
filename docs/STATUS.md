@@ -6,6 +6,8 @@ This file separates four things that are routinely confused: what is in the repo
 
 **Verified:** 2026-08-26, by direct Git and GitHub inspection.
 
+**GitHub is authoritative for the exact current `main`.** The row below is a dated verified baseline, not a live mirror: every merge moves `main`, and a merge SHA cannot be known before merging. Read `git rev-parse origin/main` when the exact value matters. A newer `main` than the one recorded here is normal and is **not** by itself a defect to chase — do not open follow-up work merely to refresh this SHA.
+
 | Item | Verified state |
 |---|---|
 | `main` | `0828cc91c41c9cd10ad709db30491ada0a52c811` |
@@ -63,6 +65,7 @@ This closes the previously open item requiring observation of a normal scheduled
 | **PR #36 worker ownership and recovery — merge `0828cc9…`** | **`MERGED` — not `DEPLOYED`, not `PRODUCTION-VALIDATED`** |
 | Phase 0B Content Intelligence runtime | `PLANNED` — not begun |
 | Worker lease/reaper | `SUPERSEDED` by ownership plus startup recovery; rationale and re-entry condition in [Roadmap](ROADMAP.md) |
+| Media publication normalization (production blocker) | `IMPLEMENTED` — not `MERGED`, not `DEPLOYED` |
 
 These states are not interchangeable. In particular: the worker currently running in production does **not** contain the ownership code and does **not** participate in the advisory-lock protocol.
 
@@ -73,6 +76,16 @@ Phase 0D.1, the deployment-authority cutover, is paused between authorities. **P
 The next operation, under its own explicit authorization, is a **read-only production reverification** of every row marked "not reverified" above. After that, and only under separate authorization each time, the ordered path is: reconcile the August 10 incident against provider account history; resolve the stale `running` row; perform a **manually controlled Render bootstrap release of the ownership fix while the GitHub gate stays `false`**; verify ownership acquisition, reconciliation, and readiness at that SHA; prove worker handoff with both versions holding the lock; and only then consider enabling the gate and proving the controller path.
 
 [Roadmap](ROADMAP.md) holds the full ordered cursor with the preflight conditions. [Deployment control](DEPLOYMENT.md) holds the exact bootstrap mechanics. Never re-enable Render native auto-deploy while the GitHub gate is true.
+
+## Active production incident — scheduled content blocked before approval
+
+**Open. Fix `IMPLEMENTED`, not `MERGED`, not `DEPLOYED`.**
+
+Since 2026-08-25, scheduled briefs have failed before an approval was created, with `image dimensions 1024x1024 are not an approved cross-platform feed profile`. The Land Rover brief and BMW brief `19811e5f-8899-4134-9634-3dd9a9a90827` (2026-08-26) both escalated. Nothing was published and no approval was orphaned — the pipeline failed closed, upstream of the approval gate — but no scheduled content is reaching a reviewer.
+
+The publication-profile allowlist was being asserted against the raw provider render instead of against the final artifact, and no resize existed. A single authorized live diagnostic on 2026-08-27 confirmed the provider honors the requested **aspect** but not the requested **pixels**: a 1024x1280 request returned a 896x1120 PNG (exactly 4:5) with no width/height metadata at all. See [Roadmap](ROADMAP.md) for the full record and [Architecture](ARCHITECTURE.md) for the corrected media lifecycle.
+
+Until that fix is deployed, scheduled posting remains blocked. Do not work around it by adding provider sizes to the approved profiles.
 
 ## Verified production incident — worker lifecycle interruption
 
