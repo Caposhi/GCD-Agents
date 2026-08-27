@@ -13,6 +13,11 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypt
 import { config } from "./config.js";
 import { assertValidSocialPostSubject, validateSocialPostSubject } from "../mcp/posting-tool/validation.js";
 import { assertPlatformSafePublicationJpeg } from "./mediaPolicy.js";
+import {
+  EvidenceRecord,
+  EvidenceRelation,
+  assertValidEvidenceRecord,
+} from "./evidence/contract.js";
 
 type Pool = import("pg").Pool;
 
@@ -1071,4 +1076,131 @@ export async function assertHostedMediaIntegrity(
   } catch (err) {
     throw new Error(`BLOCKED: hosted media is not a platform-safe JPEG: ${(err as Error).message}`);
   }
+}
+
+// --- content evidence (Phase 0B.0) ---
+//
+// Evidence is read by the Content Intelligence preview and written only by an
+// explicit operator sync. Nothing here runs on application startup: importing
+// approved facts is a deliberate command, not a boot side effect, so a deploy
+// can never silently rewrite what the system believes.
+
+/** Row → domain record. `null` columns become absent fields, not empty strings. */
+function evidenceRowToRecord(row: any): EvidenceRecord {
+  const iso = (value: unknown): string | undefined =>
+    value instanceof Date ? value.toISOString() : (typeof value === "string" ? value : undefined);
+  const record: EvidenceRecord = {
+    id: String(row.id),
+    kind: row.kind,
+    claim: String(row.claim),
+    subject: String(row.subject),
+    tags: Array.isArray(row.tags) ? row.tags.map(String) : [],
+    sourceType: row.source_type,
+    createdAt: iso(row.created_at) ?? new Date(0).toISOString(),
+    lifecycle: row.lifecycle,
+  };
+  if (row.attribute != null) record.attribute = String(row.attribute);
+  if (row.source_ref != null) record.sourceRef = String(row.source_ref);
+  if (row.provenance != null) record.provenance = String(row.provenance);
+  if (row.confidence != null) record.confidence = Number(row.confidence);
+  if (row.observed_at != null) record.observedAt = iso(row.observed_at);
+  if (row.reviewed_at != null) record.reviewedAt = iso(row.reviewed_at);
+  if (row.reviewed_by != null) record.reviewedBy = String(row.reviewed_by);
+  if (row.review_by != null) record.reviewBy = iso(row.review_by);
+  if (row.expires_at != null) record.expiresAt = iso(row.expires_at);
+  if (row.superseded_by_id != null) record.supersededById = String(row.superseded_by_id);
+  if (row.generalizable != null) record.generalizable = Boolean(row.generalizable);
+  if (row.detail != null) record.detail = row.detail as Record<string, unknown>;
+  return record;
+}
+
+/** All evidence, ordered deterministically. Empty when durable state is off. */
+export async function listContentEvidence(): Promise<EvidenceRecord[]> {
+  if (!enabled || !pool) return [];
+  const res = await pool.query(
+    `SELECT * FROM content_evidence ORDER BY subject ASC, kind ASC, id ASC`,
+  );
+  return res.rows.map(evidenceRowToRecord);
+}
+
+export async function listContentEvidenceRelations(): Promise<EvidenceRelation[]> {
+  if (!enabled || !pool) return [];
+  const res = await pool.query(
+    `SELECT from_id, to_id, kind, note, created_at FROM content_evidence_relations
+      ORDER BY from_id ASC, to_id ASC, kind ASC`,
+  );
+  return res.rows.map((row: any) => ({
+    fromId: String(row.from_id),
+    toId: String(row.to_id),
+    kind: row.kind,
+    note: row.note != null ? String(row.note) : undefined,
+    createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at),
+  }));
+}
+
+export interface EvidenceSyncResult {
+  inserted: number;
+  updated: number;
+  unchanged: number;
+}
+
+/**
+ * Idempotent upsert of adapted evidence.
+ *
+ * Running it twice with the same input must report zero further changes — that
+ * is what makes it safe to re-run after a failed operator session. The
+ * `IS DISTINCT FROM` guard in the WHERE clause is what delivers it: an
+ * unchanged row is not rewritten, so `updated_at` stays honest.
+ */
+export async function syncContentEvidence(records: EvidenceRecord[]): Promise<EvidenceSyncResult> {
+  if (!enabled || !pool) throw new Error("content evidence sync requires durable PostgreSQL state");
+  for (const record of records) assertValidEvidenceRecord(record);
+
+  const result: EvidenceSyncResult = { inserted: 0, updated: 0, unchanged: 0 };
+  for (const record of records) {
+    const res = await pool.query(
+      `INSERT INTO content_evidence (
+         id, kind, claim, subject, attribute, tags, source_type, source_ref, provenance, confidence,
+         observed_at, reviewed_at, reviewed_by, review_by, expires_at, created_at,
+         lifecycle, superseded_by_id, generalizable, detail
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+       ON CONFLICT (id) DO UPDATE SET
+         kind = EXCLUDED.kind, claim = EXCLUDED.claim, subject = EXCLUDED.subject,
+         attribute = EXCLUDED.attribute,
+         tags = EXCLUDED.tags, source_type = EXCLUDED.source_type,
+         source_ref = EXCLUDED.source_ref, provenance = EXCLUDED.provenance,
+         confidence = EXCLUDED.confidence, observed_at = EXCLUDED.observed_at,
+         reviewed_at = EXCLUDED.reviewed_at, reviewed_by = EXCLUDED.reviewed_by,
+         review_by = EXCLUDED.review_by, expires_at = EXCLUDED.expires_at,
+         lifecycle = EXCLUDED.lifecycle, superseded_by_id = EXCLUDED.superseded_by_id,
+         generalizable = EXCLUDED.generalizable, detail = EXCLUDED.detail
+       WHERE (
+         content_evidence.kind, content_evidence.claim, content_evidence.subject,
+         content_evidence.attribute, content_evidence.tags, content_evidence.source_type, content_evidence.source_ref,
+         content_evidence.provenance, content_evidence.confidence, content_evidence.observed_at,
+         content_evidence.reviewed_at, content_evidence.reviewed_by, content_evidence.review_by,
+         content_evidence.expires_at, content_evidence.lifecycle,
+         content_evidence.superseded_by_id, content_evidence.generalizable, content_evidence.detail
+       ) IS DISTINCT FROM (
+         EXCLUDED.kind, EXCLUDED.claim, EXCLUDED.subject, EXCLUDED.attribute, EXCLUDED.tags, EXCLUDED.source_type,
+         EXCLUDED.source_ref, EXCLUDED.provenance, EXCLUDED.confidence, EXCLUDED.observed_at,
+         EXCLUDED.reviewed_at, EXCLUDED.reviewed_by, EXCLUDED.review_by, EXCLUDED.expires_at,
+         EXCLUDED.lifecycle, EXCLUDED.superseded_by_id, EXCLUDED.generalizable, EXCLUDED.detail
+       )
+       RETURNING (xmax = 0) AS inserted`,
+      [
+        record.id, record.kind, record.claim, record.subject, record.attribute ?? null,
+        record.tags, record.sourceType,
+        record.sourceRef ?? null, record.provenance ?? null, record.confidence ?? null,
+        record.observedAt ?? null, record.reviewedAt ?? null, record.reviewedBy ?? null,
+        record.reviewBy ?? null, record.expiresAt ?? null, record.createdAt,
+        record.lifecycle, record.supersededById ?? null, record.generalizable ?? false,
+        record.detail ? JSON.stringify(record.detail) : null,
+      ],
+    );
+    if (res.rows.length === 0) result.unchanged++;
+    else if (res.rows[0].inserted) result.inserted++;
+    else result.updated++;
+  }
+  return result;
 }

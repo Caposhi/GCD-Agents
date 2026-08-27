@@ -2,7 +2,7 @@
 
 Verified against source on 2026-08-26; the production-state observations it references were last verified read-only on 2026-08-24 and are not reverified here. Phase 0A and Phase 0D are deployed. Phase 0B has not begun.
 
-**This document describes two things and labels which is which.** *Current production runtime* is what the live release does. *Current source / next production release* is what `main` does and what the next release will do. They diverge today: the worker ownership and recovery work (PR #36) is merged to `main` but not deployed, so the worker running in production does not participate in the ownership protocol. See [Status](STATUS.md) for exact SHAs and [Roadmap](ROADMAP.md) for the cursor.
+**This document describes two things and labels which is which.** *Current production runtime* is what the live release does. *Current source / next production release* is what `main` does and what the next release will do. They diverge today, but not over PR #36: that work is merged and — operator-reported 2026-08-27, not independently verified here — deployed and production-validated, so the live worker does participate in the ownership protocol. The divergence is now Phase 0B.0: the content evidence system, agent registry, and Content Intelligence preview exist in `main` and are **not deployed**, and migration 006 is **not applied to production**. See [Status](STATUS.md) for exact SHAs and [Roadmap](ROADMAP.md) for the cursor.
 
 ## Product architecture principle
 
@@ -20,9 +20,9 @@ The repository root builds one TypeScript project into `dist/`. Render declares 
 
 `src/api/server.ts` owns HTTP. `src/worker/index.ts` owns the approval-to-publish lifecycle. `src/scheduler/daily.ts` owns the daily enqueue. `src/harness/orchestrator.ts` is the actual manager: deterministic TypeScript, not the dormant master-prompt manager harness. `src/mcp/*` are imported libraries for image and platform APIs.
 
-### Exclusive worker ownership — current source / next production release
+### Exclusive worker ownership
 
-**Not yet current production runtime.** The live worker predates this design and holds no lock.
+**Deployed and production-validated — operator-reported 2026-08-27, not independently verified in an engineering session.** The operator reports an approximately 58-second ownership wait before readiness on the first protected deploy, which is this design's predicted behaviour under Render's zero-downtime overlap.
 
 Exactly one worker process may execute work, and that exclusivity is established rather than assumed. Render background-worker deploys are zero-downtime: the new instance starts and only about sixty seconds later does the old instance receive SIGTERM, after which it still gets its shutdown grace. Old and new overlap legitimately, so "my process just started" never implies "the running brief is abandoned".
 
@@ -43,6 +43,20 @@ The invariants, each proven by `npm run test:ownership` against injected boundar
 Ownership is **mutual exclusion, not a fencing token**: if an owner's connection dies while its process lives, PostgreSQL releases the lock and a successor may reconcile concurrently. The Phase 0A publication guard is the actual fence — the successor's revocation makes the old process's next pre-request authorization check fail closed — which narrows exposure to a single already-in-flight HTTP request, itself classified as an uncertain outcome.
 
 **What this does not solve.** Interruption during a provider attempt still leaves an outcome the system cannot resolve by itself. It is surfaced and nothing retries automatically, but provider-level `withRetry` remains an independent path that can reissue a request after an ambiguous network outcome. There is no durable provider operation ledger, no idempotency key, and no provider reconciliation, so duplicate publication remains possible and a human must reconcile against the platform. That work is the first item under Next hardening in [Roadmap](ROADMAP.md).
+
+### Content Intelligence foundation (Phase 0B.0) — implemented, not deployed
+
+Additive and inert. It changes no production behavior: the scheduled pipeline below is untouched, and no reasoning stage executes.
+
+**Content evidence.** `src/harness/evidence/` defines a typed contract in which epistemic class is a property of every record rather than a convention. Eight kinds — verified automotive fact, verified business fact, sourced research, GCD direct observation, GCD performance evidence, creative hypothesis, causal hypothesis, unsupported assumption — with per-kind validation, mirrored as CHECK constraints in migration 006 so the invariant survives any writer that bypasses the application layer. Two promotions are impossible by construction: a model-authored hypothesis can never become a verified fact, and a performance measurement can never become automotive or causal truth.
+
+**Evidence pack.** `buildEvidencePack()` groups claims by class and pulls out conflicts and stale material. It **reports conflicts and never resolves them** — choosing the newer or more confident row would manufacture certainty from genuine disagreement — and stale fact-class evidence fails closed out of `allowedFacts`. A conflict is two different claims about the same subject *attribute*; distinct attributes of one subject do not disagree.
+
+**Approved facts stay authoritative.** The adapter is a deterministic projection of `config/approved-facts.json`, carrying provenance and the exact content hash. It creates no second source of truth, and import is an explicit operator command rather than a startup side effect. The live copywriter and critic continue to cite the JSON directly until a later reviewed cutover.
+
+**AgentRegistry.** `src/harness/agents/registry.ts` registers the six target stages with model policy, prompt/skill/reference assets, allowed capabilities, required evidence kinds, input/output validators, and prerequisites. Asset paths are repository-relative and allowlist-rooted; traversal is rejected at registration, and a missing mandatory asset fails loudly rather than silently running a stage without its instructions. `executionEnabled` is `false` on every stage.
+
+**Preview.** `POST /console/content-intelligence/preview`, behind the existing console credential, builds the pack, resolves the stage plan, verifies every asset, and returns structured JSON. It calls no model, image provider, or social platform, creates no approval, and enqueues no brief; `assertPreviewIsInert()` makes that a checked property rather than a promise.
 
 ## Delivery control plane
 

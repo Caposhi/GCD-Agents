@@ -298,6 +298,72 @@ async function partialRejectedTrigger(
   });
 }
 
+/**
+ * Prove the content-intelligence preview's auth-failure path cannot leave
+ * declared-but-unsent body bytes on a reusable connection.
+ *
+ * An unauthenticated POST declares a Content-Length but withholds most of the
+ * body, then a pipelined GET /healthz is written on the SAME socket -- sent
+ * the moment the first response begins arriving, or after a short delay if it
+ * does not, so a slow or unresponsive path is still exercised. If the server
+ * failed to drain/close on rejection, Node's HTTP parser would still be
+ * expecting the rest of the preview request's body: the pipelined bytes would
+ * be consumed as that remainder, and the leftover fragment would be parsed as
+ * a second, desynchronized request/response on the same connection -- the
+ * exact corruption this proves cannot happen, mirroring the guarantee
+ * partialRejectedTrigger already proves for /triggers.
+ */
+async function partialRejectedPreviewWithPipeline(port: number): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const socket = createConnection({ host: "127.0.0.1", port });
+    const chunks: Buffer[] = [];
+    let settled = false;
+    let pipelined = false;
+    const finish = (err?: Error): void => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      if (err) reject(err);
+      else resolve(Buffer.concat(chunks).toString("utf8"));
+    };
+    const sendPipelinedHealthCheck = (): void => {
+      if (pipelined || socket.destroyed) return;
+      pipelined = true;
+      socket.write([
+        "GET /healthz HTTP/1.1",
+        `Host: 127.0.0.1:${port}`,
+        "Connection: close",
+        "",
+        "",
+      ].join("\r\n"));
+    };
+    socket.setTimeout(3_000, () => finish(new Error("unauthenticated preview probe did not close its connection")));
+    socket.once("error", (err) => finish(chunks.length > 0 ? undefined : err));
+    socket.on("data", (chunk: Buffer) => {
+      chunks.push(chunk);
+      // Pipeline as soon as any response data arrives, exactly as a client
+      // reusing a still-open keep-alive connection would.
+      sendPipelinedHealthCheck();
+    });
+    socket.once("end", () => finish());
+    socket.once("close", () => finish());
+    socket.once("connect", () => {
+      socket.write([
+        "POST /console/content-intelligence/preview HTTP/1.1",
+        `Host: 127.0.0.1:${port}`,
+        "Content-Type: application/json",
+        "Content-Length: 128",
+        "Connection: keep-alive",
+        "",
+        '{"goal":"incomplete',
+      ].join("\r\n"));
+      // Fallback in case no response arrives promptly: still pipeline, so a
+      // hung or slow path is exercised rather than silently skipped.
+      setTimeout(sendPipelinedHealthCheck, 150);
+    });
+  });
+}
+
 /** Leave the HTTP header block incomplete so Node's server-level deadline must close it. */
 async function partialHeaderRequest(port: number, marker: string): Promise<string> {
   return new Promise<string>((resolve, reject) => {
@@ -578,6 +644,79 @@ async function main(): Promise<void> {
     check("valid review displays the complete canonical payload bytes", validReview.body.includes(htmlEscape(canonicalPretty)));
     check("valid review has hardened HTML security headers", securityHeadersArePresent(validReview, "html"));
     check("approval review response never contains provider/model/Slack secrets", !/Bearer\s|hooks\.slack\.com\/services|sk-ant-|fal_key/i.test(validReview.body));
+
+    const approvalCountBeforePreview = (await database.query("SELECT count(*)::int AS n FROM approval_queue")).rows[0].n;
+    const briefCountBeforePreview = (await database.query("SELECT count(*)::int AS n FROM brief_queue")).rows[0].n;
+
+    // Phase 0B.0 preview: authenticated, validated, and inert.
+    {
+      const previewPath = "/console/content-intelligence/preview";
+      const jsonHeaders = { "content-type": "application/json", authorization: `Bearer ${consoleToken}` };
+
+      const unauth = await request(baseUrl, previewPath, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ goal: "Promote a brake fluid flush" }),
+      });
+      check("content-intelligence preview requires the control credential", unauth.status === 401);
+
+      const wrongType = await request(baseUrl, previewPath, {
+        method: "POST",
+        headers: { "content-type": "text/plain", authorization: `Bearer ${consoleToken}` },
+        body: "goal=x",
+      });
+      check("content-intelligence preview rejects a non-JSON content type", wrongType.status === 415);
+
+      const emptyGoal = await request(baseUrl, previewPath, {
+        method: "POST", headers: jsonHeaders, body: JSON.stringify({ goal: "   " }),
+      });
+      check("content-intelligence preview rejects an empty goal", emptyGoal.status === 400);
+
+      const unknownField = await request(baseUrl, previewPath, {
+        method: "POST", headers: jsonHeaders, body: JSON.stringify({ goal: "ok", publish: true }),
+      });
+      check("content-intelligence preview rejects unknown request fields", unknownField.status === 400);
+
+      const ok = await request(baseUrl, previewPath, {
+        method: "POST", headers: jsonHeaders,
+        body: JSON.stringify({ goal: "Promote a brake fluid flush special" }),
+      });
+      const preview = ok.status === 200 ? JSON.parse(ok.body) : null;
+      check("content-intelligence preview returns the six-stage plan",
+        ok.status === 200 && Array.isArray(preview?.stagePlan) && preview.stagePlan.length === 6);
+      check("content-intelligence preview reports execution disabled", preview?.executionDisabled === true);
+      check("content-intelligence preview exposes evidence classes",
+        !!preview?.evidence && typeof preview.evidence.counts === "object"
+          && Array.isArray(preview.evidence.allowedFacts)
+          && Array.isArray(preview.evidence.conflicts)
+          && Array.isArray(preview.evidence.staleEvidence));
+      check("content-intelligence preview has JSON security headers", securityHeadersArePresent(ok, "json"));
+      check("content-intelligence preview created no approval and enqueued no brief",
+        (await database.query("SELECT count(*)::int AS n FROM approval_queue")).rows[0].n === approvalCountBeforePreview
+          && (await database.query("SELECT count(*)::int AS n FROM brief_queue")).rows[0].n === briefCountBeforePreview);
+      check("content-intelligence preview leaked no secret material",
+        !/Bearer\s|hooks\.slack\.com\/services|sk-ant-|fal_key/i.test(ok.body));
+
+      // Regression: an unauthenticated preview request with a withheld body
+      // must not leave a desynchronized connection behind for the next
+      // pipelined request to be misparsed through.
+      const pipelineProbe = await partialRejectedPreviewWithPipeline(port);
+      const pipelineProbeLower = pipelineProbe.toLowerCase();
+      const statusLines = pipelineProbe.match(/HTTP\/1\.1 \d{3}/g) ?? [];
+      check("unauthenticated preview probe rejects access", pipelineProbe.startsWith("HTTP/1.1 401"));
+      check(
+        "unauthenticated partial preview closes instead of retaining unread body bytes",
+        pipelineProbeLower.includes("connection: close"),
+      );
+      check(
+        "pipelined request after a rejected partial preview is never answered on the same connection",
+        statusLines.length === 1,
+      );
+      check(
+        "pipelined request after a rejected partial preview produces no desynchronized second response",
+        !pipelineProbeLower.includes("http/1.1 400") && !pipelineProbeLower.includes("http/1.1 200"),
+      );
+    }
 
     check("no tested route attempted an outbound child-process fetch", !capture.output().includes(OUTBOUND_FETCH_MARKER));
     check("compiled API remained running through the E2E suite", capture.child.exitCode === null);

@@ -1,6 +1,6 @@
 # GCD Content Intelligence roadmap
 
-Last reviewed: 2026-08-26.
+Last reviewed: 2026-08-27.
 
 This roadmap is the canonical unfinished-work sequence and the current-phase cursor. It orders work; it does not grant authority to deploy, migrate, call providers, change external configuration, or begin a phase. [Status](STATUS.md) records what is verified true now. Where this file and verified production evidence disagree, resolve the discrepancy rather than following this text. Roadmap continuity is binding — see [`AGENTS.md`](../AGENTS.md).
 
@@ -69,9 +69,9 @@ These are not interchangeable and must not be collapsed into "done". `MERGED` in
 
 ### PR #36 — worker ownership and interrupted-brief recovery
 
-**State:** `MERGED` — **not `DEPLOYED`, not `PRODUCTION-VALIDATED`.**
+**State:** `MERGED` · `DEPLOYED` · `PRODUCTION-VALIDATED`.
 
-The production worker does not yet run this code and does not participate in the advisory-lock ownership protocol. Its first production release is a separately authorized manual bootstrap; see the current cursor below.
+**Production evidence — operator-reported 2026-08-27.** The manual bootstrap was performed by the operator, not by this engineering session, which has no Render or production database access; the following is recorded as reported and was not independently verified here. The new worker waited approximately 58 seconds for exclusive ownership before emitting readiness — the zero-downtime overlap behaving exactly as designed. The August 10 stranded brief was reconciled by startup recovery with `providerMutation = impossible` and no provider replay. Authenticated Instagram, Facebook, and Google Business Profile history had been checked beforehand and the target post was not found on any destination, so the reconciliation rested on account evidence rather than database absence.
 
 **PR / merge:** PR #36, reviewed head `281eb8f232995e58e404c916c3ec0a23b62c7acc`, merge `0828cc91c41c9cd10ad709db30491ada0a52c811`.
 
@@ -101,9 +101,29 @@ The production worker does not yet run this code and does not participate in the
 
 `docs/ARCHITECTURE.md` should have been in the first list and was not: PR #36 changed worker readiness semantics, the claim path, and runtime ownership while leaving the document that describes them untouched, which left it contradicting three other runbooks. That miss is what the roadmap-continuity and reread rules now exist to prevent.
 
-## Production blocker — media publication normalization
+### Phase 0B.0 — content evidence and agent registry foundation
 
-**State:** `IMPLEMENTED` — not `MERGED`, not `DEPLOYED`. Tracked here because it fixes an active production outage, and it is ordered **ahead of** the Phase 0D.1 cursor below.
+**State:** `IMPLEMENTED` — not `MERGED`, not `DEPLOYED`.
+
+**Delivered:** the typed evidence contract with eight kinds and per-kind validation; `state/migrations/006_content_evidence.sql` with `content_evidence` and `content_evidence_relations`; a deterministic, provenance-preserving adapter from `config/approved-facts.json`; an idempotent operator-only sync command; the evidence pack builder that surfaces conflicts and stale evidence without resolving them; `AgentRegistry` with all six target stages registered and allowlist-rooted asset loading; `ContentIntelligenceContext`; and a deterministic, inert preview endpoint.
+
+**Schema / migrations:** migration **006**, written and integration-tested against disposable PostgreSQL 16 and 18. **Not applied to production.** Its rollout is a separately authorized migration-bearing release under the existing discipline: exactly one migration authority, and no schema-dependent consumer racing it.
+
+**Material design decisions:** epistemic class is a database constraint, not a convention; conflicts are reported and never auto-resolved; the approved-facts adapter is a projection rather than a second source of truth, so the JSON stays authoritative until a later reviewed cutover; and registration is deliberately separated from execution.
+
+**Material rejected alternative — resolving conflicts by confidence or recency.** Rejected because it is precisely how a content engine starts asserting things nobody verified. A human resolves a conflict by authoring an explicit supersession, which stays auditable.
+
+**Automated validation:** 362 offline assertions across eight suites; PostgreSQL 16 and 18 integration at 154 checks each, including database-level rejection of malformed evidence and proof that repeating the sync changes nothing; bound HTTP end-to-end at 64 assertions, including that the preview creates no approval and enqueues no brief.
+
+**Production evidence:** none, by design. Nothing was deployed.
+
+**Accepted limitations:** the six stages are registered but not executed; the live publishing pipeline still cites `config/approved-facts.json` directly and is unchanged by this work; and no performance evidence exists yet, so the empirical half of "research is the prior, performance is the posterior" is still unpopulated.
+
+## Resolved production incident — media publication normalization
+
+**State:** `MERGED` in PR #38 · `DEPLOYED` · `PRODUCTION-VALIDATED`. **The incident is closed.**
+
+**Production evidence — operator-reported 2026-08-27**, recorded as reported and not independently verified in this session: a controlled brief ran the full content path, the provider returned a PNG at 896x1120, normalization scaled it uniformly to a 1080x1350 JPEG, image QC passed, and the brief reached a real human approval. Nothing was published automatically. That is the exact failure path from 2026-08-25 executing correctly end to end.
 
 **Symptom.** From 2026-08-25, scheduled briefs stopped reaching human approval. Slack reported `Content generation failed before an approval was created` and `image dimensions 1024x1024 are not an approved cross-platform feed profile`. The Land Rover brief and BMW brief `19811e5f-8899-4134-9634-3dd9a9a90827` both escalated. Because the image agent routes essentially every branded post to `text-graphic`, this blocked normal scheduled posting outright.
 
@@ -121,19 +141,21 @@ The production worker does not yet run this code and does not participate in the
 
 Phase 0D.1 is the deployment-authority cutover. It is **paused, deliberately, between authorities**, and PR #36 changed what the next safe step is.
 
-The ownership and recovery code is `MERGED` but not `DEPLOYED`. The worker running in production does not take the advisory lock, so the lock cannot fence it. Enabling the GitHub deployment gate before that worker is replaced would hand automated deployment authority to a system whose worker still strands interrupted briefs silently. **The gate is therefore no longer the next action.** The first release of the ownership fix is a separately authorized, manually controlled Render release performed while the gate stays `false`.
+The ownership bootstrap is **complete** (operator-reported 2026-08-27): the protected worker is live and its handoff behaviour was proven under real zero-downtime overlap. That unblocks the remaining cutover steps, which were always gated behind it.
+
+**This is an operational follow-up and is not a blocker to Phase 0B product work.** Phase 0B.0 shipped without touching deployment authority, and later Phase 0B slices can do the same. The remaining proof is worth doing on its own schedule, not ahead of the product.
 
 Each step below requires its own explicit authorization. None of them is authorized by this document.
 
-1. **PR #36 merged with exact-head CI green — COMPLETE** (`0828cc9…`).
-2. **Read-only production reverification.** Confirm current `main`, all three live SHAs, all three Render native auto-deploy settings off, the GitHub gate `false`, the GitHub `production` environment configuration, and no deployment or migration in flight. Stop on any discrepancy.
-3. **Reconcile the August 10 incident against provider account history first.** Check Instagram, Facebook, and Google Business Profile directly for the 2026-08-11 Mini Cooper check-engine content before any production row is mutated. Public search was inconclusive and is not sufficient evidence.
-4. **Under separate production authorization, resolve the known stale `running` row** (`c5e53afe-2657-4e11-811d-53ce5e793245`), so the reconciler's first firing is not performing an unexplained production mutation as a side effect of a deployment.
-5. **First ownership-fix release: a manually controlled Render bootstrap**, with native auto-deploy still off and `RENDER_DEPLOY_AUTOMATION_ENABLED` still `false`. Preflight requires zero `running` briefs and **zero pending approvals** — approvals created before this change carry no `brief:approval_requested` marker, so the startup orphan sweep would revoke them on first boot. Draining them first makes that sweep a no-op rather than a surprise.
-6. **Verify the bootstrap at its exact SHA:** API deployed and exact health identity confirmed; worker ownership acquisition, reconciliation, and readiness observed; scheduler artifact confirmed; all three services reporting the bootstrap SHA.
-7. **Separately reviewed worker handoff and contention proof,** performed once both the old and new worker versions contain ownership code: observe the new instance waiting, the old instance shutting down, ownership transferring only afterwards, and readiness appearing only after that.
-8. **Only after the protected worker is live and handoff behavior is proven** does enabling `RENDER_DEPLOY_AUTOMATION_ENABLED` become an eligible later step.
-9. **Then prove the GitHub controller path** — the already-current/no-deploy route first if possible, then one harmless migration-free real release.
+1. **PR #36 merged with exact-head CI green — COMPLETE.**
+2. **Read-only production reverification — COMPLETE** (operator, 2026-08-27). Confirm current `main`, all three live SHAs, all three Render native auto-deploy settings off, the GitHub gate `false`, the GitHub `production` environment configuration, and no deployment or migration in flight. Stop on any discrepancy.
+3. **Reconcile the August 10 incident against provider account history — COMPLETE.** Checked on Instagram, Facebook, and GBP; the target post was not found on any destination. Check Instagram, Facebook, and Google Business Profile directly for the 2026-08-11 Mini Cooper check-engine content before any production row is mutated. Public search was inconclusive and is not sufficient evidence.
+4. **Stale `running` row resolved — COMPLETE**, by startup recovery with `providerMutation = impossible`. Original wording: (`c5e53afe-2657-4e11-811d-53ce5e793245`), so the reconciler's first firing is not performing an unexplained production mutation as a side effect of a deployment.
+5. **Manual bootstrap release — COMPLETE.** Original wording:, with native auto-deploy still off and `RENDER_DEPLOY_AUTOMATION_ENABLED` still `false`. Preflight requires zero `running` briefs and **zero pending approvals** — approvals created before this change carry no `brief:approval_requested` marker, so the startup orphan sweep would revoke them on first boot. Draining them first makes that sweep a no-op rather than a surprise.
+6. **Bootstrap verified at its exact SHA — COMPLETE.** Original wording: API deployed and exact health identity confirmed; worker ownership acquisition, reconciliation, and readiness observed; scheduler artifact confirmed; all three services reporting the bootstrap SHA.
+7. **Worker handoff and contention proof — COMPLETE**, new instance waited ~58s for ownership before readiness. Original wording: performed once both the old and new worker versions contain ownership code: observe the new instance waiting, the old instance shutting down, ownership transferring only afterwards, and readiness appearing only after that.
+8. **Now eligible, not yet done:** enabling `RENDER_DEPLOY_AUTOMATION_ENABLED`. Requires its own authorization and immediate re-verification.
+9. **Then prove the GitHub controller path** — the already-current/no-deploy route first if possible, then one harmless migration-free real release. Note that migration 006 makes the next Phase 0B release migration-bearing, so it must go through the separately authorized migration rollout rather than the ordinary controller path.
 
 Never re-enable Render native auto-deploy while the GitHub gate is true. Do not combine this cutover with database networking work or with Phase 0B. `IMPLEMENTED`, `MERGED`, `CONFIGURED`, `ENABLED`, `DEPLOYED`, and `PRODUCTION-VALIDATED` remain distinct milestones throughout.
 
@@ -153,7 +175,15 @@ The former worker lease/reaper item is `SUPERSEDED` and is no longer active work
 
 ## Phase 0B prerequisite — fact and evidence contract
 
-Define the contract before expanding reasoning or learning. Durable records must distinguish:
+**State:** `IMPLEMENTED` — not `MERGED`, not `DEPLOYED`. Delivered by the Phase 0B.0 foundation change; migration 006 is written but deliberately unapplied.
+
+The contract is now executable rather than aspirational. `src/harness/evidence/contract.ts` defines the kinds, per-kind validation, and the two forbidden promotions; `state/migrations/006_content_evidence.sql` enforces the same rules as database CHECK constraints so the invariant survives a writer that bypasses the application.
+
+**Design decision — an eighth kind.** The roadmap named seven. `verified_business_fact` was added because `config/approved-facts.json` is almost entirely GCD business identity and policy, and importing "German Car Depot is at 2130 Fillmore Street" as a `verified_automotive_fact` would break the exact semantic separation this contract exists to enforce. All seven roadmap kinds are unchanged and none was renamed.
+
+**Design decision — conflicts key on subject *and attribute*.** An earlier draft keyed on subject alone; disposable PostgreSQL integration caught it immediately, because every approved fact shares the subject `german-car-depot` and the pack therefore reported the shop's warranty and its phone number as contradicting each other, emptying `allowedFacts`. A conflict is two different claims about the same *attribute*. Records with no attribute can only conflict through an explicitly declared relation.
+
+Durable records distinguish:
 
 - verified automotive fact;
 - sourced research;
@@ -167,7 +197,17 @@ Support source, source type, provenance, confidence, freshness, `observed_at`, `
 
 ## Phase 0B — Content Intelligence runtime
 
-`PLANNED` — not begun. After the operational prerequisites are accepted, return to the core mission with approximately six primary model reasoning stages:
+**State:** foundation `IMPLEMENTED`; six-stage reasoning execution **not yet wired**.
+
+Phase 0B.0 delivered the two runtime primitives the rest of the phase depends on:
+
+- **Content evidence** — typed contract, durable schema, deterministic approved-facts adapter, evidence pack builder with conflict and staleness surfacing, and an explicit idempotent operator sync.
+- **AgentRegistry** — all six target stages registered with model policy, prompt/skill/reference assets, allowed capabilities, required evidence kinds, input/output validators, and prerequisites. Asset loading is allowlist-rooted and rejects traversal; a missing mandatory asset fails loudly.
+- **ContentIntelligenceContext** and a deterministic preview at `POST /console/content-intelligence/preview`, behind the existing console credential.
+
+`executionEnabled` is `false` on every registered stage and the preview asserts it. Registration is not execution: no stage runs a model call, and the live publishing pipeline is untouched.
+
+**Remaining slices, in order:** wire the six stages as real model calls one at a time; then performance ingestion; then governed learning. The roughly 22 originally researched specialist roles remain conceptual capabilities — most belong as deterministic services, references, or policy modules, not as mandatory model calls. After the operational prerequisites are accepted, return to the core mission with approximately six primary model reasoning stages:
 
 1. strategy-concept;
 2. automotive-truth;

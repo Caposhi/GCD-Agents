@@ -12,7 +12,14 @@
 
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { config } from "../harness/config.js";
-import { initState, stateEnabled, enqueueBrief, getApproval, decideApproval, getMedia, recentEvents, consoleSnapshot, verifyApprovalToken } from "../harness/state.js";
+import {
+  assertPreviewIsInert,
+  buildContentIntelligencePreview,
+  parsePreviewGoal,
+  PreviewInputError,
+} from "../harness/contentIntelligence.js";
+import { APPROVED_FACTS_SOURCE_REF } from "../harness/evidence/approvedFacts.js";
+import { initState, stateEnabled, enqueueBrief, getApproval, decideApproval, getMedia, recentEvents, consoleSnapshot, verifyApprovalToken, listContentEvidence, listContentEvidenceRelations } from "../harness/state.js";
 import { buildApiHealthDocument } from "../harness/renderIdentity.js";
 import { credsFromEnv } from "../harness/creds.js";
 import { effectiveIgToken, igTokenStatus, validatedIgGraphHost } from "../harness/igToken.js";
@@ -412,7 +419,12 @@ const server = createServer({
 
     // ---- console contract (hub launcher + live game view) ----
     if (path.startsWith("/console/")) {
-      if (!protectControlPlane(req, res, consoleLimiter)) return;
+      // Body-bearing POST routes (content-intelligence preview) live under this
+      // same gate. On auth/rate-limit failure the body has not been read yet, so
+      // failing to drain/close here would leave declared-but-unsent bytes on a
+      // kept-alive connection -- exactly the desync the /triggers route already
+      // guards against with this same flag.
+      if (!protectControlPlane(req, res, consoleLimiter, true)) return;
       if (req.method === "OPTIONS") {
         res.writeHead(204);
         res.end();
@@ -436,6 +448,45 @@ const server = createServer({
       }
       if (req.method === "GET" && path === "/console/stream") {
         return streamConsole(req, res, url);
+      }
+      // Phase 0B.0 architecture inspection. Deterministic and inert: it builds
+      // the evidence pack and stage plan, and calls no model, image provider,
+      // or social platform. It creates no approval and enqueues no brief.
+      if (req.method === "POST" && path === "/console/content-intelligence/preview") {
+        if (!isJsonContentType(req.headers["content-type"])) {
+          closeUnreadRequest(req, res);
+          return json(res, 415, { error: "content-type must be application/json" });
+        }
+        const raw = await readRouteBody(req, res);
+        if (raw === null) return;
+        let goal: string;
+        try {
+          const parsed = JSON.parse(raw) as unknown;
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+            return json(res, 400, { error: "body must be a JSON object" });
+          }
+          const fields = Object.keys(parsed as Record<string, unknown>);
+          const unknown = fields.filter((f) => f !== "goal");
+          if (unknown.length) return json(res, 400, { error: "unknown fields in request body" });
+          goal = parsePreviewGoal((parsed as { goal?: unknown }).goal);
+        } catch (err) {
+          if (err instanceof PreviewInputError) return json(res, 400, { error: err.message });
+          return json(res, 400, { error: "invalid JSON body" });
+        }
+        const preview = await buildContentIntelligencePreview({
+          goal,
+          records: await listContentEvidence(),
+          relations: await listContentEvidenceRelations(),
+          now: Date.now(),
+          businessContext: {
+            activePlatforms: config.activePlatforms,
+            autonomyPhase: config.autonomyPhase,
+            approvedFactsSource: APPROVED_FACTS_SOURCE_REF,
+          },
+        });
+        // Fail closed rather than return a preview that claims to be executable.
+        assertPreviewIsInert(preview);
+        return json(res, 200, preview);
       }
       return json(res, 404, { error: "unknown console endpoint" });
     }

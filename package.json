@@ -24,13 +24,15 @@
     "test:ownership": "node dist/harness/ownershipRecovery.selftest.js",
     "test:postgres": "node dist/harness/postgres.integration.selftest.js",
     "test:http-e2e": "node dist/api/http.e2e.selftest.js",
-    "test:offline": "npm run test:posting && npm run test:image && npm run test:orchestrator && npm run test:gate && npm run test:api && npm run test:render-identity && npm run test:ownership",
+    "test:offline": "npm run test:posting && npm run test:image && npm run test:orchestrator && npm run test:gate && npm run test:api && npm run test:render-identity && npm run test:ownership && npm run test:content-intelligence",
     "test:deployment-controller": "node scripts/render/deployment-controller.selftest.mjs",
     "check:markdown-links": "node scripts/ci/check-markdown-links.mjs",
     "check:env-coverage": "node scripts/ci/check-environment-coverage.mjs",
     "scan:sensitive": "node scripts/ci/scan-sensitive-content.mjs",
     "dryrun": "node dist/harness/dryrun.cli.js",
-    "dryrun:live": "node dist/harness/dryrun.cli.js --live"
+    "dryrun:live": "node dist/harness/dryrun.cli.js --live",
+    "test:content-intelligence": "node dist/harness/contentIntelligence.selftest.js",
+    "evidence:sync": "node dist/harness/evidence/syncCli.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.106.0",

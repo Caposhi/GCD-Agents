@@ -36,7 +36,13 @@ This file separates four things that are routinely confused: what is in the repo
 
 Production API pre-deploy logs for that release showed migrations 001–005 already applied.
 
-**The live release is `10098de…`, which is two merges behind `main`** (PR #35 and PR #36; seven commits by `git rev-list`). That is expected and deliberate: PR #35 was documentation-only and PR #36 is merged but not deployed. Do not treat repository `main` and the live SHA as facts that ought to match.
+**Repository `main` and the live release are separate facts and need not match.** Relative commit distance between them is a dated observation, never durable truth; the per-PR semantic state below is what matters.
+
+- **PR #35** — merged; documentation-only, no runtime or deployment effect.
+- **PR #36** — merged; worker ownership and recovery. **Deployed and production-validated** (operator-reported 2026-08-27).
+- **PR #37** — merged; documentation and roadmap-continuity governance. No runtime or deployment effect.
+- **PR #38** — merged; media publication normalization. **Deployed and production-validated** (operator-reported 2026-08-27).
+- **Phase 0B.0** — implemented, not merged. Carries **migration 006**, which is **not applied to production**.
 
 Every row above marked "not reverified" must be reconfirmed read-only immediately before any production operation. Do not infer any of them from this file, from `render.yaml`, or from the fact that they were true two days ago.
 
@@ -62,30 +68,39 @@ This closes the previously open item requiring observation of a normal scheduled
 | Phase 0D CI and Deployment Control Foundation — PR #34, merge `10098de…` | `MERGED` · `DEPLOYED` as an application release |
 | Phase 0D GitHub controller as the deployment authority | `CONFIGURED` — **not `ENABLED`, not `PRODUCTION-VALIDATED`** |
 | PR #35 documentation reconciliation — merge `a797f4c…` | `MERGED`; documentation-only, no runtime effect |
-| **PR #36 worker ownership and recovery — merge `0828cc9…`** | **`MERGED` — not `DEPLOYED`, not `PRODUCTION-VALIDATED`** |
-| Phase 0B Content Intelligence runtime | `PLANNED` — not begun |
+| PR #36 worker ownership and recovery — merge `0828cc9…` | `MERGED` · `DEPLOYED` · `PRODUCTION-VALIDATED` (operator-reported 2026-08-27) |
+| PR #37 documentation and roadmap-continuity governance — merge `3bd638f…` | `MERGED`; documentation-only |
+| PR #38 media publication normalization — merge `a6a4316…` | `MERGED` · `DEPLOYED` · `PRODUCTION-VALIDATED` (operator-reported 2026-08-27) |
+| Phase 0B prerequisite — fact and evidence contract | `IMPLEMENTED` — not `MERGED`, not `DEPLOYED` |
+| **Phase 0B.0 evidence and agent registry foundation** | **`IMPLEMENTED`** — not `MERGED`, not `DEPLOYED`; carries unapplied migration 006 |
+| Phase 0B six-stage reasoning execution | `PLANNED` — registered but not wired |
 | Worker lease/reaper | `SUPERSEDED` by ownership plus startup recovery; rationale and re-entry condition in [Roadmap](ROADMAP.md) |
-| Media publication normalization (production blocker) | `IMPLEMENTED` — not `MERGED`, not `DEPLOYED` |
 
-These states are not interchangeable. In particular: the worker currently running in production does **not** contain the ownership code and does **not** participate in the advisory-lock protocol.
+These states are not interchangeable. In particular: Phase 0B.0 is implemented but unmerged, and its migration 006 has **not** been applied to production. Deploying a release that contains it requires the separately authorized migration rollout, not the ordinary controller path.
 
 ## Current cursor — the single next safe operation
 
-Phase 0D.1, the deployment-authority cutover, is paused between authorities. **PR #36 changed what comes next.** Enabling `RENDER_DEPLOY_AUTOMATION_ENABLED` is no longer the next step, because the worker it would deploy to is still the unprotected one.
+Two independent tracks, neither blocking the other.
 
-The next operation, under its own explicit authorization, is a **read-only production reverification** of every row marked "not reverified" above. After that, and only under separate authorization each time, the ordered path is: reconcile the August 10 incident against provider account history; resolve the stale `running` row; perform a **manually controlled Render bootstrap release of the ownership fix while the GitHub gate stays `false`**; verify ownership acquisition, reconciliation, and readiness at that SHA; prove worker handoff with both versions holding the lock; and only then consider enabling the gate and proving the controller path.
+**Product (primary).** Phase 0B continues: wire the six registered reasoning stages as real model calls, one slice at a time. Phase 0B.0 shipped without touching deployment authority and later slices can do the same.
+
+**Operational follow-up.** The ownership bootstrap and handoff proof are complete (operator-reported 2026-08-27), so enabling `RENDER_DEPLOY_AUTOMATION_ENABLED` and proving the GitHub controller path are now eligible. Each still needs its own authorization and immediate re-verification. **This is explicitly not a blocker to Phase 0B.**
+
+One coupling to respect: migration 006 makes the next release that carries Phase 0B.0 **migration-bearing**, so it must go through the separately authorized migration rollout rather than the ordinary controller path.
 
 [Roadmap](ROADMAP.md) holds the full ordered cursor with the preflight conditions. [Deployment control](DEPLOYMENT.md) holds the exact bootstrap mechanics. Never re-enable Render native auto-deploy while the GitHub gate is true.
 
-## Active production incident — scheduled content blocked before approval
+## Closed production incident — scheduled content blocked before approval
 
-**Open. Fix `IMPLEMENTED`, not `MERGED`, not `DEPLOYED`.**
+**Closed 2026-08-27.** Fix `MERGED` (PR #38) · `DEPLOYED` · `PRODUCTION-VALIDATED`.
 
 Since 2026-08-25, scheduled briefs have failed before an approval was created, with `image dimensions 1024x1024 are not an approved cross-platform feed profile`. The Land Rover brief and BMW brief `19811e5f-8899-4134-9634-3dd9a9a90827` (2026-08-26) both escalated. Nothing was published and no approval was orphaned — the pipeline failed closed, upstream of the approval gate — but no scheduled content is reaching a reviewer.
 
 The publication-profile allowlist was being asserted against the raw provider render instead of against the final artifact, and no resize existed. A single authorized live diagnostic on 2026-08-27 confirmed the provider honors the requested **aspect** but not the requested **pixels**: a 1024x1280 request returned a 896x1120 PNG (exactly 4:5) with no width/height metadata at all. See [Roadmap](ROADMAP.md) for the full record and [Architecture](ARCHITECTURE.md) for the corrected media lifecycle.
 
-Until that fix is deployed, scheduled posting remains blocked. Do not work around it by adding provider sizes to the approved profiles.
+**Resolution evidence — operator-reported 2026-08-27**, recorded as reported and not independently verified in this engineering session, which has no Render or production database access: a controlled brief ran the full content path, the provider returned a PNG at 896x1120, normalization scaled it uniformly to a 1080x1350 JPEG, image QC passed, and the brief reached a real human approval. Nothing was published automatically.
+
+The approved publication profiles were not widened. No provider size was added.
 
 ## Verified production incident — worker lifecycle interruption
 
@@ -93,20 +108,20 @@ Brief `c5e53afe-2657-4e11-811d-53ce5e793245` was enqueued 2026-08-10 13:01:22Z, 
 
 Root cause: the worker process was gone before the approval landed, so nothing was waiting. Publication is only reachable after `waitForApproval` returns `approved`, so no provider request occurred; the approval never left `approved` for `posted`/`failed`, and no publish event exists. The human approved a post that never published, and nothing alerted.
 
-This is the second incident in the same family as the Phase 0A worker/migration-005 race: **worker lifecycle versus durable state**. The row remains unmodified. Its reconciliation is a separately authorized production write, and direct account history for Instagram, Facebook, and GBP on 2026-08-11 should be checked for the Mini Cooper check-engine content first — public search was inconclusive and is not sufficient evidence.
+This is the second incident in the same family as the Phase 0A worker/migration-005 race: **worker lifecycle versus durable state**.
 
-The code that prevents a recurrence is merged but not deployed, so **this failure mode is still live in production today**.
+**Reconciled — operator-reported 2026-08-27, not independently verified in an engineering session.** The operator reports checking authenticated Instagram, Facebook, and Google Business Profile history beforehand and not finding the target post on any destination, then the new protected worker's startup recovery terminalizing the row with `providerMutation = impossible` and no provider replay. The reconciliation therefore rested on account evidence rather than on database absence, which is the correct basis. Recorded as reported.
 
 ## Material unresolved risks
 
 1. No durable provider operation ledger, idempotency, or provider reconciliation. Timeout, crash, or retry can leave unknown or duplicate publication outcomes. Provider-level `withRetry` can still reissue a request after an ambiguous network outcome; PR #36 does not change that.
-2. Worker interruption stranding is addressed by exclusive ownership plus startup recovery, **merged to `main` in PR #36 at `0828cc9…` but not deployed and not production-validated**. Until that release is live, any worker restart can still strand a `running` brief silently, and the deployment controller cannot detect it. Any manual worker restart before then needs a quiescent queue.
+2. Worker interruption stranding is addressed by exclusive ownership plus startup recovery, **merged in PR #36 at `0828cc9…`; deployed and production-validated — operator-reported 2026-08-27, not independently verified in an engineering session**. Treat this risk as reported-closed rather than verified-closed until the live worker's ownership behaviour is reconfirmed read-only.
 3. Production PostgreSQL external access was open to `0.0.0.0/0` at last verification.
 4. Default-path Instagram tokens persist plaintext in `session_state`.
 5. Approval uses a bearer URL and generic `human` label; control routes share one secret and process-local direct-socket rate limits.
 6. No complete retention program, backup policy evidence, or restore drill; migration 005 intentionally blocks media deletion.
 7. External provider ownership, scopes, review status, versions, quotas, billing, backup, and recovery details remain outside repository verification.
-8. Checked-in facts lack the Phase 0B source/provenance/confidence/freshness/conflict contract.
+8. Checked-in facts still lack a durable provenance/confidence/freshness/conflict contract **in production**. Phase 0B.0 implements that contract, but migration 006 is not applied and `content_evidence` is empty until an authorized operator runs `evidence:sync`; the risk is unchanged in the live system.
 
 ## Not implemented
 

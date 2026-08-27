@@ -33,12 +33,13 @@ New AI agents should read [Start here](docs/START_HERE.md), then the concise [AI
 
 **Repository `main` and the live production release are intentionally different commits.** Do not treat them as facts that ought to match, and do not read exact SHAs from this file — [Status](docs/STATUS.md) is authoritative for every mutable identifier and records how fresh each one is.
 
-- `main` carries Phase 0A (PR #33), Phase 0D (PR #34), the documentation reconciliation (PR #35), and the **worker ownership and recovery work (PR #36)**. Migration `state/migrations/005_approval_integrity.sql` is applied; PR #36 added no migration.
-- **Production is running the Phase 0D release and does not yet contain the ownership work.** The worker live today does not take the advisory lock and cannot be fenced by it.
+- `main` carries Phase 0A (PR #33), Phase 0D (PR #34), the documentation reconciliation (PR #35), the **worker ownership and recovery work (PR #36)**, roadmap-continuity governance (PR #37), and **media publication normalization (PR #38)**. Migration `state/migrations/005_approval_integrity.sql` is applied in production; none of those pull requests added a migration.
+- **PR #36 and PR #38 are deployed and production-validated — operator-reported 2026-08-27.** The bootstrap was performed by the operator, not verified first-hand in an engineering session with no Render or production database access. Treat it as reported, and reconfirm before relying on it for a decision.
+- **Phase 0B.0 — the content evidence system and agent registry — is implemented and NOT deployed.** It adds `state/migrations/006_content_evidence.sql`, which is **not applied to production**, so the release that first carries it is migration-bearing.
 - At the last full read-only verification, **2026-08-24 21:32 UTC**: all three services were live and healthy at the Phase 0D SHA, Render native auto-deploy was **off** on API, worker, and scheduler, the GitHub `production` environment and its five non-secret variables were configured, and repository variable `RENDER_DEPLOY_AUTOMATION_ENABLED` was **false** — intentionally leaving **no unattended deployment authority**. None of those facts has been reverified since; treat them as last-verified rather than current.
 - A normal scheduled execution of the current production SHA **was** observed on 2026-08-25 and that gap is closed. Do not trigger production cron for evidence.
 - Production PostgreSQL external access allowed `0.0.0.0/0` at last verification. Restriction is a separate high-priority security change.
-- **The next operation is not the deployment gate.** Because the ownership fix is merged but not deployed, its first production release is a separately authorized **manual Render bootstrap performed while the gate stays `false`**. Only after that worker is live and its handoff behavior is proven does enabling the gate become eligible. [Roadmap](docs/ROADMAP.md) holds the ordered cursor.
+- **Two open tracks, neither blocking the other.** The manual ownership bootstrap is complete, so enabling `RENDER_DEPLOY_AUTOMATION_ENABLED` and proving the controller path are now eligible — each under its own authorization and its own immediate re-verification. Separately, Phase 0B continues; its first release is migration-bearing and must take the controlled rollout path regardless. [Roadmap](docs/ROADMAP.md) holds the ordered cursor.
 
 Service IDs and exact control-plane configuration are recorded in [Status](docs/STATUS.md) and [Deployment control](docs/DEPLOYMENT.md). Do not infer mutable production facts from `render.yaml` alone.
 
@@ -64,16 +65,16 @@ flowchart LR
 - `src/api/`: health, authenticated triggers/diagnostics/console, approval review/actions, and public content-addressed media.
 - `src/worker/`: queue consumption, deterministic orchestration, human approval wait, and the only publication handoff.
 - `src/scheduler/`: daily `0 13 * * *` enqueue; it does not publish.
-- `src/harness/`: configuration, state, orchestration, approval, image QC, dry runs, and self-tests.
+- `src/harness/`: configuration, state, orchestration, approval, image QC, dry runs, and self-tests. `src/harness/evidence/` and `src/harness/agents/` are the Phase 0B.0 foundation — implemented, not deployed, and executing no reasoning stage.
 - `src/mcp/`: imported provider libraries, not standalone MCP servers or model tools.
-- `state/migrations/`: forward-only PostgreSQL schema authority.
+- `state/migrations/`: forward-only PostgreSQL schema authority. 001–005 are applied in production; 006 is written and **not applied**.
 - `agents/`: model prompt bodies and model IDs actually loaded by the orchestrator.
 - `skills/`: reviewed specifications, but not automatically injected into current model calls.
 - `prompts/MASTER_PROMPT.md`: dormant/experimental; the production worker does not run an Opus manager.
 - `.github/workflows/ci.yml`: comprehensive Node 22, offline/static, PostgreSQL 16/18, AgentShield, and workflow validation.
 - `.github/workflows/deploy-production.yml`: exact-SHA serialized Render controller; currently disabled by the repository gate.
 
-The current reasoning flow is analytics, copywriter, image specification, hashtag/SEO/timing, platform formatter, and final critic under deterministic TypeScript control. It is not yet the target six-stage Content OS architecture, does not inject skills/references at runtime, and does not implement empirical learning. See [Architecture](docs/ARCHITECTURE.md) and [Roadmap](docs/ROADMAP.md).
+The current reasoning flow is analytics, copywriter, image specification, hashtag/SEO/timing, platform formatter, and final critic under deterministic TypeScript control. It is not yet the target six-stage Content OS architecture, does not inject skills/references at runtime, and does not implement empirical learning. Phase 0B.0 adds the registry and evidence substrate those stages will use, but changes nothing about this flow. See [Architecture](docs/ARCHITECTURE.md) and [Roadmap](docs/ROADMAP.md).
 
 ## Phase 0A guarantees
 
@@ -93,7 +94,7 @@ The controller is not yet enabled or production-proven. [Deployment control](doc
 
 ## Publication media normalization
 
-**Implemented; not yet merged or deployed. Fixes an active production blocker** — since 2026-08-25 scheduled briefs failed before reaching approval with `image dimensions 1024x1024 are not an approved cross-platform feed profile`.
+**Merged in PR #38; deployed and production-validated — operator-reported 2026-08-27, not independently verified in an engineering session.** It resolved a production blocker: from 2026-08-25 scheduled briefs failed before reaching approval with `image dimensions 1024x1024 are not an approved cross-platform feed profile`. The operator reports a controlled brief in which a 896x1120 provider render normalized to 1080x1350 and reached a real human approval, with nothing published automatically.
 
 Image providers guarantee **composition, not exact publication pixels**. fal normalizes a requested `image_size` to its own resolution buckets and may return PNG despite a JPEG request. The pipeline previously asserted the exact publication-profile allowlist against the raw provider download and never resized, so any provider-native size was fatal.
 
@@ -106,7 +107,7 @@ Two policies are now distinct: **decode safety** governs bytes we will process, 
 
 ## Worker ownership and recovery
 
-**Merged to `main` in PR #36. NOT deployed and NOT production-validated.** This section describes current source and the next production release, not current production runtime. Phase 0D.1 remains paused: Render native auto-deploy stays off and `RENDER_DEPLOY_AUTOMATION_ENABLED` stays `false`, and the first release of this code is a separately authorized manual bootstrap rather than a gate enablement.
+**Merged in PR #36; deployed and production-validated — operator-reported 2026-08-27, not independently verified in an engineering session.** The operator reports the new worker waiting approximately 58 seconds for exclusive ownership before emitting readiness — the Render zero-downtime overlap behaving exactly as designed — and the August 10 stranded brief reconciled with `providerMutation = impossible` and no provider replay. Phase 0D.1 is no longer blocked by this: `RENDER_DEPLOY_AUTOMATION_ENABLED` still stands at `false` and enabling it is now an eligible, separately authorized step rather than a forbidden one.
 
 Render background-worker deploys are zero-downtime, so the old worker stays alive for roughly a minute after the new one starts. A starting worker therefore cannot assume a `running` brief was abandoned. Exactly one worker is the owner, established by a PostgreSQL session-level advisory lock held on a dedicated connection for the process lifetime, released automatically when that session ends.
 
@@ -117,6 +118,28 @@ Render background-worker deploys are zero-downtime, so the old worker stays aliv
 - **Readiness now means four things at once:** durable state initialized, exclusive ownership held, abandoned work reconciled, and mandatory initialization complete.
 
 Runbooks live in [Operations](docs/OPERATIONS.md) (lifecycle and reconciliation), [Deployment control](docs/DEPLOYMENT.md) (readiness window and the one-time manual bootstrap release), [Data model](docs/DATA_MODEL.md) (marker contract and advisory key), and [Security and continuity](docs/SECURITY_AND_CONTINUITY.md) (trust boundaries and residual risk).
+
+## Content evidence and agent foundation (Phase 0B.0)
+
+**Implemented; NOT merged, NOT deployed.** Migration 006 is not applied to production, and **no reasoning stage executes** — this pull request adds no model call. It exists so that the six Content Intelligence stages, when they are wired one at a time, already have a typed evidence substrate and a registry to be wired into.
+
+The system's core epistemic risk is that a plausible sentence quietly becomes a fact. Two promotions are forbidden, and the design makes them impossible rather than discouraged:
+
+- **A hypothesis can never become a verified fact.** Evidence kind is a required typed property, not a convention. Only `verified_automotive_fact` and `verified_business_fact` are citable as fact, and both require a checkable `source_ref`, provenance, and a review timestamp — and may not be sourced from `model_inference` or left unattributed. A model's own output can never be the thing that verifies it.
+- **Performance can never become automotive or causal truth.** `gcd_performance_evidence` is measurement: it requires an observation time, an analytics or shop-record source, and `generalizable = false`. A post performing well is not evidence about a car.
+
+Both rules are enforced twice, on purpose. The TypeScript contract in `src/harness/evidence/contract.ts` produces good errors; the CHECK constraints in `state/migrations/006_content_evidence.sql` make the invariant true even for a writer that bypasses the application.
+
+- **Conflicts are surfaced, never resolved.** When two active fact-class claims disagree about the same subject **and attribute**, both are removed from the citable set and reported as a conflict. The system does not pick the newer row or the higher-confidence row and present it as settled truth — a machine silently choosing between contradictory facts is exactly the failure this exists to prevent. Attribute keying is what makes this meaningful: two claims about the shop's warranty disagree; its warranty and its phone number do not.
+- **`config/approved-facts.json` stays authoritative.** The adapter is a deterministic projection of it — same bytes, same ids, same order — and every record carries provenance naming the file and the exact content sha256, so drift is visible rather than silent. There is no second source of truth.
+- **Nothing writes evidence at startup.** Import is the explicit operator command `npm run evidence:sync`, which is idempotent and has a database-free `--dry-run`. A deploy can never silently rewrite what the system believes.
+- **History is never destroyed.** Correcting a claim inserts a new row and marks the old one `superseded` with a pointer. Claim text is never rewritten and rows are never deleted, so an auditor can reconstruct what was believed and when.
+- **The registry declares six stages and executes none.** Every stage resolves its checked-in prompt and skill assets through an allowlist rooted at `agents/`, `skills/`, `prompts/`, and `config/`; traversal outside those roots is rejected at registration, not at read time. Every stage is `executionEnabled: false`.
+- **The preview is inert.** Authenticated `POST /console/content-intelligence/preview` returns the stage plan and an evidence summary. It creates no approval and no brief, and calls no provider — asserted directly against the database in the bound HTTP suite, not merely by inspection.
+
+The existing production path is untouched: the copywriter and critic still read `config/approved-facts.json`, and orchestration, approval, and publication behave exactly as before.
+
+Details in [Data model](docs/DATA_MODEL.md) (schema and constraints), [Architecture](docs/ARCHITECTURE.md) (component boundaries), [Operations](docs/OPERATIONS.md) (`evidence:sync` runbook), and [Testing](docs/TESTING.md) (what is actually proven).
 
 ## Local validation
 

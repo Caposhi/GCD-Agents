@@ -16,11 +16,11 @@ SQL files under `state/migrations/` are authoritative. `_migrations` records app
 
 ## Relationships and invariants
 
-Brief and approval records have no foreign key. Their only link is a worker log line, so no process or operator can tell from the database which approval belongs to which brief. The worker-ownership change (**merged to `main` in PR #36, not deployed**) closes this: `brief:approval_requested` records `{approvalId, packageCount}` against the brief's `run_id`, making that linkage durable. Rows written before that release is live carry no such marker. Events correlate by free-text `run_id`.
+Brief and approval records have no foreign key. Their only link is a worker log line, so no process or operator can tell from the database which approval belongs to which brief. The worker-ownership change (PR #36 — **merged, deployed and production-validated, operator-reported 2026-08-27**) closes this: `brief:approval_requested` records `{approvalId, packageCount}` against the brief's `run_id`, making that linkage durable. Rows written before that release went live carry no such marker, so the August 10 brief could only be classified from the absence of one. Events correlate by free-text `run_id`.
 
 ### Durable phase markers (safety state, not telemetry)
 
-**Merged to `main` in PR #36; not deployed.** No production row carries these markers yet, which is why the bootstrap release requires zero pending approvals — see [Deployment control](DEPLOYMENT.md).
+**Merged in PR #36; deployed and production-validated — operator-reported 2026-08-27, not independently verified here.** The bootstrap release required zero pending approvals precisely because no pre-existing row carried these markers — see [Deployment control](DEPLOYMENT.md).
 
 `recordEvent` remains best-effort telemetry whose callers may swallow failures. `recordDurablePhaseEvent` is a separate primitive over the same table whose failure **must** propagate, because interrupted work is classified purely from these rows:
 
@@ -54,3 +54,20 @@ Add a lexically ordered SQL file. The runner creates `_migrations`, skips record
 Define retention for briefs, approval subjects/token hashes/decision records, events, session state, scorecards, and proposals. Media retention is blocked by the new no-delete trigger and needs a later reviewed migration that preserves published URLs and approval integrity. Encrypt or move provider tokens out of general session JSON. Database restore must be reconciled against external posts and Slack messages after the backup timestamp; restored approval state is rechecked live but cannot prove what a provider already received.
 
 Before Phase 0B, define a separate durable evidence model that distinguishes verified automotive facts, sourced research, GCD direct observations, GCD empirical performance evidence, creative hypotheses, causal hypotheses/inferences, and unsupported assumptions. It should carry source/type/provenance, confidence, freshness, observation/review/expiry timestamps, conflicts, and supersession. See [Roadmap](ROADMAP.md).
+
+## Content evidence (migration 006 — written, NOT applied to production)
+
+`content_evidence` and `content_evidence_relations` are the durable substrate for Phase 0B reasoning. **Migration 006 exists in the repository and has been integration-tested against disposable PostgreSQL 16 and 18. It has not been applied to production**, so any release carrying it is migration-bearing and must go through the separately authorized rollout — exactly one migration authority, no schema-dependent consumer racing it.
+
+| Table | Purpose | Sensitivity |
+|---|---|---|
+| `content_evidence` | One claim, with its epistemic class, source, provenance, freshness, and lifecycle | No secrets, no customer PII, no raw analytics payloads; `detail` is small structured context only |
+| `content_evidence_relations` | `supports` / `conflicts_with` / `supersedes` between claims | Same |
+
+**The database enforces class separation, not just the application.** CHECK constraints reject a verified fact without a checkable `source_ref`, `provenance`, and `reviewed_at`; reject a verified fact sourced from `model_inference` or `unattributed`; require `observed_at` on observations and performance evidence; force `generalizable = false` on both, so an observation can never be stored as a universal rule; forbid a `causal_hypothesis` with confidence 1; and cap `unsupported_assumption` confidence at 0.5. The TypeScript contract in `src/harness/evidence/contract.ts` mirrors these — application validation gives good errors, the database makes the invariant true.
+
+**History is never destroyed.** Correcting a claim inserts a new row and marks the old one `superseded` with a pointer to its successor; it never rewrites the claim text and never deletes. `superseded_by_id` is a restrictive foreign key, self-supersession is rejected, and a superseded row must name its successor. An auditor can always reconstruct what was believed and when.
+
+`attribute` is what makes conflict detection meaningful: two claims about the shop's warranty disagree, while its warranty and its phone number do not.
+
+Writes come only from the explicit operator command `npm run evidence:sync`, which is idempotent — a second run reports zero changes. Nothing writes evidence during application startup, so a deploy can never silently rewrite what the system believes.
