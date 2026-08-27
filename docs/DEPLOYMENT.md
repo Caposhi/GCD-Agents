@@ -2,21 +2,22 @@
 
 ## Current status and authority
 
-Phase 0D is merged and production-deployed; it does not begin Phase 0B. Read-only verification at 2026-08-24 21:32 UTC confirmed workspace `tea-d4fkclpr0fns73abmnh0`, API `srv-d8u0qtpo3t8c73c5o44g`, worker `srv-d8u0qtpo3t8c73c5o440`, scheduler `crn-d8ulb4rtqb8s73bdjctg`, and PostgreSQL `dpg-d8u0qaho3t8c73c5nj40-a`. API, worker, and scheduler were live at `10098de73667797120da8c7dfa4da83f336ff6ba`; no deploy was in progress. The exact `/healthz` identity and worker readiness marker passed, and no recent error/critical logs were observed.
+Phase 0D is merged and production-deployed; it does not begin Phase 0B. Read-only verification at 2026-08-24 21:32 UTC confirmed workspace `tea-d4fkclpr0fns73abmnh0`, API `srv-d8u0qtpo3t8c73c5o44g`, worker `srv-d8u0qtpo3t8c73c5o440`, scheduler `crn-d8ulb4rtqb8s73bdjctg`, and PostgreSQL `dpg-d8u0qaho3t8c73c5nj40-a`. API, worker, and scheduler were live at `10098de73667797120da8c7dfa4da83f336ff6ba`; no deploy was in progress. The exact `/healthz` identity and worker readiness marker passed, and no recent error/critical logs were observed. **That verification has not been repeated since**; every row below is last-verified rather than current, and must be reconfirmed read-only immediately before any production operation.
 
 ### Current cutover status
 
-| Capability | State |
-|---|---|
-| Phase 0D controller source | **Implemented** and merged in PR #34 |
-| Current controller source in production | **Deployed** through the previous native Render mechanism |
-| GitHub `production` environment | **Configured** with secret name, five non-secret variables, and `main` restriction |
-| Render native auto-deploy | **Off** for API, worker, and scheduler (`autoDeploy: no`, `autoDeployTrigger: off`) |
-| GitHub repository enable gate | **Disabled**: `RENDER_DEPLOY_AUTOMATION_ENABLED=false` |
-| GitHub controller as production authority | **Not enabled; not proven in production** |
-| Current unattended deployment authorities | **Zero, intentionally** |
+| Capability | State | Freshness |
+|---|---|---|
+| Phase 0D controller source | **Implemented** and merged in PR #34 | repository fact |
+| Current controller source in production | **Deployed** through the previous native Render mechanism | last verified 2026-08-24 |
+| Worker ownership/recovery source | **Merged** to `main` in PR #36 (`0828cc9…`); **not deployed** | repository fact, verified 2026-08-26 |
+| GitHub `production` environment | **Configured** with secret name, five non-secret variables, and `main` restriction | last verified 2026-08-24; not reverified |
+| Render native auto-deploy | **Off** for API, worker, and scheduler (`autoDeploy: no`, `autoDeployTrigger: off`) | last verified 2026-08-24; not reverified |
+| GitHub repository enable gate | **Disabled**: `RENDER_DEPLOY_AUTOMATION_ENABLED=false` | last verified 2026-08-24; not reverified |
+| GitHub controller as production authority | **Not enabled; not proven in production** | follows from the rows above |
+| Current unattended deployment authorities | **Zero, intentionally** | follows from the rows above |
 
-The next separately authorized operation is to reverify this zero-authority/no-in-flight state, set the GitHub gate to exactly `true`, prove the already-current/no-deployment path if possible, and then prove one harmless migration-free release. Never re-enable Render native auto-deploy while GitHub control is enabled.
+**The next operation is no longer the gate.** Because the ownership fix is merged but not deployed, the live worker holds no advisory lock and cannot be fenced by one; enabling automated deployment authority against that worker would automate redeploys of a system that still strands interrupted briefs silently. The next separately authorized operation is a read-only reverification of the rows above, and the first release of the ownership fix is the **manually controlled bootstrap** described under "First production release of the ownership fix" below, performed with the gate still `false`. Gate enablement and the controller proof come after that bootstrap and its handoff proof, not before. Never re-enable Render native auto-deploy while GitHub control is enabled.
 
 The Phase 0A rollout proved that concurrent native deployments are unsafe: the worker started before migration 005 completed, failed twice because `approval_decisions` did not exist, and recovered after the API migration finished. Schema-dependent services must not be released concurrently with their migration authority.
 
@@ -82,13 +83,13 @@ The following configuration was verified present read-only on 2026-08-24. The se
 | `production` environment variable | `RENDER_WORKER_SERVICE_ID` | `srv-d8u0qtpo3t8c73c5o440` |
 | `production` environment variable | `RENDER_SCHEDULER_SERVICE_ID` | `crn-d8ulb4rtqb8s73bdjctg` |
 | `production` environment variable | `RENDER_API_HEALTH_URL` | `https://gcd-social-api.onrender.com/healthz` |
-| Repository variable | `RENDER_DEPLOY_AUTOMATION_ENABLED` | currently `false`; next cutover step sets exactly `true` only after immediate re-verification |
+| Repository variable | `RENDER_DEPLOY_AUTOMATION_ENABLED` | `false` at last verification; a later cutover step sets exactly `true`, only after the ownership bootstrap and handoff proof and after immediate re-verification |
 
 The enable gate must be repository-scoped because the provenance job evaluates it before entering the protected environment; an environment-only gate is unavailable there and will fail closed. `RENDER_API_HEALTH_URL` cannot select another destination: the controller accepts only the exact reviewed value shown above. The API key is not an application runtime variable and must not be copied into Render service environments. Repository/environment variables are non-secret identifiers only.
 
 ## Deployment-authority cutover
 
-The safe sequence never permits dual authority. Steps 1–7 are complete; steps 8–10 remain:
+The safe sequence never permits dual authority. Steps 1–7 are complete. **Steps 8–10 are no longer the immediate next actions**: the ownership bootstrap and its handoff proof, in the section below, must complete first. Steps 8–10 become eligible only after the protected worker is live and proven.
 
 1. Merge and validate Phase 0D with the GitHub gate false. **Complete.**
 2. Deploy Phase 0D through the previous native Render path. **Complete.**
@@ -97,7 +98,7 @@ The safe sequence never permits dual authority. Steps 1–7 are complete; steps 
 5. Keep the repository enable gate false. **Complete/current.**
 6. Turn native Render auto-deploy off on all three services. **Complete.**
 7. Verify all three settings off and no deployment/migration in flight. **Complete at the verification time above; recheck immediately before step 8.**
-8. Under explicit authorization, set `RENDER_DEPLOY_AUTOMATION_ENABLED=true`. **Not done.**
+8. Under explicit authorization, set `RENDER_DEPLOY_AUTOMATION_ENABLED=true`. **Not done — and now gated behind the ownership bootstrap below.**
 9. Prove the controller against the already-current/no-deploy route if possible. **Not done.**
 10. Prove one harmless migration-free real release, including exact API health, target-bound worker readiness/stabilization, scheduler artifact, and final three-SHA equality. **Not done.**
 
@@ -105,7 +106,7 @@ If any prerequisite changes, stop rather than enabling the second authority. Ren
 
 ## Worker ownership and the readiness window
 
-Implemented in PR, **not live in production**.
+**Merged to `main` in PR #36 (`0828cc9…`); not deployed and not production-validated.** This section describes current source and the next production release.
 
 Render background-worker deploys are zero-downtime: the new instance starts, is considered started, and only about 60 seconds later does the old instance receive SIGTERM, after which it still gets its shutdown grace. Old and new therefore overlap legitimately, and a new worker starting does **not** mean a `running` brief is abandoned.
 
@@ -127,17 +128,20 @@ Readiness now asserts four things at once: durable state initialized, exclusive 
 
 The live worker at `10098de73667797120da8c7dfa4da83f336ff6ba` does not take the lock, so the lock cannot fence it. The GitHub controller also cannot perform this release while `RENDER_DEPLOY_AUTOMATION_ENABLED=false`, and that gate must stay false until the protected worker is already live. **The first release is therefore a separately authorized, manually controlled Render release.** It is not part of the implementing PR and has not been performed.
 
-1. Merge to `main` with exact-head CI green.
-2. Reconcile the stale August 10 row under its own explicit production authorization, so no unexplained `running` row remains for the reconciler's first firing to act on as a deployment side effect.
-3. Read-only preflight: zero `running` briefs; **zero pending approvals**; no deployment in progress; far from the 13:00 UTC scheduler window; no manual trigger expected.
+Every step below requires its own explicit authorization. This document grants none of them.
+
+1. **Merge to `main` with exact-head CI green. COMPLETE** — PR #36, reviewed head `281eb8f232995e58e404c916c3ec0a23b62c7acc`, all five CI jobs green, merged as `0828cc91c41c9cd10ad709db30491ada0a52c811`.
+2. **Read-only production reverification.** Reconfirm current `main`, all three live SHAs, native auto-deploy off on all three services, the GitHub gate still `false`, the `production` environment configuration, and no deployment or migration in flight. Stop on any discrepancy.
+3. **Reconcile the August 10 incident against provider account history first.** Check Instagram, Facebook, and Google Business Profile directly for the 2026-08-11 Mini Cooper check-engine content before mutating any production row. Public search was inconclusive and is not sufficient evidence. Establishing whether anything was published is a prerequisite for deciding how the row is resolved, not a formality after it.
+4. **Then, under its own explicit production authorization, resolve the stale `running` row** (`c5e53afe-2657-4e11-811d-53ce5e793245`), so no unexplained `running` row remains for the reconciler's first firing to act on as a deployment side effect. A production write coupled to a deployment is exactly the ambiguity this sequence exists to avoid.
+5. **Read-only preflight:** zero `running` briefs; **zero pending approvals**; no deployment in progress; far from the 13:00 UTC scheduler window; no manual trigger expected.
 
    Zero pending approvals is required specifically because approvals created before this change carry no `brief:approval_requested` marker. The startup orphan sweep revokes pending approvals with no owning brief marker, so a pre-existing pending approval is indistinguishable from an orphan and would be revoked on the new worker's first boot. Draining them first makes that sweep a no-op instead of a surprise.
-4. Keep Render native auto-deploy **off** and the GitHub gate **false**.
-5. One-time manual sequential release to the same target SHA: API → verify exact health → worker → verify ownership acquisition, reconciliation, and readiness → scheduler → verify all three report the target SHA.
-6. That bootstrap enables no automatic authority.
-7. Perform a second controlled worker redeploy once both old and new versions contain ownership code, and observe the new instance waiting, the old instance shutting down, ownership transferring only afterwards, and readiness appearing only after that.
-8. Only once production protection is proven may the GitHub deployment gate be considered for enablement.
-9. Then prove the controller's already-current/no-op path, followed by a harmless migration-free real GitHub-controlled release.
+6. Keep Render native auto-deploy **off** and the GitHub gate **false** throughout.
+7. **One-time manual sequential release** to the same target SHA: API → verify exact health → worker → verify ownership acquisition, reconciliation, and readiness → scheduler → verify all three report the target SHA. The bootstrap enables no automatic authority.
+8. **Worker handoff and contention proof.** Once both the old and new versions contain ownership code, perform a second controlled worker redeploy and observe the new instance waiting, the old instance shutting down, ownership transferring only afterwards, and readiness appearing only after that. This is the step that actually proves the design under Render's zero-downtime overlap; the bootstrap alone does not, because the instance it replaced held no lock.
+9. **Only once that protection is proven in production** may the GitHub deployment gate be considered for enablement (cutover step 8 above).
+10. Then prove the controller's already-current/no-op path, followed by a harmless migration-free real GitHub-controlled release.
 
 ## Recorded follow-ups
 

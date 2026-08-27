@@ -16,7 +16,7 @@ New AI agents should read [Start here](docs/START_HERE.md), then the concise [AI
 |---|---|
 | [AI engineering handoff](docs/AI_HANDOFF.md) | Mission, orientation, current operation, next action, and authority boundaries |
 | [Status](docs/STATUS.md) | Verified current repository, production, and deployment-authority state |
-| [Roadmap](docs/ROADMAP.md) | Completed work, current cutover, hardening order, Phase 0B, and later work |
+| [Roadmap](docs/ROADMAP.md) | Canonical work sequence and current cursor: phase-state vocabulary, completed history, hardening order, Phase 0B, and later work |
 | [Architecture](docs/ARCHITECTURE.md) | Current production design versus target Content OS design |
 | [Deployment control](docs/DEPLOYMENT.md) | Exact CI/controller contract, current cutover state, and migration boundary |
 | [Operations](docs/OPERATIONS.md) | Health, routine operation, incident response, and recovery |
@@ -29,18 +29,16 @@ New AI agents should read [Start here](docs/START_HERE.md), then the concise [AI
 
 `docs/archive/` is historical only. Current source, this README, and active runbooks take precedence.
 
-## Verified handoff snapshot
+## Handoff snapshot
 
-Read-only GitHub and Render inspection at **2026-08-24 21:32 UTC** established:
+**Repository `main` and the live production release are intentionally different commits.** Do not treat them as facts that ought to match, and do not read exact SHAs from this file — [Status](docs/STATUS.md) is authoritative for every mutable identifier and records how fresh each one is.
 
-- `main` and production API, worker, and scheduler all report commit `10098de73667797120da8c7dfa4da83f336ff6ba`, the Phase 0D merge commit from PR #34.
-- Phase 0A Integrity Hardening from PR #33 is included; migration `state/migrations/005_approval_integrity.sql` is applied.
-- The API health endpoint returned the expected application, PostgreSQL, and full-commit identity. The worker emitted the exact target-bound PostgreSQL readiness marker. No recent error or critical logs were observed.
-- Render native auto-deploy is **off** for API, worker, and scheduler. The GitHub `production` environment, its named secret, its five non-secret variables, and its `main` restriction are configured, but repository variable `RENDER_DEPLOY_AUTOMATION_ENABLED` is **false**.
-- There is intentionally **no unattended deployment authority**. Phase 0D is implemented and configured, but not enabled or proven as the production deployment authority.
-- The next operation is a separately authorized cutover proof: reverify the zero-authority state and no in-flight deploy, set the GitHub gate to exactly `true`, prove the already-current/no-deploy path if possible, then prove one harmless migration-free release. Do not re-enable Render native auto-deploy while GitHub control is enabled.
-- Production PostgreSQL external access still allows `0.0.0.0/0`. Restriction is a separate high-priority security change.
-- A normal scheduler execution succeeded on 2026-08-24 before the Phase 0D release. A normal scheduled execution of the current Phase 0D SHA has not yet been observed; do not trigger production cron merely to close that gap.
+- `main` carries Phase 0A (PR #33), Phase 0D (PR #34), the documentation reconciliation (PR #35), and the **worker ownership and recovery work (PR #36)**. Migration `state/migrations/005_approval_integrity.sql` is applied; PR #36 added no migration.
+- **Production is running the Phase 0D release and does not yet contain the ownership work.** The worker live today does not take the advisory lock and cannot be fenced by it.
+- At the last full read-only verification, **2026-08-24 21:32 UTC**: all three services were live and healthy at the Phase 0D SHA, Render native auto-deploy was **off** on API, worker, and scheduler, the GitHub `production` environment and its five non-secret variables were configured, and repository variable `RENDER_DEPLOY_AUTOMATION_ENABLED` was **false** — intentionally leaving **no unattended deployment authority**. None of those facts has been reverified since; treat them as last-verified rather than current.
+- A normal scheduled execution of the current production SHA **was** observed on 2026-08-25 and that gap is closed. Do not trigger production cron for evidence.
+- Production PostgreSQL external access allowed `0.0.0.0/0` at last verification. Restriction is a separate high-priority security change.
+- **The next operation is not the deployment gate.** Because the ownership fix is merged but not deployed, its first production release is a separately authorized **manual Render bootstrap performed while the gate stays `false`**. Only after that worker is live and its handoff behavior is proven does enabling the gate become eligible. [Roadmap](docs/ROADMAP.md) holds the ordered cursor.
 
 Service IDs and exact control-plane configuration are recorded in [Status](docs/STATUS.md) and [Deployment control](docs/DEPLOYMENT.md). Do not infer mutable production facts from `render.yaml` alone.
 
@@ -95,7 +93,7 @@ The controller is not yet enabled or production-proven. [Deployment control](doc
 
 ## Worker ownership and recovery
 
-**Implemented in the repository, NOT yet live in production. Phase 0D.1 remains paused: Render native auto-deploy stays off and `RENDER_DEPLOY_AUTOMATION_ENABLED` stays `false`.**
+**Merged to `main` in PR #36. NOT deployed and NOT production-validated.** This section describes current source and the next production release, not current production runtime. Phase 0D.1 remains paused: Render native auto-deploy stays off and `RENDER_DEPLOY_AUTOMATION_ENABLED` stays `false`, and the first release of this code is a separately authorized manual bootstrap rather than a gate enablement.
 
 Render background-worker deploys are zero-downtime, so the old worker stays alive for roughly a minute after the new one starts. A starting worker therefore cannot assume a `running` brief was abandoned. Exactly one worker is the owner, established by a PostgreSQL session-level advisory lock held on a dedicated connection for the process lifetime, released automatically when that session ends.
 
@@ -128,3 +126,11 @@ git diff --check
 PostgreSQL and bound HTTP suites are opt-in and refuse non-loopback/default targets. Use only uniquely disposable local databases as described in [Testing](docs/TESTING.md). Never run `dryrun:live`, diagnostics, migrations, scheduler/worker, approval decisions, model/image calls, or provider publishing against an unidentified environment or without explicit authority.
 
 The tracked `.DS_Store` is unrelated generated OS metadata. `.gitignore` blocks future copies; remove the tracked file only in a separate explicitly scoped cleanup.
+
+## Documentation and roadmap rules
+
+Both rules are binding and live in [`AGENTS.md`](AGENTS.md); [`CONTRIBUTING.md`](CONTRIBUTING.md) carries the matching definition of done.
+
+**Documentation is part of every change.** A change is not complete until every affected Markdown file, environment example, runbook, diagram, command, path, inline operational note, and external setup description is updated in the same atomic change; instructions that no longer apply are removed or explicitly archived; every modified document is reread whole; documented paths, commands, variables, service names, routes, schedules, links, and identifiers are verified against source; this README is updated whenever architecture, data flow, deployment, security, operations, ownership, recovery, or external dependencies change; and unresolved uncertainty, manual prerequisites, rollout gates, and external-system dependencies are recorded rather than presented as completed.
+
+**Roadmap continuity is mandatory.** [`docs/ROADMAP.md`](docs/ROADMAP.md) is the canonical work sequence and current cursor; [`docs/STATUS.md`](docs/STATUS.md) records verified reality. Any change that implements, reorders, blocks, expands, narrows, supersedes, or completes roadmap scope must update the roadmap in the same change — finishing implementation is itself a roadmap-state change. Phase states (`PLANNED`, `IMPLEMENTED`, `MERGED`, `CONFIGURED`, `ENABLED`, `DEPLOYED`, `PRODUCTION-VALIDATED`, `BLOCKED`, `DEFERRED`, `SUPERSEDED`) stay distinct and are never collapsed into "done".

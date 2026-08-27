@@ -33,6 +33,31 @@ This rule applies to humans, Codex, all other AI agents, automated refactors, de
 - Do not commit, push, merge, deploy, rotate credentials, rewrite history, delete data, or contact external systems unless explicitly authorized.
 - Never weaken the Phase-A approval gate or self-improvement core-objective lock as an incidental change.
 
+## Roadmap continuity is mandatory
+
+- [`docs/ROADMAP.md`](docs/ROADMAP.md) is the canonical unfinished-work sequence and the current-phase cursor. [`docs/STATUS.md`](docs/STATUS.md) records verified current reality. Read both before selecting, beginning, continuing, or completing any phase.
+- A change that implements, reorders, blocks, expands, narrows, supersedes, or **completes** roadmap scope must update `docs/ROADMAP.md` in the same change. Finishing implementation is itself a roadmap-state change, not merely the end of one.
+- Never infer the next phase from chat history, pull-request chronology, memory, or an unchecked issue when `docs/ROADMAP.md` supplies the current cursor.
+- When executable source or verified production evidence contradicts roadmap prose, record and resolve the discrepancy. Never follow stale planning text because it is written down.
+
+### Phase state vocabulary
+
+These states are distinct and must not be collapsed into "done", "complete", or "shipped" wherever the distinction changes what an operator may safely do next:
+
+`PLANNED` · `IMPLEMENTED` · `MERGED` · `CONFIGURED` · `ENABLED` · `DEPLOYED` · `PRODUCTION-VALIDATED` · `BLOCKED` · `DEFERRED` · `SUPERSEDED`
+
+Code merged to `main` is `MERGED`. It is not `DEPLOYED` until a release carrying it is live, and not `PRODUCTION-VALIDATED` until its behavior has been observed in production. Configuration that exists is `CONFIGURED`; it is `ENABLED` only when its gate is actually on.
+
+### Completed-phase records
+
+A completed-phase record in `docs/ROADMAP.md` must preserve: phase name; PR number; merge SHA when known; delivered scope; migrations/schema impact; material design decisions; material rejected alternatives and why they were rejected; automated validation; production evidence where applicable; rollback/recovery status; security and privacy implications; accepted limitations; unresolved follow-ups; and the documents updated at completion. Rationale and evidence are never deleted, only relocated.
+
+Completed-phase records currently live inside `docs/ROADMAP.md`. A separate completed-phase ledger (`docs/COMPLETED_ROADMAP_PHASES.md`) should be introduced only once completed history has grown enough to impair `docs/ROADMAP.md` as an active planning document — judged by whether a maintainer can still find the current cursor and the next eligible work quickly, not by a line count. Introducing it is a documentation change like any other and never deletes the history it relocates.
+
+### Mutable identifiers
+
+A merge SHA cannot be known before merging, so documentation that names the current `main` SHA, current live SHAs, or the current cursor cannot always be reconciled inside the implementing change. That reconciliation is a **blocking follow-up recorded before the phase is called complete**, and it is the only sanctioned exception to same-change updating under the binding rule above. Prefer describing semantic state and pointing to `docs/STATUS.md` over repeating a mutable SHA in more documents than necessary; label any dated snapshot as a snapshot rather than as mutable current truth.
+
 ## Required validation
 
-Run the relevant build, typecheck, four offline self-tests, simulated dry run, dependency audit, AgentShield scan when available, Markdown-link validation, environment coverage comparison, credential/PII scan with manual triage, `git diff --check`, and complete diff review. Report checks that cannot run and why.
+Run the relevant build, typecheck, the offline self-test suite (`npm run test:offline`, currently seven suites), simulated dry run, deployment-controller fixtures, dependency audit, AgentShield scan when available, Markdown-link validation, environment coverage comparison, credential/PII scan with manual triage, `git diff --check`, and complete diff review. Report checks that cannot run and why.

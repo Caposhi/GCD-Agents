@@ -36,7 +36,9 @@ Daily: API/worker/scheduler status, pending/running/failed briefs, pending/expir
 
 ## Deployment
 
-Phase 0A and Phase 0D are live at the production commit recorded in [Status](STATUS.md). Native Render auto-deploy is off for API, worker, and scheduler; GitHub automation is configured but the repository gate remains false. This is an intentional zero-unattended-authority window. The worker-ownership and recovery change is implemented in PR but **not deployed**, so production still runs a worker with none of the protections above; until it is live, any manual worker restart needs a quiescent queue. The next authorized operation is controller enablement and controlled proof—not restoration of native auto-deploy. The Phase 0A worker-before-migration incident is why no migration-bearing release may use the ordinary controller path.
+Phase 0A and Phase 0D are live at the production commit recorded in [Status](STATUS.md). At the last read-only verification, native Render auto-deploy was off for API, worker, and scheduler and GitHub automation was configured with the repository gate false — an intentional zero-unattended-authority window that must be reconfirmed rather than assumed.
+
+The worker-ownership and recovery change is **merged to `main` in PR #36 (`0828cc9…`) but not deployed**, so production still runs a worker with none of the protections described below. Until that release is live, **any manual worker restart needs a quiescent queue**, and an interrupted brief can still be stranded silently. The next authorized operation is a read-only reverification, followed by the separately authorized manual bootstrap of the ownership fix with the gate still false — **not** controller enablement, and not restoration of native auto-deploy. The Phase 0A worker-before-migration incident is why no migration-bearing release may use the ordinary controller path.
 
 For a no-migration release after cutover:
 
@@ -58,9 +60,9 @@ Application rollback selects a prior release/commit. SQL migrations are forward-
 
 ## Brief lifecycle
 
-`brief_queue.status` is `pending → running → done|failed`. `running` is a single opaque state that spans orchestration, a human approval wait of up to 24 hours, and the provider publish loop, and `claimNextBrief` only ever selects `pending`. Nothing reclaims a `running` row, so before the ownership change an interrupted worker stranded its brief permanently and silently — see the August 10 incident in [Status](STATUS.md).
+`brief_queue.status` is `pending → running → done|failed`. `running` is a single opaque state that spans orchestration, a human approval wait of up to 24 hours, and the provider publish loop, and `claimNextBrief` only ever selects `pending`. **In the release running in production today, nothing reclaims a `running` row**, so an interrupted worker strands its brief permanently and silently — see the August 10 incident in [Status](STATUS.md). That is still true right now; the fix below is merged but not deployed.
 
-Implemented in PR, **not yet live in production**:
+**Merged to `main` in PR #36; not deployed and not production-validated.** The behavior below is current source and describes the next production release, not what the live worker does today:
 
 1. **Exclusive ownership.** The worker holds a session-level advisory lock on a dedicated PostgreSQL connection for its whole lifetime. Render zero-downtime deploys keep the old worker alive for roughly a minute after the new one starts, so a new instance waits — reconciling nothing, emitting no readiness, consuming nothing — until the previous session ends and the lock is free.
 2. **Ownership as a side-effect fence.** Losing the lock or entering shutdown blocks approval creation, credential acquisition, and every provider attempt, including between platforms. A worker that no longer owns the queue may only run its shutdown path.

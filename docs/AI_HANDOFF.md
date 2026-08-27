@@ -18,7 +18,7 @@ Build German Car Depot's governed Content Intelligence Platform / Content OS: an
 
 - Root `package.json` builds one Node 22 TypeScript project.
 - `src/api/server.ts`: HTTP health, protected control/diagnostic/console routes, approval review/action, and media.
-- `src/worker/index.ts`: queue → deterministic orchestration → approval → native publishing.
+- `src/worker/index.ts`: exclusive ownership → recovery → queue → deterministic orchestration → approval → native publishing. Ownership, recovery, publication ordering, and exit behavior live in `src/harness/workerOwnership.ts`, `briefRecovery.ts`, `publicationRunner.ts`, `briefLifecycle.ts`, and `workerExit.ts`; startup ordering is in `src/worker/startup.ts`. Current source; not yet the production runtime.
 - `src/scheduler/daily.ts`: daily brief enqueue only.
 - `src/harness/orchestrator.ts`: current manager/control flow. It directly invokes current agent prompt bodies; the master-prompt manager is dormant.
 - `src/mcp/`: imported provider libraries, not standalone MCP servers/model tools.
@@ -28,57 +28,55 @@ Build German Car Depot's governed Content Intelligence Platform / Content OS: an
 
 Read [Architecture](ARCHITECTURE.md), [Data model](DATA_MODEL.md), or [Testing](TESTING.md) only when the task needs their detail.
 
-## 4. Current production state
+## 4. Current state — repository versus production
 
-Read-only verification at **2026-08-24 21:32 UTC**:
+**These are intentionally different and must not be assumed equal.** [Status](STATUS.md) is authoritative for every exact SHA and for the freshness of each mutable fact; this section states only the semantics.
 
-- Repository `main`: `10098de73667797120da8c7dfa4da83f336ff6ba`.
-- API `srv-d8u0qtpo3t8c73c5o44g`: live at that SHA; exact `/healthz` application/PostgreSQL/commit identity passed.
-- Worker `srv-d8u0qtpo3t8c73c5o440`: live at that SHA; exact PostgreSQL readiness marker observed.
-- Scheduler `crn-d8ulb4rtqb8s73bdjctg`: live artifact at that SHA.
-- Workspace: `tea-d4fkclpr0fns73abmnh0`.
-- PostgreSQL: `dpg-d8u0qaho3t8c73c5nj40-a`, PostgreSQL 18, available; external allowlist still `0.0.0.0/0`.
-- No deployment in flight and no recent service error/critical logs observed.
-- A normal scheduler run succeeded before the Phase 0D release; a normal run of the current SHA remains unobserved.
+- **Repository `main` carries the worker ownership and recovery work** (PR #36). Verified by direct Git inspection on 2026-08-26.
+- **Production does not.** The live release predates it, so the worker running today does not take the advisory lock and does not participate in the ownership protocol.
+- The last full read-only production verification was **2026-08-24 21:32 UTC**. Render native auto-deploy was off on all three services, the GitHub `production` environment was configured, and the repository gate `RENDER_DEPLOY_AUTOMATION_ENABLED` was `false` — a deliberate zero-unattended-authority window. **None of those has been reverified since**; treat each as last-verified, not as current truth.
+- A normal scheduled run of the current production SHA **was** observed on 2026-08-25; that item is closed. See [Status](STATUS.md) for the run evidence.
+- PostgreSQL external access was open to `0.0.0.0/0` at last verification.
 
-Mutable state can change. Reinspect GitHub/Render read-only when relevant; never infer it from this file or `render.yaml` alone.
+Mutable state can change. Reinspect GitHub and Render read-only immediately before any production operation; never infer it from this file, from `docs/STATUS.md` alone once stale, or from `render.yaml`.
 
 ## 5. Completed work
 
-**Phase 0A, PR #33 / `30d06f95…`:** exact canonical approval/hash binding, hash-only approval tokens, expiry/revocation, append-only decisions, durable PostgreSQL authority, exact reviewer/provider parity, target and immutable-media revalidation before every provider request, bounded trusted media and fail-closed QC, protected controls, and durable startup. Migration 005 is applied.
+[Roadmap](ROADMAP.md) holds the full completed-phase records, including design decisions, rejected alternatives, validation, and accepted limitations. In brief:
 
-**Phase 0D, PR #34 / `10098de736…`:** real Node 22 CI; PostgreSQL 16/18 integration; AgentShield/actionlint/YAML/static checks; exact successful same-repository main-push provenance; stale/diverged release rejection; exact live-to-target migration gate; serialized API health → worker readiness/stabilization → scheduler release; final SHA verification; and bounded, secret-aware, inert failure evidence. Phase 0D changed no Content Intelligence behavior.
+**Phase 0A, PR #33** — exact canonical approval/hash binding, hash-only approval tokens, expiry/revocation, append-only decisions, durable PostgreSQL authority, exact reviewer/provider parity, target and immutable-media revalidation before every provider request, bounded trusted media and fail-closed QC, protected controls, and durable startup. Migration 005 is applied. `DEPLOYED` and `PRODUCTION-VALIDATED`.
+
+**Phase 0D, PR #34** — real Node 22 CI; PostgreSQL 16/18 integration; AgentShield/actionlint/YAML/static checks; exact successful same-repository main-push provenance; stale/diverged release rejection; exact live-to-target migration gate; serialized API health → worker readiness/stabilization → scheduler release; final SHA verification; and bounded, secret-aware, inert failure evidence. It changed no Content Intelligence behavior. The application is `DEPLOYED`; the controller itself is `CONFIGURED` but not `ENABLED` and not proven.
+
+**PR #35** — documentation reconciliation and the zero-context handoff set. `MERGED`; documentation-only.
+
+**PR #36 — worker ownership and interrupted-brief recovery.** `MERGED` to `main`, **not `DEPLOYED`, not `PRODUCTION-VALIDATED`.** No migration. Exclusive ownership through a PostgreSQL session-level advisory lock; the `pending → running` claim executed on that ownership session; durable phase markers committed before each side effect; refuse-don't-resume terminalization of abandoned work; a startup orphan-approval sweep; ownership loss as a side-effect fence that ends the process; and readiness redefined to assert four things at once. This is current source and the next production release — not current production runtime.
 
 ## 6. Current operation in progress
 
-The deployment-authority cutover is paused safely between authorities:
+The deployment-authority cutover, Phase 0D.1, is paused safely between authorities: no unattended deployment authority is active as of the last verification.
 
-- Render native auto-deploy is off for all three services.
-- GitHub `production` environment is configured with the expected secret name, five non-secret variables, and `main` restriction.
-- Repository gate `RENDER_DEPLOY_AUTOMATION_ENABLED` is false.
-- Therefore no unattended deployment authority is active.
-- Phase 0D is implemented and configured, but not enabled or proven in production.
+**PR #36 changed what the cutover must do next.** The ownership fix is merged but not deployed, and the live worker cannot be fenced by a lock it does not take. Enabling the GitHub gate first would grant automated deployment authority to a system whose worker still strands interrupted briefs silently. The ownership fix therefore gets its first production release through a **separately authorized manual Render bootstrap while the gate stays `false`**.
 
-See [Deployment control](DEPLOYMENT.md) for exact mechanics and current evidence.
+See [Deployment control](DEPLOYMENT.md) for exact mechanics and [Roadmap](ROADMAP.md) for the ordered cursor.
 
 ## 7. Next action
 
-Take one action only, and only with explicit authorization:
+Take one action only, and only with explicit authorization. **Do not set the deployment gate.**
 
-1. Read-only reverify current `main`, all three live SHAs, native auto-deploy off, GitHub environment/configuration, gate false, and no deploy/migration in flight.
-2. Set `RENDER_DEPLOY_AUTOMATION_ENABLED=true`.
-3. Prove the controller against the already-current/no-deploy path if possible.
-4. Then prove one harmless migration-free real release under separate reviewed scope.
+1. Read-only reverify current `main`, all three live SHAs, native auto-deploy off on all three services, the GitHub environment and configuration, the gate still `false`, and no deploy or migration in flight. Stop on any discrepancy.
 
-Stop if any prerequisite differs. Never re-enable native Render auto-deploy while the GitHub gate is true. Do not combine this cutover with database networking or Phase 0B.
+Everything after that is a separately authorized step in its own right, in this order: reconcile the August 10 incident against provider account history; resolve the stale `running` row; perform the manual bootstrap release of the ownership fix with the gate still `false`; verify ownership acquisition, reconciliation, and readiness at that SHA; prove worker handoff with both versions holding the lock; and only then consider enabling `RENDER_DEPLOY_AUTOMATION_ENABLED` and proving the controller path.
+
+Never re-enable native Render auto-deploy while the GitHub gate is true. Do not combine this cutover with database networking or Phase 0B.
 
 ## 8. Roadmap
 
-[Roadmap](ROADMAP.md) is authoritative. After cutover proof: provider idempotency/operation ledger and reconciliation, worker lease/reaper, PostgreSQL network restriction, token lifecycle, control/reviewer identity, retention and backup/restore, current-SHA scheduler observation, then the Phase 0B evidence contract and runtime.
+[Roadmap](ROADMAP.md) is authoritative and binding — see the roadmap-continuity rule in [`AGENTS.md`](../AGENTS.md). After the bootstrap and cutover proof: provider idempotency/operation ledger, provider reconciliation, PostgreSQL network restriction, token lifecycle, control/reviewer identity, retention and backup/restore, the external readiness register, then the Phase 0B evidence contract and runtime. The worker lease/reaper item is superseded and is no longer active work.
 
 ## 9. Outstanding risks
 
-Highest priority: no durable provider idempotency/reconciliation; worker-interruption recovery is implemented in PR but **not yet live in production**; PostgreSQL external access open to `0.0.0.0/0`; plaintext persisted Instagram token; bearer approval URL and generic reviewer identity; one shared control secret with process-local rate limits; no retention/restore drill; and unverified provider ownership/scopes/version/backup facts. Current skills are not injected, scorecard/proposal tables are unwritten, and no empirical learning runtime exists.
+Highest priority: no durable provider idempotency, operation ledger, or reconciliation — provider-level `withRetry` can still reissue a request after an ambiguous network outcome, so duplicate publication remains possible. Worker-interruption recovery is **merged but not deployed**, so the stranding failure mode is still live in production. PostgreSQL external access was open to `0.0.0.0/0` at last verification; the default-path Instagram token persists in plaintext; approval uses a bearer URL with a generic reviewer identity; one shared control secret carries process-local rate limits; there is no retention or restore drill; and provider ownership, scopes, versions, and backup facts remain unverified. Current skills are not injected, scorecard/proposal tables are unwritten, and no empirical learning runtime exists.
 
 ## 10. Content Intelligence target architecture
 
@@ -107,12 +105,12 @@ Read repository/Git/GitHub and explicitly available read-only infrastructure sta
 1. Read root `AGENTS.md`.
 2. Read this handoff.
 3. Read [Status](STATUS.md).
-4. Read [Roadmap](ROADMAP.md).
+4. Read [Roadmap](ROADMAP.md) — it holds the current cursor, and updating it is binding under `AGENTS.md`.
 5. Load only the specialized document needed.
 6. Inspect current Git `main`/head.
-7. Reinspect mutable production state read-only when relevant.
+7. Reinspect mutable production state read-only when relevant, and never assume repository `main` and the live release are the same commit.
 8. Treat source, migrations, self-tests, and checked-in configuration as higher authority than prose.
-9. Preserve unrelated working-tree changes, including the existing `.DS_Store` modification.
+9. Preserve unrelated working-tree changes, including any existing `.DS_Store` modification.
 10. Do not perform external or production writes without authorization.
 
 ## 14. Key files

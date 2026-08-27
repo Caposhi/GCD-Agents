@@ -1,42 +1,139 @@
 # GCD Content Intelligence roadmap
 
-This roadmap orders work; it does not grant authority to deploy, migrate, call providers, change external configuration, or begin a phase. [Status](STATUS.md) records what is true now.
+Last reviewed: 2026-08-26.
 
-## Completed
+This roadmap is the canonical unfinished-work sequence and the current-phase cursor. It orders work; it does not grant authority to deploy, migrate, call providers, change external configuration, or begin a phase. [Status](STATUS.md) records what is verified true now. Where this file and verified production evidence disagree, resolve the discrepancy rather than following this text. Roadmap continuity is binding — see [`AGENTS.md`](../AGENTS.md).
+
+## State vocabulary
+
+| State | Meaning |
+|---|---|
+| `PLANNED` | In scope and ordered, but not built |
+| `IMPLEMENTED` | Code exists and local validation passes |
+| `MERGED` | Merged to `main` at a known SHA; says nothing about production |
+| `CONFIGURED` | External identifiers/settings exist |
+| `ENABLED` | The gate controlling it is actually on |
+| `DEPLOYED` | A release carrying it is live in production |
+| `PRODUCTION-VALIDATED` | Its behavior has been observed in production |
+| `BLOCKED` | A named dependency or decision prevents safe progress |
+| `DEFERRED` | Intentionally not scheduled; reason and re-entry condition recorded |
+| `SUPERSEDED` | Replaced by a different accepted design; kept for its rationale |
+
+These are not interchangeable and must not be collapsed into "done". `MERGED` in particular is not `DEPLOYED`.
+
+## Completed / durable history
 
 ### Phase 0A — Integrity Hardening
 
-Merged in PR #33 as `30d06f95f32c46f9952bc63f0bc34a6040d40a09` and production-deployed. It established protected controls, exact canonical approval/hash binding, hash-only decision-token storage, expiry/revocation, append-only atomic decisions, durable PostgreSQL publication authority, reviewer/provider parity, live target and immutable-media revalidation before every provider request, bounded trusted-media handling, fail-closed QC, and durable startup prerequisites. Migration 005 applied these database guarantees and invalidated incompatible legacy approvals.
+**State:** `MERGED` · `DEPLOYED` · `PRODUCTION-VALIDATED`.
+
+**PR / merge:** PR #33, merge `30d06f95f32c46f9952bc63f0bc34a6040d40a09`.
+
+**Delivered:** protected controls; exact canonical approval/hash binding; hash-only decision-token storage; expiry and revocation; append-only atomic decisions; durable PostgreSQL publication authority; reviewer/provider parity; live target and immutable-media revalidation before every provider request; bounded trusted-media handling; fail-closed QC; and durable startup prerequisites.
+
+**Schema:** migration 005 applied these database guarantees and invalidated incompatible legacy approvals.
+
+**Accepted limitations:** no provider-side exactly-once guarantee; the approval bearer URL and generic reviewer identity remain; `session_state` still persists a default-path Instagram token in plaintext.
+
+**Follow-ups still open:** provider operation ledger and reconciliation; control/reviewer identity; token lifecycle.
 
 ### Phase 0D — CI and Deployment Control Foundation
 
-Merged in PR #34 as `10098de73667797120da8c7dfa4da83f336ff6ba` and production-deployed through the previous Render native auto-deploy path. It added comprehensive Node 22 CI; disposable PostgreSQL 16 and 18 integration; AgentShield and workflow validation; exact CI provenance; stale-release rejection; exact live/target ancestry and migration-range gates; serialized API, worker, and scheduler release control; release-bound health/readiness; bounded diagnostics; and fail-closed redaction/rendering.
+**State:** `MERGED` · `DEPLOYED` · `PRODUCTION-VALIDATED` as an application release. The GitHub controller itself is `CONFIGURED` but **not** `ENABLED` and **not** `PRODUCTION-VALIDATED` as the deployment authority.
 
-## In cutover / current — Phase 0D.1
+**PR / merge:** PR #34, merge `10098de73667797120da8c7dfa4da83f336ff6ba`. Deployed through the previous Render native auto-deploy path, not through the controller it introduced.
 
-Verified 2026-08-24:
+**Delivered:** comprehensive Node 22 CI; disposable PostgreSQL 16 and 18 integration; AgentShield and workflow validation; exact CI provenance; stale-release rejection; exact live/target ancestry and migration-range gates; serialized API, worker, and scheduler release control; release-bound health and readiness; bounded diagnostics; and fail-closed redaction/rendering.
 
-- Render native auto-deploy: off for API, worker, and scheduler.
-- GitHub `production` environment: configured with the named secret, five non-secret variables, and `main` restriction.
-- GitHub automation gate: `false`.
-- Production: all three services live at `10098de73667797120da8c7dfa4da83f336ff6ba`; no deploy in flight.
-- Deployment authority: deliberate zero-unattended-authority window.
+**Schema:** none.
 
-The single next checkpoint is a separately authorized controller proof. Reconfirm the state above, then set `RENDER_DEPLOY_AUTOMATION_ENABLED` to exactly `true`; prove the already-current/no-deploy path if possible; then prove one harmless migration-free real release. Do not re-enable Render native auto-deploy while GitHub control is enabled. “Implemented,” “configured,” “enabled,” and “proven in production” remain distinct milestones.
+**Design decision:** deployment authority is exact-SHA and serialized, and a migration-bearing range stops the release rather than running a migration automatically. Exactly one migration runner remains the invariant.
+
+**Rejected alternative:** allowing the controller to execute migrations. The Phase 0A rollout had already proven that a schema-dependent consumer racing its migration authority fails; giving the controller that authority would have created a second migration runner.
+
+**Production evidence:** all three services observed live at the merge SHA on 2026-08-24; exact `/healthz` identity and the exact target-bound worker readiness marker passed. A normal scheduled run of this SHA was subsequently observed on 2026-08-25, closing the previously open current-SHA scheduler observation; the run evidence is recorded in [Status](STATUS.md).
+
+**Accepted limitation:** the controller has never performed a release. Being deployed is not being proven.
+
+### PR #35 — documentation reconciliation and zero-context handoff modernization
+
+**State:** `MERGED`. Documentation-only; no runtime, schema, workflow, or deployment effect.
+
+**PR / merge:** PR #35, merge `a797f4cbd85c477c1b558168b0a07018120adf64`.
+
+**Delivered:** created `docs/AI_HANDOFF.md`, `docs/ROADMAP.md`, and `docs/START_HERE.md`; rewrote the root README as a zero-context handoff; reconciled the runbook set against source.
+
+**Schema:** none. **Production evidence:** not applicable — nothing was deployed.
+
+**Accepted limitation, recorded honestly:** this change introduced a roadmap without introducing a rule binding anyone to update it, and it recorded the repository `main` SHA in prose that its own merge immediately invalidated. Both defects are corrected by the documentation-governance change that adds this record.
+
+### PR #36 — worker ownership and interrupted-brief recovery
+
+**State:** `MERGED` — **not `DEPLOYED`, not `PRODUCTION-VALIDATED`.**
+
+The production worker does not yet run this code and does not participate in the advisory-lock ownership protocol. Its first production release is a separately authorized manual bootstrap; see the current cursor below.
+
+**PR / merge:** PR #36, reviewed head `281eb8f232995e58e404c916c3ec0a23b62c7acc`, merge `0828cc91c41c9cd10ad709db30491ada0a52c811`.
+
+**Delivered:** exclusive worker ownership through a PostgreSQL session-level advisory lock held on a dedicated client for the process lifetime; the `pending → running` claim executed on that ownership session; durable phase markers committed before each side effect as safety state rather than best-effort telemetry; refuse-don't-resume terminalization of work abandoned by a previous owner; a startup orphan-approval sweep; ownership loss as a side-effect fence that ends the process nonzero; a widened and truncation-aware worker readiness window in the deployment controller; and readiness redefined to assert durable state initialized, exclusive ownership held, abandoned work reconciled, and required initialization complete.
+
+**Schema / migrations:** **none.** The advisory key is runtime state, `failed` was already permitted by the 002 constraint, the `events` table already stored the markers, and approval revocation columns already existed from migration 005. The change therefore ships through the controller's ordinary path instead of tripping its own migration gate.
+
+**Material design decisions:** ownership is established, never assumed, because Render zero-downtime worker deploys keep the old instance alive for roughly a minute after the new one starts. Recovery runs only after ownership is held, because recovery is destructive. Markers commit before the side effect they describe, so an interrupted brief is classified exactly rather than guessed at. A former owner declines every terminal write so it cannot overwrite a successor's recovery.
+
+**Material rejected alternative — a time-based worker lease or reaper.** Rejected on correctness for the current single-instance topology, not on effort. A brief legitimately remains `running` while waiting up to 24 hours for a human approval decision, so no TTL can distinguish a crashed worker from a waiting one. A lease row also survives its holder, whereas a session-level advisory lock is released by PostgreSQL the instant the owning session ends, making clean exit, SIGKILL, OOM, and host loss identical and requiring no expiry at all.
+
+**Re-entry condition for that decision:** reconsider the lease/fencing architecture if worker scale or topology changes — more than one concurrent worker, a partitioned queue, or any deployment model in which two owners are intended to run at once.
+
+**Automated validation (on the reviewed head, before merge):** Node 22 typecheck and build; the offline suite including `test:ownership` at 112 checks; deployment-controller fixtures including new truncation and pagination cases; disposable local PostgreSQL 16 integration at 114 checks, including two real sessions contending for the real advisory lock, automatic release on session death, and a `pg_terminate_backend` of the owning session proving a claim cannot commit afterwards; the bound HTTP end-to-end suite at 54 checks; simulated dry run; Markdown links; environment coverage; credential/PII scan; `npm audit --omit=dev` clean; AgentShield 1.4.0 clean. Exact-head GitHub CI was green across all five jobs before merge.
+
+**Production evidence:** **none, by design.** Nothing was deployed.
+
+**Rollback / recovery status:** no migration, so there is no forward-only schema commitment to unwind. Rollback is an ordinary application-release decision. Recovery itself is refuse-don't-resume: it never returns a brief to `pending`, never retries, and issues no provider request.
+
+**Security and privacy implications:** an interrupted brief's approval is now revoked rather than left live, and a startup sweep revokes pending approvals with no owning brief marker — closing an approval-integrity gap in which a human could approve a post that nothing was waiting to publish. Ownership is mutual exclusion, not a fencing token: the Phase 0A publication guard remains the actual fence. Marker error text is bounded to 300 characters so provider response bodies do not accumulate in durable state.
+
+**Accepted limitations:** interruption during a provider attempt still yields an outcome the system cannot resolve alone — it is surfaced and nothing retries automatically, but a human must reconcile against the platform. The Render log-truncation fallback remains a heuristic wherever the CLI exposes no `hasMore` or cursor; it is conservative and can fail a healthy release, but cannot pass an unproven one.
+
+**Unresolved follow-ups:** the durable provider operation ledger and idempotency work below; the manual bootstrap release; reconciliation of the August 10 stranded row under separate production authorization.
+
+**Documents updated at completion:** in the implementing PR — `README.md`, `docs/AI_HANDOFF.md`, `docs/DATA_MODEL.md`, `docs/DEPLOYMENT.md`, `docs/OPERATIONS.md`, `docs/ROADMAP.md`, `docs/SECURITY_AND_CONTINUITY.md`, `docs/STATUS.md`, `docs/TESTING.md`. In the follow-up governance change that added this record — all of the above plus `AGENTS.md`, `CONTRIBUTING.md`, `docs/ARCHITECTURE.md`, `docs/ENVIRONMENT.md`, and `docs/credentials-setup.md`.
+
+`docs/ARCHITECTURE.md` should have been in the first list and was not: PR #36 changed worker readiness semantics, the claim path, and runtime ownership while leaving the document that describes them untouched, which left it contradicting three other runbooks. That miss is what the roadmap-continuity and reread rules now exist to prevent.
+
+## Current cursor — Phase 0D.1
+
+Phase 0D.1 is the deployment-authority cutover. It is **paused, deliberately, between authorities**, and PR #36 changed what the next safe step is.
+
+The ownership and recovery code is `MERGED` but not `DEPLOYED`. The worker running in production does not take the advisory lock, so the lock cannot fence it. Enabling the GitHub deployment gate before that worker is replaced would hand automated deployment authority to a system whose worker still strands interrupted briefs silently. **The gate is therefore no longer the next action.** The first release of the ownership fix is a separately authorized, manually controlled Render release performed while the gate stays `false`.
+
+Each step below requires its own explicit authorization. None of them is authorized by this document.
+
+1. **PR #36 merged with exact-head CI green — COMPLETE** (`0828cc9…`).
+2. **Read-only production reverification.** Confirm current `main`, all three live SHAs, all three Render native auto-deploy settings off, the GitHub gate `false`, the GitHub `production` environment configuration, and no deployment or migration in flight. Stop on any discrepancy.
+3. **Reconcile the August 10 incident against provider account history first.** Check Instagram, Facebook, and Google Business Profile directly for the 2026-08-11 Mini Cooper check-engine content before any production row is mutated. Public search was inconclusive and is not sufficient evidence.
+4. **Under separate production authorization, resolve the known stale `running` row** (`c5e53afe-2657-4e11-811d-53ce5e793245`), so the reconciler's first firing is not performing an unexplained production mutation as a side effect of a deployment.
+5. **First ownership-fix release: a manually controlled Render bootstrap**, with native auto-deploy still off and `RENDER_DEPLOY_AUTOMATION_ENABLED` still `false`. Preflight requires zero `running` briefs and **zero pending approvals** — approvals created before this change carry no `brief:approval_requested` marker, so the startup orphan sweep would revoke them on first boot. Draining them first makes that sweep a no-op rather than a surprise.
+6. **Verify the bootstrap at its exact SHA:** API deployed and exact health identity confirmed; worker ownership acquisition, reconciliation, and readiness observed; scheduler artifact confirmed; all three services reporting the bootstrap SHA.
+7. **Separately reviewed worker handoff and contention proof,** performed once both the old and new worker versions contain ownership code: observe the new instance waiting, the old instance shutting down, ownership transferring only afterwards, and readiness appearing only after that.
+8. **Only after the protected worker is live and handoff behavior is proven** does enabling `RENDER_DEPLOY_AUTOMATION_ENABLED` become an eligible later step.
+9. **Then prove the GitHub controller path** — the already-current/no-deploy route first if possible, then one harmless migration-free real release.
+
+Never re-enable Render native auto-deploy while the GitHub gate is true. Do not combine this cutover with database networking work or with Phase 0B. `IMPLEMENTED`, `MERGED`, `CONFIGURED`, `ENABLED`, `DEPLOYED`, and `PRODUCTION-VALIDATED` remain distinct milestones throughout.
 
 ## Next hardening
 
 Keep these changes separable unless a reviewed design shows they must be atomic.
 
-1. **Durable provider operation ledger and idempotency.** Model at least `not_attempted`, `attempted`, `provider_accepted`, `result_unknown`, `published`, `reconciled`, and `failed_safely`. Prevent timeout/crash/retry ambiguity from becoming duplicate posts.
-2. **Provider reconciliation.** Reconcile internal intent/result records with provider-side post identities and safely resolve unknown outcomes before another attempt.
-3. **Worker lease/reaper — superseded for single-instance operation.** Exclusive ownership plus startup recovery (implemented in PR, not yet live) removes the stranding failure without a lease. A time-based lease was rejected on correctness: a brief legitimately sits in `running` for up to 24 hours awaiting a human, so no expiry can distinguish a crash from a wait. Re-open this item only if the worker is ever scaled beyond one instance.
-4. **PostgreSQL network restriction.** Remove the currently verified `0.0.0.0/0` external allowlist after confirming all required access paths.
-5. **Provider-token lifecycle.** Encrypt or move the plaintext default Instagram token/session state, define rotation/expiry/recovery, and review log/outcome redaction.
-6. **Control and approval identity.** Replace the shared `CONSOLE_TOKEN`, process-local direct-socket limits, generic reviewer label, and bearer token in browser/Slack URL history with scoped authenticated identities and a safer review/revocation flow.
-7. **Retention, backup, and restore.** Set retention for briefs, approvals, events, sessions, scorecards, proposals, and media; design the reviewed forward migration needed for media deletion; verify backup policy and conduct an isolated restore drill with external-side-effect reconciliation.
-8. **Current-SHA scheduler observation.** Observe the next normal scheduled run of `10098de…`; do not trigger production cron merely for evidence.
-9. **External readiness register.** Verify provider account ownership, scopes, app review, versions, quotas, billing, test assets, recovery contacts, and the accuracy/freshness of approved business facts.
+1. **Durable provider operation ledger and idempotency.** Model at least `not_attempted`, `attempted`, `provider_accepted`, `result_unknown`, `published`, `reconciled`, and `failed_safely`. This is the highest-priority remaining item: PR #36's durable phase markers are deliberately its precursor, but they make an ambiguous provider outcome *visible*, not *impossible*. Provider-level `withRetry` can still reissue a request after an ambiguous network outcome, so duplicate publication remains possible.
+2. **Provider reconciliation.** Reconcile internal intent and result records with provider-side post identities, and safely resolve unknown outcomes before another attempt is permitted.
+3. **PostgreSQL network restriction.** Remove the `0.0.0.0/0` external allowlist recorded at the last verification, after confirming every required access path. Do not combine with the deployment cutover.
+4. **Provider-token lifecycle.** Encrypt or relocate the plaintext default Instagram token and session state, define rotation/expiry/recovery, and review log and outcome redaction.
+5. **Control and approval identity.** Replace the shared `CONSOLE_TOKEN`, process-local direct-socket limits, generic reviewer label, and the bearer token in browser/Slack URL history with scoped authenticated identities and a safer review/revocation flow.
+6. **Retention, backup, and restore.** Set retention for briefs, approvals, events, sessions, scorecards, proposals, and media; design the reviewed forward migration needed for media deletion; verify backup policy and conduct an isolated restore drill with external-side-effect reconciliation.
+7. **External readiness register.** Verify provider account ownership, scopes, app review, versions, quotas, billing, test assets, recovery contacts, and the accuracy and freshness of approved business facts.
+
+The former worker lease/reaper item is `SUPERSEDED` and is no longer active work. Its rationale and re-entry condition are preserved in the PR #36 record above.
 
 ## Phase 0B prerequisite — fact and evidence contract
 
@@ -54,7 +151,7 @@ Support source, source type, provenance, confidence, freshness, `observed_at`, `
 
 ## Phase 0B — Content Intelligence runtime
 
-After the operational prerequisites are accepted, return to the core mission with approximately six primary model reasoning stages:
+`PLANNED` — not begun. After the operational prerequisites are accepted, return to the core mission with approximately six primary model reasoning stages:
 
 1. strategy-concept;
 2. automotive-truth;
@@ -63,11 +160,11 @@ After the operational prerequisites are accepted, return to the core mission wit
 5. packaging-adaptation; and
 6. final-critic.
 
-Implement an `AgentRegistry`, real skill/reference injection, research/reference retrieval, structured evidence capture, and deterministic input/output validation around those stages. Treat the roughly 22 originally researched specialist roles as conceptual capabilities: most should be deterministic services, references, policy modules, or optional specialists—not 22 mandatory model calls.
+Implement an `AgentRegistry`, real skill/reference injection, research/reference retrieval, structured evidence capture, and deterministic input/output validation around those stages. Treat the roughly 22 originally researched specialist roles as conceptual capabilities: most should be deterministic services, references, policy modules, or optional specialists — not 22 mandatory model calls.
 
 Keep human filming and external editing in the loop. Do not add an in-browser video editor unless a later phase explicitly requires it. Preserve human approval and governed change. Do not implement uncontrolled prompt, skill, agent, process, or publishing-rule rewriting.
 
-## Later
+## Later / deferred
 
 - ingest platform performance with provenance and freshness;
 - build content scorecards around reach, qualified followers, repeat viewing, affinity, retention, engagement, authority, and local relevance;
@@ -76,3 +173,5 @@ Keep human filming and external editing in the loop. Do not add an in-browser vi
 - generate governed improvement proposals for human review;
 - add paid amplification only after the organic engine and controls are reliable; and
 - connect attribution, leads, and revenue after attention and audience quality are measurable.
+
+**`DEFERRED` — browser-based video editing.** Humans film and CapCut or another external editor remains the V1 path. Re-entry condition: an explicit later phase that requires in-browser editing.
