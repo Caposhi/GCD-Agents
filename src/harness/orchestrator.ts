@@ -412,7 +412,9 @@ async function resolveImage(image: any, runId?: string): Promise<any> {
           ? `[image] media contract failure (not retryable, ${attempt} generation used): ${issue}`
           : `[image] error: ${issue}`,
       );
-      emit(runId, "image:media_contract", issue, {
+      // Only a genuine media-contract breach carries that label; a transport or
+      // decode failure logged under it would make the telemetry misleading.
+      emit(runId, deterministic ? "image:media_contract" : "image:error", issue, {
         agent: "image",
         data: { deterministic, attempts: attempt },
       });

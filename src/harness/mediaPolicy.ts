@@ -28,15 +28,24 @@ const PLATFORM_SAFE_IMAGE_SIZES = new Set([
 ]);
 
 /**
- * Aspect equality tolerance for a uniform resize.
+ * Exact rational aspect equality, by integer cross-multiplication.
  *
- * Tight on purpose. This is not a "close enough" allowance — it exists only so
- * integer provider dimensions that represent the same ratio compare equal
- * (896/1120 and 1080/1350 are both exactly 0.8, but a provider could return
- * e.g. 897x1121). Anything a human would notice as a different composition
- * must fail closed rather than be silently cropped or stretched.
+ * A near-ratio tolerance cannot express this invariant. 897x1121 sits within
+ * 0.0002 of 4:5, but scaling it to 1080x1350 gives scaleX 1.204013 and scaleY
+ * 1.204282 — a real, if subtle, stretch of a text-bearing brand graphic. Only
+ * exact ratio equality guarantees scaleX === scaleY, which is what "pure
+ * uniform scale" actually means.
+ *
+ * Both dimensions are already bounded to 4,096, so the cross-products cannot
+ * exceed 16,777,216 and stay far inside the safe-integer range. This is exact
+ * integer arithmetic with no floating-point comparison anywhere.
  */
-export const PUBLICATION_ASPECT_TOLERANCE = 0.002;
+export function aspectRatiosAreExactlyEqual(
+  source: { width: number; height: number },
+  target: { width: number; height: number },
+): boolean {
+  return source.width * target.height === target.width * source.height;
+}
 
 /**
  * A deterministic media-contract failure, as opposed to a creative/QC failure.
@@ -181,6 +190,11 @@ export function assertPlatformSafePublicationJpeg(bytes: Uint8Array): GeneratedI
  * graphic cuts through the headline. Padding would alter the composition a
  * reviewer approved. So the only sanctioned transformation is a scale that
  * preserves the entire frame.
+ *
+ * "Uniform" is enforced literally, by exact rational aspect equality rather
+ * than a near-ratio tolerance: only exact equality guarantees the horizontal
+ * and vertical scale factors are the same number, so nothing can be stretched
+ * on the grounds that its ratio was merely close.
  */
 export function planPublicationResize(
   source: { width: number; height: number },
@@ -190,16 +204,22 @@ export function planPublicationResize(
   if (source.width <= 0 || source.height <= 0) {
     throw new MediaContractError(`unusable source dimensions ${source.width}x${source.height}`);
   }
-  const sourceAspect = source.width / source.height;
-  const targetAspect = target.width / target.height;
-  if (Math.abs(sourceAspect - targetAspect) > PUBLICATION_ASPECT_TOLERANCE) {
+  if (!aspectRatiosAreExactlyEqual(source, target)) {
     throw new MediaContractError(
       `image provider returned ${source.width}x${source.height} (${describeAspect(source.width, source.height)}) `
       + `for requested ${target.width}x${target.height} (${describeAspect(target.width, target.height)}) publication media; `
-      + "automatic cropping is forbidden",
+      + "automatic cropping and stretching are forbidden",
     );
   }
-  return { scale: target.width / source.width };
+  // Exact ratio equality makes these the same number; assert it so the
+  // "uniform" claim is checked rather than merely intended.
+  const scale = target.width / source.width;
+  if (scale !== target.height / source.height) {
+    throw new MediaContractError(
+      `refusing a non-uniform scale for ${source.width}x${source.height} -> ${target.width}x${target.height}`,
+    );
+  }
+  return { scale };
 }
 
 /** Small human-readable ratio for operator-facing errors, e.g. "4:5". */

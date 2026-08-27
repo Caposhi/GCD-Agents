@@ -653,7 +653,7 @@ async function run(): Promise<void> {
     }
     check(
       "G. 1024x1024 -> 1080x1350 is refused rather than cropped",
-      squareError.includes("1024x1024") && squareError.includes("cropping is forbidden"),
+      squareError.includes("1024x1024") && squareError.includes("cropping and stretching are forbidden"),
     );
     check(
       "G2. aspect refusal is a deterministic, non-retryable media-contract failure",
@@ -693,6 +693,60 @@ async function run(): Promise<void> {
       "M2. approved profiles are unchanged (no provider size was added)",
       JSON.stringify(approvedPublicationProfiles()) === JSON.stringify(["1080x1350", "1080x1080", "1200x900", "1200x630"]),
     );
+
+    // --- exact-ratio enforcement (added after review) ----------------------
+    //
+    // A near-ratio tolerance would let 897x1121 through: it is within 0.0002 of
+    // 4:5, but scaling it to 1080x1350 gives scaleX 1.204013 and scaleY
+    // 1.204282 — a real stretch of a text-bearing graphic. Uniformity is
+    // therefore enforced by exact integer cross-multiplication.
+    {
+      const assertUniform = (sw: number, sh: number): boolean => {
+        const { scale } = planPublicationResize({ width: sw, height: sh }, target);
+        // Integer cross-product equality, and both scale factors identical.
+        return sw * target.height === target.width * sh
+          && scale === target.width / sw
+          && scale === target.height / sh;
+      };
+
+      check("R1. 896x1120 -> 1080x1350 plans an exactly uniform scale", assertUniform(896, 1_120));
+      check("R2. 1024x1280 -> 1080x1350 plans an exactly uniform scale", assertUniform(1_024, 1_280));
+
+      let nearRatioError = "";
+      try {
+        planPublicationResize({ width: 897, height: 1_121 }, target);
+      } catch (e) {
+        nearRatioError = (e as Error).message;
+      }
+      check(
+        "R3. near-ratio 897x1121 -> 1080x1350 fails closed instead of being stretched",
+        nearRatioError.includes("897x1121") && nearRatioError.includes("forbidden"),
+      );
+      check(
+        "R3b. that near-ratio refusal is a deterministic media-contract failure",
+        throws(() => planPublicationResize({ width: 897, height: 1_121 }, target))
+          && (() => {
+            try {
+              planPublicationResize({ width: 897, height: 1_121 }, target);
+              return false;
+            } catch (e) {
+              return e instanceof MediaContractError;
+            }
+          })(),
+      );
+      check(
+        "R3c. the near-ratio source would genuinely have been stretched (scaleX !== scaleY)",
+        1_080 / 897 !== 1_350 / 1_121,
+      );
+
+      // End-to-end: the near-ratio render must not survive normalization either.
+      const nearRatioSource = await makeImage(897, 1_121, "png");
+      check(
+        "R4. near-ratio render is refused by full normalization, not just the planner",
+        await rejectsWithMediaContractError(nearRatioSource, target),
+      );
+      check("R5. 1024x1024 -> 1080x1350 still fails closed", throws(() => planPublicationResize({ width: 1_024, height: 1_024 }, target)));
+    }
 
     // Q. A deterministic media-contract failure must never trigger another paid
     // generation; a creative failure keeps its own (QC-driven) retry path.
