@@ -101,6 +101,22 @@ The production worker does not yet run this code and does not participate in the
 
 `docs/ARCHITECTURE.md` should have been in the first list and was not: PR #36 changed worker readiness semantics, the claim path, and runtime ownership while leaving the document that describes them untouched, which left it contradicting three other runbooks. That miss is what the roadmap-continuity and reread rules now exist to prevent.
 
+## Production blocker — media publication normalization
+
+**State:** `IMPLEMENTED` — not `MERGED`, not `DEPLOYED`. Tracked here because it fixes an active production outage, and it is ordered **ahead of** the Phase 0D.1 cursor below.
+
+**Symptom.** From 2026-08-25, scheduled briefs stopped reaching human approval. Slack reported `Content generation failed before an approval was created` and `image dimensions 1024x1024 are not an approved cross-platform feed profile`. The Land Rover brief and BMW brief `19811e5f-8899-4134-9634-3dd9a9a90827` both escalated. Because the image agent routes essentially every branded post to `text-graphic`, this blocked normal scheduled posting outright.
+
+**Root cause.** The exact publication-profile allowlist was asserted against the **raw provider download**, not against the artifact this application produces. Image providers guarantee composition, not exact publication pixels, and no resize existed anywhere in `src/`, so any provider-native size was fatal. The request shape dated from 2026-06-24; the allowlist arrived on 2026-08-24 with Phase 0A, and the next scheduled briefs failed. Phase 0A behaved correctly — it exposed a latent mismatch rather than causing one.
+
+**Provider evidence (one authorized live diagnostic, 2026-08-27).** A single `fal-ai/ideogram/v3` call requesting `image_size: {width: 1024, height: 1280}` returned HTTP 200 with `images[0]` carrying only `url`, `content_type`, `file_name`, `file_size` — **no width or height** — with `content_type: image/png` despite `output_format: "jpeg"`, and downloaded bytes of **896x1120**, exactly 4:5. Requested pixels were not honored; the requested **aspect** was. Production had requested 1080x1350 and received 1024x1024 (1:1), so the requested value decides whether the composition survives at all.
+
+**Fix.** Separate decode safety from publication policy; request a provider-friendly source size per profile; normalize by **pure uniform scale only** to the exact reviewed profile before QC, hashing, hosting, and approval. Cropping and padding are refused, not unimplemented — cropping 1:1 into 4:5 would cut 20% of the frame through the headline.
+
+**Explicitly not done:** no provider size was added to the allowlist, and the durable publication guard is unchanged in strength.
+
+**Accepted limitation:** only the 4:5 source mapping is proven against the live provider. The other three are exact by arithmetic and fail closed if the provider composes something else.
+
 ## Current cursor — Phase 0D.1
 
 Phase 0D.1 is the deployment-authority cutover. It is **paused, deliberately, between authorities**, and PR #36 changed what the next safe step is.

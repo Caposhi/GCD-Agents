@@ -5,8 +5,31 @@
  */
 
 import { withRetry } from "../../../harness/retry.js";
-import { ImageProvider, ImageRequest, ImageResult } from "../types.js";
+import { ImageProvider, ImageRequest, ImageResult, ProviderImageMetadata } from "../types.js";
 import { buildFalRequest } from "./models.js";
+
+/**
+ * Keep whatever the provider volunteered, and require none of it.
+ *
+ * The observed Ideogram v3 asset carries url/content_type/file_name/file_size
+ * and omits width/height entirely. Absent fields stay undefined rather than
+ * failing generation; the downloaded header decides the real dimensions.
+ */
+export function providerMetadata(asset: any): ProviderImageMetadata | undefined {
+  if (!asset || typeof asset !== "object") return undefined;
+  const numeric = (value: unknown): number | undefined =>
+    typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+  const text = (value: unknown): string | undefined =>
+    typeof value === "string" && value.trim() ? value.trim() : undefined;
+  const metadata: ProviderImageMetadata = {
+    contentType: text(asset.content_type ?? asset.contentType),
+    fileName: text(asset.file_name ?? asset.fileName),
+    fileSize: numeric(asset.file_size ?? asset.fileSize),
+    width: numeric(asset.width),
+    height: numeric(asset.height),
+  };
+  return Object.values(metadata).some((v) => v !== undefined) ? metadata : undefined;
+}
 
 interface HttpError extends Error {
   status?: number;
@@ -56,9 +79,10 @@ export class FalImageProvider implements ImageProvider {
         { shouldRetry: retryableStatus },
       );
       // fal sync responses vary slightly by model; check the common shapes.
-      const url = (json?.images?.[0]?.url ?? json?.image?.url ?? json?.data?.images?.[0]?.url) as string | undefined;
+      const asset = json?.images?.[0] ?? json?.image ?? json?.data?.images?.[0];
+      const url = asset?.url as string | undefined;
       if (!url) return { ok: false, model: built.model, error: `no image url in fal response: ${JSON.stringify(json).slice(0, 200)}` };
-      return { ok: true, url, model: built.model };
+      return { ok: true, url, model: built.model, metadata: providerMetadata(asset) };
     } catch (err) {
       return { ok: false, model: built.model, error: (err as Error).message };
     }

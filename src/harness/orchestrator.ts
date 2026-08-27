@@ -30,20 +30,43 @@ import {
   validatePublicationTarget,
 } from "../mcp/posting-tool/validation.js";
 import {
-  assertPlatformSafePublicationJpeg,
+  MediaContractError,
   publicationImageDimensions,
-  validateGeneratedImageHeader,
 } from "./mediaPolicy.js";
+import { describeNormalization, normalizeToPublicationJpeg } from "./mediaNormalize.js";
 
 export {
+  approvedPublicationProfiles,
+  assertApprovedPublicationProfile,
   assertPlatformSafePublicationJpeg,
+  describeAspect,
+  isApprovedPublicationProfile,
+  MediaContractError,
+  planPublicationResize,
   publicationImageDimensions,
   validateGeneratedImageHeader,
 } from "./mediaPolicy.js";
 export type { GeneratedImageHeader } from "./mediaPolicy.js";
+export { describeNormalization, normalizeToPublicationJpeg } from "./mediaNormalize.js";
+export type { NormalizedPublicationImage } from "./mediaNormalize.js";
 
 const MAX_IMAGE_DOWNLOAD_BYTES = 20 * 1024 * 1024;
 const IMAGE_DOWNLOAD_TIMEOUT_MS = 30_000;
+
+/**
+ * Retry policy for a thrown image-attempt failure.
+ *
+ * Only a *creative* failure — a render that came back legible-but-wrong — can be
+ * improved by another generation, because only the prompt changes between
+ * attempts. A media-contract failure reproduces exactly: the request bytes are
+ * identical every time, so retrying spends real money to observe the same
+ * outcome. Both currently stop the loop; the flag keeps the reason explicit so
+ * the two can never be silently merged back together.
+ */
+export function imageAttemptFailurePolicy(error: unknown): { retry: boolean; deterministic: boolean } {
+  const deterministic = error instanceof MediaContractError;
+  return { retry: false, deterministic };
+}
 
 /** Only URLs returned by the configured fal adapter may be fetched. */
 export function isTrustedGeneratedImageUrl(raw: string): boolean {
@@ -98,22 +121,14 @@ async function fetchGeneratedJpeg(
   }
   if (totalBytes === 0) throw new Error("image download is empty");
   const bytes = Buffer.concat(chunks, totalBytes);
-  const header = validateGeneratedImageHeader(bytes);
-  if (header.width !== expectedDimensions.width || header.height !== expectedDimensions.height) {
-    throw new Error(
-      `image provider returned ${header.width}x${header.height}; expected ${expectedDimensions.width}x${expectedDimensions.height}`,
-    );
-  }
-  const { Jimp, JimpMime } = await import("jimp");
-  const image = await Jimp.read(bytes);
-  const output = (await image.getBuffer(JimpMime.jpeg, { quality: 90 })) as Buffer;
-  const outputHeader = assertPlatformSafePublicationJpeg(output);
-  if (outputHeader.width !== expectedDimensions.width || outputHeader.height !== expectedDimensions.height) {
-    throw new Error(
-      `transcoded image is ${outputHeader.width}x${outputHeader.height}; expected ${expectedDimensions.width}x${expectedDimensions.height}`,
-    );
-  }
-  return output;
+
+  // The provider render is an input, not the artifact. Normalization performs
+  // decode-safety validation, refuses any non-uniform transformation, scales to
+  // the exact reviewed profile, and transcodes to JPEG — all before QC, hashing,
+  // hosting, and approval see these bytes.
+  const normalized = await normalizeToPublicationJpeg(bytes, expectedDimensions);
+  console.log(`[image] ${describeNormalization(normalized, expectedDimensions)}`);
+  return normalized.bytes;
 }
 
 async function hostInspectedJpeg(jpeg: Buffer): Promise<{ url: string; contentSha256: string }> {
@@ -355,6 +370,14 @@ async function resolveImage(image: any, runId?: string): Promise<any> {
         console.warn(`[image] generation failed: ${gen.error}`);
         break;
       }
+      if (gen.metadata?.contentType || gen.metadata?.fileSize) {
+        // Diagnostic only. The provider may report image/png even though JPEG
+        // was requested; the final encoding is enforced below, not here.
+        console.log(
+          `[image] provider asset: ${gen.metadata.contentType ?? "unknown type"}`
+          + `${gen.metadata.fileSize ? `, ${gen.metadata.fileSize} bytes` : ""}`,
+        );
+      }
       const jpeg = await fetchGeneratedJpeg(gen.url, { width, height });
       const qc = await inspectImageText(jpeg.toString("base64"), expected);
       if (qc.ok) {
@@ -380,8 +403,22 @@ async function resolveImage(image: any, runId?: string): Promise<any> {
     } catch (e) {
       const issue = (e as Error).message;
       lastIssues = [issue];
-      console.warn(`[image] error: ${issue}`);
-      break;
+      // A deterministic media-contract failure cannot be improved by another
+      // generation: the request is byte-identical every attempt. Say so
+      // explicitly rather than letting it read as a creative QC rejection.
+      const { retry, deterministic } = imageAttemptFailurePolicy(e);
+      console.warn(
+        deterministic
+          ? `[image] media contract failure (not retryable, ${attempt} generation used): ${issue}`
+          : `[image] error: ${issue}`,
+      );
+      // Only a genuine media-contract breach carries that label; a transport or
+      // decode failure logged under it would make the telemetry misleading.
+      emit(runId, deterministic ? "image:media_contract" : "image:error", issue, {
+        agent: "image",
+        data: { deterministic, attempts: attempt },
+      });
+      if (!retry) break;
     }
   }
   return fail(lastIssues.join("; ") || "image generation or inspection failed", attempts);
