@@ -298,6 +298,72 @@ async function partialRejectedTrigger(
   });
 }
 
+/**
+ * Prove the content-intelligence preview's auth-failure path cannot leave
+ * declared-but-unsent body bytes on a reusable connection.
+ *
+ * An unauthenticated POST declares a Content-Length but withholds most of the
+ * body, then a pipelined GET /healthz is written on the SAME socket -- sent
+ * the moment the first response begins arriving, or after a short delay if it
+ * does not, so a slow or unresponsive path is still exercised. If the server
+ * failed to drain/close on rejection, Node's HTTP parser would still be
+ * expecting the rest of the preview request's body: the pipelined bytes would
+ * be consumed as that remainder, and the leftover fragment would be parsed as
+ * a second, desynchronized request/response on the same connection -- the
+ * exact corruption this proves cannot happen, mirroring the guarantee
+ * partialRejectedTrigger already proves for /triggers.
+ */
+async function partialRejectedPreviewWithPipeline(port: number): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const socket = createConnection({ host: "127.0.0.1", port });
+    const chunks: Buffer[] = [];
+    let settled = false;
+    let pipelined = false;
+    const finish = (err?: Error): void => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      if (err) reject(err);
+      else resolve(Buffer.concat(chunks).toString("utf8"));
+    };
+    const sendPipelinedHealthCheck = (): void => {
+      if (pipelined || socket.destroyed) return;
+      pipelined = true;
+      socket.write([
+        "GET /healthz HTTP/1.1",
+        `Host: 127.0.0.1:${port}`,
+        "Connection: close",
+        "",
+        "",
+      ].join("\r\n"));
+    };
+    socket.setTimeout(3_000, () => finish(new Error("unauthenticated preview probe did not close its connection")));
+    socket.once("error", (err) => finish(chunks.length > 0 ? undefined : err));
+    socket.on("data", (chunk: Buffer) => {
+      chunks.push(chunk);
+      // Pipeline as soon as any response data arrives, exactly as a client
+      // reusing a still-open keep-alive connection would.
+      sendPipelinedHealthCheck();
+    });
+    socket.once("end", () => finish());
+    socket.once("close", () => finish());
+    socket.once("connect", () => {
+      socket.write([
+        "POST /console/content-intelligence/preview HTTP/1.1",
+        `Host: 127.0.0.1:${port}`,
+        "Content-Type: application/json",
+        "Content-Length: 128",
+        "Connection: keep-alive",
+        "",
+        '{"goal":"incomplete',
+      ].join("\r\n"));
+      // Fallback in case no response arrives promptly: still pipeline, so a
+      // hung or slow path is exercised rather than silently skipped.
+      setTimeout(sendPipelinedHealthCheck, 150);
+    });
+  });
+}
+
 /** Leave the HTTP header block incomplete so Node's server-level deadline must close it. */
 async function partialHeaderRequest(port: number, marker: string): Promise<string> {
   return new Promise<string>((resolve, reject) => {
@@ -630,6 +696,26 @@ async function main(): Promise<void> {
           && (await database.query("SELECT count(*)::int AS n FROM brief_queue")).rows[0].n === briefCountBeforePreview);
       check("content-intelligence preview leaked no secret material",
         !/Bearer\s|hooks\.slack\.com\/services|sk-ant-|fal_key/i.test(ok.body));
+
+      // Regression: an unauthenticated preview request with a withheld body
+      // must not leave a desynchronized connection behind for the next
+      // pipelined request to be misparsed through.
+      const pipelineProbe = await partialRejectedPreviewWithPipeline(port);
+      const pipelineProbeLower = pipelineProbe.toLowerCase();
+      const statusLines = pipelineProbe.match(/HTTP\/1\.1 \d{3}/g) ?? [];
+      check("unauthenticated preview probe rejects access", pipelineProbe.startsWith("HTTP/1.1 401"));
+      check(
+        "unauthenticated partial preview closes instead of retaining unread body bytes",
+        pipelineProbeLower.includes("connection: close"),
+      );
+      check(
+        "pipelined request after a rejected partial preview is never answered on the same connection",
+        statusLines.length === 1,
+      );
+      check(
+        "pipelined request after a rejected partial preview produces no desynchronized second response",
+        !pipelineProbeLower.includes("http/1.1 400") && !pipelineProbeLower.includes("http/1.1 200"),
+      );
     }
 
     check("no tested route attempted an outbound child-process fetch", !capture.output().includes(OUTBOUND_FETCH_MARKER));

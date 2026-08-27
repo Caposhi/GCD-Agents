@@ -419,7 +419,12 @@ const server = createServer({
 
     // ---- console contract (hub launcher + live game view) ----
     if (path.startsWith("/console/")) {
-      if (!protectControlPlane(req, res, consoleLimiter)) return;
+      // Body-bearing POST routes (content-intelligence preview) live under this
+      // same gate. On auth/rate-limit failure the body has not been read yet, so
+      // failing to drain/close here would leave declared-but-unsent bytes on a
+      // kept-alive connection -- exactly the desync the /triggers route already
+      // guards against with this same flag.
+      if (!protectControlPlane(req, res, consoleLimiter, true)) return;
       if (req.method === "OPTIONS") {
         res.writeHead(204);
         res.end();
