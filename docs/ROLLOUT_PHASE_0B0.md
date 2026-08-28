@@ -6,15 +6,23 @@
 44d7336f2c75ff880cff0d8205d2fafe13eb91b5
 ```
 
-**Status: EXECUTED — ALL THREE SERVICES DEPLOYED AND VERIFIED AT THE TARGET.** The API, worker, and scheduler all report `44d7336f2c75ff880cff0d8205d2fafe13eb91b5`; migration 006 is applied exactly once; the inert preview was exercised once and changed nothing. See [§0 — rollout completion](#0-rollout-completion--operator-verified-2026-08-28) for exactly what was observed. There is no remaining step in this runbook; any further production action (`evidence:sync`, enabling `RENDER_DEPLOY_AUTOMATION_ENABLED`, wiring a reasoning stage) is separate work under its own authorization.
+**Status: EXECUTED — ALL THREE SERVICES DEPLOYED AND VERIFIED AT THE TARGET, WITH ONE DOCUMENTED STEP-13 VARIANCE.** The API, worker, and scheduler all report `44d7336f2c75ff880cff0d8205d2fafe13eb91b5`; migration 006 was applied exactly once, to the shared database, by the API pre-deploy runner; the inert preview was exercised **exactly once** and changed nothing.
+
+**Not every literal subcheck ran as written.** Step 13's procedure asks for two production preview calls to compare byte-identical responses. The operator authorization granted exactly one, one was made, and **no second production preview was executed**. The deterministic-equality property was instead established by the existing automated fixed-input test that runs in CI on every PR and on `main`. That is a deliberate, authorization-governed variance, recorded rather than smoothed over — see [§0](#0-rollout-completion--verified-2026-08-28).
+
+There is no remaining step in this runbook; any further production action (`evidence:sync`, enabling `RENDER_DEPLOY_AUTOMATION_ENABLED`, wiring a reasoning stage) is separate work under its own authorization.
 
 This was the repository's **first migration-bearing release**. `state/migrations/006_content_evidence.sql` was applied to production on 2026-08-28 by the API pre-deploy runner; the ordinary GitHub controller path was forbidden for this release by design — it stops such a release at `CONTROLLED MIGRATION ROLLOUT REQUIRED`. See [Deployment control](DEPLOYMENT.md).
 
 ---
 
-## 0. Rollout completion — operator-verified 2026-08-28
+## 0. Rollout completion — verified 2026-08-28
 
-**Attribution.** Everything in this section was **verified by the operator on 2026-08-28** and is recorded as reported. The engineering session that wrote and corrected this runbook has no Render access, no production database credentials, and its egress policy denies both `gcd-social-api.onrender.com` and `api.render.com` (403 at CONNECT). **None of it was independently verified here.** Reconfirm read-only before relying on it for a further decision.
+**Attribution — two sessions, different access.** The engineering session that wrote and corrected this runbook has **no Render access, no production database credentials**, and an egress policy that denies both `gcd-social-api.onrender.com` and `api.render.com` (403 at CONNECT). It verified none of the production claims below; they reached it as operator reports.
+
+A **separate final-inspection session independently reverified**, on **2026-08-28**, using Render and read-only PostgreSQL access: the API, worker, and scheduler all live at the exact target; native auto-deploy off on all three; `RENDER_DEPLOY_AUTOMATION_ENABLED` still `false`; `/healthz` healthy with PostgreSQL state and the exact target; `_migrations` holding six rows with migration 006 exactly once; the migration-006 object inventory; the row counts (71 briefs, 62 approvals, 168 media, 0 evidence, 0 relations, 0 pending/running briefs, 0 live pending approvals); and the absence of API, worker, and scheduler errors during the rollout interval.
+
+**That inspection did not cover everything in this document.** It did **not** re-examine authenticated Instagram, Facebook, or Google Business Profile history, and it did **not** re-examine the earlier PR #38 controlled brief. Those remain operator-reported from 2026-08-27 and are not independently verified by anyone.
 
 ### The step-6 stop, and why it was correct
 
@@ -57,11 +65,13 @@ The migration had applied exactly as designed and the schema was correct through
 
 Step 13 below asks for the preview to be called *twice* with the same goal to check for a byte-identical response. Only **one** authenticated call was made against production, honoring the operator authorization block's narrower grant of "ONE authenticated call to the inert Content Intelligence preview" — a second live call was correctly not made merely to satisfy this document.
 
-This is not a gap. `buildContentIntelligencePreview` is proven deterministic for a fixed input by an automated, in-process test (`S5. preview is deterministic for a fixed trace and clock`, `src/harness/contentIntelligence.selftest.ts`), which calls the same function twice with the same goal, trace ID, and clock and asserts byte-identical JSON. That check runs in `npm run test:offline` on every PR and on `main`, including PostgreSQL 16 and 18 CI jobs, so it is repeated, automated evidence, not a one-off local claim. Combined with the single production smoke test above — which independently confirms the *deployed* code path returns a well-formed six-stage plan with every invariant holding — the determinism claim step 13 was checking for is fully covered without a second live call. Step 13's text is retained below unchanged as the original design intent, but a single production call plus the existing automated determinism test is sufficient and is what was actually done; do not read the absence of a second production call as a shortfall.
+**This is a variance, not a gap, and it is recorded as a variance.** Deterministic equality was established by the existing automated fixed-input test — `S5. preview is deterministic for a fixed trace and clock` in `src/harness/contentIntelligence.selftest.ts` — which calls `buildContentIntelligencePreview` twice with the same goal, trace ID, and clock and asserts byte-identical JSON. That test runs in `npm run test:offline` on every PR and on `main`, including the PostgreSQL 16 and 18 CI jobs, so it is repeated automated evidence rather than a one-off local claim. The single production call above independently confirms the *deployed* code path returns a well-formed six-stage plan with every invariant holding.
+
+To be unambiguous: **exactly one production preview was executed. A second production preview did not occur and must not be inferred from this document.** Step 13's original two-call text is retained below as the design intent; what was actually done is one authorized production call plus the pre-existing automated determinism test.
 
 ### Rollout evidence caveat
 
-Everything above under "Observed" and "Deployment record" is **operator-reported and not independently verified in this engineering session** for the same reason as the rest of this section: no Render access, no production database credentials, and denied egress to both `gcd-social-api.onrender.com` and `api.render.com`. It is recorded here because the operator is the authority for production state and this is the accurate, current record of what was done — but a future session with Render or production-database access should reconfirm it read-only before relying on it for any further production decision.
+Everything above under "Observed" and "Deployment record" reached the authoring engineering session as an operator report and was **not** verified by it — no Render access, no production database credentials, denied egress to both `gcd-social-api.onrender.com` and `api.render.com`. The current-state claims listed in the attribution note above were subsequently **independently reverified on 2026-08-28** by a separate final-inspection session with Render and read-only PostgreSQL access. Per-deploy timings and event-level detail were not individually re-derived in that inspection, and provider account history was not examined at all. Reconfirm read-only before relying on any of it for a further production decision.
 
 ---
 
@@ -161,7 +171,7 @@ Steps marked **[operator]** could **not** be verified in the session that wrote 
 | P4 | `RENDER_DEPLOY_AUTOMATION_ENABLED` | `false` | ✅ verified — deploy run `33118928702` echoed `AUTOMATION_ENABLED: false` and failed closed |
 | P5 | No deployment triggered for the target | gate job failed, release job skipped | ✅ verified |
 | P6 | CI green on the target | `CI_CONCLUSION: success`, `event: push`, `branch: main` | ✅ verified |
-| P7 | Render native auto-deploy OFF on all three services | off | **[operator]** — reported off throughout; not independently verified here |
+| P7 | Render native auto-deploy OFF on all three services | off | **independently verified 2026-08-28** — off on all three |
 | P8 | All three services live at `a6a4316…` before this preflight | equal at preflight time | **[operator]** — this was the pre-rollout state; all three now report `44d7336…`, see §0 |
 | P9 | `/healthz` reports `a6a4316…`, `service: gcd-social-api`, `state: postgres` | equal at preflight time | **[operator]** — superseded by §0's final `/healthz` at the new target |
 | P10 | `_migrations` contains `001–005` only | 5 rows, no `006` | **[operator]** — this was the pre-rollout state; `_migrations` now contains `001–006`, see §0 |
@@ -312,7 +322,7 @@ Supply `CONSOLE_TOKEN` from the environment. **Never place it in a URL**, and ne
 
 Expect a six-stage plan with execution disabled and an evidence summary whose classes are all empty — `content_evidence` is empty until an operator separately runs `evidence:sync`, which **is not part of this rollout**.
 
-**13. Prove the preview changed nothing. — ✅ COMPLETE.** Counts before and after step 12 were captured and were identical (§0). See "Reconciling step 13's two-call language" in §0 for why only one production call was made, not two.
+**13. Prove the preview changed nothing. — ✅ COMPLETE, WITH A DOCUMENTED VARIANCE.** Counts before and after step 12 were captured and were identical (§0). The two-call comparison written below was **not** performed against production: exactly one authorized production call was made, and deterministic equality came from the existing automated fixed-input test instead. See "Reconciling step 13's two-call language" in §0.
 
 Capture counts before and after step 12 and require them equal:
 
