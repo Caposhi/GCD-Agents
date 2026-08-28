@@ -27,7 +27,7 @@ This file separates four things that are routinely confused: what is in the repo
 | API | `srv-d8u0qtpo3t8c73c5o44g`, live at `44d7336…`; `/healthz` healthy with PostgreSQL state and the exact target | independently verified 2026-08-28 |
 | Worker | `srv-d8u0qtpo3t8c73c5o440`, live at `44d7336…` | independently verified 2026-08-28 |
 | Scheduler | `crn-d8ulb4rtqb8s73bdjctg`, live artifact at `44d7336…`; cron unchanged at `0 13 * * *` | independently verified 2026-08-28 |
-| PostgreSQL | `dpg-d8u0qaho3t8c73c5nj40-a`, PostgreSQL 18, available; `_migrations` holds six rows with `006` exactly once | migration state independently verified 2026-08-28; **external allowlist `0.0.0.0/0` last verified 2026-08-24 and not revisited** |
+| PostgreSQL | `dpg-d8u0qaho3t8c73c5nj40-a`, PostgreSQL 18, available; `_migrations` holds six rows with `006` exactly once; external allowlist confirmed still `0.0.0.0/0` | independently verified 2026-08-28, including the external allowlist |
 | Row counts | 71 briefs, 62 approvals, 168 media, 0 content evidence, 0 evidence relations, 0 pending briefs, 0 running briefs, 0 live pending approvals | independently verified 2026-08-28 |
 | Deploy activity | None in progress; no API, worker, or scheduler errors during the rollout interval | independently verified 2026-08-28 |
 | Render native auto-deploy | Off on all three services (`autoDeploy: no`, `autoDeployTrigger: off`) | independently verified 2026-08-28 |
@@ -45,7 +45,7 @@ The API pre-deploy runner applied migration 006 during this release; `_migration
 - **PR #38** — merged; media publication normalization. **Deployed and production-validated** (operator-reported 2026-08-27).
 - **PR #40 / Phase 0B.0** — **merged** 2026-08-27 as `44d7336…`. **Deployed 2026-08-28, independently verified** by a separate final-inspection session with Render and read-only PostgreSQL access: API, worker, and scheduler all report `44d7336…`; **migration 006 was applied exactly once at `2026-08-28T15:24:18.56508Z`**, ~53 ms; the worker acquired exclusive ownership and clean readiness on two deploys (58,142 ms then 60,094 ms); the scheduler is live with its cron un-triggered; a single authenticated preview call left all row counts unchanged. The rollout **stopped at step 6** under S8/S18 mid-flight — the runbook's index count was wrong, not the schema — then resumed under fresh authorization and completed, with one documented, authorization-governed variance at step 13 (see the cursor below). See [ROLLOUT_PHASE_0B0.md §0](ROLLOUT_PHASE_0B0.md) for the full record.
 
-Every row above marked "not reverified" — the GitHub `production` environment variables and the PostgreSQL external allowlist — must be reconfirmed read-only immediately before any production operation. The 2026-08-28 rows are fresh as of that inspection but are still a point-in-time observation; do not infer any of them from this file, from `render.yaml`, or from the fact that they were true earlier.
+The row above marked "not reverified" — the GitHub `production` environment variables — must be reconfirmed read-only immediately before any production operation; it is now the only row still carrying just the 2026-08-24 verification. The 2026-08-28 rows, including the PostgreSQL external allowlist, are fresh as of that inspection but are still a point-in-time observation; do not infer any of them from this file, from `render.yaml`, or from the fact that they were true earlier.
 
 ### Observed: normal scheduled run of the Phase 0D production SHA
 
@@ -123,7 +123,7 @@ This is the second incident in the same family as the Phase 0A worker/migration-
 
 1. No durable provider operation ledger, idempotency, or provider reconciliation. Timeout, crash, or retry can leave unknown or duplicate publication outcomes. Provider-level `withRetry` can still reissue a request after an ambiguous network outcome; PR #36 does not change that.
 2. Worker interruption stranding is addressed by exclusive ownership plus startup recovery, **merged in PR #36 at `0828cc9…`; deployed and production-validated — operator-reported 2026-08-27, not independently verified in an engineering session**. Treat this risk as reported-closed rather than verified-closed until the live worker's ownership behaviour is reconfirmed read-only.
-3. Production PostgreSQL external access was open to `0.0.0.0/0` at last verification.
+3. Production PostgreSQL external access remains open to `0.0.0.0/0` — independently reverified 2026-08-28; unchanged and still a high-priority, separately authorized follow-up.
 4. Default-path Instagram tokens persist plaintext in `session_state`.
 5. Approval uses a bearer URL and generic `human` label; control routes share one secret and process-local direct-socket rate limits.
 6. No complete retention program, backup policy evidence, or restore drill; migration 005 intentionally blocks media deletion.

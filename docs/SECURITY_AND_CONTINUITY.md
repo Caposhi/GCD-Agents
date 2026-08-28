@@ -21,7 +21,7 @@
 
 Residual risk remains and is not closed by that deployment. A brief interrupted between the reviewer's approval and the next worker start is still stranded for that interval — recovery is a sweep at startup, not a live watcher — and the reviewer receives no alert during it. Recovery also terminalizes rather than resumes, so an approved package that was never published must be reissued as new work. Publication idempotency is still absent, an ambiguous provider outcome is still only *visible* rather than resolvable, and approval review still rests on a bearer URL with a generic `human` identity rather than an authenticated reviewer.
 - Ownership is mutual exclusion, not a fencing token: if the owner's connection dies while its process lives, PostgreSQL releases the lock and a successor may reconcile concurrently. The Phase 0A publication guard is the fence — the successor's revocation makes the old process's next pre-request authorization check fail closed — which narrows the exposure to a single already-in-flight HTTP request, itself classified as an uncertain outcome.
-- Production discovery found PostgreSQL external access open to `0.0.0.0/0`. This is a recorded high-priority follow-up, not changed by Phase 0D; do not combine networking remediation with deployment-controller cutover without a separately reviewed plan.
+- Production PostgreSQL external access remains open to `0.0.0.0/0` — independently reverified 2026-08-28 by a separate final-inspection session. This is a recorded high-priority, separately authorized follow-up, not changed by Phase 0D or by this rollout; do not combine networking remediation with deployment-controller cutover without a separately reviewed plan.
 
 ## Deployment authority and credential boundary
 

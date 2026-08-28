@@ -16,11 +16,11 @@ SQL files under `state/migrations/` are authoritative. `_migrations` records app
 
 ## Relationships and invariants
 
-Brief and approval records have no foreign key. Their only link is a worker log line, so no process or operator can tell from the database which approval belongs to which brief. The worker-ownership change (PR #36 — **merged, deployed and production-validated, operator-reported 2026-08-27**) closes this: `brief:approval_requested` records `{approvalId, packageCount}` against the brief's `run_id`, making that linkage durable. Rows written before that release went live carry no such marker, so the August 10 brief could only be classified from the absence of one. Events correlate by free-text `run_id`.
+Brief and approval records have no foreign key. Their only link is a worker log line, so no process or operator can tell from the database which approval belongs to which brief. The worker-ownership change (PR #36 — **merged and deployed, its code live in the current `44d7336…` release, independently verified 2026-08-28**; the bootstrap's behavioural evidence remains operator-reported 2026-08-27, not independently re-examined) closes this: `brief:approval_requested` records `{approvalId, packageCount}` against the brief's `run_id`, making that linkage durable. Rows written before that release went live carry no such marker, so the August 10 brief could only be classified from the absence of one. Events correlate by free-text `run_id`.
 
 ### Durable phase markers (safety state, not telemetry)
 
-**Merged in PR #36; deployed and production-validated — operator-reported 2026-08-27, not independently verified here.** The bootstrap release required zero pending approvals precisely because no pre-existing row carried these markers — see [Deployment control](DEPLOYMENT.md).
+**Merged in PR #36; deployed — the code is live in the current `44d7336…` release, independently verified 2026-08-28.** The bootstrap release's own behavioural evidence remains operator-reported 2026-08-27, not independently re-examined; it required zero pending approvals precisely because no pre-existing row carried these markers — see [Deployment control](DEPLOYMENT.md).
 
 `recordEvent` remains best-effort telemetry whose callers may swallow failures. `recordDurablePhaseEvent` is a separate primitive over the same table whose failure **must** propagate, because interrupted work is classified purely from these rows:
 

@@ -2,16 +2,16 @@
 
 ## Current status and authority
 
-Phase 0D is merged and production-deployed; it does not begin Phase 0B. Current exact target: `44d7336f2c75ff880cff0d8205d2fafe13eb91b5`, reached through the Phase 0B.0 migration-bearing rollout. **Independently verified 2026-08-28** by a separate final-inspection session with Render and read-only PostgreSQL access: workspace `tea-d4fkclpr0fns73abmnh0`, API `srv-d8u0qtpo3t8c73c5o44g`, worker `srv-d8u0qtpo3t8c73c5o440`, and scheduler `crn-d8ulb4rtqb8s73bdjctg` are all live at `44d7336…`, PostgreSQL `dpg-d8u0qaho3t8c73c5nj40-a` holds `_migrations` `001–006`, and no recent error/critical logs were observed. That inspection's rows are marked below; two rows still carry only the earlier 2026-08-24 21:32 UTC verification and were not revisited — reconfirm those read-only immediately before any production operation.
+Phase 0D is merged and production-deployed; it does not begin Phase 0B. Current exact target: `44d7336f2c75ff880cff0d8205d2fafe13eb91b5`, reached through the Phase 0B.0 migration-bearing rollout. **Independently verified 2026-08-28** by a separate final-inspection session with Render and read-only PostgreSQL access: workspace `tea-d4fkclpr0fns73abmnh0`, API `srv-d8u0qtpo3t8c73c5o44g`, worker `srv-d8u0qtpo3t8c73c5o440`, and scheduler `crn-d8ulb4rtqb8s73bdjctg` are all live at `44d7336…`, PostgreSQL `dpg-d8u0qaho3t8c73c5nj40-a` holds `_migrations` `001–006`, and no recent error/critical logs were observed. That inspection's rows are marked below; the GitHub `production` environment's five non-secret variables are the only row still carrying only the earlier 2026-08-24 21:32 UTC verification and were not revisited — reconfirm that one read-only immediately before any production operation.
 
 ### Current cutover status
 
 | Capability | State | Freshness |
 |---|---|---|
 | Phase 0D controller source | **Implemented** and merged in PR #34 | repository fact |
-| Current controller source in production | **Deployed** through the previous native Render mechanism | last verified 2026-08-24 |
-| Worker ownership/recovery | **Merged** in PR #36 (`0828cc9…`); **deployed and production-validated** | operator-reported 2026-08-27; **not independently verified in an engineering session** |
-| Media publication normalization | **Merged** in PR #38 (`a6a4316…`); **deployed and production-validated** | operator-reported 2026-08-27; **not independently verified in an engineering session** |
+| Current controller source in production | **Present** in the currently deployed `44d7336…` release; originally reached production through the previous native Render mechanism | current release independently verified 2026-08-28; the native-mechanism origin is last verified 2026-08-24 |
+| Worker ownership/recovery | **Merged** in PR #36 (`0828cc9…`); **deployed** — the code is live in the current `44d7336…` release | current deployment independently verified 2026-08-28; the ~58-second ownership-wait timing and the August 10 provider-history reconciliation remain operator-reported 2026-08-27 and were not independently re-examined |
+| Media publication normalization | **Merged** in PR #38 (`a6a4316…`); **deployed** — the code is live in the current `44d7336…` release | current deployment independently verified 2026-08-28; the controlled-brief evidence remains operator-reported 2026-08-27 and was not independently re-examined |
 | Phase 0B.0 (PR #40, merge `44d7336…`) | **Merged**; **deployed** — API, worker, and scheduler all at the target | independently verified 2026-08-28 |
 | Migration 006 (`content_evidence`) | **Applied to production** once, `2026-08-28T15:24:18.56508Z`, ~53 ms | independently verified 2026-08-28 |
 | API | **`44d7336…`**, live and healthy | independently verified 2026-08-28 |
@@ -155,8 +155,8 @@ Every step below requires its own explicit authorization. This document grants n
 
 ## Recorded follow-ups
 
-- Production PostgreSQL currently exposes external access through `0.0.0.0/0`. Restricting it is a separate security change; Phase 0D does not alter database networking.
-- A normal scheduler execution succeeded on 2026-08-24 before Phase 0D deployed. The current Phase 0D scheduler artifact is live, but its next normal scheduled execution has not yet been observed. Do not manually run production cron merely to close this gap.
+- Production PostgreSQL external access remains `0.0.0.0/0` — **independently reverified 2026-08-28** by a separate final-inspection session. Restricting it is a separate, high-priority, separately authorized security change; it was not altered by this rollout and must not be changed outside that authorization.
+- A normal scheduled execution of the Phase 0D SHA was observed on 2026-08-25, closing that observation historically — see [Status](STATUS.md) for the run evidence. The scheduler now runs `44d7336…` (independently verified 2026-08-28). Do not manually run production cron to observe its next scheduled firing.
 - Review and deliberately update the pinned Render CLI and actionlint versions/checksums; never float either download.
 
 ## Release engineering lessons
