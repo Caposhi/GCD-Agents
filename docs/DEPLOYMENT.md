@@ -13,10 +13,10 @@ Phase 0D is merged and production-deployed; it does not begin Phase 0B. Current 
 | Worker ownership/recovery | **Merged** in PR #36 (`0828cc9…`); **deployed** — the code is live in the current `44d7336…` release | current deployment independently verified 2026-08-28; the ~58-second ownership-wait timing and the August 10 provider-history reconciliation remain operator-reported 2026-08-27 and were not independently re-examined |
 | Media publication normalization | **Merged** in PR #38 (`a6a4316…`); **deployed** — the code is live in the current `44d7336…` release | current deployment independently verified 2026-08-28; the controlled-brief evidence remains operator-reported 2026-08-27 and was not independently re-examined |
 | Phase 0B.0 (PR #40, merge `44d7336…`) | **Merged**; **deployed** — API, worker, and scheduler all at the target | independently verified 2026-08-28 |
-| Migration 006 (`content_evidence`) | **Applied to production** once, `2026-08-28T15:24:18.56508Z`, ~53 ms | independently verified 2026-08-28 |
+| Migration 006 (`content_evidence`) | **Applied to production** exactly once | independently verified 2026-08-28 (`_migrations` holds `006` exactly once); the exact timestamp `2026-08-28T15:24:18.56508Z` and ~53 ms duration are operator-reported |
 | API | **`44d7336…`**, live and healthy | independently verified 2026-08-28 |
-| Worker | **`44d7336…`** — exclusive ownership and readiness confirmed on two separate deploys (58,142 ms, 60,094 ms) | independently verified 2026-08-28; this authoring session has no Render access, a separate final-inspection session did |
-| Scheduler | **`44d7336…`** — live, cron `0 13 * * *` unchanged and not manually triggered | independently verified 2026-08-28 |
+| Worker | **`44d7336…`** — exclusive ownership held and readiness reported on two separate deploys | independently verified 2026-08-28 that ownership is held and readiness is reported at this target (this authoring session has no Render access; a separate final-inspection session did); the exact acquisition timings (58,142 ms, 60,094 ms) and the recovery/readiness event sequence are operator-reported, not independently re-derived |
+| Scheduler | **`44d7336…`** — live, cron `0 13 * * *` unchanged | independently verified 2026-08-28 that the scheduler is live at this target with its cron configuration unchanged; that it was not manually triggered is operator-reported |
 | GitHub `production` environment | **Configured** with secret name, five non-secret variables, and `main` restriction | last verified 2026-08-24; not reverified |
 | Render native auto-deploy | **Off** for API, worker, and scheduler (`autoDeploy: no`, `autoDeployTrigger: off`) | independently verified 2026-08-28 |
 | GitHub repository enable gate | **Disabled**: `RENDER_DEPLOY_AUTOMATION_ENABLED=false` | independently verified 2026-08-28 |
@@ -116,7 +116,7 @@ If any prerequisite changes, stop rather than enabling the second authority. Ren
 
 ## Worker ownership and the readiness window
 
-**Merged in PR #36 (`0828cc9…`); deployed and production-validated — operator-reported 2026-08-27, not independently verified in an engineering session.** The operator reported the new worker waiting approximately 58 seconds for exclusive ownership before emitting readiness, which is the overlap behaviour this section predicts.
+**Merged in PR #36 (`0828cc9…`); deployed — the code is live in the current `44d7336…` release, independently verified 2026-08-28.** The production-validated behavioral evidence remains operator-reported 2026-08-27, not independently re-examined: the operator reported the new worker waiting approximately 58 seconds for exclusive ownership before emitting readiness, which is the overlap behaviour this section predicts.
 
 Render background-worker deploys are zero-downtime: the new instance starts, is considered started, and only about 60 seconds later does the old instance receive SIGTERM, after which it still gets its shutdown grace. Old and new therefore overlap legitimately, and a new worker starting does **not** mean a `running` brief is abandoned.
 
