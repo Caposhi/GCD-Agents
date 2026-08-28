@@ -59,7 +59,7 @@ The row above marked "not reverified" — the GitHub `production` environment va
 | 13:00:52.861 | Scheduler enqueued brief `14616895-78f9-4c7b-a83f-74ecdeb5082e`, theme `Land Rover:oil-leak` |
 | 13:00:59.881 | Cron job run finished successfully |
 
-This closes the previously open item requiring observation of a normal scheduled execution of the current production SHA. The evidence is read-only Render cron-run output; no scheduler run was triggered to obtain it, and none should be.
+This closes the previously open item requiring observation of a normal scheduled execution of the **then-current** production SHA (`10098de…`); it does not describe the current `44d7336…` release, which deployed on 2026-08-28. The evidence is read-only Render cron-run output; no scheduler run was triggered to obtain it, and none should be.
 
 ## Phase state
 

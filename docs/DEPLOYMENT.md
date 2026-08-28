@@ -99,7 +99,7 @@ The enable gate must be repository-scoped because the provenance job evaluates i
 
 ## Deployment-authority cutover
 
-The safe sequence never permits dual authority. Steps 1–7 are complete. **Steps 8–10 are no longer the immediate next actions**: the ownership bootstrap and its handoff proof, in the section below, must complete first. Steps 8–10 become eligible only after the protected worker is live and proven.
+The safe sequence never permits dual authority. Steps 1–7 are complete. **The ownership bootstrap and its handoff proof, in the section below, are reported complete**, so steps 8–10 are now **eligible**. They remain **separately unauthorized** and require a fresh read-only preflight reverification immediately before acting, not merely a reference to this prior completion.
 
 1. Merge and validate Phase 0D with the GitHub gate false. **Complete.**
 2. Deploy Phase 0D through the previous native Render path. **Complete.**
@@ -108,7 +108,7 @@ The safe sequence never permits dual authority. Steps 1–7 are complete. **Step
 5. Keep the repository enable gate false. **Complete/current.**
 6. Turn native Render auto-deploy off on all three services. **Complete.**
 7. Verify all three settings off and no deployment/migration in flight. **Complete at the verification time above; recheck immediately before step 8.**
-8. Under explicit authorization, set `RENDER_DEPLOY_AUTOMATION_ENABLED=true`. **Not done — and now gated behind the ownership bootstrap below.**
+8. Under explicit authorization, set `RENDER_DEPLOY_AUTOMATION_ENABLED=true`. **Not done — eligible now that the bootstrap below is reported complete, but still separately unauthorized.**
 9. Prove the controller against the already-current/no-deploy route if possible. **Not done.**
 10. Prove one harmless migration-free real release, including exact API health, target-bound worker readiness/stabilization, scheduler artifact, and final three-SHA equality. **Not done.**
 
