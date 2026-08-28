@@ -22,7 +22,7 @@ The repository root builds one TypeScript project into `dist/`. Render declares 
 
 ### Exclusive worker ownership
 
-**Deployed and production-validated — operator-reported 2026-08-27, not independently verified in an engineering session.** The operator reports an approximately 58-second ownership wait before readiness on the first protected deploy, which is this design's predicted behaviour under Render's zero-downtime overlap.
+**Deployed** — the code is live in the current `44d7336…` release, independently verified 2026-08-28. The production-validated behavioral evidence remains **operator-reported 2026-08-27, not independently re-examined**: the operator reports an approximately 58-second ownership wait before readiness on the first protected deploy, which is this design's predicted behaviour under Render's zero-downtime overlap.
 
 Exactly one worker process may execute work, and that exclusivity is established rather than assumed. Render background-worker deploys are zero-downtime: the new instance starts and only about sixty seconds later does the old instance receive SIGTERM, after which it still gets its shutdown grace. Old and new overlap legitimately, so "my process just started" never implies "the running brief is abandoned".
 
