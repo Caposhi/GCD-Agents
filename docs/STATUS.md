@@ -42,7 +42,7 @@ Production API pre-deploy logs for that release showed migrations 001–005 alre
 - **PR #36** — merged; worker ownership and recovery. **Deployed and production-validated** (operator-reported 2026-08-27).
 - **PR #37** — merged; documentation and roadmap-continuity governance. No runtime or deployment effect.
 - **PR #38** — merged; media publication normalization. **Deployed and production-validated** (operator-reported 2026-08-27).
-- **Phase 0B.0** — implemented, not merged. Carries **migration 006**, which is **not applied to production**.
+- **PR #40 / Phase 0B.0** — **merged** 2026-08-27 as `44d7336…`. Carries **migration 006**, which is **not applied to production**, and is therefore **not `DEPLOYED`**. Production still runs `a6a4316…`.
 
 Every row above marked "not reverified" must be reconfirmed read-only immediately before any production operation. Do not infer any of them from this file, from `render.yaml`, or from the fact that they were true two days ago.
 
@@ -72,21 +72,23 @@ This closes the previously open item requiring observation of a normal scheduled
 | PR #37 documentation and roadmap-continuity governance — merge `3bd638f…` | `MERGED`; documentation-only |
 | PR #38 media publication normalization — merge `a6a4316…` | `MERGED` · `DEPLOYED` · `PRODUCTION-VALIDATED` (operator-reported 2026-08-27) |
 | Phase 0B prerequisite — fact and evidence contract | `IMPLEMENTED` — not `MERGED`, not `DEPLOYED` |
-| **Phase 0B.0 evidence and agent registry foundation** | **`IMPLEMENTED`** — not `MERGED`, not `DEPLOYED`; carries unapplied migration 006 |
+| **Phase 0B.0 evidence and agent registry foundation** — merge `44d7336…` | **`MERGED`** — not `DEPLOYED`; carries unapplied migration 006 |
 | Phase 0B six-stage reasoning execution | `PLANNED` — registered but not wired |
 | Worker lease/reaper | `SUPERSEDED` by ownership plus startup recovery; rationale and re-entry condition in [Roadmap](ROADMAP.md) |
 
-These states are not interchangeable. In particular: Phase 0B.0 is implemented but unmerged, and its migration 006 has **not** been applied to production. Deploying a release that contains it requires the separately authorized migration rollout, not the ordinary controller path.
+These states are not interchangeable. In particular: Phase 0B.0 is **merged but not deployed**, and its migration 006 has **not** been applied to production. `MERGED` is a repository fact; `DEPLOYED` is a production fact; the two are separated here precisely because they now differ. Deploying the release that contains it requires the separately authorized migration rollout in [Phase 0B.0 rollout runbook](ROLLOUT_PHASE_0B0.md), not the ordinary controller path.
 
 ## Current cursor — the single next safe operation
 
 Two independent tracks, neither blocking the other.
 
-**Product (primary).** Phase 0B continues: wire the six registered reasoning stages as real model calls, one slice at a time. Phase 0B.0 shipped without touching deployment authority and later slices can do the same.
+**Rollout (primary).** Phase 0B.0 is merged and undeployed. The prepared, unauthorized runbook for releasing `44d7336…` — the repository's first migration-bearing release — is [ROLLOUT_PHASE_0B0.md](ROLLOUT_PHASE_0B0.md). It has not been executed.
+
+**Product.** Phase 0B continues: wire the six registered reasoning stages as real model calls, one slice at a time. Phase 0B.0 shipped without touching deployment authority and later slices can do the same.
 
 **Operational follow-up.** The ownership bootstrap and handoff proof are complete (operator-reported 2026-08-27), so enabling `RENDER_DEPLOY_AUTOMATION_ENABLED` and proving the GitHub controller path are now eligible. Each still needs its own authorization and immediate re-verification. **This is explicitly not a blocker to Phase 0B.**
 
-One coupling to respect: migration 006 makes the next release that carries Phase 0B.0 **migration-bearing**, so it must go through the separately authorized migration rollout rather than the ordinary controller path.
+One coupling to respect: migration 006 makes the release that carries Phase 0B.0 **migration-bearing**, so it must go through the separately authorized migration rollout rather than the ordinary controller path. Migration 006 was independently inspected on 2026-08-28: it is purely additive, takes **no lock on any pre-existing table**, applies in about 50 ms, and old `a6a4316…` code was **tested and proven** to start correctly against a database that already has it — which is what makes rollback safe.
 
 [Roadmap](ROADMAP.md) holds the full ordered cursor with the preflight conditions. [Deployment control](DEPLOYMENT.md) holds the exact bootstrap mechanics. Never re-enable Render native auto-deploy while the GitHub gate is true.
 

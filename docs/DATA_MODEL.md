@@ -57,7 +57,11 @@ Before Phase 0B, define a separate durable evidence model that distinguishes ver
 
 ## Content evidence (migration 006 — written, NOT applied to production)
 
-`content_evidence` and `content_evidence_relations` are the durable substrate for Phase 0B reasoning. **Migration 006 exists in the repository and has been integration-tested against disposable PostgreSQL 16 and 18. It has not been applied to production**, so any release carrying it is migration-bearing and must go through the separately authorized rollout — exactly one migration authority, no schema-dependent consumer racing it.
+`content_evidence` and `content_evidence_relations` are the durable substrate for Phase 0B reasoning. **Migration 006 is merged to `main` (`44d7336…`) and has been integration-tested against disposable PostgreSQL 16 and 18. It has not been applied to production**, so the release carrying it is migration-bearing and must go through the separately authorized rollout — exactly one migration authority, no schema-dependent consumer racing it. See the [Phase 0B.0 rollout runbook](ROLLOUT_PHASE_0B0.md).
+
+**Independently inspected 2026-08-28.** Migration 006 creates 34 objects — 2 tables, 9 indexes, 16 CHECK constraints, 3 foreign keys, 1 trigger — and is **purely additive**: no `ALTER TABLE`, no `UPDATE`, no `DELETE`, and every foreign key points at a table it creates itself. Measured against disposable PostgreSQL 16, applying it inside a transaction took **no lock of any kind** on `approval_queue`, `approval_decisions`, `media`, `brief_queue`, `events`, or `session_state`, and it completed in about **50 ms**. It therefore cannot block a running worker or scheduler.
+
+Because the Phase-0A startup probe is existence-scoped — it counts triggers restricted by `tgrelid` to the three Phase-0A tables and constraints restricted by `conrelid` to `approval_queue`, and never reads `_migrations` — code predating this migration runs unaffected against a database that has it. That was **tested, not assumed**: `a6a4316…` was built and its durable startup probe, console snapshot, and event read all succeeded against a runner-migrated `001–006` database. This is what makes rolling application code back while leaving 006 applied a safe recovery, and why no destructive down migration should be written.
 
 | Table | Purpose | Sensitivity |
 |---|---|---|

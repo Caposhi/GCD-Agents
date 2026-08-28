@@ -103,11 +103,17 @@ These are not interchangeable and must not be collapsed into "done". `MERGED` in
 
 ### Phase 0B.0 — content evidence and agent registry foundation
 
-**State:** `IMPLEMENTED` — not `MERGED`, not `DEPLOYED`.
+**State:** `MERGED` — not `DEPLOYED`.
+
+**Merge:** PR #40, merged 2026-08-27 as `44d7336f2c75ff880cff0d8205d2fafe13eb91b5`, base `a6a4316…`, reviewed head `4891bf3…`. Merged by the repository owner after all five CI jobs passed on the exact head.
+
+**Carried a security fix from independent inspection.** Commit `4891bf3` made the `/console/*` gate drain and close an unread request body on auth or rate-limit failure, matching what `/triggers` already did. Without it, a rejected body-bearing request left declared-but-unsent bytes on a keep-alive connection, so a pipelined follow-up could be consumed as the first request's remainder. That gate also fronts the already-live `/console/state` and `/console/stream`, so the fix closes an exposure present in production until this release ships.
 
 **Delivered:** the typed evidence contract with eight kinds and per-kind validation; `state/migrations/006_content_evidence.sql` with `content_evidence` and `content_evidence_relations`; a deterministic, provenance-preserving adapter from `config/approved-facts.json`; an idempotent operator-only sync command; the evidence pack builder that surfaces conflicts and stale evidence without resolving them; `AgentRegistry` with all six target stages registered and allowlist-rooted asset loading; `ContentIntelligenceContext`; and a deterministic, inert preview endpoint.
 
-**Schema / migrations:** migration **006**, written and integration-tested against disposable PostgreSQL 16 and 18. **Not applied to production.** Its rollout is a separately authorized migration-bearing release under the existing discipline: exactly one migration authority, and no schema-dependent consumer racing it.
+**Schema / migrations:** migration **006**, merged and integration-tested against disposable PostgreSQL 16 and 18. **Not applied to production.** Its rollout is a separately authorized migration-bearing release under the existing discipline: exactly one migration authority, and no schema-dependent consumer racing it. The runbook is [ROLLOUT_PHASE_0B0.md](ROLLOUT_PHASE_0B0.md) — prepared, unauthorized, unexecuted.
+
+**Rollout safety, independently established 2026-08-28.** Migration 006 creates 34 objects and is purely additive; applied inside a transaction it took **zero locks** on any pre-existing table and completed in about **50 ms**. Old `a6a4316…` code was built and **tested** against a runner-migrated `001–006` database: its durable startup probe, console snapshot, and event read all succeeded. Rolling application code back while leaving 006 applied is therefore a proven-safe recovery, and no destructive down migration should be written.
 
 **Material design decisions:** epistemic class is a database constraint, not a convention; conflicts are reported and never auto-resolved; the approved-facts adapter is a projection rather than a second source of truth, so the JSON stays authoritative until a later reviewed cutover; and registration is deliberately separated from execution.
 
@@ -175,7 +181,7 @@ The former worker lease/reaper item is `SUPERSEDED` and is no longer active work
 
 ## Phase 0B prerequisite — fact and evidence contract
 
-**State:** `IMPLEMENTED` — not `MERGED`, not `DEPLOYED`. Delivered by the Phase 0B.0 foundation change; migration 006 is written but deliberately unapplied.
+**State:** `MERGED` — not `DEPLOYED`. Delivered by the Phase 0B.0 foundation change (`44d7336…`); migration 006 is merged but deliberately unapplied.
 
 The contract is now executable rather than aspirational. `src/harness/evidence/contract.ts` defines the kinds, per-kind validation, and the two forbidden promotions; `state/migrations/006_content_evidence.sql` enforces the same rules as database CHECK constraints so the invariant survives a writer that bypasses the application.
 
@@ -197,7 +203,7 @@ Support source, source type, provenance, confidence, freshness, `observed_at`, `
 
 ## Phase 0B — Content Intelligence runtime
 
-**State:** foundation `IMPLEMENTED`; six-stage reasoning execution **not yet wired**.
+**State:** foundation `MERGED`, not `DEPLOYED`; six-stage reasoning execution **not yet wired**.
 
 Phase 0B.0 delivered the two runtime primitives the rest of the phase depends on:
 

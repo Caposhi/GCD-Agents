@@ -2,7 +2,7 @@
 
 Verified against source on 2026-08-26; the production-state observations it references were last verified read-only on 2026-08-24 and are not reverified here. Phase 0A and Phase 0D are deployed. Phase 0B has not begun.
 
-**This document describes two things and labels which is which.** *Current production runtime* is what the live release does. *Current source / next production release* is what `main` does and what the next release will do. They diverge today, but not over PR #36: that work is merged and — operator-reported 2026-08-27, not independently verified here — deployed and production-validated, so the live worker does participate in the ownership protocol. The divergence is now Phase 0B.0: the content evidence system, agent registry, and Content Intelligence preview exist in `main` and are **not deployed**, and migration 006 is **not applied to production**. See [Status](STATUS.md) for exact SHAs and [Roadmap](ROADMAP.md) for the cursor.
+**This document describes two things and labels which is which.** *Current production runtime* is what the live release does. *Current source / next production release* is what `main` does and what the next release will do. They diverge today, but not over PR #36: that work is merged and — operator-reported 2026-08-27, not independently verified here — deployed and production-validated, so the live worker does participate in the ownership protocol. The divergence is now Phase 0B.0: the content evidence system, agent registry, and Content Intelligence preview are **merged to `main` (`44d7336…`) and not deployed**, and migration 006 is **not applied to production**. Production runs `a6a4316…`. See [Status](STATUS.md) for exact SHAs and [Roadmap](ROADMAP.md) for the cursor.
 
 ## Product architecture principle
 
@@ -44,7 +44,7 @@ Ownership is **mutual exclusion, not a fencing token**: if an owner's connection
 
 **What this does not solve.** Interruption during a provider attempt still leaves an outcome the system cannot resolve by itself. It is surfaced and nothing retries automatically, but provider-level `withRetry` remains an independent path that can reissue a request after an ambiguous network outcome. There is no durable provider operation ledger, no idempotency key, and no provider reconciliation, so duplicate publication remains possible and a human must reconcile against the platform. That work is the first item under Next hardening in [Roadmap](ROADMAP.md).
 
-### Content Intelligence foundation (Phase 0B.0) — implemented, not deployed
+### Content Intelligence foundation (Phase 0B.0) — merged, not deployed
 
 Additive and inert. It changes no production behavior: the scheduled pipeline below is untouched, and no reasoning stage executes.
 

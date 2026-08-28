@@ -21,9 +21,9 @@ Build German Car Depot's governed Content Intelligence Platform / Content OS: an
 - `src/worker/index.ts`: exclusive ownership → recovery → queue → deterministic orchestration → approval → native publishing. Ownership, recovery, publication ordering, and exit behavior live in `src/harness/workerOwnership.ts`, `briefRecovery.ts`, `publicationRunner.ts`, `briefLifecycle.ts`, and `workerExit.ts`; startup ordering is in `src/worker/startup.ts`.
 - `src/scheduler/daily.ts`: daily brief enqueue only.
 - `src/harness/orchestrator.ts`: current manager/control flow. It directly invokes current agent prompt bodies; the master-prompt manager is dormant.
-- `src/harness/evidence/`: the Phase 0B.0 evidence contract, pack builder, approved-facts adapter, and the `evidence:sync` operator command. `src/harness/agents/registry.ts`: the six-stage agent registry, asset resolution, and stage planning — **no stage executes**. `src/harness/contentIntelligence.ts`: the deterministic, inert preview those two feed. Implemented, not deployed.
+- `src/harness/evidence/`: the Phase 0B.0 evidence contract, pack builder, approved-facts adapter, and the `evidence:sync` operator command. `src/harness/agents/registry.ts`: the six-stage agent registry, asset resolution, and stage planning — **no stage executes**. `src/harness/contentIntelligence.ts`: the deterministic, inert preview those two feed. Merged, not deployed.
 - `src/mcp/`: imported provider libraries, not standalone MCP servers/model tools.
-- `state/migrations/`: forward-only PostgreSQL authority. Migration 005 is applied in production. **Migration 006 (`content_evidence`) exists in the repository and is NOT applied to production**, so any release carrying it is migration-bearing.
+- `state/migrations/`: forward-only PostgreSQL authority. Migration 005 is applied in production. **Migration 006 (`content_evidence`) is merged to `main` and is NOT applied to production**, so the release carrying it is migration-bearing — see [Phase 0B.0 rollout runbook](ROLLOUT_PHASE_0B0.md).
 - `.github/workflows/ci.yml`: pull-request/`main` CI.
 - `.github/workflows/deploy-production.yml` plus `scripts/render/deployment-controller.mjs`: disabled exact-SHA production controller.
 
@@ -34,7 +34,7 @@ Read [Architecture](ARCHITECTURE.md), [Data model](DATA_MODEL.md), or [Testing](
 **These are intentionally different and must not be assumed equal.** [Status](STATUS.md) is authoritative for every exact SHA and for the freshness of each mutable fact; this section states only the semantics.
 
 - **PR #36 (worker ownership and recovery) and PR #38 (media publication normalization) are merged, deployed, and production-validated — operator-reported 2026-08-27.** The manual bootstrap was performed by the operator; no engineering session here has Render or production database access, so this is recorded as reported and was **not independently verified**. The operator reported an approximately 58-second wait for exclusive ownership before readiness, reconciliation of the August 10 stranded brief with `providerMutation = impossible`, and a controlled brief in which a 896x1120 provider render normalized to 1080x1350 and reached a real human approval with nothing published automatically.
-- **Phase 0B.0 is in the repository and is not deployed.** The evidence system, agent registry, and Content Intelligence preview are implemented; migration 006 is not applied to production; the six reasoning stages do not execute.
+- **Phase 0B.0 is merged (`44d7336…`) and not deployed.** The evidence system, agent registry, and Content Intelligence preview are in `main`; migration 006 is not applied to production; the six reasoning stages do not execute. Production is expected to still run `a6a4316…`, but that could not be verified in this session — see the runbook's preflight table.
 - The last full read-only production verification performed *in an engineering session* was **2026-08-24 21:32 UTC**. Render native auto-deploy was off on all three services, the GitHub `production` environment was configured, and the repository gate `RENDER_DEPLOY_AUTOMATION_ENABLED` was `false` — a deliberate zero-unattended-authority window. **None of those has been reverified in a session since**; treat each as last-verified, not as current truth. The operator's bootstrap was a manual Render action and was not expected to change the gate.
 - A normal scheduled run of the then-current production SHA **was** observed on 2026-08-25; that item is closed. See [Status](STATUS.md) for the run evidence.
 - PostgreSQL external access was open to `0.0.0.0/0` at last verification.
@@ -55,18 +55,22 @@ Mutable state can change. Reinspect GitHub and Render read-only immediately befo
 
 **PR #38 — media publication normalization.** `MERGED` · `DEPLOYED` · `PRODUCTION-VALIDATED` (operator-reported 2026-08-27). No migration. Decode safety and publication profile separated into two distinct byte policies; provider-friendly source render sizes mapped to each publication profile at exactly its aspect ratio; and an off-ratio render — a square 1024x1024 — **refused rather than cropped or stretched**, typed as a deterministic non-retryable media-contract failure. Equality is exact integer cross-multiplication, not a floating-point tolerance.
 
-**PR #37 and PR #39** — roadmap-continuity governance and its post-merge clarification. Documentation-only. PR #37 is `MERGED`; PR #39 was still open at the start of Phase 0B.0.
+**PR #37 and PR #39** — roadmap-continuity governance and its post-merge clarification. Documentation-only. PR #37 is `MERGED`; **PR #39 remains open, draft, and now conflicting with `main`** — see §6.
 
-**Phase 0B.0 — content evidence and agent foundation.** `IMPLEMENTED`, **not `MERGED`, not `DEPLOYED`.** Migration 006, the typed evidence contract with its eight epistemic kinds, the evidence pack that surfaces conflicts instead of resolving them, the deterministic approved-facts projection, the explicit `evidence:sync` operator command, the six-stage agent registry with allowlist-rooted asset loading, and an inert Content Intelligence preview route. **No stage executes and no model call was added.**
+**Phase 0B.0 — content evidence and agent foundation (PR #40, merge `44d7336…`).** `MERGED`, **not `DEPLOYED`.** Migration 006, the typed evidence contract with its eight epistemic kinds, the evidence pack that surfaces conflicts instead of resolving them, the deterministic approved-facts projection, the explicit `evidence:sync` operator command, the six-stage agent registry with allowlist-rooted asset loading, and an inert Content Intelligence preview route. **No stage executes and no model call was added.**
 
 ## 6. Current operation in progress
 
-**Phase 0B.0 — content evidence and agent registry foundation.** Implemented on `codex/phase-0b-evidence-agent-registry` and proposed as a draft pull request. It adds no model call and executes no reasoning stage; it exists so that the six stages, when they are wired, have a typed evidence substrate and a registry to be wired into.
+**The first migration-bearing production rollout.** Phase 0B.0 merged as `44d7336…` on 2026-08-27. Production is expected to still run `a6a4316…`, and migration 006 is unapplied, so `main` and the live release now differ by a schema change for the first time. A full runbook — preflight, sequence, stop conditions, rollback matrix, operator authorization block — is **prepared, unauthorized, and unexecuted** in [ROLLOUT_PHASE_0B0.md](ROLLOUT_PHASE_0B0.md).
+
+Note that `44d7336…` also carries `4891bf3`, a security fix draining an unread body on `/console/*` auth failure. That gate is shared with the already-live `/console/state` and `/console/stream`, so the rollout closes an exposure that exists in production today.
 
 Two independent tracks remain open, and **neither blocks the other**:
 
-- **Deployment authority (Phase 0D.1).** The manual ownership bootstrap is complete (operator-reported), which was the thing that had to precede it. Enabling `RENDER_DEPLOY_AUTOMATION_ENABLED` and proving the controller path are now eligible, each under its own authorization and its own immediate re-verification.
-- **Phase 0B.** The remaining Content Intelligence build. Its first release is migration-bearing because of migration 006, so it cannot take the ordinary controller path regardless of how the authority track resolves.
+- **Deployment authority (Phase 0D.1).** The manual ownership bootstrap is complete (operator-reported). Enabling `RENDER_DEPLOY_AUTOMATION_ENABLED` and proving the controller path are eligible, each under its own authorization and its own immediate re-verification. This is **not** the path for the Phase 0B.0 release, which is migration-bearing by design.
+- **Phase 0B.** The remaining Content Intelligence build — wiring the six registered stages one slice at a time.
+
+**PR #39 is open, draft, and conflicting.** It predates PR #40 and its `README.md`, `docs/ROADMAP.md`, and `docs/STATUS.md` edits were overtaken; its `AGENTS.md` and `CONTRIBUTING.md` governance clarification is **not** on `main` and remains unshipped. Do not merge, rewrite, close, or repurpose it without separate authorization.
 
 See [Deployment control](DEPLOYMENT.md) for exact mechanics and [Roadmap](ROADMAP.md) for the ordered cursor.
 
@@ -74,9 +78,11 @@ See [Deployment control](DEPLOYMENT.md) for exact mechanics and [Roadmap](ROADMA
 
 Take one action only, and only with explicit authorization.
 
-1. Land Phase 0B.0: review and merge the draft pull request on `codex/phase-0b-evidence-agent-registry`. It is repository-only — no deployment, no migration run, no provider call.
+1. Read-only reverify the production half of the rollout preflight — Render service states, native auto-deploy off, all three live SHAs, `/healthz` identity, `_migrations` = `001–005`, brief/approval queue state, worker ownership, and recent errors. That half could not be verified from an engineering session (no Render access; `/healthz` egress denied by policy) and is the gate on everything else. Stop on any discrepancy.
 
-Everything after that is a separately authorized step in its own right. On the **Phase 0B** track: wire the six reasoning stages onto the registry, one stage at a time with its own validation, then plan the migration-bearing first release of migration 006 through the controlled rollout — never the ordinary controller path. On the **deployment authority** track: read-only reverify current `main`, all three live SHAs, native auto-deploy state, the GitHub environment and configuration, and the gate, stopping on any discrepancy; then consider enabling `RENDER_DEPLOY_AUTOMATION_ENABLED` and proving the controller path.
+Only after that, and only under its own explicit authorization, execute [ROLLOUT_PHASE_0B0.md](ROLLOUT_PHASE_0B0.md) against exactly `44d7336f2c75ff880cff0d8205d2fafe13eb91b5`.
+
+Everything after that is a separately authorized step in its own right. On the **Phase 0B** track: wire the six reasoning stages onto the registry, one stage at a time with its own validation. On the **deployment authority** track: reverify the gate and configuration, then consider enabling `RENDER_DEPLOY_AUTOMATION_ENABLED` and proving the controller path. A first production `evidence:sync` is its own operation and is not part of the rollout.
 
 Never re-enable native Render auto-deploy while the GitHub gate is true. Do not combine the authority cutover with database networking or with the Phase 0B migration release.
 
@@ -86,7 +92,7 @@ Never re-enable native Render auto-deploy while the GitHub gate is true. Do not 
 
 ## 9. Outstanding risks
 
-Highest priority: no durable provider idempotency, operation ledger, or reconciliation — provider-level `withRetry` can still reissue a request after an ambiguous network outcome, so duplicate publication remains possible. Worker-interruption recovery is deployed (operator-reported 2026-08-27, not independently verified here), so that specific stranding mode should be closed — but a claim recorded as reported is not a claim verified, and it should be reconfirmed before being relied on. PostgreSQL external access was open to `0.0.0.0/0` at last verification; the default-path Instagram token persists in plaintext; approval uses a bearer URL with a generic reviewer identity; one shared control secret carries process-local rate limits; there is no retention or restore drill; and provider ownership, scopes, versions, and backup facts remain unverified. Current skills are not injected, scorecard/proposal tables are unwritten, and no empirical learning runtime exists. Phase 0B.0 adds the evidence substrate but does not populate it: `content_evidence` is empty until an authorized operator runs `evidence:sync`, and the six reasoning stages still do not execute.
+Highest priority: no durable provider idempotency, operation ledger, or reconciliation — provider-level `withRetry` can still reissue a request after an ambiguous network outcome, so duplicate publication remains possible. Worker-interruption recovery is deployed (operator-reported 2026-08-27, not independently verified here), so that specific stranding mode should be closed — but a claim recorded as reported is not a claim verified, and it should be reconfirmed before being relied on. PostgreSQL external access was open to `0.0.0.0/0` at last verification; the default-path Instagram token persists in plaintext; approval uses a bearer URL with a generic reviewer identity; one shared control secret carries process-local rate limits; there is no retention or restore drill; and provider ownership, scopes, versions, and backup facts remain unverified. Current skills are not injected, scorecard/proposal tables are unwritten, and no empirical learning runtime exists. Phase 0B.0 adds the evidence substrate but does not populate it, and it is not deployed: migration 006 is unapplied, `content_evidence` will be empty until an authorized operator runs `evidence:sync`, and the six reasoning stages still do not execute.
 
 ## 10. Content Intelligence target architecture
 
@@ -142,3 +148,4 @@ Read repository/Git/GitHub and explicitly available read-only infrastructure sta
 - [Production workflow](../.github/workflows/deploy-production.yml)
 - [Migration 005](../state/migrations/005_approval_integrity.sql)
 - [Migration 006](../state/migrations/006_content_evidence.sql)
+- [Phase 0B.0 rollout runbook](ROLLOUT_PHASE_0B0.md)
