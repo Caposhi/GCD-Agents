@@ -21,7 +21,7 @@ The cron runs at 09:00 EDT or 08:00 EST. One brief generates one package contain
 
 The worker starts the Instagram token tick/timer only when Instagram is active. On the default Instagram-login host it uses the live PostgreSQL-backed refresh path; on the alternate Facebook-login host this module returns the environment token without refreshing it. Once a review is approved, the helper runs only when the approved array includes Instagram, and Google OAuth refresh is attempted only when that array includes GBP. A Google refresh error is logged and the provider path may still use the static fallback token from the environment; no unrelated platform refresh is attempted.
 
-## Content evidence sync (Phase 0B.0 — schema applied 2026-08-28; tables empty)
+## Content evidence sync (Phase 0B.0 — deployed 2026-08-28; schema applied; tables empty)
 
 `npm run evidence:sync` is the **only** writer of `content_evidence`. It is an explicit operator command, not a startup step and not part of any release: if it ran on boot, every deploy would silently rewrite what the system believes is true, and a bad edit to `config/approved-facts.json` would propagate without anyone deciding to apply it.
 
@@ -35,7 +35,7 @@ The dry run needs no database at all. The applying run requires durable state an
 
 `config/approved-facts.json` stays authoritative. The sync is a projection of it, and every record carries provenance naming the file and the exact content sha256 it was derived from, so drift between the file and durable evidence is visible rather than silent. It does not create a second source of truth: the copywriter and critic still read the JSON.
 
-**Do not run this against production in an unauthorized session.** Migration 006 **was applied to production on 2026-08-28**, so the tables now exist — and they are **empty**, which is correct. A first production sync is a separately authorized operation that follows the rollout; it is explicitly **not** part of it, and the rollout is not yet complete. See the [Phase 0B.0 rollout runbook](ROLLOUT_PHASE_0B0.md).
+**Do not run this against production in an unauthorized session.** Migration 006 **was applied to production on 2026-08-28** and the rollout has since completed on all three services, so the tables now exist — and they are **empty**, which is correct. A first production sync is a separately authorized operation that follows the rollout; it is explicitly **not** part of it and has **not yet been run**. See the [Phase 0B.0 rollout runbook](ROLLOUT_PHASE_0B0.md).
 
 ## Routine checks
 
@@ -54,7 +54,7 @@ Daily: API/worker/scheduler status, pending/running/failed briefs, pending/expir
 
 Phase 0A and Phase 0D are live at the production commit recorded in [Status](STATUS.md). At the last read-only verification, native Render auto-deploy was off for API, worker, and scheduler and GitHub automation was configured with the repository gate false — an intentional zero-unattended-authority window that must be reconfirmed rather than assumed.
 
-The worker-ownership and recovery change (PR #36, merge `0828cc9…`) and the media normalization change (PR #38, merge `a6a4316…`) are **merged, deployed, and production-validated — operator-reported 2026-08-27**. That is recorded as reported: the manual bootstrap was performed by the operator, and no engineering session here has Render or production database access to verify it first-hand. Re-verify against `/healthz` before relying on it for a decision. Controller enablement and restoration of native auto-deploy remain separate, individually authorized operations; the gate stays false until then. The Phase 0A worker-before-migration incident is why no migration-bearing release may use the ordinary controller path — and **migration 006 was applied to production on 2026-08-28** as part of the Phase 0B.0 release, which is **partially complete**: the API runs `44d7336…`, the worker and scheduler still run `a6a4316…`. That rollout stopped at step 6 under S8/S18 and resumes at the worker deployment under fresh authorization — see [ROLLOUT_PHASE_0B0.md §0](ROLLOUT_PHASE_0B0.md).
+The worker-ownership and recovery change (PR #36, merge `0828cc9…`) and the media normalization change (PR #38, merge `a6a4316…`) are **merged, deployed, and production-validated — operator-reported 2026-08-27**. That is recorded as reported: the manual bootstrap was performed by the operator, and no engineering session here has Render or production database access to verify it first-hand. Re-verify against `/healthz` before relying on it for a decision. Controller enablement and restoration of native auto-deploy remain separate, individually authorized operations; the gate stays false until then. The Phase 0A worker-before-migration incident is why no migration-bearing release may use the ordinary controller path — and **migration 006 was applied to production on 2026-08-28** as part of the Phase 0B.0 release, which is **complete**: API, worker, and scheduler all run `44d7336…`. That rollout stopped once mid-flight at step 6 under S8/S18 on a documentation defect, then resumed under fresh authorization and finished — see [ROLLOUT_PHASE_0B0.md §0](ROLLOUT_PHASE_0B0.md).
 
 For a no-migration release after cutover:
 

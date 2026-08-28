@@ -6,54 +6,62 @@
 44d7336f2c75ff880cff0d8205d2fafe13eb91b5
 ```
 
-**Status: PARTIALLY EXECUTED — STOPPED AT STEP 6 UNDER S8/S18, THEN PAUSED.** The API is deployed and migration 006 is applied. The worker and scheduler are **not** deployed and remain on `a6a4316…`. See [§0 — rollout checkpoint](#0-rollout-checkpoint--operator-verified-2026-08-28) for exactly what was observed and what is required to resume. Every remaining step requires fresh explicit authorization, and this document grants none.
+**Status: EXECUTED — ALL THREE SERVICES DEPLOYED AND VERIFIED AT THE TARGET.** The API, worker, and scheduler all report `44d7336f2c75ff880cff0d8205d2fafe13eb91b5`; migration 006 is applied exactly once; the inert preview was exercised once and changed nothing. See [§0 — rollout completion](#0-rollout-completion--operator-verified-2026-08-28) for exactly what was observed. There is no remaining step in this runbook; any further production action (`evidence:sync`, enabling `RENDER_DEPLOY_AUTOMATION_ENABLED`, wiring a reasoning stage) is separate work under its own authorization.
 
-This is the repository's **first migration-bearing release**. `state/migrations/006_content_evidence.sql` was applied to production on 2026-08-28 by the API pre-deploy runner; the ordinary GitHub controller path is forbidden for this release by design — it stops such a release at `CONTROLLED MIGRATION ROLLOUT REQUIRED`. See [Deployment control](DEPLOYMENT.md).
+This was the repository's **first migration-bearing release**. `state/migrations/006_content_evidence.sql` was applied to production on 2026-08-28 by the API pre-deploy runner; the ordinary GitHub controller path was forbidden for this release by design — it stops such a release at `CONTROLLED MIGRATION ROLLOUT REQUIRED`. See [Deployment control](DEPLOYMENT.md).
 
 ---
 
-## 0. Rollout checkpoint — operator-verified 2026-08-28
+## 0. Rollout completion — operator-verified 2026-08-28
 
-**Attribution.** Everything in this section was **verified by the operator on 2026-08-28** and is recorded as reported. The engineering session that wrote and corrected this runbook has no Render access, no production database credentials, and its egress policy denies both `gcd-social-api.onrender.com` and `api.render.com` (403 at CONNECT). **None of it was independently verified here.** Reconfirm read-only before relying on it to resume.
+**Attribution.** Everything in this section was **verified by the operator on 2026-08-28** and is recorded as reported. The engineering session that wrote and corrected this runbook has no Render access, no production database credentials, and its egress policy denies both `gcd-social-api.onrender.com` and `api.render.com` (403 at CONNECT). **None of it was independently verified here.** Reconfirm read-only before relying on it for a further decision.
+
+### The step-6 stop, and why it was correct
+
+The rollout first halted at **step 6** under **S8** (object inventory does not match §2) and **S18** (any result is ambiguous rather than clearly pass or fail). §2 had claimed 9 indexes; the catalog reported **10** — the ninth and tenth being the two primary-key-backed indexes, which are separate catalog objects from the two primary-key constraints. The original per-category list also failed to sum: `2 + 9 + 16 + 3 + 2 + 1 = 33`, against a stated total of 34. The total was right because it came from a live catalog query; the category breakdown was miscounted by hand.
+
+The migration had applied exactly as designed and the schema was correct throughout — the defect was in this document, not the database. An operator following the runbook literally could not distinguish "the document is wrong" from "the migration produced the wrong schema", and stopping rather than proceeding on an unexplained discrepancy is precisely the behaviour S8 and S18 exist to produce. §2 was corrected against a re-derived catalog query, the correction was independently inspected, a fresh preflight was re-run, and the rollout resumed at step 8 under fresh authorization.
+
+### Deployment record
+
+| Step | Service | Deploy ID | Result |
+|---|---|---|---|
+| 4–5 | API (migration-bearing) | `dep-da8qfv2d0e5s738t86r0` | Live at target; migration 006 applied exactly once at `2026-08-28T15:24:18.56508Z`, ~53 ms |
+| — | API (config redeploy, same target) | `dep-da8sbq0n74is73e0hgcg` | Live at target; migrations 001–006 correctly skipped as already applied |
+| 8 | Worker (first deploy at target) | `dep-da8shn142hec73dvbtgg` | Live at target; exclusive ownership acquired after 58,142 ms; recovery found no interrupted briefs; readiness reported the target and `state: postgres`; no errors, restarts, provider activity, or active work |
+| 8 (handoff proof) | Worker (authorized same-SHA redeploy) | `dep-da8sjmp42hec73dvhk30` | Live at target; exclusive ownership acquired after 60,094 ms; recovery again found no interrupted briefs; readiness again reported the target and `state: postgres`; no errors, restarts, provider activity, or active work |
+| 10 | Scheduler | `dep-da8siupsrm7s73afv6u0` | Live at target; cron **not** manually executed; schedule unchanged at `0 13 * * *`; no scheduler errors |
 
 ### Observed
 
 | Item | Observation |
 |---|---|
-| API | **Live and healthy** at `44d7336f2c75ff880cff0d8205d2fafe13eb91b5` |
-| Migration 006 | **Applied exactly once**, at **`2026-08-28T15:24:18Z`** |
-| Migration duration | approximately **53 ms** — consistent with the 49 ms measured on disposable PostgreSQL 16 |
-| `content_evidence` / `content_evidence_relations` | **Empty**, as required; nothing populates them at deploy time |
-| Object inventory | **Matched the migration**, except for this runbook's incorrect index count |
-| Active briefs and approvals | **Zero** |
-| Worker | **Not deployed** — remains at `a6a4316c20f7dfc45921683b59fc042ad7266087` |
-| Scheduler | **Not deployed** — remains at `a6a4316c20f7dfc45921683b59fc042ad7266087` |
-| Provider / publication activity | **None** during the rollout |
+| API, worker, scheduler | **All three live and healthy** at `44d7336f2c75ff880cff0d8205d2fafe13eb91b5` |
+| Migration 006 | Applied **exactly once**, at **`2026-08-28T15:24:18.56508Z`**, ~53 ms |
+| `_migrations` | Contains exactly `001`–`006` |
+| Object inventory | **34 catalog objects** — 2 tables, 10 indexes, 16 CHECK constraints, 3 foreign keys, 2 primary-key constraints, 1 trigger — matching the corrected §2 exactly |
+| `content_evidence` / `content_evidence_relations` | **Empty**, before and after the preview call |
+| Final `/healthz` | `status=ok`, `service=gcd-social-api`, `autonomyPhase=A`, `state=postgres`, commit `44d7336…` |
+| Unauthenticated `/console/manifest` | `401` with `WWW-Authenticate: Bearer` — the console token gate is active on the deployed API |
+| Preview | Exactly **one** authenticated call (see below); no second call was made |
+| Database row counts, before vs. after | **Identical** — see below |
+| New application events during the verification interval | **None recorded** |
+| `RENDER_DEPLOY_AUTOMATION_ENABLED` | Still `false` |
+| Native Render auto-deploy | Still off on all three services |
 
-### Why it stopped
+**Inert preview — the single authorized call.** Goal `post-rollout inert preview verification`; trace ID `26966419-1a6d-4d67-a055-af7b68dcec49`; built at `2026-08-28T18:02:09.870Z`. Returned the six registered stages, every one with execution disabled; `assetsVerified=true`; `invariantViolations=[]`; every evidence class empty. No model or provider execution was observed. Render shell history confirmed exactly one preview command was ever run against production.
 
-The rollout halted at **step 6** under **S8** (object inventory does not match §2) and **S18** (any result is ambiguous rather than clearly pass or fail).
+**Database counts, before and after the preview (identical):** briefs 71, approvals 62, media 168, content evidence 0, evidence relations 0, pending briefs 0, running briefs 0, live pending approvals 0.
 
-**The stop was correct, and the defect was in this document, not in the database.** §2 claimed 9 indexes. The catalog reports **10** — the ninth and tenth being the two primary-key-backed indexes, which are separate catalog objects from the two primary-key constraints. The original per-category list also failed to sum: `2 + 9 + 16 + 3 + 2 + 1 = 33`, against a stated total of 34. The total was right because it came from a live catalog query; the category breakdown was miscounted by hand.
+### Reconciling step 13's two-call language
 
-So the migration applied exactly as designed and the schema is correct. An operator following the runbook literally could not distinguish "the document is wrong" from "the migration produced the wrong schema", and stopping rather than proceeding on an unexplained discrepancy is precisely the behaviour S8 and S18 exist to produce. §2 is now corrected against a re-derived catalog query.
+Step 13 below asks for the preview to be called *twice* with the same goal to check for a byte-identical response. Only **one** authenticated call was made against production, honoring the operator authorization block's narrower grant of "ONE authenticated call to the inert Content Intelligence preview" — a second live call was correctly not made merely to satisfy this document.
 
-### Current state — a proven-compatible safe pause
+This is not a gap. `buildContentIntelligencePreview` is proven deterministic for a fixed input by an automated, in-process test (`S5. preview is deterministic for a fixed trace and clock`, `src/harness/contentIntelligence.selftest.ts`), which calls the same function twice with the same goal, trace ID, and clock and asserts byte-identical JSON. That check runs in `npm run test:offline` on every PR and on `main`, including PostgreSQL 16 and 18 CI jobs, so it is repeated, automated evidence, not a one-off local claim. Combined with the single production smoke test above — which independently confirms the *deployed* code path returns a well-formed six-stage plan with every invariant holding — the determinism claim step 13 was checking for is fully covered without a second live call. Step 13's text is retained below unchanged as the original design intent, but a single production call plus the existing automated determinism test is sufficient and is what was actually done; do not read the absence of a second production call as a shortfall.
 
-Production now runs a **mixed version**: new API at `44d7336…`, old worker and scheduler at `a6a4316…`, against a database with migrations `001–006`.
+### Rollout evidence caveat
 
-**This is one of the configurations proven safe in §2, and it can be held indefinitely.** The compatibility matrix covers it directly: the worker and scheduler import no Phase 0B.0 code and never touch `content_evidence`, and old `a6a4316…` code was built and run against a runner-migrated `001–006` database with its durable startup probe, console snapshot, and event read all succeeding. There is no time pressure to resume, and no need to roll anything back to sit here safely.
-
-### Resuming requires all four
-
-1. **Independent inspection of this corrective documentation delta** — the §2 inventory correction and this checkpoint.
-2. **A fresh read-only preflight** — §3, re-run in full. The earlier results are stale, and the `0 13 * * *` scheduler has fired since.
-3. **Fresh explicit authorization** — the authorization for the stopped rollout does not carry forward.
-4. **Resumption begins at step 8, the worker deployment.** Steps 4–7 are complete.
-
-> **Migration 006 must not be rerun manually.** It is already applied and recorded in `_migrations`. The runner skips a recorded file, so a re-run is a no-op — but running it by hand outside a transaction would also silently disable its `SET LOCAL` timeout guards (§2). There is no circumstance in this resumption where migration 006 should be applied again by any means.
-
-Step 6's verification should be repeated once against the corrected §2 inventory before continuing, to close the check that was stopped rather than to re-apply anything.
+Everything above under "Observed" and "Deployment record" is **operator-reported and not independently verified in this engineering session** for the same reason as the rest of this section: no Render access, no production database credentials, and denied egress to both `gcd-social-api.onrender.com` and `api.render.com`. It is recorded here because the operator is the authority for production state and this is the accurate, current record of what was done — but a future session with Render or production-database access should reconfirm it read-only before relying on it for any further production decision.
 
 ---
 
@@ -153,15 +161,15 @@ Steps marked **[operator]** could **not** be verified in the session that wrote 
 | P4 | `RENDER_DEPLOY_AUTOMATION_ENABLED` | `false` | ✅ verified — deploy run `33118928702` echoed `AUTOMATION_ENABLED: false` and failed closed |
 | P5 | No deployment triggered for the target | gate job failed, release job skipped | ✅ verified |
 | P6 | CI green on the target | `CI_CONCLUSION: success`, `event: push`, `branch: main` | ✅ verified |
-| P7 | Render native auto-deploy OFF on all three services | off | **[operator]** |
-| P8 | All three services live at `a6a4316…` | equal | **[operator]** |
-| P9 | `/healthz` reports `a6a4316…`, `service: gcd-social-api`, `state: postgres` | equal | **[operator]** |
-| P10 | `_migrations` contains `001–005` only | 5 rows, no `006` | **[operator]** |
-| P11 | Brief queue: zero `pending`, zero `running` | zero | **[operator]** |
-| P12 | Zero pending approvals | zero | **[operator]** |
+| P7 | Render native auto-deploy OFF on all three services | off | **[operator]** — reported off throughout; not independently verified here |
+| P8 | All three services live at `a6a4316…` before this preflight | equal at preflight time | **[operator]** — this was the pre-rollout state; all three now report `44d7336…`, see §0 |
+| P9 | `/healthz` reports `a6a4316…`, `service: gcd-social-api`, `state: postgres` | equal at preflight time | **[operator]** — superseded by §0's final `/healthz` at the new target |
+| P10 | `_migrations` contains `001–005` only | 5 rows, no `006` | **[operator]** — this was the pre-rollout state; `_migrations` now contains `001–006`, see §0 |
+| P11 | Brief queue: zero `pending`, zero `running` | zero | **[operator]** — reported zero at preflight and unchanged after, see §0's before/after counts |
+| P12 | Zero pending approvals | zero | **[operator]** — reported zero at preflight and unchanged after, see §0's before/after counts |
 | P13 | No scheduler run in flight; clear of the 13:00 UTC window | clear | **[operator]** |
-| P14 | Worker holds ownership and is ready at `a6a4316…` | healthy | **[operator]** |
-| P15 | No recent fatal API / worker / scheduler / database errors | none | **[operator]** |
+| P14 | Worker holds ownership and is ready at `a6a4316…` | healthy | **[operator]** — this was the pre-rollout state; the new worker's ownership/readiness evidence is in §0 |
+| P15 | No recent fatal API / worker / scheduler / database errors | none | **[operator]** — reported none throughout the rollout, see §0 |
 
 ### Timing constraint — read before choosing a window
 
@@ -231,7 +239,7 @@ Expected log, exactly once:
 [migrate] done
 ```
 
-**6. Verify migration 006 applied exactly once, with every expected object. — ⚠️ STOPPED HERE under S8/S18 on the runbook's incorrect index count; repeat once against the corrected §2 inventory.**
+**6. Verify migration 006 applied exactly once, with every expected object. — ✅ COMPLETE (re-verified against the corrected §2 inventory).** Initially **stopped here under S8/S18** on the runbook's own incorrect index count (see §0); after §2 was corrected, re-verified clean: 34 objects across all six categories, exactly one `006` row, both evidence tables empty.
 
 ```sql
 -- Exactly one 006 row.
@@ -282,15 +290,15 @@ curl -sS --max-time 10 https://gcd-social-api.onrender.com/healthz
 
 Confirm the Render deploy record reports the exact target, review API logs for startup errors, and confirm no abnormal database locks or connection errors. **At this point the old worker and scheduler are still running `a6a4316…` against a database with 006 applied — a state proven compatible in §2.** There is no time pressure to continue; it is safe to pause here.
 
-**8. Deploy the worker at the same exact target. — ⬅️ RESUME HERE, under fresh authorization.** `gcd-social-worker` at `44d7336…`. No other change.
+**8. Deploy the worker at the same exact target. — ✅ COMPLETE.** `gcd-social-worker` at `44d7336…`, deploy `dep-da8shn142hec73dvbtgg`. No other change.
 
-**9. Verify ownership, recovery, and readiness before proceeding.** Render worker deploys are zero-downtime, so **expect the new instance to wait roughly 60 seconds** for the old instance's session to end before it acquires the advisory lock. That wait is the design working, not a hang. Require, in order: exclusive ownership acquired → interrupted-work reconciliation completed → readiness emitted at exactly `44d7336…`. Then observe at least 10 seconds of stable logs with no fatal, crash, or restart signal. Confirm the worker did not contact any provider during recovery.
+**9. Verify ownership, recovery, and readiness before proceeding. — ✅ COMPLETE.** Render worker deploys are zero-downtime, so **expect the new instance to wait roughly 60 seconds** for the old instance's session to end before it acquires the advisory lock. That wait is the design working, not a hang. Observed, in order: exclusive ownership acquired after **58,142 ms** → recovery found **no interrupted briefs** → readiness emitted at exactly `44d7336…` with `state: postgres`. No fatal, crash, or restart signal; no provider contact during recovery. A subsequent authorized same-SHA worker handoff proof (deploy `dep-da8sjmp42hec73dvhk30`) repeated the same sequence — ownership after 60,094 ms, no interrupted briefs, clean readiness — confirming the behavior under a second zero-downtime overlap, not just the first.
 
-**10. Deploy the scheduler at the same exact target.** `gcd-social-scheduler` at `44d7336…`. **Do not manually execute the cron job as a smoke test.** A cron deploy does not run the job; the next scheduled firing is the proof, and it can wait.
+**10. Deploy the scheduler at the same exact target. — ✅ COMPLETE.** `gcd-social-scheduler` at `44d7336…`, deploy `dep-da8siupsrm7s73afv6u0`. **The cron was not manually executed** as a smoke test; the schedule remains `0 13 * * *` and no scheduler errors were observed.
 
-**11. Verify the exact SHA across all three services.** API, worker, and scheduler must each report `44d7336f2c75ff880cff0d8205d2fafe13eb91b5`. Any divergence is a stop condition.
+**11. Verify the exact SHA across all three services. — ✅ COMPLETE.** API, worker, and scheduler each report `44d7336f2c75ff880cff0d8205d2fafe13eb91b5`. No divergence observed.
 
-**12. Exercise only the inert Content Intelligence preview.**
+**12. Exercise only the inert Content Intelligence preview. — ✅ COMPLETE, exactly once (see §0).**
 
 ```bash
 curl -sS --max-time 15 -X POST \
@@ -304,7 +312,9 @@ Supply `CONSOLE_TOKEN` from the environment. **Never place it in a URL**, and ne
 
 Expect a six-stage plan with execution disabled and an evidence summary whose classes are all empty — `content_evidence` is empty until an operator separately runs `evidence:sync`, which **is not part of this rollout**.
 
-**13. Prove the preview changed nothing.** Capture counts before and after step 12 and require them equal:
+**13. Prove the preview changed nothing. — ✅ COMPLETE.** Counts before and after step 12 were captured and were identical (§0). See "Reconciling step 13's two-call language" in §0 for why only one production call was made, not two.
+
+Capture counts before and after step 12 and require them equal:
 
 ```sql
 SELECT (SELECT count(*)::int FROM brief_queue)                  AS briefs,
@@ -316,7 +326,7 @@ SELECT (SELECT count(*)::int FROM brief_queue)                  AS briefs,
 
 Call the preview twice with the same goal and require byte-identical stage plans, ignoring any timestamp field. Confirm the response contains no `Bearer`, no `hooks.slack.com`, and no provider key material. Confirm worker logs show no provider call and no model call in the interval, and that no new `brief:*` or `approval:*` event was written.
 
-**14. Final state checks.** Re-run the §3 read-only queries. Require: `_migrations` = `001–006`; brief queue unchanged from step 3; zero live pending approvals; evidence tables empty; no new errors in API, worker, scheduler, or database logs; all three services still at the target. Record the completion time, the exact SHA, and the operator.
+**14. Final state checks. — ✅ COMPLETE.** `_migrations` = `001–006`; brief queue (71) and approvals (62) unchanged from preflight; zero live pending approvals; evidence tables empty; no new errors in API, worker, scheduler, or database logs; all three services at the target `44d7336f2c75ff880cff0d8205d2fafe13eb91b5`. Completion recorded 2026-08-28 by the operator; the exact completion timestamp beyond the recorded event times above was not separately reported.
 
 **Nothing in this rollout creates a brief, approves anything, or publishes anything.** No live social-post approval or publication is part of it.
 
@@ -360,9 +370,9 @@ Forward-safe recovery is preferred everywhere. **Migration 006 stays applied in 
 | **Before migration** — preflight or step 4 fails before pre-deploy runs | `001–005` | Nothing deployed. Abandon the window; no rollback needed. | N/A |
 | **During migration** — pre-deploy fails | `001–005` — the runner wraps each file in one transaction, so a failure rolls that file back **atomically**; a partially applied 006 is not a reachable state | Do not retry blindly. Capture the exact error, confirm `006` is absent from `_migrations` and the tables do not exist, then diagnose. The API deploy will have failed; the old API remains live. | N/A — never applied |
 | **After API deployment** — 006 applied, new API unhealthy | `001–006` | Roll the **API only** back to `a6a4316…`. Worker and scheduler were never touched. Old API against 006 is proven compatible. | **Yes** |
-| **Current paused state** — API at target, 006 applied, worker/scheduler at `a6a4316…` | `001–006` | **No action required.** This mixed version is a proven-compatible resting state and may be held indefinitely (§0). Roll the API back only if it becomes unhealthy; do not roll back merely to leave the paused state. | **Yes** |
-| **After worker deployment** — worker fails ownership, readiness, or stabilization | `001–006` | Roll the **worker** back to `a6a4316…`. Expect the ~60-second ownership handover again in the reverse direction. Leave the API at the target only if it is healthy; otherwise roll it back too. Do not resume or requeue any brief by hand. | **Yes** |
-| **After scheduler deployment** — SHA mismatch or scheduler error | `001–006` | Roll the **scheduler** back to `a6a4316…`. It only enqueues; a mismatched scheduler is low-risk but must not be left divergent. | **Yes** |
+| **After worker deployment** — worker fails ownership, readiness, or stabilization | `001–006` | Roll the **worker** back to `a6a4316…`. Expect the ~60-second ownership handover again in the reverse direction. Leave the API at the target only if it is healthy; otherwise roll it back too. Do not resume or requeue any brief by hand. Did not occur — the worker acquired ownership and readiness cleanly on both deploys (§0). | **Yes** |
+| **After scheduler deployment** — SHA mismatch or scheduler error | `001–006` | Roll the **scheduler** back to `a6a4316…`. It only enqueues; a mismatched scheduler is low-risk but must not be left divergent. Did not occur — the scheduler deployed cleanly at the target with no errors (§0). | **Yes** |
+| **Completed rollout — all three services at target, 006 applied** | `001–006` | This is the state the rollout reached (§0). **No rollback action is indicated** absent a new fault; a future rollback of any single service to `a6a4316…` remains available and safe under this same row's reasoning, since 006 stays applied and old code is proven compatible with it. | **Yes** |
 | **Any point — evidence of provider mutation** | any | Stop everything. Do **not** roll back first: preserve state, logs, and provider IDs, and reconcile against the platforms before any further deployment. | **Yes** |
 
 **Full-stack rollback** is API → worker → scheduler all returned to `a6a4316…` with 006 left applied. That is a proven-compatible resting state, and it is where an ambiguous incident should end up rather than in a partially-migrated or half-rolled-back configuration.
@@ -414,7 +424,7 @@ escalate rather than improvise.
 
 ## 8. After a successful rollout
 
-1. Update [Status](STATUS.md), [Roadmap](ROADMAP.md), [Architecture](ARCHITECTURE.md), [Data model](DATA_MODEL.md), [Operations](OPERATIONS.md), and the README: Phase 0B.0 becomes `DEPLOYED`, and migration 006 becomes applied. Record what was **observed**, distinguishing it from what was reported.
-2. The documentation pull request prepared alongside this runbook is written for the pre-rollout state and **must not be merged until the rollout completes**. Update it with verified results first, then merge.
-3. A first production `evidence:sync` is a **separate** authorized operation. It is not part of this rollout, and until it runs the evidence tables are correctly empty.
-4. Enabling `RENDER_DEPLOY_AUTOMATION_ENABLED` remains its own separately authorized step and is unrelated to this release.
+1. **Done, in this update.** [Status](STATUS.md), [Roadmap](ROADMAP.md), [Architecture](ARCHITECTURE.md), [Data model](DATA_MODEL.md), [Operations](OPERATIONS.md), [Deployment control](DEPLOYMENT.md), [Security and continuity](SECURITY_AND_CONTINUITY.md), [AI handoff](AI_HANDOFF.md), and the README now record Phase 0B.0 as `DEPLOYED` and migration 006 as applied, with the completion evidence in §0 recorded as **observed** and attributed to the operator, distinguished from what an engineering session independently verified.
+2. This documentation pull request (#41) was written for the pre-rollout paused state and has now been updated with the completed rollout's verified results, per this reconciliation. It remains **unmerged** and awaits its own separate final inspection and human merge decision — updating it did not merge it.
+3. A first production `evidence:sync` is a **separate** authorized operation. It has **not** run — this rollout did not include it, and the evidence tables remain correctly empty until it does.
+4. Enabling `RENDER_DEPLOY_AUTOMATION_ENABLED` remains its own separately authorized step, is unrelated to this release, and **remains `false`** (§0).

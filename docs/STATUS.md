@@ -42,7 +42,7 @@ Production API pre-deploy logs for that release showed migrations 001–005 alre
 - **PR #36** — merged; worker ownership and recovery. **Deployed and production-validated** (operator-reported 2026-08-27).
 - **PR #37** — merged; documentation and roadmap-continuity governance. No runtime or deployment effect.
 - **PR #38** — merged; media publication normalization. **Deployed and production-validated** (operator-reported 2026-08-27).
-- **PR #40 / Phase 0B.0** — **merged** 2026-08-27 as `44d7336…`. **Partially deployed 2026-08-28 (operator-verified, not independently verified here):** the API is live at `44d7336…` and **migration 006 was applied exactly once at `2026-08-28T15:24:18Z`**. The rollout **stopped at step 6** under S8/S18 — the runbook's index count was wrong — so the **worker and scheduler remain at `a6a4316…`**. That mixed version is a proven-compatible safe pause state.
+- **PR #40 / Phase 0B.0** — **merged** 2026-08-27 as `44d7336…`. **Deployed 2026-08-28 (operator-verified, not independently verified here):** API, worker, and scheduler all report `44d7336…`; **migration 006 was applied exactly once at `2026-08-28T15:24:18.56508Z`**, ~53 ms; the worker acquired exclusive ownership and clean readiness on two deploys (58,142 ms then 60,094 ms); the scheduler is live with its cron un-triggered; a single authenticated preview call left all row counts unchanged. The rollout **stopped at step 6** under S8/S18 mid-flight — the runbook's index count was wrong, not the schema — then resumed under fresh authorization and completed. See [ROLLOUT_PHASE_0B0.md §0](ROLLOUT_PHASE_0B0.md) for the full record.
 
 Every row above marked "not reverified" must be reconfirmed read-only immediately before any production operation. Do not infer any of them from this file, from `render.yaml`, or from the fact that they were true two days ago.
 
@@ -72,17 +72,17 @@ This closes the previously open item requiring observation of a normal scheduled
 | PR #37 documentation and roadmap-continuity governance — merge `3bd638f…` | `MERGED`; documentation-only |
 | PR #38 media publication normalization — merge `a6a4316…` | `MERGED` · `DEPLOYED` · `PRODUCTION-VALIDATED` (operator-reported 2026-08-27) |
 | Phase 0B prerequisite — fact and evidence contract | `IMPLEMENTED` — not `MERGED`, not `DEPLOYED` |
-| **Phase 0B.0 evidence and agent registry foundation** — merge `44d7336…` | **`MERGED`** · **PARTIALLY `DEPLOYED`** — API live at the target and migration 006 applied 2026-08-28; worker and scheduler still `a6a4316…` (operator-verified) |
+| **Phase 0B.0 evidence and agent registry foundation** — merge `44d7336…` | **`MERGED`** · **`DEPLOYED`** — API, worker, and scheduler all at the target, migration 006 applied 2026-08-28 (operator-verified) |
 | Phase 0B six-stage reasoning execution | `PLANNED` — registered but not wired |
 | Worker lease/reaper | `SUPERSEDED` by ownership plus startup recovery; rationale and re-entry condition in [Roadmap](ROADMAP.md) |
 
-These states are not interchangeable. In particular: Phase 0B.0 is **merged and only partially deployed**, and its migration 006 **has** been applied to production while two of the three services still run the previous release. `MERGED` is a repository fact; `DEPLOYED` is a production fact; the two are separated here precisely because they now differ, and `DEPLOYED` is not even uniform across the three services. Completing the release requires the separately authorized rollout in the [Phase 0B.0 rollout runbook](ROLLOUT_PHASE_0B0.md), resuming at the worker deployment under fresh authorization — not the ordinary controller path, and never a manual re-run of migration 006.
+These states are not interchangeable. In particular: Phase 0B.0 is **merged and deployed**, and its migration 006 **has** been applied to production and all three services report the target commit. `MERGED` is a repository fact; `DEPLOYED` is a production fact; they happened to diverge for a period during this rollout (API deployed before worker and scheduler) and are recorded here as now reconciled. Migration 006 must never be manually re-run — the runner records it as applied and would skip it, but applying it by hand outside a transaction would silently disable its `SET LOCAL` timeout guards. See the [Phase 0B.0 rollout runbook](ROLLOUT_PHASE_0B0.md) for the completion record.
 
 ## Current cursor — the single next safe operation
 
 Two independent tracks, neither blocking the other.
 
-**Rollout (primary).** Phase 0B.0 is merged and **partially deployed**: API at the target with migration 006 applied, worker and scheduler still at `a6a4316…`. The rollout stopped at step 6 under S8/S18 on a documentation defect, now corrected. Resuming requires independent inspection of that correction, a fresh read-only preflight, fresh explicit authorization, and restart **at the worker deployment**. See [ROLLOUT_PHASE_0B0.md §0](ROLLOUT_PHASE_0B0.md).
+**Rollout — complete.** Phase 0B.0 is merged and **deployed**: API, worker, and scheduler all at the target with migration 006 applied. The rollout stopped once, mid-flight, at step 6 under S8/S18 on a documentation defect (9 vs. 10 indexes); once corrected and independently inspected, it resumed under fresh authorization and finished all 14 steps. See [ROLLOUT_PHASE_0B0.md §0](ROLLOUT_PHASE_0B0.md) for the full record. Remaining separately authorized follow-ups: a first production `evidence:sync` (not yet run), and the Phase 0D.1 authority cutover below.
 
 **Product.** Phase 0B continues: wire the six registered reasoning stages as real model calls, one slice at a time. Phase 0B.0 shipped without touching deployment authority and later slices can do the same.
 

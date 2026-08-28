@@ -12,10 +12,11 @@ Phase 0D is merged and production-deployed; it does not begin Phase 0B. Read-onl
 | Current controller source in production | **Deployed** through the previous native Render mechanism | last verified 2026-08-24 |
 | Worker ownership/recovery | **Merged** in PR #36 (`0828cc9…`); **deployed and production-validated** | operator-reported 2026-08-27; **not independently verified in an engineering session** |
 | Media publication normalization | **Merged** in PR #38 (`a6a4316…`); **deployed and production-validated** | operator-reported 2026-08-27; **not independently verified in an engineering session** |
-| Phase 0B.0 (PR #40, merge `44d7336…`) | **Merged**; **partially deployed** — API only | operator-verified 2026-08-28 |
-| Migration 006 (`content_evidence`) | **Applied to production** once, `2026-08-28T15:24:18Z`, ~53 ms | operator-verified 2026-08-28 |
+| Phase 0B.0 (PR #40, merge `44d7336…`) | **Merged**; **deployed** — API, worker, and scheduler all at the target | operator-verified 2026-08-28 |
+| Migration 006 (`content_evidence`) | **Applied to production** once, `2026-08-28T15:24:18.56508Z`, ~53 ms | operator-verified 2026-08-28 |
 | API | **`44d7336…`**, live and healthy | operator-verified 2026-08-28 |
-| Worker and scheduler | **`a6a4316…`** — not yet deployed; rollout stopped at step 6 under S8/S18 | operator-verified 2026-08-28 |
+| Worker | **`44d7336…`** — exclusive ownership and readiness confirmed on two separate deploys (58,142 ms, 60,094 ms) | operator-verified 2026-08-28 |
+| Scheduler | **`44d7336…`** — live, cron `0 13 * * *` unchanged and not manually triggered | operator-verified 2026-08-28 |
 | Production state generally | — | **not verifiable in an engineering session** — no Render access; `/healthz` and `api.render.com` egress denied (403) |
 | GitHub `production` environment | **Configured** with secret name, five non-secret variables, and `main` restriction | last verified 2026-08-24; not reverified |
 | Render native auto-deploy | **Off** for API, worker, and scheduler (`autoDeploy: no`, `autoDeployTrigger: off`) | last verified 2026-08-24; not reverified |
@@ -25,9 +26,9 @@ Phase 0D is merged and production-deployed; it does not begin Phase 0B. Read-onl
 
 **The gate is now eligible, not yet authorized.** The prerequisite that blocked it — a live worker holding no advisory lock — is closed: the manual bootstrap and the handoff proof are reported complete. Enabling `RENDER_DEPLOY_AUTOMATION_ENABLED` and proving the controller path are therefore the next steps in this track, each under its own explicit authorization and each preceded by a read-only reverification of every row above, because those rows are last-verified rather than current and the operator's bootstrap was a manual Render action performed outside any engineering session. Never re-enable Render native auto-deploy while GitHub control is enabled.
 
-**A separate constraint applies to the Phase 0B track.** `state/migrations/006_content_evidence.sql` made the release carrying Phase 0B.0 (`44d7336…`) migration-bearing. It was **applied to production on 2026-08-28** by the API pre-deploy runner. The controller stops such a release at `CONTROLLED MIGRATION ROLLOUT REQUIRED` by design, which is why this one went through the manual path — and why the remaining worker and scheduler deployments must too, whether or not the gate is ever enabled.
+**A separate constraint applied to the Phase 0B track.** `state/migrations/006_content_evidence.sql` made the release carrying Phase 0B.0 (`44d7336…`) migration-bearing. It was **applied to production on 2026-08-28** by the API pre-deploy runner. The controller stops such a release at `CONTROLLED MIGRATION ROLLOUT REQUIRED` by design, which is why this one went through the manual path.
 
-That rollout is written out step by step, with preflight evidence, stop conditions, a rollback matrix, and an operator authorization block, in **[ROLLOUT_PHASE_0B0.md](ROLLOUT_PHASE_0B0.md)**. It is **partially executed**: steps 4–7 are complete and it stopped at step 6's inventory check under S8/S18 on a documentation defect, since corrected. It resumes at **step 8, the worker deployment**, and only under fresh authorization — migration 006 is applied and must not be rerun.
+That rollout was written out step by step, with preflight evidence, stop conditions, a rollback matrix, and an operator authorization block, in **[ROLLOUT_PHASE_0B0.md](ROLLOUT_PHASE_0B0.md)**. It is now **fully executed**: it stopped once at step 6's inventory check under S8/S18 on a documentation defect (corrected and independently inspected), then resumed under fresh authorization through step 14. All three services report the target; migration 006 is applied and must not be rerun.
 
 The Phase 0A rollout proved that concurrent native deployments are unsafe: the worker started before migration 005 completed, failed twice because `approval_decisions` did not exist, and recovered after the API migration finished. Schema-dependent services must not be released concurrently with their migration authority.
 

@@ -1,8 +1,8 @@
 # Architecture
 
-Verified against source on 2026-08-26; the production-state observations it references were last verified read-only on 2026-08-24 and are not reverified here. Phase 0A and Phase 0D are deployed. Phase 0B has not begun.
+Verified against source on 2026-08-26; the production-state observations it references were last verified read-only on 2026-08-24 and are not reverified here except where a later dated observation is given explicitly. Phase 0A and Phase 0D are deployed. Phase 0B.0, the foundation slice of Phase 0B, is merged and deployed (operator-verified 2026-08-28); the six reasoning stages themselves are not yet wired.
 
-**This document describes two things and labels which is which.** *Current production runtime* is what the live release does. *Current source / next production release* is what `main` does and what the next release will do. They diverge today, but not over PR #36: that work is merged and — operator-reported 2026-08-27, not independently verified here — deployed and production-validated, so the live worker does participate in the ownership protocol. The divergence is now Phase 0B.0, and production is currently **mixed**: the API runs `44d7336…` with migration 006 applied, while the worker and scheduler still run `a6a4316…` (operator-verified 2026-08-28). The rollout stopped at step 6 under S8/S18; see [ROLLOUT_PHASE_0B0.md §0](ROLLOUT_PHASE_0B0.md). The evidence tables exist and are empty, and no reasoning stage executes. See [Status](STATUS.md) for exact SHAs and [Roadmap](ROADMAP.md) for the cursor.
+**This document describes two things and labels which is which.** *Current production runtime* is what the live release does. *Current source / next production release* is what `main` does and what the next release will do. They no longer diverge: PR #36's worker ownership protocol and PR #38's media normalization reached production in an earlier manual bootstrap release (operator-reported 2026-08-27, not independently verified here), and Phase 0B.0 (`44d7336…`) — the release directly on top of that — is now deployed on all three services (operator-verified 2026-08-28, not independently verified here). Migration 006 is applied; the evidence tables exist and are empty; no reasoning stage executes. The rollout paused once mid-flight at step 6 under S8/S18 on a documentation defect, then completed; see [ROLLOUT_PHASE_0B0.md §0](ROLLOUT_PHASE_0B0.md). See [Status](STATUS.md) for exact SHAs and [Roadmap](ROADMAP.md) for the cursor.
 
 ## Product architecture principle
 
@@ -44,7 +44,7 @@ Ownership is **mutual exclusion, not a fencing token**: if an owner's connection
 
 **What this does not solve.** Interruption during a provider attempt still leaves an outcome the system cannot resolve by itself. It is surfaced and nothing retries automatically, but provider-level `withRetry` remains an independent path that can reissue a request after an ambiguous network outcome. There is no durable provider operation ledger, no idempotency key, and no provider reconciliation, so duplicate publication remains possible and a human must reconcile against the platform. That work is the first item under Next hardening in [Roadmap](ROADMAP.md).
 
-### Content Intelligence foundation (Phase 0B.0) — merged; API deployed, worker and scheduler pending
+### Content Intelligence foundation (Phase 0B.0) — merged and deployed
 
 Additive and inert. It changes no production behavior: the scheduled pipeline below is untouched, and no reasoning stage executes.
 
