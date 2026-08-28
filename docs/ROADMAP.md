@@ -103,7 +103,7 @@ These are not interchangeable and must not be collapsed into "done". `MERGED` in
 
 ### Phase 0B.0 — content evidence and agent registry foundation
 
-**State:** `MERGED` — not `DEPLOYED`.
+**State:** `MERGED` · **partially `DEPLOYED`** — API live at the target with migration 006 applied 2026-08-28; worker and scheduler still `a6a4316…` (operator-verified, not independently verified in an engineering session).
 
 **Merge:** PR #40, merged 2026-08-27 as `44d7336f2c75ff880cff0d8205d2fafe13eb91b5`, base `a6a4316…`, reviewed head `4891bf3…`. Merged by the repository owner after all five CI jobs passed on the exact head.
 
@@ -111,9 +111,11 @@ These are not interchangeable and must not be collapsed into "done". `MERGED` in
 
 **Delivered:** the typed evidence contract with eight kinds and per-kind validation; `state/migrations/006_content_evidence.sql` with `content_evidence` and `content_evidence_relations`; a deterministic, provenance-preserving adapter from `config/approved-facts.json`; an idempotent operator-only sync command; the evidence pack builder that surfaces conflicts and stale evidence without resolving them; `AgentRegistry` with all six target stages registered and allowlist-rooted asset loading; `ContentIntelligenceContext`; and a deterministic, inert preview endpoint.
 
-**Schema / migrations:** migration **006**, merged and integration-tested against disposable PostgreSQL 16 and 18. **Not applied to production.** Its rollout is a separately authorized migration-bearing release under the existing discipline: exactly one migration authority, and no schema-dependent consumer racing it. The runbook is [ROLLOUT_PHASE_0B0.md](ROLLOUT_PHASE_0B0.md) — prepared, unauthorized, unexecuted.
+**Schema / migrations:** migration **006**, integration-tested against disposable PostgreSQL 16 and 18 and **applied to production on 2026-08-28 at `15:24:18Z`**, exactly once, by the API pre-deploy runner. Its rollout is a separately authorized migration-bearing release under the existing discipline: exactly one migration authority, and no schema-dependent consumer racing it. The runbook is [ROLLOUT_PHASE_0B0.md](ROLLOUT_PHASE_0B0.md) — partially executed, paused before the worker deployment.
 
-**Rollout safety, independently established 2026-08-28.** Migration 006 creates 34 objects and is purely additive; applied inside a transaction it took **zero locks** on any pre-existing table and completed in about **50 ms**. Old `a6a4316…` code was built and **tested** against a runner-migrated `001–006` database: its durable startup probe, console snapshot, and event read all succeeded. Rolling application code back while leaving 006 applied is therefore a proven-safe recovery, and no destructive down migration should be written.
+**Rollout safety, independently established 2026-08-28.** Migration 006 creates 34 catalog objects — 2 tables, 10 indexes (2 of them primary-key-backed), 16 CHECK constraints, 3 foreign keys, 2 primary-key constraints, 1 trigger — and is purely additive; applied inside a transaction it took **zero locks** on any pre-existing table and completed in about **50 ms**. Old `a6a4316…` code was built and **tested** against a runner-migrated `001–006` database: its durable startup probe, console snapshot, and event read all succeeded. Rolling application code back while leaving 006 applied is therefore a proven-safe recovery, and no destructive down migration should be written.
+
+**Rollout outcome, operator-verified 2026-08-28.** The API deployed to the target and migration 006 applied exactly once at `15:24:18Z` in about 53 ms, with both evidence tables empty and zero active briefs and approvals. The rollout then stopped at step 6 under S8/S18 because the runbook stated 9 indexes where the catalog reports 10 — the two primary-key-backed indexes being separate catalog objects from the two primary-key constraints. **The schema was correct; the document was wrong**, and stopping on an inventory discrepancy rather than proceeding is exactly what those stop conditions exist to produce. The worker and scheduler were not deployed, leaving a mixed version that the runbook's compatibility matrix already proves safe. Resumption begins at the worker deployment under fresh authorization; migration 006 must not be rerun.
 
 **Material design decisions:** epistemic class is a database constraint, not a convention; conflicts are reported and never auto-resolved; the approved-facts adapter is a projection rather than a second source of truth, so the JSON stays authoritative until a later reviewed cutover; and registration is deliberately separated from execution.
 
@@ -181,7 +183,7 @@ The former worker lease/reaper item is `SUPERSEDED` and is no longer active work
 
 ## Phase 0B prerequisite — fact and evidence contract
 
-**State:** `MERGED` — not `DEPLOYED`. Delivered by the Phase 0B.0 foundation change (`44d7336…`); migration 006 is merged but deliberately unapplied.
+**State:** `MERGED` · **partially `DEPLOYED`**. Delivered by the Phase 0B.0 foundation change (`44d7336…`); migration 006 was applied to production on 2026-08-28, and the tables are correctly empty until an authorized operator runs `evidence:sync`.
 
 The contract is now executable rather than aspirational. `src/harness/evidence/contract.ts` defines the kinds, per-kind validation, and the two forbidden promotions; `state/migrations/006_content_evidence.sql` enforces the same rules as database CHECK constraints so the invariant survives a writer that bypasses the application.
 

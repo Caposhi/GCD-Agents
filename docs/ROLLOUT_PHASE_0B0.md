@@ -6,9 +6,54 @@
 44d7336f2c75ff880cff0d8205d2fafe13eb91b5
 ```
 
-**Status: PREPARED, NOT AUTHORIZED, NOT EXECUTED.** Nothing in this document has been performed. It exists to be inspected before anyone decides whether to run it. Every step requires its own explicit authorization, and this document grants none.
+**Status: PARTIALLY EXECUTED — STOPPED AT STEP 6 UNDER S8/S18, THEN PAUSED.** The API is deployed and migration 006 is applied. The worker and scheduler are **not** deployed and remain on `a6a4316…`. See [§0 — rollout checkpoint](#0-rollout-checkpoint--operator-verified-2026-08-28) for exactly what was observed and what is required to resume. Every remaining step requires fresh explicit authorization, and this document grants none.
 
-This is the repository's **first migration-bearing release**. `state/migrations/006_content_evidence.sql` is merged and unapplied, so the ordinary GitHub controller path is forbidden by design — it stops such a release at `CONTROLLED MIGRATION ROLLOUT REQUIRED`. See [Deployment control](DEPLOYMENT.md).
+This is the repository's **first migration-bearing release**. `state/migrations/006_content_evidence.sql` was applied to production on 2026-08-28 by the API pre-deploy runner; the ordinary GitHub controller path is forbidden for this release by design — it stops such a release at `CONTROLLED MIGRATION ROLLOUT REQUIRED`. See [Deployment control](DEPLOYMENT.md).
+
+---
+
+## 0. Rollout checkpoint — operator-verified 2026-08-28
+
+**Attribution.** Everything in this section was **verified by the operator on 2026-08-28** and is recorded as reported. The engineering session that wrote and corrected this runbook has no Render access, no production database credentials, and its egress policy denies both `gcd-social-api.onrender.com` and `api.render.com` (403 at CONNECT). **None of it was independently verified here.** Reconfirm read-only before relying on it to resume.
+
+### Observed
+
+| Item | Observation |
+|---|---|
+| API | **Live and healthy** at `44d7336f2c75ff880cff0d8205d2fafe13eb91b5` |
+| Migration 006 | **Applied exactly once**, at **`2026-08-28T15:24:18Z`** |
+| Migration duration | approximately **53 ms** — consistent with the 49 ms measured on disposable PostgreSQL 16 |
+| `content_evidence` / `content_evidence_relations` | **Empty**, as required; nothing populates them at deploy time |
+| Object inventory | **Matched the migration**, except for this runbook's incorrect index count |
+| Active briefs and approvals | **Zero** |
+| Worker | **Not deployed** — remains at `a6a4316c20f7dfc45921683b59fc042ad7266087` |
+| Scheduler | **Not deployed** — remains at `a6a4316c20f7dfc45921683b59fc042ad7266087` |
+| Provider / publication activity | **None** during the rollout |
+
+### Why it stopped
+
+The rollout halted at **step 6** under **S8** (object inventory does not match §2) and **S18** (any result is ambiguous rather than clearly pass or fail).
+
+**The stop was correct, and the defect was in this document, not in the database.** §2 claimed 9 indexes. The catalog reports **10** — the ninth and tenth being the two primary-key-backed indexes, which are separate catalog objects from the two primary-key constraints. The original per-category list also failed to sum: `2 + 9 + 16 + 3 + 2 + 1 = 33`, against a stated total of 34. The total was right because it came from a live catalog query; the category breakdown was miscounted by hand.
+
+So the migration applied exactly as designed and the schema is correct. An operator following the runbook literally could not distinguish "the document is wrong" from "the migration produced the wrong schema", and stopping rather than proceeding on an unexplained discrepancy is precisely the behaviour S8 and S18 exist to produce. §2 is now corrected against a re-derived catalog query.
+
+### Current state — a proven-compatible safe pause
+
+Production now runs a **mixed version**: new API at `44d7336…`, old worker and scheduler at `a6a4316…`, against a database with migrations `001–006`.
+
+**This is one of the configurations proven safe in §2, and it can be held indefinitely.** The compatibility matrix covers it directly: the worker and scheduler import no Phase 0B.0 code and never touch `content_evidence`, and old `a6a4316…` code was built and run against a runner-migrated `001–006` database with its durable startup probe, console snapshot, and event read all succeeding. There is no time pressure to resume, and no need to roll anything back to sit here safely.
+
+### Resuming requires all four
+
+1. **Independent inspection of this corrective documentation delta** — the §2 inventory correction and this checkpoint.
+2. **A fresh read-only preflight** — §3, re-run in full. The earlier results are stale, and the `0 13 * * *` scheduler has fired since.
+3. **Fresh explicit authorization** — the authorization for the stopped rollout does not carry forward.
+4. **Resumption begins at step 8, the worker deployment.** Steps 4–7 are complete.
+
+> **Migration 006 must not be rerun manually.** It is already applied and recorded in `_migrations`. The runner skips a recorded file, so a re-run is a no-op — but running it by hand outside a transaction would also silently disable its `SET LOCAL` timeout guards (§2). There is no circumstance in this resumption where migration 006 should be applied again by any means.
+
+Step 6's verification should be repeated once against the corrected §2 inventory before continuing, to close the check that was stopped rather than to re-apply anything.
 
 ---
 
@@ -41,11 +86,14 @@ Confirmed by catalog query after applying `001–005` and then `006` alone — *
 | Kind | Count | Names |
 |---|---|---|
 | Table | 2 | `content_evidence`, `content_evidence_relations` |
-| Primary key | 2 | `content_evidence_pkey`, `content_evidence_relations_pkey` |
-| Index | 9 | the two PKs plus `content_evidence_kind_lifecycle_idx`, `content_evidence_subject_idx`, `content_evidence_subject_attribute_idx`, `content_evidence_active_idx`, `content_evidence_review_by_idx`, `content_evidence_tags_idx` (GIN), `content_evidence_relations_to_idx`, `content_evidence_relations_kind_idx` |
+| Primary-key constraint | 2 | `content_evidence_pkey`, `content_evidence_relations_pkey` |
+| Index | **10** | the 2 primary-key-backed indexes `content_evidence_pkey` and `content_evidence_relations_pkey`, plus the 8 explicitly created indexes: `content_evidence_kind_lifecycle_idx`, `content_evidence_subject_idx`, `content_evidence_subject_attribute_idx`, `content_evidence_active_idx`, `content_evidence_review_by_idx`, `content_evidence_tags_idx` (GIN), `content_evidence_relations_to_idx`, `content_evidence_relations_kind_idx` |
 | CHECK | 16 | `kind_check`, `lifecycle_check`, `source_type_check`, `claim_present`, `subject_present`, `confidence_range`, `verified_requires_source`, `research_requires_source`, `observation_requires_observed_at`, `performance_shape`, `causal_not_certain`, `assumption_low_confidence`, `supersession_shape`, `no_self_supersede`, `relations_kind_check`, `relations_no_self` |
 | Foreign key | 3 | `content_evidence_superseded_by_id_fkey` (self), `content_evidence_relations_from_id_fkey`, `content_evidence_relations_to_id_fkey` |
 | Trigger | 1 | `content_evidence_touch_updated_at_trigger` on `content_evidence` |
+| **Total** | **34** | 2 + 10 + 16 + 3 + 2 + 1 |
+
+**Why the two primary keys are counted twice — once as constraints, once as indexes.** In PostgreSQL a primary key is *two* catalog objects, not one: a constraint row in `pg_constraint` (`contype='p'`) and the unique index that enforces it in `pg_class`/`pg_indexes`. They have the same name but are distinct entries, and the verification query in step 6 unions `pg_indexes` and `pg_constraint` separately, so each primary key legitimately contributes one row to the index category **and** one to the primary-key-constraint category. That is intentional and is why the categories sum to 34 rather than 32. A reviewer expecting 8 indexes is counting only the `CREATE INDEX` statements in the migration file; the catalog reports 10.
 
 **It is purely additive.** It issues no `ALTER TABLE`, no `UPDATE`, and no `DELETE` against any existing table. Every foreign key points at a table the migration itself creates, so no existing table is referenced.
 
@@ -170,9 +218,9 @@ Every step is operator-executed and separately authorized. **Stop at the first d
 
 **3. Confirm no conflicting work.** Re-run P11–P15. Zero pending briefs, zero running briefs, zero live pending approvals, no worker mid-publication, no scheduler run in flight. **Do not alter any row to satisfy this check** — a non-zero result is a stop condition to be investigated and separately resolved, not tidied away.
 
-**4. Deploy the API at the exact target.** Deploy `gcd-social-api` at `44d7336f2c75ff880cff0d8205d2fafe13eb91b5` and nothing else. Do not touch the worker or scheduler yet.
+**4. Deploy the API at the exact target. — ✅ COMPLETE 2026-08-28 (operator-verified).** Deploy `gcd-social-api` at `44d7336f2c75ff880cff0d8205d2fafe13eb91b5` and nothing else. Do not touch the worker or scheduler yet.
 
-**5. Let the API pre-deploy command be the only migration authority.** `preDeployCommand: npm run migrate` runs migration 006 exactly once. Neither the worker nor the scheduler has a `preDeployCommand`, so deploying the API alone guarantees a single migration runner — the specific failure of the Phase 0A rollout, where the worker started before the API's migration finished. **Do not run `npm run migrate` by hand, and do not apply the SQL through `psql`** (see the `SET LOCAL` caveat in §2).
+**5. Let the API pre-deploy command be the only migration authority. — ✅ COMPLETE 2026-08-28: applied exactly once at `2026-08-28T15:24:18Z`, ~53 ms. Do NOT rerun.** `preDeployCommand: npm run migrate` runs migration 006 exactly once. Neither the worker nor the scheduler has a `preDeployCommand`, so deploying the API alone guarantees a single migration runner — the specific failure of the Phase 0A rollout, where the worker started before the API's migration finished. **Do not run `npm run migrate` by hand, and do not apply the SQL through `psql`** (see the `SET LOCAL` caveat in §2).
 
 Expected log, exactly once:
 
@@ -183,7 +231,7 @@ Expected log, exactly once:
 [migrate] done
 ```
 
-**6. Verify migration 006 applied exactly once, with every expected object.**
+**6. Verify migration 006 applied exactly once, with every expected object. — ⚠️ STOPPED HERE under S8/S18 on the runbook's incorrect index count; repeat once against the corrected §2 inventory.**
 
 ```sql
 -- Exactly one 006 row.
@@ -205,7 +253,12 @@ UNION ALL SELECT 'TRIGGER', tgname FROM pg_trigger
   WHERE tgrelid::regclass::text LIKE 'content_evidence%' AND NOT tgisinternal
 ORDER BY 1, 2;
 
--- Counts: 16 CHECK, 3 FK, 1 trigger, 9 indexes, 2 tables.
+-- Expected category counts, matching the table in §2:
+--   2 tables, 10 indexes (including the 2 primary-key-backed indexes),
+--   16 CHECK constraints, 3 foreign keys, 2 primary-key constraints,
+--   1 trigger  ->  total catalog inventory 34.
+-- The 2 primary keys each appear twice on purpose: once in pg_indexes and
+-- once in pg_constraint. They are separate catalog objects (see §2).
 -- The evidence tables must be EMPTY. Nothing populates them at deploy time.
 SELECT (SELECT count(*)::int FROM content_evidence)            AS evidence_rows,
        (SELECT count(*)::int FROM content_evidence_relations)  AS relation_rows;
@@ -220,7 +273,7 @@ WHERE NOT tgisinternal AND tgenabled IN ('O','A')
     OR (tgrelid='media'::regclass AND tgname='media_content_immutable'));
 ```
 
-**7. Verify API health, identity, and database health.**
+**7. Verify API health, identity, and database health. — ✅ COMPLETE 2026-08-28: API live and healthy at the exact target.**
 
 ```bash
 curl -sS --max-time 10 https://gcd-social-api.onrender.com/healthz
@@ -229,7 +282,7 @@ curl -sS --max-time 10 https://gcd-social-api.onrender.com/healthz
 
 Confirm the Render deploy record reports the exact target, review API logs for startup errors, and confirm no abnormal database locks or connection errors. **At this point the old worker and scheduler are still running `a6a4316…` against a database with 006 applied — a state proven compatible in §2.** There is no time pressure to continue; it is safe to pause here.
 
-**8. Deploy the worker at the same exact target.** `gcd-social-worker` at `44d7336…`. No other change.
+**8. Deploy the worker at the same exact target. — ⬅️ RESUME HERE, under fresh authorization.** `gcd-social-worker` at `44d7336…`. No other change.
 
 **9. Verify ownership, recovery, and readiness before proceeding.** Render worker deploys are zero-downtime, so **expect the new instance to wait roughly 60 seconds** for the old instance's session to end before it acquires the advisory lock. That wait is the design working, not a hang. Require, in order: exclusive ownership acquired → interrupted-work reconciliation completed → readiness emitted at exactly `44d7336…`. Then observe at least 10 seconds of stable logs with no fatal, crash, or restart signal. Confirm the worker did not contact any provider during recovery.
 
@@ -307,6 +360,7 @@ Forward-safe recovery is preferred everywhere. **Migration 006 stays applied in 
 | **Before migration** — preflight or step 4 fails before pre-deploy runs | `001–005` | Nothing deployed. Abandon the window; no rollback needed. | N/A |
 | **During migration** — pre-deploy fails | `001–005` — the runner wraps each file in one transaction, so a failure rolls that file back **atomically**; a partially applied 006 is not a reachable state | Do not retry blindly. Capture the exact error, confirm `006` is absent from `_migrations` and the tables do not exist, then diagnose. The API deploy will have failed; the old API remains live. | N/A — never applied |
 | **After API deployment** — 006 applied, new API unhealthy | `001–006` | Roll the **API only** back to `a6a4316…`. Worker and scheduler were never touched. Old API against 006 is proven compatible. | **Yes** |
+| **Current paused state** — API at target, 006 applied, worker/scheduler at `a6a4316…` | `001–006` | **No action required.** This mixed version is a proven-compatible resting state and may be held indefinitely (§0). Roll the API back only if it becomes unhealthy; do not roll back merely to leave the paused state. | **Yes** |
 | **After worker deployment** — worker fails ownership, readiness, or stabilization | `001–006` | Roll the **worker** back to `a6a4316…`. Expect the ~60-second ownership handover again in the reverse direction. Leave the API at the target only if it is healthy; otherwise roll it back too. Do not resume or requeue any brief by hand. | **Yes** |
 | **After scheduler deployment** — SHA mismatch or scheduler error | `001–006` | Roll the **scheduler** back to `a6a4316…`. It only enqueues; a mismatched scheduler is low-risk but must not be left divergent. | **Yes** |
 | **Any point — evidence of provider mutation** | any | Stop everything. Do **not** roll back first: preserve state, logs, and provider IDs, and reconcile against the platforms before any further deployment. | **Yes** |

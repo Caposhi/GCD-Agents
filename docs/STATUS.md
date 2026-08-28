@@ -42,7 +42,7 @@ Production API pre-deploy logs for that release showed migrations 001–005 alre
 - **PR #36** — merged; worker ownership and recovery. **Deployed and production-validated** (operator-reported 2026-08-27).
 - **PR #37** — merged; documentation and roadmap-continuity governance. No runtime or deployment effect.
 - **PR #38** — merged; media publication normalization. **Deployed and production-validated** (operator-reported 2026-08-27).
-- **PR #40 / Phase 0B.0** — **merged** 2026-08-27 as `44d7336…`. Carries **migration 006**, which is **not applied to production**, and is therefore **not `DEPLOYED`**. Production still runs `a6a4316…`.
+- **PR #40 / Phase 0B.0** — **merged** 2026-08-27 as `44d7336…`. **Partially deployed 2026-08-28 (operator-verified, not independently verified here):** the API is live at `44d7336…` and **migration 006 was applied exactly once at `2026-08-28T15:24:18Z`**. The rollout **stopped at step 6** under S8/S18 — the runbook's index count was wrong — so the **worker and scheduler remain at `a6a4316…`**. That mixed version is a proven-compatible safe pause state.
 
 Every row above marked "not reverified" must be reconfirmed read-only immediately before any production operation. Do not infer any of them from this file, from `render.yaml`, or from the fact that they were true two days ago.
 
@@ -72,17 +72,17 @@ This closes the previously open item requiring observation of a normal scheduled
 | PR #37 documentation and roadmap-continuity governance — merge `3bd638f…` | `MERGED`; documentation-only |
 | PR #38 media publication normalization — merge `a6a4316…` | `MERGED` · `DEPLOYED` · `PRODUCTION-VALIDATED` (operator-reported 2026-08-27) |
 | Phase 0B prerequisite — fact and evidence contract | `IMPLEMENTED` — not `MERGED`, not `DEPLOYED` |
-| **Phase 0B.0 evidence and agent registry foundation** — merge `44d7336…` | **`MERGED`** — not `DEPLOYED`; carries unapplied migration 006 |
+| **Phase 0B.0 evidence and agent registry foundation** — merge `44d7336…` | **`MERGED`** · **PARTIALLY `DEPLOYED`** — API live at the target and migration 006 applied 2026-08-28; worker and scheduler still `a6a4316…` (operator-verified) |
 | Phase 0B six-stage reasoning execution | `PLANNED` — registered but not wired |
 | Worker lease/reaper | `SUPERSEDED` by ownership plus startup recovery; rationale and re-entry condition in [Roadmap](ROADMAP.md) |
 
-These states are not interchangeable. In particular: Phase 0B.0 is **merged but not deployed**, and its migration 006 has **not** been applied to production. `MERGED` is a repository fact; `DEPLOYED` is a production fact; the two are separated here precisely because they now differ. Deploying the release that contains it requires the separately authorized migration rollout in [Phase 0B.0 rollout runbook](ROLLOUT_PHASE_0B0.md), not the ordinary controller path.
+These states are not interchangeable. In particular: Phase 0B.0 is **merged and only partially deployed**, and its migration 006 **has** been applied to production while two of the three services still run the previous release. `MERGED` is a repository fact; `DEPLOYED` is a production fact; the two are separated here precisely because they now differ, and `DEPLOYED` is not even uniform across the three services. Completing the release requires the separately authorized rollout in the [Phase 0B.0 rollout runbook](ROLLOUT_PHASE_0B0.md), resuming at the worker deployment under fresh authorization — not the ordinary controller path, and never a manual re-run of migration 006.
 
 ## Current cursor — the single next safe operation
 
 Two independent tracks, neither blocking the other.
 
-**Rollout (primary).** Phase 0B.0 is merged and undeployed. The prepared, unauthorized runbook for releasing `44d7336…` — the repository's first migration-bearing release — is [ROLLOUT_PHASE_0B0.md](ROLLOUT_PHASE_0B0.md). It has not been executed.
+**Rollout (primary).** Phase 0B.0 is merged and **partially deployed**: API at the target with migration 006 applied, worker and scheduler still at `a6a4316…`. The rollout stopped at step 6 under S8/S18 on a documentation defect, now corrected. Resuming requires independent inspection of that correction, a fresh read-only preflight, fresh explicit authorization, and restart **at the worker deployment**. See [ROLLOUT_PHASE_0B0.md §0](ROLLOUT_PHASE_0B0.md).
 
 **Product.** Phase 0B continues: wire the six registered reasoning stages as real model calls, one slice at a time. Phase 0B.0 shipped without touching deployment authority and later slices can do the same.
 
@@ -123,7 +123,7 @@ This is the second incident in the same family as the Phase 0A worker/migration-
 5. Approval uses a bearer URL and generic `human` label; control routes share one secret and process-local direct-socket rate limits.
 6. No complete retention program, backup policy evidence, or restore drill; migration 005 intentionally blocks media deletion.
 7. External provider ownership, scopes, review status, versions, quotas, billing, backup, and recovery details remain outside repository verification.
-8. Checked-in facts still lack a durable provenance/confidence/freshness/conflict contract **in production**. Phase 0B.0 implements that contract, but migration 006 is not applied and `content_evidence` is empty until an authorized operator runs `evidence:sync`; the risk is unchanged in the live system.
+8. Checked-in facts still lack a durable provenance/confidence/freshness/conflict contract **in use**. Phase 0B.0 implements that contract and migration 006 is now applied, but `content_evidence` is empty until an authorized operator runs `evidence:sync`, and no reasoning stage reads it; the risk is unchanged in the live system.
 
 ## Not implemented
 

@@ -26,7 +26,7 @@ New AI agents should read [Start here](docs/START_HERE.md), then the concise [AI
 | [Integrations](docs/INTEGRATIONS.md) | External-system responsibilities and failure boundaries |
 | [Environment](docs/ENVIRONMENT.md) | Application and GitHub control-plane variable contracts |
 | [Credential setup](docs/credentials-setup.md) | Provider and deployment setup without secret values |
-| [Phase 0B.0 rollout runbook](docs/ROLLOUT_PHASE_0B0.md) | Prepared, unauthorized migration-bearing release plan for `44d7336…`: preflight, sequence, stop conditions, rollback matrix |
+| [Phase 0B.0 rollout runbook](docs/ROLLOUT_PHASE_0B0.md) | Migration-bearing release of `44d7336…`: observed checkpoint, preflight, sequence, stop conditions, rollback matrix. Partially executed — paused before the worker deployment |
 
 `docs/archive/` is historical only. Current source, this README, and active runbooks take precedence.
 
@@ -36,7 +36,7 @@ New AI agents should read [Start here](docs/START_HERE.md), then the concise [AI
 
 - `main` carries Phase 0A (PR #33), Phase 0D (PR #34), the documentation reconciliation (PR #35), the **worker ownership and recovery work (PR #36)**, roadmap-continuity governance (PR #37), and **media publication normalization (PR #38)**. Migration `state/migrations/005_approval_integrity.sql` is applied in production; none of those pull requests added a migration.
 - **PR #36 and PR #38 are deployed and production-validated — operator-reported 2026-08-27.** The bootstrap was performed by the operator, not verified first-hand in an engineering session with no Render or production database access. Treat it as reported, and reconfirm before relying on it for a decision.
-- **Phase 0B.0 — the content evidence system and agent registry — is MERGED (`44d7336…`) and NOT deployed.** It adds `state/migrations/006_content_evidence.sql`, which is **not applied to production**, so the release that carries it is migration-bearing. The prepared, unauthorized runbook is [ROLLOUT_PHASE_0B0.md](docs/ROLLOUT_PHASE_0B0.md).
+- **Phase 0B.0 is MERGED (`44d7336…`) and PARTIALLY DEPLOYED.** Operator-verified 2026-08-28: the API is live at the target and `state/migrations/006_content_evidence.sql` was applied exactly once at `15:24:18Z`; the **worker and scheduler still run `a6a4316…`**. The rollout stopped at step 6 under stop conditions S8/S18 — the runbook's index count was wrong, the schema was correct — and resumes at the worker deployment under fresh authorization. See [ROLLOUT_PHASE_0B0.md §0](docs/ROLLOUT_PHASE_0B0.md).
 - At the last full read-only verification, **2026-08-24 21:32 UTC**: all three services were live and healthy at the Phase 0D SHA, Render native auto-deploy was **off** on API, worker, and scheduler, the GitHub `production` environment and its five non-secret variables were configured, and repository variable `RENDER_DEPLOY_AUTOMATION_ENABLED` was **false** — intentionally leaving **no unattended deployment authority**. None of those facts has been reverified since; treat them as last-verified rather than current.
 - A normal scheduled execution of the current production SHA **was** observed on 2026-08-25 and that gap is closed. Do not trigger production cron for evidence.
 - Production PostgreSQL external access allowed `0.0.0.0/0` at last verification. Restriction is a separate high-priority security change.
@@ -66,9 +66,9 @@ flowchart LR
 - `src/api/`: health, authenticated triggers/diagnostics/console, approval review/actions, and public content-addressed media.
 - `src/worker/`: queue consumption, deterministic orchestration, human approval wait, and the only publication handoff.
 - `src/scheduler/`: daily `0 13 * * *` enqueue; it does not publish.
-- `src/harness/`: configuration, state, orchestration, approval, image QC, dry runs, and self-tests. `src/harness/evidence/` and `src/harness/agents/` are the Phase 0B.0 foundation — merged, not deployed, and executing no reasoning stage.
+- `src/harness/`: configuration, state, orchestration, approval, image QC, dry runs, and self-tests. `src/harness/evidence/` and `src/harness/agents/` are the Phase 0B.0 foundation — merged, live on the API only, and executing no reasoning stage.
 - `src/mcp/`: imported provider libraries, not standalone MCP servers or model tools.
-- `state/migrations/`: forward-only PostgreSQL schema authority. 001–005 are applied in production; 006 is written and **not applied**.
+- `state/migrations/`: forward-only PostgreSQL schema authority. **001–006 are applied in production** — 006 as of 2026-08-28.
 - `agents/`: model prompt bodies and model IDs actually loaded by the orchestrator.
 - `skills/`: reviewed specifications, but not automatically injected into current model calls.
 - `prompts/MASTER_PROMPT.md`: dormant/experimental; the production worker does not run an Opus manager.
@@ -122,7 +122,7 @@ Runbooks live in [Operations](docs/OPERATIONS.md) (lifecycle and reconciliation)
 
 ## Content evidence and agent foundation (Phase 0B.0)
 
-**MERGED (`44d7336…`); NOT deployed.** Migration 006 is merged but **not applied to production**, and **no reasoning stage executes** — this change adds no model call. It exists so that the six Content Intelligence stages, when they are wired one at a time, already have a typed evidence substrate and a registry to be wired into.
+**MERGED (`44d7336…`); PARTIALLY DEPLOYED.** Migration 006 was applied to production on 2026-08-28 and the evidence tables are correctly empty; the worker and scheduler are still at `a6a4316…`. **No reasoning stage executes** — this change adds no model call. It exists so that the six Content Intelligence stages, when they are wired one at a time, already have a typed evidence substrate and a registry to be wired into.
 
 The system's core epistemic risk is that a plausible sentence quietly becomes a fact. Two promotions are forbidden, and the design makes them impossible rather than discouraged:
 
