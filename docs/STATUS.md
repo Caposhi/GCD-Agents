@@ -73,7 +73,7 @@ This closes the previously open item requiring observation of a normal scheduled
 | PR #37 documentation and roadmap-continuity governance — merge `3bd638f…` | `MERGED`; documentation-only |
 | PR #38 media publication normalization — merge `a6a4316…` | `MERGED` · `DEPLOYED` · `PRODUCTION-VALIDATED` (operator-reported 2026-08-27) |
 | Phase 0B prerequisite — fact and evidence contract | `MERGED` · `DEPLOYED` — delivered by Phase 0B.0; migration 006 applied 2026-08-28 |
-| **Phase 0B.0 evidence and agent registry foundation** — merge `44d7336…` | **`MERGED`** · **`DEPLOYED`** — API, worker, and scheduler all at the target, migration 006 applied 2026-08-28 (operator-verified) |
+| **Phase 0B.0 evidence and agent registry foundation** — merge `44d7336…` | **`MERGED`** · **`DEPLOYED`** — API, worker, and scheduler all at the target, migration 006 applied 2026-08-28 (independently verified 2026-08-28) |
 | Phase 0B six-stage reasoning execution | `PLANNED` — registered but not wired |
 | Worker lease/reaper | `SUPERSEDED` by ownership plus startup recovery; rationale and re-entry condition in [Roadmap](ROADMAP.md) |
 
@@ -111,7 +111,7 @@ The approved publication profiles were not widened. No provider size was added.
 
 ## Verified production incident — worker lifecycle interruption
 
-Brief `c5e53afe-2657-4e11-811d-53ce5e793245` was enqueued 2026-08-10 13:01:22Z, claimed at 13:01:29Z, and reached `brief:awaiting_approval` at 13:07:29Z. No later event exists and it is still `running`. Its approval `08ab5c07-4d36-4b66-810a-9856dae4ca5d` was approved by a human at 2026-08-11 12:39:01Z — inside the 24-hour wait — and later revoked by migration 005 on 2026-08-24 15:50:41Z as a legacy non-hash-bound row.
+Brief `c5e53afe-2657-4e11-811d-53ce5e793245` was enqueued 2026-08-10 13:01:22Z, claimed at 13:01:29Z, and reached `brief:awaiting_approval` at 13:07:29Z. No later event existed from that period, and the row was still `running` at the time of the pre-reconciliation observation. Its approval `08ab5c07-4d36-4b66-810a-9856dae4ca5d` was approved by a human at 2026-08-11 12:39:01Z — inside the 24-hour wait — and later revoked by migration 005 on 2026-08-24 15:50:41Z as a legacy non-hash-bound row. The brief itself was subsequently terminalized during the operator-reported startup recovery described below (`providerMutation = impossible`). **Current production has zero running briefs — independently verified 2026-08-28.**
 
 Root cause: the worker process was gone before the approval landed, so nothing was waiting. Publication is only reachable after `waitForApproval` returns `approved`, so no provider request occurred; the approval never left `approved` for `posted`/`failed`, and no publish event exists. The human approved a post that never published, and nothing alerted.
 
@@ -149,7 +149,7 @@ PR #34's exact reviewed head passed Node 22 offline quality gates, PostgreSQL 16
 
 PR #36's exact reviewed head `281eb8f…` passed all five CI jobs before merge. Its ownership and recovery behavior is proven by offline suites and by disposable local PostgreSQL integration — including real advisory-lock contention and a `pg_terminate_backend` proof that a claim cannot commit after ownership loss. It is **deployed**, and its production evidence is the operator-reported 2026-08-27 bootstrap (a ~58-second ownership wait before readiness, and reconciliation of the August 10 stranded brief). That specific evidence was **not** re-examined by the 2026-08-28 final inspection, which verified current service SHAs, health, control settings, migration state, inventory, queue counts, and error absence — not the earlier bootstrap's provider-history reconciliation.
 
-The current production release was observed live on all three services through Render's previous native auto-deploy path. API pre-deploy completed with all migrations already recorded, API health returned the exact Phase 0D SHA, and the worker emitted the exact ready marker. This proves current application deployment and health, not GitHub controller authority. See [Testing](TESTING.md) for deterministic coverage and [Deployment control](DEPLOYMENT.md) for release semantics.
+The Phase 0D release (`10098de…`) was, at the time, observed live on all three services through Render's previous native auto-deploy path: API pre-deploy completed with all migrations already recorded, API health returned the exact Phase 0D SHA, and the worker emitted the exact ready marker. That observation proved application deployment and health for that historical release, not GitHub controller authority — it does not describe the current release. **The current production release, `44d7336…`, was reached through the separately authorized manual migration-bearing rollout** in [ROLLOUT_PHASE_0B0.md](ROLLOUT_PHASE_0B0.md), not through the GitHub controller path, and was independently verified live on all three services on 2026-08-28. See [Testing](TESTING.md) for deterministic coverage and [Deployment control](DEPLOYMENT.md) for release semantics.
 
 ## Local workspace note
 

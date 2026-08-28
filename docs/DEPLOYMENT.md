@@ -2,7 +2,7 @@
 
 ## Current status and authority
 
-Phase 0D is merged and production-deployed; it does not begin Phase 0B. Read-only verification at 2026-08-24 21:32 UTC confirmed workspace `tea-d4fkclpr0fns73abmnh0`, API `srv-d8u0qtpo3t8c73c5o44g`, worker `srv-d8u0qtpo3t8c73c5o440`, scheduler `crn-d8ulb4rtqb8s73bdjctg`, and PostgreSQL `dpg-d8u0qaho3t8c73c5nj40-a`. API, worker, and scheduler were live at `10098de73667797120da8c7dfa4da83f336ff6ba`; no deploy was in progress. The exact `/healthz` identity and worker readiness marker passed, and no recent error/critical logs were observed. **That verification has not been repeated since**; every row below is last-verified rather than current, and must be reconfirmed read-only immediately before any production operation.
+Phase 0D is merged and production-deployed; it does not begin Phase 0B. Current exact target: `44d7336f2c75ff880cff0d8205d2fafe13eb91b5`, reached through the Phase 0B.0 migration-bearing rollout. **Independently verified 2026-08-28** by a separate final-inspection session with Render and read-only PostgreSQL access: workspace `tea-d4fkclpr0fns73abmnh0`, API `srv-d8u0qtpo3t8c73c5o44g`, worker `srv-d8u0qtpo3t8c73c5o440`, and scheduler `crn-d8ulb4rtqb8s73bdjctg` are all live at `44d7336…`, PostgreSQL `dpg-d8u0qaho3t8c73c5nj40-a` holds `_migrations` `001–006`, and no recent error/critical logs were observed. That inspection's rows are marked below; two rows still carry only the earlier 2026-08-24 21:32 UTC verification and were not revisited — reconfirm those read-only immediately before any production operation.
 
 ### Current cutover status
 
@@ -12,19 +12,18 @@ Phase 0D is merged and production-deployed; it does not begin Phase 0B. Read-onl
 | Current controller source in production | **Deployed** through the previous native Render mechanism | last verified 2026-08-24 |
 | Worker ownership/recovery | **Merged** in PR #36 (`0828cc9…`); **deployed and production-validated** | operator-reported 2026-08-27; **not independently verified in an engineering session** |
 | Media publication normalization | **Merged** in PR #38 (`a6a4316…`); **deployed and production-validated** | operator-reported 2026-08-27; **not independently verified in an engineering session** |
-| Phase 0B.0 (PR #40, merge `44d7336…`) | **Merged**; **deployed** — API, worker, and scheduler all at the target | operator-verified 2026-08-28 |
-| Migration 006 (`content_evidence`) | **Applied to production** once, `2026-08-28T15:24:18.56508Z`, ~53 ms | operator-verified 2026-08-28 |
-| API | **`44d7336…`**, live and healthy | operator-verified 2026-08-28 |
-| Worker | **`44d7336…`** — exclusive ownership and readiness confirmed on two separate deploys (58,142 ms, 60,094 ms) | operator-verified 2026-08-28 |
-| Scheduler | **`44d7336…`** — live, cron `0 13 * * *` unchanged and not manually triggered | operator-verified 2026-08-28 |
-| Production state generally | — | **not verifiable in an engineering session** — no Render access; `/healthz` and `api.render.com` egress denied (403) |
+| Phase 0B.0 (PR #40, merge `44d7336…`) | **Merged**; **deployed** — API, worker, and scheduler all at the target | independently verified 2026-08-28 |
+| Migration 006 (`content_evidence`) | **Applied to production** once, `2026-08-28T15:24:18.56508Z`, ~53 ms | independently verified 2026-08-28 |
+| API | **`44d7336…`**, live and healthy | independently verified 2026-08-28 |
+| Worker | **`44d7336…`** — exclusive ownership and readiness confirmed on two separate deploys (58,142 ms, 60,094 ms) | independently verified 2026-08-28; this authoring session has no Render access, a separate final-inspection session did |
+| Scheduler | **`44d7336…`** — live, cron `0 13 * * *` unchanged and not manually triggered | independently verified 2026-08-28 |
 | GitHub `production` environment | **Configured** with secret name, five non-secret variables, and `main` restriction | last verified 2026-08-24; not reverified |
-| Render native auto-deploy | **Off** for API, worker, and scheduler (`autoDeploy: no`, `autoDeployTrigger: off`) | last verified 2026-08-24; not reverified |
-| GitHub repository enable gate | **Disabled**: `RENDER_DEPLOY_AUTOMATION_ENABLED=false` | last verified 2026-08-24; not reverified |
+| Render native auto-deploy | **Off** for API, worker, and scheduler (`autoDeploy: no`, `autoDeployTrigger: off`) | independently verified 2026-08-28 |
+| GitHub repository enable gate | **Disabled**: `RENDER_DEPLOY_AUTOMATION_ENABLED=false` | independently verified 2026-08-28 |
 | GitHub controller as production authority | **Not enabled; not proven in production** | follows from the rows above |
 | Current unattended deployment authorities | **Zero, intentionally** | follows from the rows above |
 
-**The gate is now eligible, not yet authorized.** The prerequisite that blocked it — a live worker holding no advisory lock — is closed: the manual bootstrap and the handoff proof are reported complete. Enabling `RENDER_DEPLOY_AUTOMATION_ENABLED` and proving the controller path are therefore the next steps in this track, each under its own explicit authorization and each preceded by a read-only reverification of every row above, because those rows are last-verified rather than current and the operator's bootstrap was a manual Render action performed outside any engineering session. Never re-enable Render native auto-deploy while GitHub control is enabled.
+**The gate is now eligible, not yet authorized.** The prerequisite that blocked it — a live worker holding no advisory lock — is closed: the manual bootstrap and handoff proof are reported complete, and the worker's exclusive-ownership behavior at the current target was independently verified 2026-08-28. Enabling `RENDER_DEPLOY_AUTOMATION_ENABLED` and proving the controller path are therefore the next steps in this track, each under its own explicit authorization and each preceded by a fresh read-only reverification immediately before acting — the GitHub `production` environment's configuration still carries only the 2026-08-24 verification and was not revisited on 2026-08-28. Never re-enable Render native auto-deploy while GitHub control is enabled.
 
 **A separate constraint applied to the Phase 0B track.** `state/migrations/006_content_evidence.sql` made the release carrying Phase 0B.0 (`44d7336…`) migration-bearing. It was **applied to production on 2026-08-28** by the API pre-deploy runner. The controller stops such a release at `CONTROLLED MIGRATION ROLLOUT REQUIRED` by design, which is why this one went through the manual path.
 
