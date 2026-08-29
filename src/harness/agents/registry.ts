@@ -153,7 +153,13 @@ const STAGE_DEFINITIONS: AgentStageDefinition[] = [
     order: 1,
     purpose: "Choose the strategic angle and content concept for the goal, given evidence and brand position.",
     modelPolicy: "reasoning-heavy",
-    promptPaths: ["agents/analytics.md"],
+    // Phase 0B.1: a dedicated prompt. `agents/analytics.md` was registered as a
+    // placeholder, but it defines a performance-readout subagent — different
+    // output contract, its own pinned model, and declared tools. Executing this
+    // stage against it would have meant running one contract while claiming
+    // another. The analytics skill stays: past performance still informs the
+    // angle, it just never becomes a fact.
+    promptPaths: ["agents/strategy-concept.md"],
     skillPaths: ["skills/brand-voice/SKILL.md", "skills/analytics-readout/SKILL.md"],
     referencePaths: ["config/approved-facts.json"],
     allowedCapabilities: ["read_evidence_pack"],
@@ -343,6 +349,28 @@ export class AgentRegistry {
       });
     }
     return assets;
+  }
+
+  /**
+   * Load stage assets **with their contents**, through the same allowlisted
+   * path mechanism as `loadStageAssets`.
+   *
+   * The execution boundary needs the actual instruction text, and it must not
+   * acquire it by reading the filesystem itself — routing it through here keeps
+   * one traversal-checked door into repository content rather than two.
+   */
+  async loadStageAssetContents(
+    id: AgentStageId,
+  ): Promise<Array<ResolvedStageAsset & { text: string }>> {
+    const assets = await this.loadStageAssets(id);
+    const withText: Array<ResolvedStageAsset & { text: string }> = [];
+    for (const asset of assets) {
+      // Re-resolve rather than trusting the returned path string: the checks are
+      // cheap and this keeps the guarantee local to the read.
+      const text = await readFile(resolveAssetPath(asset.path), "utf8");
+      withText.push({ ...asset, text });
+    }
+    return withText;
   }
 
   /** Verify every stage's assets resolve. Used by the preview and self-tests. */

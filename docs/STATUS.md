@@ -74,7 +74,8 @@ This closes the previously open item requiring observation of a normal scheduled
 | PR #38 media publication normalization — merge `a6a4316…` | `MERGED` · `DEPLOYED` (independently verified 2026-08-28) · `PRODUCTION-VALIDATED` (operator-reported 2026-08-27, not independently re-examined) |
 | Phase 0B prerequisite — fact and evidence contract | `MERGED` · `DEPLOYED` — delivered by Phase 0B.0; migration 006 applied 2026-08-28 |
 | **Phase 0B.0 evidence and agent registry foundation** — merge `44d7336…` | **`MERGED`** · **`DEPLOYED`** — API, worker, and scheduler all at the target, migration 006 applied 2026-08-28 (independently verified 2026-08-28) |
-| Phase 0B six-stage reasoning execution | `PLANNED` — registered but not wired |
+| **Phase 0B.1 `strategy-concept` stage executor** | **`IMPLEMENTED`** — not `MERGED`, not `DEPLOYED`, not `PRODUCTION-VALIDATED`; dormant, no production path reaches it |
+| Phase 0B remaining five reasoning stages | `PLANNED` — registered but not wired |
 | Worker lease/reaper | `SUPERSEDED` by ownership plus startup recovery; rationale and re-entry condition in [Roadmap](ROADMAP.md) |
 
 These states are not interchangeable. In particular: Phase 0B.0 is **merged and deployed**, and its migration 006 **has** been applied to production and all three services report the target commit. `MERGED` is a repository fact; `DEPLOYED` is a production fact; they happened to diverge for a period during this rollout (API deployed before worker and scheduler) and are recorded here as now reconciled. Migration 006 must never be manually re-run — the runner records it as applied and would skip it, but applying it by hand outside a transaction would silently disable its `SET LOCAL` timeout guards. See the [Phase 0B.0 rollout runbook](ROLLOUT_PHASE_0B0.md) for the completion record.
@@ -89,7 +90,7 @@ Completion carried a **documented, authorization-governed variance at step 13**:
 
 See [ROLLOUT_PHASE_0B0.md §0](ROLLOUT_PHASE_0B0.md) for the full record. Remaining separately authorized follow-ups: a first production `evidence:sync` (not yet run), and the Phase 0D.1 authority cutover below.
 
-**Product.** Phase 0B continues: wire the six registered reasoning stages as real model calls, one slice at a time. Phase 0B.0 shipped without touching deployment authority and later slices can do the same.
+**Product.** Phase 0B continues, one stage at a time. **Phase 0B.1 implements the `strategy-concept` executor and is on a branch, not merged.** It is dormant by design: no worker, scheduler, orchestrator, approval path, or HTTP route calls it, and the preview stays inert. Phase 0B.0 shipped without touching deployment authority and 0B.1 does the same — it adds no route, environment variable, or migration.
 
 **Operational follow-up.** The ownership bootstrap and handoff proof are complete (operator-reported 2026-08-27) and the Phase 0B.0 rollout is complete (independently verified 2026-08-28), so enabling `RENDER_DEPLOY_AUTOMATION_ENABLED` and proving the GitHub controller path are now **eligible** — they remain separately unauthorized, and the gate was confirmed `false` on 2026-08-28. Each still needs its own authorization and immediate re-verification. **This is explicitly not a blocker to Phase 0B.**
 
