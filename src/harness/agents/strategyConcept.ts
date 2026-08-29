@@ -7,16 +7,36 @@
  * Executing it requires a caller to construct an invocation deliberately and
  * supply a runner.
  *
- * The interesting work here is not the model call — it is refusing to believe
- * the result. The model chooses an angle; it does not get to choose what counts
- * as evidence. Every id it returns is checked against the pack the caller built,
- * in the section the contract requires, and anything conflicted, stale, or
- * inactive is rejected even when the id is real.
+ * ## What this stage guarantees, exactly
  *
- * The two promotions this pipeline exists to prevent are enforced structurally
- * rather than asked for politely: a performance or hypothesis id placed in
- * `supportingFactIds` fails validation, because membership is checked against
- * `allowedFacts` and nothing else.
+ * **Guaranteed:** wrong-class and fabricated ids cannot enter the typed
+ * fact-citation channel. Every id the model returns is checked against the pack
+ * the caller built, in the section the contract assigns it, and anything
+ * conflicted, stale, or inactive is rejected even when the id is real. A
+ * performance or hypothesis id placed in `supportingFactIds` fails, because
+ * membership is tested against `allowedFacts` and nothing else.
+ *
+ * **NOT guaranteed:** that the model's prose is true. `angle`, `concept`, and
+ * `rationale` are free-form text. They are length-bounded and nothing more. A
+ * response can assert a performance correlation as automotive fact inside
+ * `rationale`, cite an unrelated but valid fact id, and validate cleanly. This
+ * validator does not read prose for meaning and does not claim to.
+ *
+ * That gap is closed structurally rather than by keyword matching, which would
+ * be trivially evadable and would imply a semantic check the code does not
+ * perform. Instead the *type* separates the two channels:
+ *
+ *  - `output.provisional` — model-authored prose, branded
+ *    `provisional_model_prose`, carrying `publishable: false` and
+ *    `verified: false`. It is strategy material, not evidence, and no function
+ *    in this module converts it into either.
+ *  - `output.evidence` — the typed id channel. `citedFactRecords()` is the only
+ *    supported way to obtain evidence records from this stage's output, and it
+ *    returns records drawn from `pack.allowedFacts`, never model text.
+ *
+ * **Factual truth validation is the `automotive-truth` stage's job.** Stage 2
+ * establishes and constrains the claims content may make. Nothing produced here
+ * is publishable until that stage has run; this stage picks an angle.
  */
 
 import { EvidenceRecord } from "../evidence/contract.js";
@@ -62,18 +82,47 @@ export interface StrategyConceptHypothesis {
   basis: "creative" | "causal";
 }
 
-export interface StrategyConceptOutput {
+/**
+ * Model-authored prose from this stage.
+ *
+ * Deliberately branded and flagged. This is provisional, untrusted, and
+ * **non-publishable** strategy material: the validator bounds its length and
+ * checks nothing about its meaning. A consumer that wants evidence must use
+ * `output.evidence` / `citedFactRecords()`; the literal `false` fields make
+ * "treat prose as verified" a type error rather than an oversight.
+ */
+export interface ProvisionalStrategyProse {
+  readonly kind: "provisional_model_prose";
+  /** Always false. Nothing here may be published without `automotive-truth`. */
+  readonly publishable: false;
+  /** Always false. No prose from this stage has been checked for truth. */
+  readonly verified: false;
   angle: string;
   concept: string;
   rationale: string;
+  hypotheses: StrategyConceptHypothesis[];
+  assumptions: string[];
+}
+
+/**
+ * The typed evidence channel — the only path by which this stage contributes
+ * anything the rest of the pipeline may treat as evidence.
+ */
+export interface CitedStageEvidence {
+  readonly kind: "typed_evidence_citations";
   /** Ids drawn from `pack.allowedFacts` only. */
   supportingFactIds: string[];
   /** Ids drawn from `pack.gcdObservations` only. */
   observationIds: string[];
   /** Ids drawn from `pack.performanceEvidence` only. Never facts. */
   performanceSignalIds: string[];
-  hypotheses: StrategyConceptHypothesis[];
-  assumptions: string[];
+}
+
+export interface StrategyConceptOutput {
+  /** Untrusted, non-publishable model prose. Never evidence. */
+  provisional: ProvisionalStrategyProse;
+  /** Typed, pack-validated citations. */
+  evidence: CitedStageEvidence;
 }
 
 export interface StrategyConceptResult {
@@ -166,11 +215,18 @@ function unusableIds(pack: EvidencePack): Set<string> {
 }
 
 /**
- * Validate the model's object against the contract *and* against the evidence.
+ * Validate the model's object against the contract and bind every cited id.
  *
- * Structural checks come first so a malformed shape fails before any semantic
- * work; the semantic checks then bind every cited id to the exact section the
+ * Structural checks come first so a malformed shape fails before any id work.
+ * The id checks then bind each citation to the exact evidence section the
  * contract assigns it.
+ *
+ * **Scope of this function, stated precisely.** It validates *shape* and
+ * *citations*. It does not evaluate the truth of `angle`, `concept`, or
+ * `rationale`, which are returned inside `provisional` marked
+ * `publishable: false` / `verified: false`. Prose that misstates a performance
+ * correlation as automotive fact will pass this validator; catching that is the
+ * `automotive-truth` stage's job, and nothing here may be published before it.
  */
 export function validateStrategyConceptOutput(
   raw: Record<string, unknown>,
@@ -247,15 +303,42 @@ export function validateStrategyConceptOutput(
   }
 
   return {
-    angle,
-    concept,
-    rationale,
-    supportingFactIds,
-    observationIds,
-    performanceSignalIds,
-    hypotheses,
-    assumptions,
+    provisional: {
+      kind: "provisional_model_prose",
+      publishable: false,
+      verified: false,
+      angle,
+      concept,
+      rationale,
+      hypotheses,
+      assumptions,
+    },
+    evidence: {
+      kind: "typed_evidence_citations",
+      supportingFactIds,
+      observationIds,
+      performanceSignalIds,
+    },
   };
+}
+
+/**
+ * The only supported way to turn this stage's output into evidence records.
+ *
+ * Returns records from `pack.allowedFacts` matching the typed citation channel.
+ * It cannot return model prose, because it never reads `output.provisional` —
+ * the ids are the entire input. A downstream consumer that wants to know what
+ * this stage established as fact calls this; there is no counterpart that
+ * promotes text.
+ */
+export function citedFactRecords(
+  output: StrategyConceptOutput,
+  pack: EvidencePack,
+): EvidenceRecord[] {
+  const byId = new Map(pack.allowedFacts.map((r) => [r.id, r]));
+  return output.evidence.supportingFactIds
+    .map((id) => byId.get(id))
+    .filter((r): r is EvidenceRecord => r !== undefined);
 }
 
 /**
@@ -278,8 +361,12 @@ export function assertRequiredEvidence(pack: EvidencePack, registry: AgentRegist
  * Execute the strategy-concept stage exactly once.
  *
  * Fails closed on: missing required evidence, an oversized or empty goal, a
- * missing asset, a runner error or timeout, non-strict JSON, and any structural
- * or semantic contract violation. Performs no retry and no second model call.
+ * missing asset, a runner error or timeout, non-strict JSON, any structural
+ * contract violation, and any citation that is fabricated, wrong-class, stale,
+ * conflicted, or inactive. Performs no retry and no second model call.
+ *
+ * It does **not** verify the truth of the returned prose — see this module's
+ * header for the exact boundary.
  */
 export async function executeStrategyConcept(
   invocation: StrategyConceptInvocation,
@@ -296,6 +383,12 @@ export async function executeStrategyConcept(
     stage: STRATEGY_CONCEPT_STAGE,
     registry,
     runner: invocation.runner,
+    // The evidence projection below is the authoritative factual input. The
+    // declared reference (`config/approved-facts.json`) is deliberately omitted
+    // rather than injected: the pack already carries those facts classified,
+    // freshness-checked, and conflict-filtered, and a raw second copy would be
+    // unclassified authority competing with it.
+    referenceChannel: "omit",
     dataBlocks: [
       { label: "GOAL", body: goal },
       { label: "EVIDENCE", body: renderEvidenceForStage(invocation.evidencePack) },

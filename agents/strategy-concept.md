@@ -53,10 +53,12 @@ Return **exactly one JSON object** and nothing else. No prose before or after it
 }
 ```
 
+**What happens to each part of your answer.** `angle`, `concept`, and `rationale` are recorded as **provisional strategy material**: untrusted, unverified, and not publishable. Your citation arrays are the only part treated as evidence. Asserting something as fact in prose does not make it a fact — a later stage, `automotive-truth`, establishes what content may actually claim, and nothing you write here can be published before it runs. Write prose that is honest anyway; the separation exists so a mistake is contained, not so it is acceptable.
+
 Rules the validator enforces, so satisfying them is not optional:
 
 - **Every field is required.** No extra fields. No nulls.
-- **Every id must appear in the matching evidence section.** An id you did not receive is a fabrication and fails. An id from the wrong section fails — a performance id in `supportingFactIds` is exactly the promotion this pipeline exists to prevent.
+- **Every id must appear in the matching evidence section.** An id you did not receive is a fabrication and fails. An id from the wrong section fails — a performance id in `supportingFactIds` is exactly the promotion this pipeline exists to prevent. This check covers the id channel only; it does not read your prose.
 - **Ids from `conflicts`, `staleEvidence`, or `inactiveEvidence` fail.** They are shown to you so you can avoid them.
 - `angle`, `concept`, `rationale` are non-empty and reasonably bounded. Do not pad.
 - Arrays may be empty when you genuinely have nothing to put in them. **An empty array is honest; an invented id is not.**

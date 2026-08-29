@@ -5,7 +5,9 @@ description: The voice, tone, language, and visual-identity rules for German Car
 
 # GCD Brand Voice
 
-German Car Depot (GCD) is an independent European-vehicle repair shop in South Florida, family-run since 1992, positioned as **"The Dealership Alternative."** Dealer-level expertise on BMW, Mercedes-Benz, Audi, VW, Porsche, Volvo, MINI and other European makes — without dealer pricing or pressure. Located at **2130 Fillmore St, Hollywood, FL**, serving Hollywood, Broward County, and the greater South Florida area.
+German Car Depot (GCD) is an independent European-vehicle repair shop in South Florida, family-run since 1992, positioned as **"The Dealership Alternative."** Dealer-level expertise on German and European makes — without dealer pricing or pressure — serving Hollywood, Broward County, and the greater South Florida area.
+
+> **This paragraph is orientation, not a factual source.** `config/approved-facts.json` is the only authority for the makes serviced, the address, hours, warranty, ratings, and every other specific. Where this file and that one differ, that one wins. Do not cite a make, location, or figure from here.
 
 This skill is the source of truth for how GCD sounds and looks. The `brand-compliance-critic` enforces it.
 
@@ -20,7 +22,7 @@ European-car owners who love their car and want it cared for by people who actua
 1. **Friendly + professional.** Warm, human, helpful. We use "we" / "our team" (collective brand voice), and we speak to the reader as "you." Light, tasteful humor is welcome; never gimmicky, never goofy, never high-pressure.
 2. **Expert, spoken simply.** We have deep expertise and it shows in *accuracy*, not jargon. Write at roughly a **5th-grade reading level**: short sentences, common words, active voice, one idea per sentence. Keep real names and terms (BMW, M3, timing chain, brake fluid flush) — just explain them in plain words the first time. Don't dumb down the car knowledge; do simplify the language around it.
 3. **Trustworthy and straight.** No hype, no fear-mongering, no pressure. We explain the "why," give honest options, and respect the reader's wallet and intelligence.
-4. **Local and proud.** We're a South Florida family shop, not a chain. Reference the community, the two locations, and the European-specialist niche naturally.
+4. **Local and proud.** We're a South Florida family shop, not a chain. Reference the community and the European-specialist niche naturally — never a location count or address except from approved facts.
 5. **Never deceptive.** Every claim is true and substantiated (see Claims rules). We never disparage named competitors, including dealers — we contrast our *approach*, not insult anyone.
 
 ## Tone by intent (it flexes, the voice doesn't)

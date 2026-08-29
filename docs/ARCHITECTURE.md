@@ -116,7 +116,7 @@ The earlier research named roughly 22 conceptual specialists. That is not a requ
 5. packaging-adaptation; and
 6. final-critic.
 
-Other specialists should generally become deterministic services, policy/rule modules, reference material, or optional invocations. Science and evidence should be represented deterministically where possible. Phase 0B must add an `AgentRegistry`, real skill/reference injection, research/reference retrieval, deterministic validation around every agent output, and structured evidence capture. None of those target components is implemented today.
+Other specialists should generally become deterministic services, policy/rule modules, reference material, or optional invocations. Science and evidence should be represented deterministically where possible. Phase 0B must add an `AgentRegistry`, real skill/reference handling, research/reference retrieval, deterministic validation around every agent output, and structured evidence capture. The registry (0B.0) and the first stage executor with its typed output validation (0B.1) now exist; the executor injects prompt and skill assets and deliberately keeps factual reference assets out of the instruction channel. Retrieval and evidence capture from real runs remain unbuilt, and **nothing executes in a production path**.
 
 Before that expansion, define the fact/evidence contract described in [Roadmap](ROADMAP.md). A content-performance correlation must never become an automotive fact or causal truth merely because it performed well.
 

@@ -15,9 +15,16 @@
  *    none, and nothing here adds any. A stage may only use capabilities the
  *    registry declared, and the only declared capability in this slice is the
  *    read-only `read_evidence_pack`.
- *  - **Instructions come only from registry assets.** The system prompt is built
- *    from files loaded through the registry's allowlisted path mechanism. There
- *    is no way to pass free-form system text through this boundary.
+ *  - **Instructions come only from registry assets, and only prompts and skills
+ *    reach the instruction channel.** The system prompt is built from files
+ *    loaded through the registry's allowlisted path mechanism; there is no way
+ *    to pass free-form system text through this boundary. **Reference assets are
+ *    excluded from the instruction channel**: a reference is factual data, and
+ *    putting `config/approved-facts.json` into the system prompt would make it
+ *    authority the model reads as instruction, competing with the classified,
+ *    validated evidence projection that is supposed to be the sole factual
+ *    input. References are either omitted or placed in an untrusted data block —
+ *    never in `system`.
  *  - **Untrusted inputs are framed as data.** The goal and the evidence are
  *    wrapped in labelled, delimited blocks that say plainly they are data. A
  *    stage that concatenates a goal into its instructions is one prompt away
@@ -86,13 +93,28 @@ export const anthropicStageRunner: StageRunner = async (request) =>
     maxTokens: request.maxTokens,
   });
 
-/** Bounded, non-sensitive execution metadata worth returning to a caller. */
+/**
+ * Where an asset's contents actually went.
+ *
+ * Recorded per asset so metadata describes what was *used*, not merely what was
+ * declared. An asset reported as `omitted` did not reach the model at all.
+ */
+export type AssetChannel = "instruction" | "untrusted_data" | "omitted";
+
+export interface StageAssetUse {
+  path: string;
+  role: ResolvedStageAsset["role"];
+  sha256: string;
+  bytes: number;
+  channel: AssetChannel;
+}
+
 export interface StageExecutionMetadata {
   stage: AgentStageId;
   model: string;
   modelPolicy: string;
-  /** Exactly the assets whose text was used to build the instructions. */
-  assets: Array<{ path: string; role: ResolvedStageAsset["role"]; sha256: string; bytes: number }>;
+  /** Every declared asset, with the channel its contents actually reached. */
+  assets: StageAssetUse[];
   modelRequests: number;
   usage?: Record<string, number> | undefined;
   totalCostUsd?: number | undefined;
@@ -104,6 +126,16 @@ export interface StageInvocation {
   /** Labelled untrusted blocks, rendered as data in the user turn. */
   dataBlocks: Array<{ label: string; body: string }>;
   runner: StageRunner;
+  /**
+   * What to do with declared reference assets. Never `instruction`.
+   *
+   * `omit` (the default) is right when the caller already supplies the same
+   * material in a validated, classified form — as `strategy-concept` does with
+   * the evidence pack. Injecting the raw reference on top would give the model a
+   * second, unclassified copy of the facts, which is exactly the channel the
+   * evidence contract exists to replace.
+   */
+  referenceChannel?: "omit" | "untrusted_data";
 }
 
 export interface StageInvocationResult {
@@ -115,9 +147,12 @@ export interface StageInvocationResult {
  * Wrap untrusted content so the model reads it as quoted data.
  *
  * The delimiter is explicit and the label states the trust level. This is a
- * mitigation, not a proof: the real defences are that no tool is registered,
- * that the capability set is closed, and that every field of the output is
- * validated against evidence the model did not choose.
+ * mitigation, not a proof. The real defences are that no tool is registered,
+ * that the capability set is closed, and that the stage's **typed citation
+ * channel** is bound to evidence the model did not choose. Note the limit: the
+ * model's free-form prose is bounded in length but not checked for meaning, so
+ * framing reduces the chance of injection changing behaviour without proving it
+ * cannot.
  */
 function renderDataBlock(label: string, body: string): string {
   return [
@@ -162,23 +197,38 @@ export async function invokeStage(invocation: StageInvocation): Promise<StageInv
     throw new StageExecutionError(stage, "has no prompt asset and cannot be executed");
   }
 
+  const referenceChannel = invocation.referenceChannel ?? "omit";
+
+  // Prompts and skills define *how* the stage works, so they belong in the
+  // instruction channel. References are factual *data*; they never do.
   const instructionParts: string[] = [];
+  const referenceBlocks: Array<{ label: string; body: string }> = [];
+  const assetUses: StageAssetUse[] = [];
   for (const asset of assets) {
+    let channel: AssetChannel;
     if (asset.role === "prompt") {
       instructionParts.push(asset.text);
+      channel = "instruction";
+    } else if (asset.role === "skill") {
+      instructionParts.push(`# SKILL: ${asset.path}\n\n${asset.text}`);
+      channel = "instruction";
+    } else if (referenceChannel === "untrusted_data") {
+      referenceBlocks.push({ label: `REFERENCE ${asset.path}`, body: asset.text });
+      channel = "untrusted_data";
     } else {
-      // Skills and references are supporting material the stage must consult,
-      // but they are checked-in repository content, not model output — they are
-      // labelled by role so the prompt stays the authority on the contract.
-      instructionParts.push(`# ${asset.role.toUpperCase()}: ${asset.path}\n\n${asset.text}`);
+      channel = "omitted";
     }
+    assetUses.push({
+      path: asset.path, role: asset.role, sha256: asset.sha256, bytes: asset.bytes, channel,
+    });
   }
   const systemPrompt = instructionParts.join("\n\n---\n\n");
   if (systemPrompt.length > MAX_INSTRUCTION_CHARS) {
     throw new StageExecutionError(stage, "assembled instructions exceed the bound");
   }
 
-  const prompt = dataBlocks.map((b) => renderDataBlock(b.label, b.body)).join("\n\n");
+  const prompt = [...dataBlocks, ...referenceBlocks]
+    .map((b) => renderDataBlock(b.label, b.body)).join("\n\n");
   if (!prompt.trim()) throw new StageExecutionError(stage, "no input data supplied");
   if (prompt.length > MAX_PAYLOAD_CHARS) {
     throw new StageExecutionError(stage, "assembled input exceeds the bound");
@@ -209,7 +259,7 @@ export async function invokeStage(invocation: StageInvocation): Promise<StageInv
       stage,
       model: resolved.model,
       modelPolicy: resolved.policy,
-      assets: assets.map((a) => ({ path: a.path, role: a.role, sha256: a.sha256, bytes: a.bytes })),
+      assets: assetUses,
       modelRequests: 1,
       usage: result.usage,
       totalCostUsd: result.totalCostUsd,
