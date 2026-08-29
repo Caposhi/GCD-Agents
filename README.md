@@ -26,20 +26,22 @@ New AI agents should read [Start here](docs/START_HERE.md), then the concise [AI
 | [Integrations](docs/INTEGRATIONS.md) | External-system responsibilities and failure boundaries |
 | [Environment](docs/ENVIRONMENT.md) | Application and GitHub control-plane variable contracts |
 | [Credential setup](docs/credentials-setup.md) | Provider and deployment setup without secret values |
+| [Phase 0B.0 rollout runbook](docs/ROLLOUT_PHASE_0B0.md) | Migration-bearing release of `44d7336…`: preflight, sequence, stop conditions, rollback matrix, and the completed rollout record |
 
 `docs/archive/` is historical only. Current source, this README, and active runbooks take precedence.
 
 ## Handoff snapshot
 
-**Repository `main` and the live production release are intentionally different commits.** Do not treat them as facts that ought to match, and do not read exact SHAs from this file — [Status](docs/STATUS.md) is authoritative for every mutable identifier and records how fresh each one is.
+**Repository `main` and the live production release currently match at `44d7336…`.** They are still separate facts that may diverge again at any merge, so do not read exact SHAs from this file — [Status](docs/STATUS.md) is authoritative for every mutable identifier and records how fresh each one is.
 
-- `main` carries Phase 0A (PR #33), Phase 0D (PR #34), the documentation reconciliation (PR #35), the **worker ownership and recovery work (PR #36)**, roadmap-continuity governance (PR #37), and **media publication normalization (PR #38)**. Migration `state/migrations/005_approval_integrity.sql` is applied in production; none of those pull requests added a migration.
-- **PR #36 and PR #38 are deployed and production-validated — operator-reported 2026-08-27.** The bootstrap was performed by the operator, not verified first-hand in an engineering session with no Render or production database access. Treat it as reported, and reconfirm before relying on it for a decision.
-- **Phase 0B.0 — the content evidence system and agent registry — is implemented and NOT deployed.** It adds `state/migrations/006_content_evidence.sql`, which is **not applied to production**, so the release that first carries it is migration-bearing.
-- At the last full read-only verification, **2026-08-24 21:32 UTC**: all three services were live and healthy at the Phase 0D SHA, Render native auto-deploy was **off** on API, worker, and scheduler, the GitHub `production` environment and its five non-secret variables were configured, and repository variable `RENDER_DEPLOY_AUTOMATION_ENABLED` was **false** — intentionally leaving **no unattended deployment authority**. None of those facts has been reverified since; treat them as last-verified rather than current.
-- A normal scheduled execution of the current production SHA **was** observed on 2026-08-25 and that gap is closed. Do not trigger production cron for evidence.
-- Production PostgreSQL external access allowed `0.0.0.0/0` at last verification. Restriction is a separate high-priority security change.
-- **Two open tracks, neither blocking the other.** The manual ownership bootstrap is complete, so enabling `RENDER_DEPLOY_AUTOMATION_ENABLED` and proving the controller path are now eligible — each under its own authorization and its own immediate re-verification. Separately, Phase 0B continues; its first release is migration-bearing and must take the controlled rollout path regardless. [Roadmap](docs/ROADMAP.md) holds the ordered cursor.
+- `main` carries Phase 0A (PR #33), Phase 0D (PR #34), the documentation reconciliation (PR #35), the **worker ownership and recovery work (PR #36)**, roadmap-continuity governance (PR #37), **media publication normalization (PR #38)**, and the **Phase 0B.0 content evidence and agent foundation (PR #40)**. Migrations `001–006` are applied in production: `005_approval_integrity.sql` since Phase 0A, and `006_content_evidence.sql` since 2026-08-28. PR #40 is the only one of those pull requests that added a migration.
+- **PR #36 and PR #38 are deployed — their code is live in the current `44d7336…` release, independently verified 2026-08-28.** The earlier behavioral evidence — the ownership-wait timing, the August 10 provider-history reconciliation, and the PR #38 controlled brief — remains **operator-reported 2026-08-27** and was not independently re-examined. Treat that part as reported, and reconfirm before relying on it for a decision.
+- **Phase 0B.0 is MERGED (`44d7336…`) and DEPLOYED.** Independently verified 2026-08-28 by a separate final-inspection session with Render and read-only PostgreSQL access: the API, worker, and scheduler all report `44d7336…`; `_migrations` holds `006` exactly once; the evidence tables are empty; database row counts are unchanged; no API, worker, or scheduler errors during the rollout interval. The exact application timestamp (`15:24:18Z`), the two separate worker-ownership-acquisition events, the scheduler's non-trigger action, and that exactly one preview call was executed are **operator-reported**, not independently re-derived. A documentation-inventory defect (9 vs. 10 indexes) stopped the rollout mid-flight at step 6 before it was corrected and resumed under fresh authorization — the schema was always correct. Completion carried one documented, authorization-governed variance at step 13: exactly one production preview was executed, as authorized, and deterministic equality came from the existing automated fixed-input test — **no second production preview occurred**. See [ROLLOUT_PHASE_0B0.md §0](docs/ROLLOUT_PHASE_0B0.md) for the full record.
+- **Reverified 2026-08-28** by a separate final-inspection session with Render and read-only PostgreSQL access: all three services live and healthy at `44d7336…`; `/healthz` reporting PostgreSQL state and the exact target; Render native auto-deploy **off** on API, worker, and scheduler; repository variable `RENDER_DEPLOY_AUTOMATION_ENABLED` still **false** — **no unattended deployment authority**; `_migrations` holding six rows with migration 006 exactly once; and no API, worker, or scheduler errors during the rollout interval.
+- **Genuinely still stale, from the 2026-08-24 21:32 UTC verification and not revisited since:** the GitHub `production` environment and its five non-secret variables. Treat that as last-verified rather than current — it is now the only fact in this state.
+- A normal scheduled execution of the **then-current Phase 0D SHA** (`10098de…`) **was** observed on 2026-08-25, closing that observation historically; it does not describe the `44d7336…` release, which deployed on 2026-08-28. Do not trigger production cron for evidence.
+- Production PostgreSQL external access remains `0.0.0.0/0` — **independently reverified 2026-08-28** by a separate final-inspection session. Restriction is a separate, high-priority, separately authorized security change.
+- **Two open tracks, neither blocking the other.** The Phase 0B.0 migration-bearing rollout is complete, so enabling `RENDER_DEPLOY_AUTOMATION_ENABLED` and proving the controller path are now eligible — each under its own authorization and its own immediate re-verification, and the gate remains `false` until then. Separately, Phase 0B continues with the six reasoning stages. [Roadmap](docs/ROADMAP.md) holds the ordered cursor.
 
 Service IDs and exact control-plane configuration are recorded in [Status](docs/STATUS.md) and [Deployment control](docs/DEPLOYMENT.md). Do not infer mutable production facts from `render.yaml` alone.
 
@@ -65,9 +67,9 @@ flowchart LR
 - `src/api/`: health, authenticated triggers/diagnostics/console, approval review/actions, and public content-addressed media.
 - `src/worker/`: queue consumption, deterministic orchestration, human approval wait, and the only publication handoff.
 - `src/scheduler/`: daily `0 13 * * *` enqueue; it does not publish.
-- `src/harness/`: configuration, state, orchestration, approval, image QC, dry runs, and self-tests. `src/harness/evidence/` and `src/harness/agents/` are the Phase 0B.0 foundation — implemented, not deployed, and executing no reasoning stage.
+- `src/harness/`: configuration, state, orchestration, approval, image QC, dry runs, and self-tests. `src/harness/evidence/` and `src/harness/agents/` are the Phase 0B.0 foundation — merged, deployed on all three services, and executing no reasoning stage.
 - `src/mcp/`: imported provider libraries, not standalone MCP servers or model tools.
-- `state/migrations/`: forward-only PostgreSQL schema authority. 001–005 are applied in production; 006 is written and **not applied**.
+- `state/migrations/`: forward-only PostgreSQL schema authority. **001–006 are applied in production** — 006 as of 2026-08-28.
 - `agents/`: model prompt bodies and model IDs actually loaded by the orchestrator.
 - `skills/`: reviewed specifications, but not automatically injected into current model calls.
 - `prompts/MASTER_PROMPT.md`: dormant/experimental; the production worker does not run an Opus manager.
@@ -94,7 +96,7 @@ The controller is not yet enabled or production-proven. [Deployment control](doc
 
 ## Publication media normalization
 
-**Merged in PR #38; deployed and production-validated — operator-reported 2026-08-27, not independently verified in an engineering session.** It resolved a production blocker: from 2026-08-25 scheduled briefs failed before reaching approval with `image dimensions 1024x1024 are not an approved cross-platform feed profile`. The operator reports a controlled brief in which a 896x1120 provider render normalized to 1080x1350 and reached a real human approval, with nothing published automatically.
+**Merged in PR #38; deployed — the code is live in the current `44d7336…` release, independently verified 2026-08-28.** It resolved a production blocker: from 2026-08-25 scheduled briefs failed before reaching approval with `image dimensions 1024x1024 are not an approved cross-platform feed profile`. The controlled-brief evidence proving the fix in production remains **operator-reported 2026-08-27, not independently re-examined**: a 896x1120 provider render normalized to 1080x1350 and reached a real human approval, with nothing published automatically.
 
 Image providers guarantee **composition, not exact publication pixels**. fal normalizes a requested `image_size` to its own resolution buckets and may return PNG despite a JPEG request. The pipeline previously asserted the exact publication-profile allowlist against the raw provider download and never resized, so any provider-native size was fatal.
 
@@ -107,7 +109,7 @@ Two policies are now distinct: **decode safety** governs bytes we will process, 
 
 ## Worker ownership and recovery
 
-**Merged in PR #36; deployed and production-validated — operator-reported 2026-08-27, not independently verified in an engineering session.** The operator reports the new worker waiting approximately 58 seconds for exclusive ownership before emitting readiness — the Render zero-downtime overlap behaving exactly as designed — and the August 10 stranded brief reconciled with `providerMutation = impossible` and no provider replay. Phase 0D.1 is no longer blocked by this: `RENDER_DEPLOY_AUTOMATION_ENABLED` still stands at `false` and enabling it is now an eligible, separately authorized step rather than a forbidden one.
+**Merged in PR #36; deployed — the code is live in the current `44d7336…` release, independently verified 2026-08-28.** The behavioral bootstrap evidence remains **operator-reported 2026-08-27, not independently re-examined**: the new worker waiting approximately 58 seconds for exclusive ownership before emitting readiness — the Render zero-downtime overlap behaving exactly as designed — and the August 10 stranded brief reconciled with `providerMutation = impossible` and no provider replay. Phase 0D.1 is no longer blocked by this: `RENDER_DEPLOY_AUTOMATION_ENABLED` still stands at `false` and enabling it is now an eligible, separately authorized step rather than a forbidden one.
 
 Render background-worker deploys are zero-downtime, so the old worker stays alive for roughly a minute after the new one starts. A starting worker therefore cannot assume a `running` brief was abandoned. Exactly one worker is the owner, established by a PostgreSQL session-level advisory lock held on a dedicated connection for the process lifetime, released automatically when that session ends.
 
@@ -121,7 +123,7 @@ Runbooks live in [Operations](docs/OPERATIONS.md) (lifecycle and reconciliation)
 
 ## Content evidence and agent foundation (Phase 0B.0)
 
-**Implemented; NOT merged, NOT deployed.** Migration 006 is not applied to production, and **no reasoning stage executes** — this pull request adds no model call. It exists so that the six Content Intelligence stages, when they are wired one at a time, already have a typed evidence substrate and a registry to be wired into.
+**MERGED (`44d7336…`); DEPLOYED.** Migration 006 was applied to production on 2026-08-28 and the evidence tables are correctly empty; the API, worker, and scheduler all report the target. **No reasoning stage executes** — this change adds no model call. It exists so that the six Content Intelligence stages, when they are wired one at a time, already have a typed evidence substrate and a registry to be wired into.
 
 The system's core epistemic risk is that a plausible sentence quietly becomes a fact. Two promotions are forbidden, and the design makes them impossible rather than discouraged:
 
@@ -139,7 +141,7 @@ Both rules are enforced twice, on purpose. The TypeScript contract in `src/harne
 
 The existing production path is untouched: the copywriter and critic still read `config/approved-facts.json`, and orchestration, approval, and publication behave exactly as before.
 
-Details in [Data model](docs/DATA_MODEL.md) (schema and constraints), [Architecture](docs/ARCHITECTURE.md) (component boundaries), [Operations](docs/OPERATIONS.md) (`evidence:sync` runbook), and [Testing](docs/TESTING.md) (what is actually proven).
+Details in [Data model](docs/DATA_MODEL.md) (schema and constraints), [Architecture](docs/ARCHITECTURE.md) (component boundaries), [Operations](docs/OPERATIONS.md) (`evidence:sync` runbook), [Testing](docs/TESTING.md) (what is actually proven), and [the rollout runbook](docs/ROLLOUT_PHASE_0B0.md) (how it reaches production).
 
 ## Local validation
 

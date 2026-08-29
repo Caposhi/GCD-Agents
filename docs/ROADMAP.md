@@ -103,19 +103,27 @@ These are not interchangeable and must not be collapsed into "done". `MERGED` in
 
 ### Phase 0B.0 — content evidence and agent registry foundation
 
-**State:** `IMPLEMENTED` — not `MERGED`, not `DEPLOYED`.
+**State:** `MERGED` · **`DEPLOYED`** — API, worker, and scheduler all live at the target with migration 006 applied 2026-08-28 (independently verified 2026-08-28 by a separate final-inspection session with Render and read-only PostgreSQL access).
+
+**Merge:** PR #40, merged 2026-08-27 as `44d7336f2c75ff880cff0d8205d2fafe13eb91b5`, base `a6a4316…`, reviewed head `4891bf3…`. Merged by the repository owner after all five CI jobs passed on the exact head.
+
+**Carried a security fix from independent inspection.** Commit `4891bf3` made the `/console/*` gate drain and close an unread request body on auth or rate-limit failure, matching what `/triggers` already did. Without it, a rejected body-bearing request left declared-but-unsent bytes on a keep-alive connection, so a pipelined follow-up could be consumed as the first request's remainder. That gate also fronts the already-live `/console/state` and `/console/stream`, so the fix closes an exposure present in production until this release ships.
 
 **Delivered:** the typed evidence contract with eight kinds and per-kind validation; `state/migrations/006_content_evidence.sql` with `content_evidence` and `content_evidence_relations`; a deterministic, provenance-preserving adapter from `config/approved-facts.json`; an idempotent operator-only sync command; the evidence pack builder that surfaces conflicts and stale evidence without resolving them; `AgentRegistry` with all six target stages registered and allowlist-rooted asset loading; `ContentIntelligenceContext`; and a deterministic, inert preview endpoint.
 
-**Schema / migrations:** migration **006**, written and integration-tested against disposable PostgreSQL 16 and 18. **Not applied to production.** Its rollout is a separately authorized migration-bearing release under the existing discipline: exactly one migration authority, and no schema-dependent consumer racing it.
+**Schema / migrations:** migration **006**, integration-tested against disposable PostgreSQL 16 and 18 and **applied to production on 2026-08-28 at `15:24:18Z`**, exactly once, by the API pre-deploy runner. Its rollout was a separately authorized migration-bearing release under the existing discipline: exactly one migration authority, and no schema-dependent consumer racing it. The runbook is [ROLLOUT_PHASE_0B0.md](ROLLOUT_PHASE_0B0.md) — executed to completion with all three services at the target, and with one documented, authorization-governed variance at step 13: exactly one production preview call was made, as authorized, and the deterministic-equality check was satisfied by the existing automated fixed-input test rather than by a second production call.
+
+**Rollout safety, independently established 2026-08-28.** Migration 006 creates 34 catalog objects — 2 tables, 10 indexes (2 of them primary-key-backed), 16 CHECK constraints, 3 foreign keys, 2 primary-key constraints, 1 trigger — and is purely additive; applied inside a transaction it took **zero locks** on any pre-existing table and completed in about **50 ms**. Old `a6a4316…` code was built and **tested** against a runner-migrated `001–006` database: its durable startup probe, console snapshot, and event read all succeeded. Rolling application code back while leaving 006 applied is therefore a proven-safe recovery, and no destructive down migration should be written.
+
+**Rollout outcome — operator-performed 2026-08-28; current-state results later independently reverified.** The operator deployed the API and applied migration 006 exactly once at `15:24:18.56508Z` in about 53 ms, with both evidence tables empty and zero active briefs and approvals. The rollout then stopped at step 6 under S8/S18 because the runbook stated 9 indexes where the catalog reports 10 — the two primary-key-backed indexes being separate catalog objects from the two primary-key constraints. **The schema was correct; the document was wrong**, and stopping on an inventory discrepancy rather than proceeding is exactly what those stop conditions exist to produce. §2 was corrected, independently inspected, and the operator resumed the rollout at the worker deployment under fresh authorization: the worker acquired exclusive ownership and clean readiness on two separate deploys (58,142 ms, then 60,094 ms on an authorized same-SHA handoff proof), the scheduler deployed with its cron unchanged and un-triggered, and a single authenticated preview call left all database row counts unchanged. **A separate final-inspection session later independently reverified the resulting current state** — all three services reporting `44d7336…`, migration 006 applied exactly once, and the unchanged row counts — on 2026-08-28; migration 006 must not be rerun. See [ROLLOUT_PHASE_0B0.md §0](ROLLOUT_PHASE_0B0.md) for the full record.
 
 **Material design decisions:** epistemic class is a database constraint, not a convention; conflicts are reported and never auto-resolved; the approved-facts adapter is a projection rather than a second source of truth, so the JSON stays authoritative until a later reviewed cutover; and registration is deliberately separated from execution.
 
 **Material rejected alternative — resolving conflicts by confidence or recency.** Rejected because it is precisely how a content engine starts asserting things nobody verified. A human resolves a conflict by authoring an explicit supersession, which stays auditable.
 
-**Automated validation:** 362 offline assertions across eight suites; PostgreSQL 16 and 18 integration at 154 checks each, including database-level rejection of malformed evidence and proof that repeating the sync changes nothing; bound HTTP end-to-end at 64 assertions, including that the preview creates no approval and enqueues no brief.
+**Automated validation:** 362 offline assertions across eight suites; PostgreSQL 16 and 18 integration at 154 checks each, including database-level rejection of malformed evidence and proof that repeating the sync changes nothing; bound HTTP end-to-end at 64 assertions, including that the preview creates no approval and enqueues no brief. These are the counts as validated at PR #40's merge; the corrective delta that followed (`4891bf3`) added four more HTTP e2e assertions — see [Testing](TESTING.md).
 
-**Production evidence:** none, by design. Nothing was deployed.
+**Production evidence — independently verified 2026-08-28** by a separate final-inspection session with Render and read-only PostgreSQL access: all three application services deployed at the target; migration 006 applied to the shared database exactly once; both evidence tables empty; every database row count unchanged (71 briefs, 62 approvals, 168 media, 0 evidence, 0 relations). The exact number and execution of production preview calls — that exactly one was made, returning the six-stage plan with execution disabled, `assetsVerified=true`, and no invariant violations — the ~53 ms migration duration, and that the API pre-deploy runner performed the application are **operator-reported**, not independently re-derived; the step-13 two-call comparison was satisfied instead by the existing automated fixed-input test. See [ROLLOUT_PHASE_0B0.md §0](ROLLOUT_PHASE_0B0.md).
 
 **Accepted limitations:** the six stages are registered but not executed; the live publishing pipeline still cites `config/approved-facts.json` directly and is unchanged by this work; and no performance evidence exists yet, so the empirical half of "research is the prior, performance is the posterior" is still unpopulated.
 
@@ -165,7 +173,7 @@ Keep these changes separable unless a reviewed design shows they must be atomic.
 
 1. **Durable provider operation ledger and idempotency.** Model at least `not_attempted`, `attempted`, `provider_accepted`, `result_unknown`, `published`, `reconciled`, and `failed_safely`. This is the highest-priority remaining item: PR #36's durable phase markers are deliberately its precursor, but they make an ambiguous provider outcome *visible*, not *impossible*. Provider-level `withRetry` can still reissue a request after an ambiguous network outcome, so duplicate publication remains possible.
 2. **Provider reconciliation.** Reconcile internal intent and result records with provider-side post identities, and safely resolve unknown outcomes before another attempt is permitted.
-3. **PostgreSQL network restriction.** Remove the `0.0.0.0/0` external allowlist recorded at the last verification, after confirming every required access path. Do not combine with the deployment cutover.
+3. **PostgreSQL network restriction.** Remove the `0.0.0.0/0` external allowlist — still in place, independently reverified 2026-08-28 — after confirming every required access path. Do not combine with the deployment cutover.
 4. **Provider-token lifecycle.** Encrypt or relocate the plaintext default Instagram token and session state, define rotation/expiry/recovery, and review log and outcome redaction.
 5. **Control and approval identity.** Replace the shared `CONSOLE_TOKEN`, process-local direct-socket limits, generic reviewer label, and the bearer token in browser/Slack URL history with scoped authenticated identities and a safer review/revocation flow.
 6. **Retention, backup, and restore.** Set retention for briefs, approvals, events, sessions, scorecards, proposals, and media; design the reviewed forward migration needed for media deletion; verify backup policy and conduct an isolated restore drill with external-side-effect reconciliation.
@@ -175,7 +183,7 @@ The former worker lease/reaper item is `SUPERSEDED` and is no longer active work
 
 ## Phase 0B prerequisite — fact and evidence contract
 
-**State:** `IMPLEMENTED` — not `MERGED`, not `DEPLOYED`. Delivered by the Phase 0B.0 foundation change; migration 006 is written but deliberately unapplied.
+**State:** `MERGED` · **`DEPLOYED`**. Delivered by the Phase 0B.0 foundation change (`44d7336…`). Migration 006 was applied **exactly once, to the shared production database, by the API pre-deploy runner** on 2026-08-28; the API, worker, and scheduler were then **separately deployed at the target commit**. A migration is applied to a database, not to a service — the three services share one database and none of them ran the migration except the API's pre-deploy step. The tables are correctly empty until an authorized operator runs `evidence:sync`, which has not yet happened.
 
 The contract is now executable rather than aspirational. `src/harness/evidence/contract.ts` defines the kinds, per-kind validation, and the two forbidden promotions; `state/migrations/006_content_evidence.sql` enforces the same rules as database CHECK constraints so the invariant survives a writer that bypasses the application.
 
@@ -197,7 +205,7 @@ Support source, source type, provenance, confidence, freshness, `observed_at`, `
 
 ## Phase 0B — Content Intelligence runtime
 
-**State:** foundation `IMPLEMENTED`; six-stage reasoning execution **not yet wired**.
+**State:** foundation `MERGED` and `DEPLOYED`; six-stage reasoning execution **not yet wired**.
 
 Phase 0B.0 delivered the two runtime primitives the rest of the phase depends on:
 

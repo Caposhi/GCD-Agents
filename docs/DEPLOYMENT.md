@@ -2,26 +2,32 @@
 
 ## Current status and authority
 
-Phase 0D is merged and production-deployed; it does not begin Phase 0B. Read-only verification at 2026-08-24 21:32 UTC confirmed workspace `tea-d4fkclpr0fns73abmnh0`, API `srv-d8u0qtpo3t8c73c5o44g`, worker `srv-d8u0qtpo3t8c73c5o440`, scheduler `crn-d8ulb4rtqb8s73bdjctg`, and PostgreSQL `dpg-d8u0qaho3t8c73c5nj40-a`. API, worker, and scheduler were live at `10098de73667797120da8c7dfa4da83f336ff6ba`; no deploy was in progress. The exact `/healthz` identity and worker readiness marker passed, and no recent error/critical logs were observed. **That verification has not been repeated since**; every row below is last-verified rather than current, and must be reconfirmed read-only immediately before any production operation.
+Phase 0D is merged and production-deployed; it does not begin Phase 0B. Current exact target: `44d7336f2c75ff880cff0d8205d2fafe13eb91b5`, reached through the Phase 0B.0 migration-bearing rollout. **Independently verified 2026-08-28** by a separate final-inspection session with Render and read-only PostgreSQL access: workspace `tea-d4fkclpr0fns73abmnh0`, API `srv-d8u0qtpo3t8c73c5o44g`, worker `srv-d8u0qtpo3t8c73c5o440`, and scheduler `crn-d8ulb4rtqb8s73bdjctg` are all live at `44d7336…`, PostgreSQL `dpg-d8u0qaho3t8c73c5nj40-a` holds `_migrations` `001–006`, and no recent error/critical logs were observed. That inspection's rows are marked below; the GitHub `production` environment's five non-secret variables are the only row still carrying only the earlier 2026-08-24 21:32 UTC verification and were not revisited — reconfirm that one read-only immediately before any production operation.
 
 ### Current cutover status
 
 | Capability | State | Freshness |
 |---|---|---|
 | Phase 0D controller source | **Implemented** and merged in PR #34 | repository fact |
-| Current controller source in production | **Deployed** through the previous native Render mechanism | last verified 2026-08-24 |
-| Worker ownership/recovery | **Merged** in PR #36 (`0828cc9…`); **deployed and production-validated** | operator-reported 2026-08-27; **not independently verified in an engineering session** |
-| Media publication normalization | **Merged** in PR #38 (`a6a4316…`); **deployed and production-validated** | operator-reported 2026-08-27; **not independently verified in an engineering session** |
-| Migration 006 (`content_evidence`) | **Written**; **not applied to production** | repository fact |
+| Current controller source in production | **Present** in the currently deployed `44d7336…` release; originally reached production through the previous native Render mechanism | current release independently verified 2026-08-28; the native-mechanism origin is last verified 2026-08-24 |
+| Worker ownership/recovery | **Merged** in PR #36 (`0828cc9…`); **deployed** — the code is live in the current `44d7336…` release | current deployment independently verified 2026-08-28; the ~58-second ownership-wait timing and the August 10 provider-history reconciliation remain operator-reported 2026-08-27 and were not independently re-examined |
+| Media publication normalization | **Merged** in PR #38 (`a6a4316…`); **deployed** — the code is live in the current `44d7336…` release | current deployment independently verified 2026-08-28; the controlled-brief evidence remains operator-reported 2026-08-27 and was not independently re-examined |
+| Phase 0B.0 (PR #40, merge `44d7336…`) | **Merged**; **deployed** — API, worker, and scheduler all at the target | independently verified 2026-08-28 |
+| Migration 006 (`content_evidence`) | **Applied to production** exactly once | independently verified 2026-08-28 (`_migrations` holds `006` exactly once); the exact timestamp `2026-08-28T15:24:18.56508Z` and ~53 ms duration are operator-reported |
+| API | **`44d7336…`**, live and healthy | independently verified 2026-08-28 |
+| Worker | **`44d7336…`** — exclusive ownership held and readiness reported on two separate deploys | independently verified 2026-08-28 that ownership is held and readiness is reported at this target (this authoring session has no Render access; a separate final-inspection session did); the exact acquisition timings (58,142 ms, 60,094 ms) and the recovery/readiness event sequence are operator-reported, not independently re-derived |
+| Scheduler | **`44d7336…`** — live, cron `0 13 * * *` unchanged | independently verified 2026-08-28 that the scheduler is live at this target with its cron configuration unchanged; that it was not manually triggered is operator-reported |
 | GitHub `production` environment | **Configured** with secret name, five non-secret variables, and `main` restriction | last verified 2026-08-24; not reverified |
-| Render native auto-deploy | **Off** for API, worker, and scheduler (`autoDeploy: no`, `autoDeployTrigger: off`) | last verified 2026-08-24; not reverified |
-| GitHub repository enable gate | **Disabled**: `RENDER_DEPLOY_AUTOMATION_ENABLED=false` | last verified 2026-08-24; not reverified |
+| Render native auto-deploy | **Off** for API, worker, and scheduler (`autoDeploy: no`, `autoDeployTrigger: off`) | independently verified 2026-08-28 |
+| GitHub repository enable gate | **Disabled**: `RENDER_DEPLOY_AUTOMATION_ENABLED=false` | independently verified 2026-08-28 |
 | GitHub controller as production authority | **Not enabled; not proven in production** | follows from the rows above |
 | Current unattended deployment authorities | **Zero, intentionally** | follows from the rows above |
 
-**The gate is now eligible, not yet authorized.** The prerequisite that blocked it — a live worker holding no advisory lock — is closed: the manual bootstrap and the handoff proof are reported complete. Enabling `RENDER_DEPLOY_AUTOMATION_ENABLED` and proving the controller path are therefore the next steps in this track, each under its own explicit authorization and each preceded by a read-only reverification of every row above, because those rows are last-verified rather than current and the operator's bootstrap was a manual Render action performed outside any engineering session. Never re-enable Render native auto-deploy while GitHub control is enabled.
+**The gate is now eligible, not yet authorized.** The prerequisite that blocked it — a live worker holding no advisory lock — is closed: the manual bootstrap and handoff proof are reported complete, and the worker's exclusive-ownership behavior at the current target was independently verified 2026-08-28. Enabling `RENDER_DEPLOY_AUTOMATION_ENABLED` and proving the controller path are therefore the next steps in this track, each under its own explicit authorization and each preceded by a fresh read-only reverification immediately before acting — the GitHub `production` environment's configuration still carries only the 2026-08-24 verification and was not revisited on 2026-08-28. Never re-enable Render native auto-deploy while GitHub control is enabled.
 
-**A separate constraint now applies to the Phase 0B track.** `state/migrations/006_content_evidence.sql` exists in the repository and is not applied to production, so the first release carrying Phase 0B.0 is migration-bearing. The controller stops such a release at `CONTROLLED MIGRATION ROLLOUT REQUIRED` by design; it must take the separately authorized rollout path whether or not the gate is ever enabled.
+**A separate constraint applied to the Phase 0B track.** `state/migrations/006_content_evidence.sql` made the release carrying Phase 0B.0 (`44d7336…`) migration-bearing. It was **applied to production on 2026-08-28** by the API pre-deploy runner. The controller stops such a release at `CONTROLLED MIGRATION ROLLOUT REQUIRED` by design, which is why this one went through the manual path.
+
+That rollout was written out step by step, with preflight evidence, stop conditions, a rollback matrix, and an operator authorization block, in **[ROLLOUT_PHASE_0B0.md](ROLLOUT_PHASE_0B0.md)**. It is now **fully executed**: it stopped once at step 6's inventory check under S8/S18 on a documentation defect (corrected and independently inspected), then resumed under fresh authorization through step 14. All three services report the target; migration 006 is applied and must not be rerun.
 
 The Phase 0A rollout proved that concurrent native deployments are unsafe: the worker started before migration 005 completed, failed twice because `approval_decisions` did not exist, and recovered after the API migration finished. Schema-dependent services must not be released concurrently with their migration authority.
 
@@ -93,7 +99,7 @@ The enable gate must be repository-scoped because the provenance job evaluates i
 
 ## Deployment-authority cutover
 
-The safe sequence never permits dual authority. Steps 1–7 are complete. **Steps 8–10 are no longer the immediate next actions**: the ownership bootstrap and its handoff proof, in the section below, must complete first. Steps 8–10 become eligible only after the protected worker is live and proven.
+The safe sequence never permits dual authority. Steps 1–7 are complete. **The ownership bootstrap and its handoff proof, in the section below, are reported complete**, so steps 8–10 are now **eligible**. They remain **separately unauthorized** and require a fresh read-only preflight reverification immediately before acting, not merely a reference to this prior completion.
 
 1. Merge and validate Phase 0D with the GitHub gate false. **Complete.**
 2. Deploy Phase 0D through the previous native Render path. **Complete.**
@@ -102,7 +108,7 @@ The safe sequence never permits dual authority. Steps 1–7 are complete. **Step
 5. Keep the repository enable gate false. **Complete/current.**
 6. Turn native Render auto-deploy off on all three services. **Complete.**
 7. Verify all three settings off and no deployment/migration in flight. **Complete at the verification time above; recheck immediately before step 8.**
-8. Under explicit authorization, set `RENDER_DEPLOY_AUTOMATION_ENABLED=true`. **Not done — and now gated behind the ownership bootstrap below.**
+8. Under explicit authorization, set `RENDER_DEPLOY_AUTOMATION_ENABLED=true`. **Not done — eligible now that the bootstrap below is reported complete, but still separately unauthorized.**
 9. Prove the controller against the already-current/no-deploy route if possible. **Not done.**
 10. Prove one harmless migration-free real release, including exact API health, target-bound worker readiness/stabilization, scheduler artifact, and final three-SHA equality. **Not done.**
 
@@ -110,7 +116,7 @@ If any prerequisite changes, stop rather than enabling the second authority. Ren
 
 ## Worker ownership and the readiness window
 
-**Merged in PR #36 (`0828cc9…`); deployed and production-validated — operator-reported 2026-08-27, not independently verified in an engineering session.** The operator reported the new worker waiting approximately 58 seconds for exclusive ownership before emitting readiness, which is the overlap behaviour this section predicts.
+**Merged in PR #36 (`0828cc9…`); deployed — the code is live in the current `44d7336…` release, independently verified 2026-08-28.** The production-validated behavioral evidence remains operator-reported 2026-08-27, not independently re-examined: the operator reported the new worker waiting approximately 58 seconds for exclusive ownership before emitting readiness, which is the overlap behaviour this section predicts.
 
 Render background-worker deploys are zero-downtime: the new instance starts, is considered started, and only about 60 seconds later does the old instance receive SIGTERM, after which it still gets its shutdown grace. Old and new therefore overlap legitimately, and a new worker starting does **not** mean a `running` brief is abandoned.
 
@@ -149,8 +155,8 @@ Every step below requires its own explicit authorization. This document grants n
 
 ## Recorded follow-ups
 
-- Production PostgreSQL currently exposes external access through `0.0.0.0/0`. Restricting it is a separate security change; Phase 0D does not alter database networking.
-- A normal scheduler execution succeeded on 2026-08-24 before Phase 0D deployed. The current Phase 0D scheduler artifact is live, but its next normal scheduled execution has not yet been observed. Do not manually run production cron merely to close this gap.
+- Production PostgreSQL external access remains `0.0.0.0/0` — **independently reverified 2026-08-28** by a separate final-inspection session. Restricting it is a separate, high-priority, separately authorized security change; it was not altered by this rollout and must not be changed outside that authorization.
+- A normal scheduled execution of the Phase 0D SHA was observed on 2026-08-25, closing that observation historically — see [Status](STATUS.md) for the run evidence. The scheduler now runs `44d7336…` (independently verified 2026-08-28). Do not manually run production cron to observe its next scheduled firing.
 - Review and deliberately update the pinned Render CLI and actionlint versions/checksums; never float either download.
 
 ## Release engineering lessons

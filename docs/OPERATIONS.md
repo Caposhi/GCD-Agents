@@ -2,7 +2,7 @@
 
 ## Health and observability
 
-- `GET https://gcd-social-api.onrender.com/healthz` proves the expected API process/release can respond only when its JSON includes `status: "ok"`, `service: "gcd-social-api"`, `state: "postgres"`, and the expected full Render commit. Production startup fails closed when `RENDER_GIT_COMMIT` is missing or malformed. Read-only verification observed the exact current Phase 0D commit. Startup requires and probes PostgreSQL, but each health request does not perform a new database or provider probe.
+- `GET https://gcd-social-api.onrender.com/healthz` proves the expected API process/release can respond only when its JSON includes `status: "ok"`, `service: "gcd-social-api"`, `state: "postgres"`, and the expected full Render commit. Production startup fails closed when `RENDER_GIT_COMMIT` is missing or malformed. **Independently verified 2026-08-28** by a separate final-inspection session: `/healthz` reported the exact current target `44d7336…` with PostgreSQL state healthy. Startup requires and probes PostgreSQL, but each health request does not perform a new database or provider probe.
 - Authenticated `/console/state` summarizes queues, latest brief, token-health estimates, and recent events. Authenticated `/console/stream` polls the events table every 1.5 seconds and emits SSE heartbeats. Use `Authorization: Bearer <CONSOLE_TOKEN>` or `x-console-token`; do not put the secret in a URL.
 - Render logs are the only checked-in log destination. The code has no metrics backend, structured trace correlation beyond event `run_id`, alert destination outside its Slack webhook messages, or dead-letter queue.
 - Diagnostics call live Meta/Google APIs. They now require `CONSOLE_TOKEN`, use a process-local 20/minute limit, and have request/operation time bounds, but still must not be used as casual health checks or without an identified environment and authority.
@@ -21,7 +21,7 @@ The cron runs at 09:00 EDT or 08:00 EST. One brief generates one package contain
 
 The worker starts the Instagram token tick/timer only when Instagram is active. On the default Instagram-login host it uses the live PostgreSQL-backed refresh path; on the alternate Facebook-login host this module returns the environment token without refreshing it. Once a review is approved, the helper runs only when the approved array includes Instagram, and Google OAuth refresh is attempted only when that array includes GBP. A Google refresh error is logged and the provider path may still use the static fallback token from the environment; no unrelated platform refresh is attempted.
 
-## Content evidence sync (Phase 0B.0 — implemented, not deployed)
+## Content evidence sync (Phase 0B.0 — deployed 2026-08-28; schema applied; tables empty)
 
 `npm run evidence:sync` is the **only** writer of `content_evidence`. It is an explicit operator command, not a startup step and not part of any release: if it ran on boot, every deploy would silently rewrite what the system believes is true, and a bad edit to `config/approved-facts.json` would propagate without anyone deciding to apply it.
 
@@ -35,7 +35,7 @@ The dry run needs no database at all. The applying run requires durable state an
 
 `config/approved-facts.json` stays authoritative. The sync is a projection of it, and every record carries provenance naming the file and the exact content sha256 it was derived from, so drift between the file and durable evidence is visible rather than silent. It does not create a second source of truth: the copywriter and critic still read the JSON.
 
-**Do not run this against production in an unauthorized session.** Migration 006 is not applied to production, so there is currently nothing there to sync into. A first production sync is a separately authorized operation that follows the migration rollout below.
+**Do not run this against production in an unauthorized session.** Migration 006 **was applied to production on 2026-08-28** and the rollout has since completed on all three services, so the tables now exist — and they are **empty**, which is correct. A first production sync is a separately authorized operation that follows the rollout; it is explicitly **not** part of it and has **not yet been run**. See the [Phase 0B.0 rollout runbook](ROLLOUT_PHASE_0B0.md).
 
 ## Routine checks
 
@@ -52,9 +52,9 @@ Daily: API/worker/scheduler status, pending/running/failed briefs, pending/expir
 
 ## Deployment
 
-Phase 0A and Phase 0D are live at the production commit recorded in [Status](STATUS.md). At the last read-only verification, native Render auto-deploy was off for API, worker, and scheduler and GitHub automation was configured with the repository gate false — an intentional zero-unattended-authority window that must be reconfirmed rather than assumed.
+Phase 0A and Phase 0D are live at the production commit recorded in [Status](STATUS.md). **Independently verified 2026-08-28** by a separate final-inspection session with Render access (this authoring engineering session has none): native Render auto-deploy was off for API, worker, and scheduler and GitHub automation was configured with the repository gate false — an intentional zero-unattended-authority window. Reconfirm immediately before any production operation rather than assuming it still holds.
 
-The worker-ownership and recovery change (PR #36, merge `0828cc9…`) and the media normalization change (PR #38, merge `a6a4316…`) are **merged, deployed, and production-validated — operator-reported 2026-08-27**. That is recorded as reported: the manual bootstrap was performed by the operator, and no engineering session here has Render or production database access to verify it first-hand. Re-verify against `/healthz` before relying on it for a decision. Controller enablement and restoration of native auto-deploy remain separate, individually authorized operations; the gate stays false until then. The Phase 0A worker-before-migration incident is why no migration-bearing release may use the ordinary controller path — and **migration 006 now exists in the repository unapplied**, so the release that first carries Phase 0B.0 is migration-bearing and must take the separately authorized rollout path at step 3 below.
+The worker-ownership and recovery change (PR #36, merge `0828cc9…`) and the media normalization change (PR #38, merge `a6a4316…`) are **merged and deployed — their code is live in the current `44d7336…` release, independently verified 2026-08-28** by a separate final-inspection session with Render access. The earlier manual bootstrap's behavioural evidence (the ownership-wait timing, the August 10 reconciliation, the PR #38 controlled brief) remains **operator-reported 2026-08-27** and was not re-examined by that inspection; reconfirm it before relying on it for a decision. Controller enablement and restoration of native auto-deploy remain separate, individually authorized operations; the gate stays false until then. The Phase 0A worker-before-migration incident is why no migration-bearing release may use the ordinary controller path — and **migration 006 was applied to production on 2026-08-28** as part of the Phase 0B.0 release, which is **complete**: API, worker, and scheduler all run `44d7336…`. That rollout stopped once mid-flight at step 6 under S8/S18 on a documentation defect, then resumed under fresh authorization and finished — see [ROLLOUT_PHASE_0B0.md §0](ROLLOUT_PHASE_0B0.md).
 
 For a no-migration release after cutover:
 
@@ -78,7 +78,7 @@ Application rollback selects a prior release/commit. SQL migrations are forward-
 
 `brief_queue.status` is `pending → running → done|failed`. `running` is a single opaque state that spans orchestration, a human approval wait of up to 24 hours, and the provider publish loop, and `claimNextBrief` only ever selects `pending`. In the release that preceded PR #36, nothing reclaimed a `running` row, so an interrupted worker stranded its brief permanently and silently — see the August 10 incident in [Status](STATUS.md). The behavior below replaces that.
 
-**Merged in PR #36; deployed and production-validated — operator-reported 2026-08-27, not independently verified in this engineering session.** The operator reported the new worker waiting approximately 58 seconds for exclusive ownership before emitting readiness, and the August 10 stranded brief being reconciled with `providerMutation = impossible` and no provider replay:
+**Merged in PR #36; deployed — the code is live in the current `44d7336…` release, independently verified 2026-08-28.** The production-validated behavioral evidence remains operator-reported 2026-08-27, not independently re-examined: the operator reported the new worker waiting approximately 58 seconds for exclusive ownership before emitting readiness, and the August 10 stranded brief being reconciled with `providerMutation = impossible` and no provider replay:
 
 1. **Exclusive ownership.** The worker holds a session-level advisory lock on a dedicated PostgreSQL connection for its whole lifetime. Render zero-downtime deploys keep the old worker alive for roughly a minute after the new one starts, so a new instance waits — reconciling nothing, emitting no readiness, consuming nothing — until the previous session ends and the lock is free.
 2. **Ownership as a side-effect fence.** Losing the lock or entering shutdown blocks approval creation, credential acquisition, and every provider attempt, including between platforms. A worker that no longer owns the queue may only run its shutdown path.
@@ -113,5 +113,5 @@ Application rollback selects a prior release/commit. SQL migrations are forward-
 - Approval review still uses a URL bearer token and a generic `human` actor label; revocation has no operator-facing route.
 - Control-plane authentication shares one secret and uses per-process, direct-socket rate limits rather than distributed identity-aware enforcement.
 - Checked-in facts are authoritative against caller override, but have no enforced source/confidence/freshness/last-review metadata; define that contract before Phase 0B.
-- Production PostgreSQL external access was discovered as `0.0.0.0/0`; remediation is a separate security change.
-- A normal scheduler execution succeeded before Phase 0D deployed, but a normal run of the current Phase 0D SHA has not yet been observed.
+- Production PostgreSQL external access remains `0.0.0.0/0` — independently reverified 2026-08-28; remediation is a separate, high-priority, separately authorized security change.
+- A normal scheduled execution of the Phase 0D SHA was observed on 2026-08-25, closing that observation historically — see [Status](STATUS.md) for the run evidence. The scheduler now runs `44d7336…`, independently verified 2026-08-28. Do not manually run production cron merely to close a gap.
