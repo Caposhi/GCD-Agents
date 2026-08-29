@@ -38,6 +38,7 @@
  */
 
 import { runAgent } from "../sdk.js";
+import { EvidencePack } from "../evidence/pack.js";
 import { AgentRegistry, AgentStageId, ResolvedStageAsset } from "./registry.js";
 import { resolveModelPolicy } from "./modelPolicy.js";
 
@@ -141,6 +142,40 @@ export interface StageInvocation {
 export interface StageInvocationResult {
   rawText: string;
   metadata: StageExecutionMetadata;
+}
+
+/**
+ * Refuse before the model call when a stage's declared evidence classes are
+ * absent from the pack.
+ *
+ * The registry declares, per stage, which evidence classes must actually be
+ * citable for that stage's work to mean anything. This checks the declaration
+ * against the pack the caller built and throws when a class is missing.
+ *
+ * Two properties matter and are the reason this is one shared function rather
+ * than a copy per stage:
+ *
+ *  - It reads **`pack.allowedFacts` only**. Sourced research, observations,
+ *    performance evidence, hypotheses, assumptions, and raw reference data are
+ *    not substitutes for a missing fact class and can never satisfy it here.
+ *  - Callers invoke it **before** `invokeStage`, so a stage missing its
+ *    evidence spends no model call. Failing after the request would still be
+ *    correct, but it would pay for an answer that was never usable.
+ */
+export function assertRequiredEvidenceKinds(
+  stage: AgentStageId,
+  registry: AgentRegistry,
+  pack: EvidencePack,
+): void {
+  const definition = registry.get(stage);
+  const available = new Set(pack.allowedFacts.map((r) => r.kind));
+  const missing = definition.requiredEvidenceKinds.filter((kind) => !available.has(kind));
+  if (missing.length) {
+    throw new StageExecutionError(
+      stage,
+      `required evidence class(es) absent from the pack: ${missing.join(", ")}`,
+    );
+  }
 }
 
 /**

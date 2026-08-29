@@ -34,18 +34,24 @@
  *    supported way to obtain evidence records from this stage's output, and it
  *    returns records drawn from `pack.allowedFacts`, never model text.
  *
- * **Factual truth validation is the `automotive-truth` stage's job.** Stage 2
- * establishes and constrains the claims content may make. Nothing produced here
- * is publishable until that stage has run; this stage picks an angle.
+ * Stage 2 receives this complete typed output and structurally constrains the
+ * claims content may make to evidence-record ids. It does not semantically prove
+ * this prose true. Nothing produced here is publishable; this stage picks an
+ * angle and preserves its untrusted inputs for that downstream review.
  */
 
 import { EvidenceRecord } from "../evidence/contract.js";
-import { EvidencePack } from "../evidence/pack.js";
+import {
+  EvidencePack,
+  renderEvidencePackForStage,
+  unusableEvidenceIds,
+} from "../evidence/pack.js";
 import { AgentRegistry } from "./registry.js";
 import {
   StageExecutionError,
   StageExecutionMetadata,
   StageRunner,
+  assertRequiredEvidenceKinds,
   invokeStage,
   parseStrictJsonObject,
 } from "./stageExecution.js";
@@ -165,54 +171,16 @@ function requireIdArray(value: unknown, field: string): string[] {
 }
 
 /**
- * A bounded projection of the pack for the model.
+ * The bounded projection of the pack this stage shows the model.
  *
- * Only id, claim, and — for the sections where it matters — the attribute are
- * sent. Provenance, confidence numbers, and internal timestamps are withheld:
- * the model's job is to choose an angle, not to relitigate what the evidence
- * system already decided, and a confidence score in the prompt is an invitation
- * to argue a disputed claim back into use.
- *
- * Conflicted, stale, and inactive material is included **as a named exclusion
- * list** rather than dropped silently, so the model can see what it must not
- * cite instead of inventing a replacement for something it never knew existed.
+ * Implemented once, beside the pack (`renderEvidencePackForStage`), and shared
+ * by every stage: if each stage rendered its own view, two stages could
+ * disagree about what the evidence says while both claiming to have read it.
+ * Provenance, confidence, and internal timestamps are withheld; conflicted,
+ * stale, and inactive material is named as an exclusion list rather than
+ * dropped silently.
  */
-export function renderEvidenceForStage(pack: EvidencePack): string {
-  const brief = (records: EvidenceRecord[]) =>
-    records.map((r) => ({ id: r.id, claim: r.claim, ...(r.attribute ? { attribute: r.attribute } : {}) }));
-  return JSON.stringify(
-    {
-      builtAt: pack.builtAt,
-      allowedFacts: brief(pack.allowedFacts),
-      sourcedResearch: brief(pack.sourcedResearch),
-      gcdObservations: brief(pack.gcdObservations),
-      performanceEvidence: brief(pack.performanceEvidence),
-      creativeHypotheses: brief(pack.creativeHypotheses),
-      causalHypotheses: brief(pack.causalHypotheses),
-      unusable: {
-        conflicted: pack.conflicts.map((c) => ({ aId: c.aId, bId: c.bId, subject: c.subject })),
-        stale: pack.staleEvidence.map((r) => r.id),
-        inactive: pack.inactiveEvidence.map((r) => r.id),
-        unsupportedAssumptions: pack.unsupportedAssumptions.map((r) => r.id),
-      },
-      counts: pack.counts,
-    },
-    null,
-    2,
-  );
-}
-
-/** Ids the model may never cite as support, whatever section they came from. */
-function unusableIds(pack: EvidencePack): Set<string> {
-  const unusable = new Set<string>();
-  for (const conflict of pack.conflicts) {
-    unusable.add(conflict.aId);
-    unusable.add(conflict.bId);
-  }
-  for (const record of pack.staleEvidence) unusable.add(record.id);
-  for (const record of pack.inactiveEvidence) unusable.add(record.id);
-  return unusable;
-}
+export const renderEvidenceForStage = renderEvidencePackForStage;
 
 /**
  * Validate the model's object against the contract and bind every cited id.
@@ -225,8 +193,10 @@ function unusableIds(pack: EvidencePack): Set<string> {
  * *citations*. It does not evaluate the truth of `angle`, `concept`, or
  * `rationale`, which are returned inside `provisional` marked
  * `publishable: false` / `verified: false`. Prose that misstates a performance
- * correlation as automotive fact will pass this validator; catching that is the
- * `automotive-truth` stage's job, and nothing here may be published before it.
+ * correlation as automotive fact will pass this validator. `automotive-truth`
+ * receives the complete result and may structurally bind permissions to evidence
+ * ids, but it does not semantically prove the prose true; nothing here is
+ * publishable.
  */
 export function validateStrategyConceptOutput(
   raw: Record<string, unknown>,
@@ -280,7 +250,7 @@ export function validateStrategyConceptOutput(
   const factIds = new Set(pack.allowedFacts.map((r) => r.id));
   const observationPackIds = new Set(pack.gcdObservations.map((r) => r.id));
   const performancePackIds = new Set(pack.performanceEvidence.map((r) => r.id));
-  const blocked = unusableIds(pack);
+  const blocked = unusableEvidenceIds(pack);
 
   for (const id of supportingFactIds) {
     if (!factIds.has(id)) {
@@ -345,16 +315,13 @@ export function citedFactRecords(
  * Precondition: the stage's declared required evidence must actually be present.
  *
  * The registry declares `verified_business_fact` as required for this stage. A
- * strategy built with zero citable business facts is a strategy built on nothing,
- * so this refuses before spending a model call rather than after.
+ * strategy built with zero citable business facts is a strategy built on
+ * nothing, so this refuses before spending a model call rather than after. The
+ * check itself lives on the shared boundary so every stage enforces its
+ * declaration identically.
  */
 export function assertRequiredEvidence(pack: EvidencePack, registry: AgentRegistry): void {
-  const definition = registry.get(STRATEGY_CONCEPT_STAGE);
-  const available = new Set(pack.allowedFacts.map((r) => r.kind));
-  const missing = definition.requiredEvidenceKinds.filter((kind) => !available.has(kind));
-  if (missing.length) {
-    fail(`required evidence class(es) absent from the pack: ${missing.join(", ")}`);
-  }
+  assertRequiredEvidenceKinds(STRATEGY_CONCEPT_STAGE, registry, pack);
 }
 
 /**

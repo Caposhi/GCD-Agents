@@ -263,3 +263,72 @@ export function evidencePackInvariants(pack: EvidencePack, now: number): string[
   }
   return violations;
 }
+
+/**
+ * Every id a reasoning stage may never cite as support, whatever section it
+ * appeared in.
+ *
+ * Conflicted, stale, and inactive material is still *shown* to a stage — as a
+ * named exclusion list — so the model can avoid it instead of inventing a
+ * replacement for something it never knew existed. This set is what turns that
+ * from advice into enforcement.
+ *
+ * It lives here, beside the pack, because it is a property of the pack rather
+ * than of any one stage. Two stages sharing one definition cannot drift apart.
+ */
+export function unusableEvidenceIds(pack: EvidencePack): Set<string> {
+  const unusable = new Set<string>();
+  for (const conflict of pack.conflicts) {
+    unusable.add(conflict.aId);
+    unusable.add(conflict.bId);
+  }
+  for (const record of pack.staleEvidence) unusable.add(record.id);
+  for (const record of pack.inactiveEvidence) unusable.add(record.id);
+  return unusable;
+}
+
+/**
+ * The bounded projection of a pack that reasoning stages are shown.
+ *
+ * Only id, kind, claim, and — where it matters — attribute are sent. `kind` is
+ * the evidence system's authoritative classification; stages must never infer
+ * it from claim prose. Provenance, confidence numbers, reviewer identity, and
+ * internal timestamps are withheld: a stage's job is to reason within what the
+ * evidence system already decided, not to relitigate it, and a confidence score
+ * in the prompt is an invitation to argue a disputed claim back into use.
+ *
+ * Conflicted, stale, and inactive material is included **as a named exclusion
+ * list** rather than dropped silently.
+ *
+ * Shared by every stage on purpose. If a stage rendered its own view of the
+ * pack, two stages could disagree about what the evidence says while both
+ * claiming to have read it.
+ */
+export function renderEvidencePackForStage(pack: EvidencePack): string {
+  const brief = (records: EvidenceRecord[]) =>
+    records.map((r) => ({
+      id: r.id,
+      kind: r.kind,
+      claim: r.claim,
+      ...(r.attribute ? { attribute: r.attribute } : {}),
+    }));
+  return JSON.stringify(
+    {
+      allowedFacts: brief(pack.allowedFacts),
+      sourcedResearch: brief(pack.sourcedResearch),
+      gcdObservations: brief(pack.gcdObservations),
+      performanceEvidence: brief(pack.performanceEvidence),
+      creativeHypotheses: brief(pack.creativeHypotheses),
+      causalHypotheses: brief(pack.causalHypotheses),
+      unusable: {
+        conflicted: pack.conflicts.map((c) => ({ aId: c.aId, bId: c.bId, subject: c.subject })),
+        stale: pack.staleEvidence.map((r) => r.id),
+        inactive: pack.inactiveEvidence.map((r) => r.id),
+        unsupportedAssumptions: pack.unsupportedAssumptions.map((r) => r.id),
+      },
+      counts: pack.counts,
+    },
+    null,
+    2,
+  );
+}

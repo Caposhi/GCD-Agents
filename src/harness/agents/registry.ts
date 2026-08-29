@@ -173,15 +173,30 @@ const STAGE_DEFINITIONS: AgentStageDefinition[] = [
   {
     id: "automotive-truth",
     order: 2,
-    purpose: "Establish and constrain the automotive claims the content may make, citing only citable evidence.",
+    purpose: "Review the complete typed Stage 1 output and structurally constrain claims to classified citable evidence.",
     modelPolicy: "reasoning-heavy",
-    promptPaths: [],
-    skillPaths: ["skills/compliance-checklist/SKILL.md"],
+    // Phase 0B.2: a dedicated prompt, and a deliberately narrow skill.
+    //
+    // `skills/compliance-checklist/SKILL.md` was registered here and has been
+    // removed. It is the final package critic's rubric: provider payloads,
+    // hashtag counts, image profiles and pixel limits, WCAG contrast, GBP
+    // fields, and a PASS/FAIL verdict against a built package. None of that is
+    // this stage's contract, and injecting it as instruction would have told a
+    // stage that decides what may be *claimed* to behave like a stage that
+    // reviews what was *produced*. It also carries concrete facts — an address,
+    // a city, a slogan — which must never enter the instruction channel of the
+    // stage whose whole job is to refuse claims that lack evidence. It stays
+    // registered on `final-critic`, where it is exactly right.
+    //
+    // `skills/claim-boundaries/SKILL.md` replaces it with the claim-level
+    // subset that does belong here, written to contain no facts of its own.
+    promptPaths: ["agents/automotive-truth.md"],
+    skillPaths: ["skills/claim-boundaries/SKILL.md"],
     referencePaths: ["config/approved-facts.json"],
     allowedCapabilities: ["read_evidence_pack"],
     // The stage whose entire job is truth must be given the fact classes.
     requiredEvidenceKinds: ["verified_automotive_fact", "verified_business_fact"],
-    inputSchema: objectValidator("AutomotiveTruthInput", ["concept", "evidencePack"]),
+    inputSchema: objectValidator("AutomotiveTruthInput", ["strategyOutput", "evidencePack"]),
     outputSchema: objectValidator("AutomotiveTruthOutput", ["allowedClaims", "forbiddenClaims"]),
     mandatory: true,
     prerequisites: ["evidence_pack_built", "strategy-concept"],
