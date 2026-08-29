@@ -76,7 +76,7 @@ flowchart LR
 - `.github/workflows/ci.yml`: comprehensive Node 22, offline/static, PostgreSQL 16/18, AgentShield, and workflow validation.
 - `.github/workflows/deploy-production.yml`: exact-SHA serialized Render controller; currently disabled by the repository gate.
 
-The current reasoning flow is analytics, copywriter, image specification, hashtag/SEO/timing, platform formatter, and final critic under deterministic TypeScript control. Phase 0B.1 adds a **dormant** `strategy-concept` executor alongside it — merged, but not reachable from any production path and not established as deployed. It is not yet the target six-stage Content OS architecture and implements no empirical learning. Phase 0B.0 added the registry and evidence substrate those stages use; Phase 0B.1 adds the first executor, which **does** inject prompt and skill assets into its instruction channel — references stay out of it. Neither changes this production flow. See [Architecture](docs/ARCHITECTURE.md) and [Roadmap](docs/ROADMAP.md).
+The current reasoning flow is analytics, copywriter, image specification, hashtag/SEO/timing, platform formatter, and final critic under deterministic TypeScript control. Phase 0B.1 adds a **dormant** `strategy-concept` executor alongside it — merged, but not reachable from any production path and not established as deployed. Phase 0B.2 adds a second dormant executor, `automotive-truth`, which is **implemented in a draft pull request and not merged**. It is not yet the target six-stage Content OS architecture and implements no empirical learning. Phase 0B.0 added the registry and evidence substrate those stages use; Phase 0B.1 adds the first executor, which **does** inject prompt and skill assets into its instruction channel — references stay out of it. Neither changes this production flow. See [Architecture](docs/ARCHITECTURE.md) and [Roadmap](docs/ROADMAP.md).
 
 ## Phase 0A guarantees
 
@@ -147,7 +147,7 @@ Details in [Data model](docs/DATA_MODEL.md) (schema and constraints), [Architect
 
 **`MERGED` through PR #42 — not established as deployed, not production-validated, and deliberately dormant.** Merge commit `8c8bd5b0fd500f9a28247f472fd6626bb05c6ebd`; reviewed head `2dc416f1a49bb419531549e95cb31052ada28009`; base `aec3e805cecc2b99dc7a582292bef536cee8ae21`.
 
-Merging changed nothing about reachability. Nothing calls it — not the worker, scheduler, orchestrator, approval path, or any HTTP route. `POST /console/content-intelligence/preview` remains inert and never invokes it. Every registered stage, including this one, still reports `executionEnabled: false`, and only `strategy-concept` has an executor. No route, migration, environment variable, publishing path, approval path, or provider authority was added. Running it requires a caller to construct an invocation and supply a runner.
+Merging changed nothing about reachability. Nothing calls it — not the worker, scheduler, orchestrator, approval path, or any HTTP route. `POST /console/content-intelligence/preview` remains inert and never invokes it. Every registered stage, including this one, still reports `executionEnabled: false`. No route, migration, environment variable, publishing path, approval path, or provider authority was added. Running it requires a caller to construct an invocation and supply a runner.
 
 This is the first Content Intelligence stage with a real execution path. The interesting part is not the model call — it is refusing to believe the result.
 
@@ -162,6 +162,24 @@ This is the first Content Intelligence stage with a real execution path. The int
 - **A dedicated prompt.** The registry previously pointed this stage at `agents/analytics.md`, which defines a performance-readout subagent with a different output contract, its own pinned model, and declared tools. Executing against it would have meant running one contract while claiming another.
 
 Determinism is proven for the validator and the boundary using an injected fake runner. **Real model output is not deterministic and is not claimed to be.**
+
+Details in [Architecture](docs/ARCHITECTURE.md), [Roadmap](docs/ROADMAP.md), and [Testing](docs/TESTING.md).
+
+## Automotive-truth stage executor (Phase 0B.2)
+
+**`IMPLEMENTED` in a draft pull request — not merged, therefore not on `main`, not deployed, not production-validated, and deliberately dormant.**
+
+Stage 2 decides what the content is allowed to assert. Nothing calls it — not the worker, scheduler, orchestrator, approval path, or any HTTP route; the preview stays inert; `executionEnabled` was not changed for any stage; and no route, migration, environment variable, dependency, workflow change, publishing path, approval path, or provider authority was added.
+
+A stage named "automotive-truth" is the obvious place to accidentally build a machine that lets a language model declare things true. It is not one.
+
+- **No sentence the model writes becomes a claim the pipeline may make.** A permission is a **binding to an evidence id**, not a sentence. Fabricated ids, ids from any other evidence class, duplicates, and ids the pack marked conflicted, stale, or inactive are all rejected.
+- **The class the evidence system recorded wins.** The model must declare `claimClass`, and a declaration that disagrees with the record fails — which is how "a business fact permitted as automotive truth" is caught rather than merely discouraged. The record is never reclassified to match the model.
+- **What may be claimed is read back from the records.** `allowedClaimRecords()` and `allowedClaimTexts()` take ids and never read model text, so a restatement that overstates its fact cannot become the claim.
+- **The model's prose is not verified, and the code does not claim to verify it.** `assessment`, `restatement`, `forbiddenClaims`, `requiredCaveats`, and `openQuestions` are length-bounded and nothing more. **A language model is not a semantic prover of factual truth here.** The gap is closed structurally, not by keyword matching: prose is branded `provisional_model_prose` (`verified: false`, `publishable: false`) and each restatement is separately branded `restatementVerified: false`. `forbiddenClaims` is advisory — nothing enforces it, and a claim absent from it is not thereby permitted.
+- **Missing evidence refuses before the model call.** Both `verified_automotive_fact` and `verified_business_fact` must be citable in the pack. Sourced research, observations, performance evidence, hypotheses, assumptions, and raw approved-facts data are **not** substitutes.
+- **A dedicated prompt, and a narrow skill in place of the wrong one.** The registry pointed this stage at `skills/compliance-checklist/SKILL.md` — the final critic's publishing-era rubric (provider payloads, hashtag counts, image profiles, WCAG contrast, GBP fields, a PASS/FAIL verdict) which also states concrete facts. It was removed from this stage, stays registered on `final-critic`, and is replaced by `skills/claim-boundaries/SKILL.md`: claim-level rules only, with **no facts of its own**, asserted by test.
+- **No second model-call implementation.** The stage reuses the Phase 0B.1 boundary, the central model-policy resolution, and the shared evidence projection. It adds no retry wrapper, repair call, tool mechanism, or policy table.
 
 Details in [Architecture](docs/ARCHITECTURE.md), [Roadmap](docs/ROADMAP.md), and [Testing](docs/TESTING.md).
 
