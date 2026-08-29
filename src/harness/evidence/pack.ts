@@ -290,11 +290,12 @@ export function unusableEvidenceIds(pack: EvidencePack): Set<string> {
 /**
  * The bounded projection of a pack that reasoning stages are shown.
  *
- * Only id, claim, and — where it matters — attribute are sent. Provenance,
- * confidence numbers, and internal timestamps are withheld: a stage's job is to
- * reason within what the evidence system already decided, not to relitigate it,
- * and a confidence score in the prompt is an invitation to argue a disputed
- * claim back into use.
+ * Only id, kind, claim, and — where it matters — attribute are sent. `kind` is
+ * the evidence system's authoritative classification; stages must never infer
+ * it from claim prose. Provenance, confidence numbers, reviewer identity, and
+ * internal timestamps are withheld: a stage's job is to reason within what the
+ * evidence system already decided, not to relitigate it, and a confidence score
+ * in the prompt is an invitation to argue a disputed claim back into use.
  *
  * Conflicted, stale, and inactive material is included **as a named exclusion
  * list** rather than dropped silently.
@@ -305,10 +306,14 @@ export function unusableEvidenceIds(pack: EvidencePack): Set<string> {
  */
 export function renderEvidencePackForStage(pack: EvidencePack): string {
   const brief = (records: EvidenceRecord[]) =>
-    records.map((r) => ({ id: r.id, claim: r.claim, ...(r.attribute ? { attribute: r.attribute } : {}) }));
+    records.map((r) => ({
+      id: r.id,
+      kind: r.kind,
+      claim: r.claim,
+      ...(r.attribute ? { attribute: r.attribute } : {}),
+    }));
   return JSON.stringify(
     {
-      builtAt: pack.builtAt,
       allowedFacts: brief(pack.allowedFacts),
       sourcedResearch: brief(pack.sourcedResearch),
       gcdObservations: brief(pack.gcdObservations),

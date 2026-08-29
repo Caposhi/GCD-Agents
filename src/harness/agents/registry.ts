@@ -173,7 +173,7 @@ const STAGE_DEFINITIONS: AgentStageDefinition[] = [
   {
     id: "automotive-truth",
     order: 2,
-    purpose: "Establish and constrain the automotive claims the content may make, citing only citable evidence.",
+    purpose: "Review the complete typed Stage 1 output and structurally constrain claims to classified citable evidence.",
     modelPolicy: "reasoning-heavy",
     // Phase 0B.2: a dedicated prompt, and a deliberately narrow skill.
     //
@@ -196,7 +196,7 @@ const STAGE_DEFINITIONS: AgentStageDefinition[] = [
     allowedCapabilities: ["read_evidence_pack"],
     // The stage whose entire job is truth must be given the fact classes.
     requiredEvidenceKinds: ["verified_automotive_fact", "verified_business_fact"],
-    inputSchema: objectValidator("AutomotiveTruthInput", ["concept", "evidencePack"]),
+    inputSchema: objectValidator("AutomotiveTruthInput", ["strategyOutput", "evidencePack"]),
     outputSchema: objectValidator("AutomotiveTruthOutput", ["allowedClaims", "forbiddenClaims"]),
     mandatory: true,
     prerequisites: ["evidence_pack_built", "strategy-concept"],

@@ -65,6 +65,8 @@ import {
   unusableEvidenceIds,
 } from "../evidence/pack.js";
 import { AgentRegistry } from "./registry.js";
+import type { StrategyConceptOutput } from "./strategyConcept.js";
+import { validateStrategyConceptOutput } from "./strategyConcept.js";
 import {
   StageExecutionError,
   StageExecutionMetadata,
@@ -83,7 +85,7 @@ export const TRUTH_LIMITS = {
   forbiddenClaimChars: 400,
   caveatChars: 300,
   openQuestionChars: 300,
-  conceptChars: 4_000,
+  strategyOutputChars: 12_000,
   maxAllowedClaims: 12,
   maxForbiddenClaims: 12,
   maxCaveats: 6,
@@ -192,13 +194,11 @@ export interface AutomotiveTruthResult {
 
 export interface AutomotiveTruthInvocation {
   /**
-   * The concept from stage 1 — pass `strategyOutput.provisional.concept`.
-   *
-   * It is provisional model prose and is treated as untrusted data: it is the
-   * subject of review, never a source of truth, and it never reaches the
-   * instruction channel.
+   * The complete typed output from stage 1. Its prose and typed citations are
+   * review input only: they are untrusted data, never a source of truth, never
+   * instructions, and never automatic claim permissions.
    */
-  concept: string;
+  strategyOutput: StrategyConceptOutput;
   evidencePack: EvidencePack;
   registry?: AgentRegistry;
   runner: StageRunner;
@@ -230,6 +230,66 @@ function requireExactKeys(obj: Record<string, unknown>, keys: string[], label: s
   if (extras.length) fail(`${label} has unknown field(s): ${extras.join(", ")}`);
   for (const key of keys) {
     if (!(key in obj)) fail(`${label} is missing "${key}"`);
+  }
+}
+
+/**
+ * Revalidate the runtime value at the stage boundary even though callers have a
+ * compile-time `StrategyConceptOutput`. Casts, deserialisation, and JavaScript
+ * callers can still supply malformed data. Reconstructing the Stage 1 validator
+ * input also prevents the branding fields from being treated as authority.
+ */
+function validateStrategyOutputInput(
+  value: unknown,
+  pack: EvidencePack,
+): StrategyConceptOutput {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    fail('"strategyOutput" must be a complete StrategyConceptOutput object');
+  }
+  const output = value as Record<string, unknown>;
+  requireExactKeys(output, ["provisional", "evidence"], "strategyOutput");
+
+  if (!output.provisional || typeof output.provisional !== "object" || Array.isArray(output.provisional)) {
+    fail('"strategyOutput.provisional" must be an object');
+  }
+  if (!output.evidence || typeof output.evidence !== "object" || Array.isArray(output.evidence)) {
+    fail('"strategyOutput.evidence" must be an object');
+  }
+  const provisional = output.provisional as Record<string, unknown>;
+  const evidence = output.evidence as Record<string, unknown>;
+  requireExactKeys(
+    provisional,
+    ["kind", "publishable", "verified", "angle", "concept", "rationale", "hypotheses", "assumptions"],
+    "strategyOutput.provisional",
+  );
+  requireExactKeys(
+    evidence,
+    ["kind", "supportingFactIds", "observationIds", "performanceSignalIds"],
+    "strategyOutput.evidence",
+  );
+  if (provisional.kind !== "provisional_model_prose"
+      || provisional.publishable !== false
+      || provisional.verified !== false) {
+    fail('"strategyOutput.provisional" has invalid boundary branding');
+  }
+  if (evidence.kind !== "typed_evidence_citations") {
+    fail('"strategyOutput.evidence" has invalid boundary branding');
+  }
+
+  try {
+    return validateStrategyConceptOutput({
+      angle: provisional.angle,
+      concept: provisional.concept,
+      rationale: provisional.rationale,
+      hypotheses: provisional.hypotheses,
+      assumptions: provisional.assumptions,
+      supportingFactIds: evidence.supportingFactIds,
+      observationIds: evidence.observationIds,
+      performanceSignalIds: evidence.performanceSignalIds,
+    }, pack);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return fail(`"strategyOutput" is invalid: ${detail}`);
   }
 }
 
@@ -425,11 +485,11 @@ export function assertRequiredTruthEvidence(pack: EvidencePack, registry: AgentR
 /**
  * Execute the automotive-truth stage exactly once.
  *
- * Fails closed on: a missing required fact class, an empty or oversized concept,
- * a missing asset, a runner error or timeout, non-strict JSON, any structural
- * contract violation, and any permission that is fabricated, wrong-class,
- * misdeclared, duplicated, stale, conflicted, or inactive. Performs no retry and
- * no second model call.
+ * Fails closed on: a missing required fact class, an empty, malformed, or
+ * oversized complete Stage 1 output, a missing asset, a runner error or timeout,
+ * non-strict JSON, any structural contract violation, and any permission that is
+ * fabricated, wrong-class, misdeclared, duplicated, stale, conflicted, or
+ * inactive. Performs no retry and no second model call.
  *
  * It does **not** verify the truth of the returned prose — see this module's
  * header for the exact boundary.
@@ -439,9 +499,13 @@ export async function executeAutomotiveTruth(
 ): Promise<AutomotiveTruthResult> {
   const registry = invocation.registry ?? new AgentRegistry();
 
-  const concept = requireBoundedString(invocation.concept, "concept", TRUTH_LIMITS.conceptChars);
   if (!invocation.evidencePack || typeof invocation.evidencePack !== "object") {
     fail("an evidence pack is required");
+  }
+  const strategyOutput = validateStrategyOutputInput(invocation.strategyOutput, invocation.evidencePack);
+  const renderedStrategyOutput = JSON.stringify(strategyOutput, null, 2);
+  if (renderedStrategyOutput.length > TRUTH_LIMITS.strategyOutputChars) {
+    fail(`"strategyOutput" exceeds ${TRUTH_LIMITS.strategyOutputChars} characters`);
   }
   assertRequiredTruthEvidence(invocation.evidencePack, registry);
 
@@ -457,7 +521,7 @@ export async function executeAutomotiveTruth(
     // would matter most.
     referenceChannel: "omit",
     dataBlocks: [
-      { label: "CONCEPT", body: concept },
+      { label: "STRATEGY_OUTPUT", body: renderedStrategyOutput },
       { label: "EVIDENCE", body: renderEvidenceForTruthStage(invocation.evidencePack) },
     ],
   });

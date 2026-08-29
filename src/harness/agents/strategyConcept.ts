@@ -34,9 +34,10 @@
  *    supported way to obtain evidence records from this stage's output, and it
  *    returns records drawn from `pack.allowedFacts`, never model text.
  *
- * **Factual truth validation is the `automotive-truth` stage's job.** Stage 2
- * establishes and constrains the claims content may make. Nothing produced here
- * is publishable until that stage has run; this stage picks an angle.
+ * Stage 2 receives this complete typed output and structurally constrains the
+ * claims content may make to evidence-record ids. It does not semantically prove
+ * this prose true. Nothing produced here is publishable; this stage picks an
+ * angle and preserves its untrusted inputs for that downstream review.
  */
 
 import { EvidenceRecord } from "../evidence/contract.js";
@@ -192,8 +193,10 @@ export const renderEvidenceForStage = renderEvidencePackForStage;
  * *citations*. It does not evaluate the truth of `angle`, `concept`, or
  * `rationale`, which are returned inside `provisional` marked
  * `publishable: false` / `verified: false`. Prose that misstates a performance
- * correlation as automotive fact will pass this validator; catching that is the
- * `automotive-truth` stage's job, and nothing here may be published before it.
+ * correlation as automotive fact will pass this validator. `automotive-truth`
+ * receives the complete result and may structurally bind permissions to evidence
+ * ids, but it does not semantically prove the prose true; nothing here is
+ * publishable.
  */
 export function validateStrategyConceptOutput(
   raw: Record<string, unknown>,
