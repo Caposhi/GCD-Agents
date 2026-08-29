@@ -1,6 +1,6 @@
 # Current status
 
-This file separates four things that are routinely confused: what is in the repository, what is running in production, what phase state each body of work is in, and what the single next safe operation is. **Repository state and production state are separate facts and currently differ.** Production was last independently verified at `44d7336…` on 2026-08-28. The source lineage beginning with PR #42's merge additionally carries the merged, dormant Phase 0B.1 `strategy-concept` executor, which is **not established as deployed or production-validated** — nothing calls it, so the difference changes no production behavior. **The exact current `main` is a Git/GitHub lookup, not a field this file maintains**: run `git rev-parse origin/main`. The dated baseline table below is historical evidence of a verified state, not a live mirror; it is deliberately not refreshed to chase the current tip.
+This file separates four things that are routinely confused: what is in the repository, what is running in production, what phase state each body of work is in, and what the single next safe operation is. **Repository state and production state are separate facts and currently differ.** Production was last independently verified at `44d7336…` on 2026-08-28. The source lineage additionally carries the merged, dormant Phase 0B.1 `strategy-concept` and Phase 0B.2 `automotive-truth` executors, neither established as deployed or production-validated — nothing calls either one, so the difference changes no production behavior. **The exact current `main` is a Git/GitHub lookup, not a field this file maintains**: run `git rev-parse origin/main`. The dated baseline table below is historical evidence of a verified state, not a live mirror; it is deliberately not refreshed to chase the current tip.
 
 ## Repository state
 
@@ -37,7 +37,7 @@ This file separates four things that are routinely confused: what is in the repo
 
 The API pre-deploy runner applied migration 006 during this release; `_migrations` now holds `001–006`.
 
-**Repository `main` and the live release are separate facts that happen to match today.** Relative commit distance between them is a dated observation, never durable truth; the per-PR semantic state below is what matters.
+**Repository `main` and the live release are separate facts.** They matched at the dated 2026-08-28 baseline, but later source-only merges mean that equality must not be presented as current truth. Relative commit distance is always a dated observation; the per-PR semantic state below is what matters.
 
 - **PR #35** — merged; documentation-only, no runtime or deployment effect.
 - **PR #36** — merged; worker ownership and recovery. **Deployed** — the code is live in the current `44d7336…` release, independently verified 2026-08-28; the behavioral bootstrap evidence (production-validated behavior) remains operator-reported 2026-08-27, not independently re-examined.
@@ -75,7 +75,7 @@ This closes the previously open item requiring observation of a normal scheduled
 | Phase 0B prerequisite — fact and evidence contract | `MERGED` · `DEPLOYED` — delivered by Phase 0B.0; migration 006 applied 2026-08-28 |
 | **Phase 0B.0 evidence and agent registry foundation** — merge `44d7336…` | **`MERGED`** · **`DEPLOYED`** — API, worker, and scheduler all at the target, migration 006 applied 2026-08-28 (independently verified 2026-08-28) |
 | **Phase 0B.1 `strategy-concept` stage executor** — merge `8c8bd5b…` | **`MERGED`** — **not established as `DEPLOYED`, not `PRODUCTION-VALIDATED`**; dormant, no production path reaches it |
-| **Phase 0B.2 `automotive-truth` stage executor** — draft PR #44 | **`IMPLEMENTED`** — **not `MERGED`**, therefore not on `main`, **not `DEPLOYED`, not `PRODUCTION-VALIDATED`**; dormant, no production path reaches it |
+| **Phase 0B.2 `automotive-truth` stage executor** — PR #44, merge `52050b4…` | **`MERGED`** — **not established as `DEPLOYED`, not `PRODUCTION-VALIDATED`**; deliberately dormant, no production path reaches it, `executionEnabled: false` |
 | Phase 0B remaining four reasoning stages | `PLANNED` — registered but not wired |
 | Worker lease/reaper | `SUPERSEDED` by ownership plus startup recovery; rationale and re-entry condition in [Roadmap](ROADMAP.md) |
 
@@ -93,9 +93,9 @@ See [ROLLOUT_PHASE_0B0.md §0](ROLLOUT_PHASE_0B0.md) for the full record. Remain
 
 **Product.** Phase 0B continues, one stage at a time. **Phase 0B.1 is `MERGED`** through PR #42 (merge `8c8bd5b0fd500f9a28247f472fd6626bb05c6ebd`, reviewed head `2dc416f…`, base `aec3e805…`) and is **not established as deployed or production-validated**. It is dormant by design: no worker, scheduler, orchestrator, approval path, or HTTP route calls it, the preview stays inert, and all six registry entries still have `executionEnabled: false`. Phase 0B.0 shipped without touching deployment authority and 0B.1 did the same — no route, migration, environment variable, publishing path, approval path, or provider authority was added.
 
-**Phase 0B.2 is `IMPLEMENTED`, not `MERGED`.** The dormant `automotive-truth` executor sits in **draft PR #44**. It is not on `main`, so it is part of neither repository state as recorded above nor production state, and it is not deployed or production-validated. It, too, changed no `executionEnabled` field and added no route, migration, environment variable, dependency, workflow change, publishing path, approval path, or provider authority. It receives the complete typed Stage 1 result as bounded untrusted data and structurally whitelists exact ids from an evidence projection that includes authoritative `kind`. Its guarantee is that **no sentence the model writes becomes a claim the pipeline may make** — not that either stage's prose or a restatement is semantically proved true; see [Roadmap](ROADMAP.md).
+**Phase 0B.2 is `MERGED`, deliberately dormant, and not established as deployed or production-validated.** PR #44 merged the `automotive-truth` executor without changing reachability: the worker, scheduler, orchestrator, API, preview, approval, publication, provider, image, Slack, database, and evidence-write paths cannot reach it, and all six stages remain `executionEnabled: false`. It receives the complete typed Stage 1 result as bounded untrusted data and structurally whitelists exact ids from an evidence projection that includes authoritative `kind`. Its guarantee is that **no sentence the model writes becomes a claim the pipeline may make** — not that either stage's prose or a restatement is semantically proved true; see [Roadmap](ROADMAP.md).
 
-**Next slice: Phase 0B.3 — dormant `hook-story-script` stage executor**, which writes inside the claim boundary stage 2 establishes. Not designed or implemented here. Deployment-authority work remains an independent track and must not be combined with it.
+**Next slice: Phase 0B.3 — dormant `hook-story-script` stage executor.** Named only; not designed or implemented here. Deployment-authority work remains an independent track and must not be combined with it.
 
 **Operational follow-up.** The ownership bootstrap and handoff proof are complete (operator-reported 2026-08-27) and the Phase 0B.0 rollout is complete (independently verified 2026-08-28), so enabling `RENDER_DEPLOY_AUTOMATION_ENABLED` and proving the GitHub controller path are now **eligible** — they remain separately unauthorized, and the gate was confirmed `false` on 2026-08-28. Each still needs its own authorization and immediate re-verification. **This is explicitly not a blocker to Phase 0B.**
 
@@ -141,9 +141,9 @@ This is the second incident in the same family as the Phase 0A worker/migration-
 - durable provider-operation state/reconciliation and exactly-once guarantees;
 - authenticated reviewer/control identities or operator revocation UI;
 - encrypted provider-token persistence;
-- runtime `AgentRegistry`, skill/reference injection, or research retrieval;
-- the target six-stage Content Intelligence reasoning architecture;
-- durable fact/evidence records, performance ingestion, active scorecard writes, hypothesis tracking, or governed improvement proposal generation;
+- production execution through `AgentRegistry`, production skill/reference injection, or research retrieval;
+- the complete target six-stage Content Intelligence reasoning architecture — two dormant executors are merged, but no stage is production-wired;
+- populated production fact/evidence records, performance ingestion, active scorecard writes, hypothesis tracking, or governed improvement proposal generation;
 - autonomy B/C behavior; every parsed phase still requires the Phase A approval gate; and
 - browser-based video editing.
 
@@ -154,6 +154,8 @@ Brief leases and stale-work recovery are no longer listed here: stale-work recov
 PR #34's exact reviewed head passed Node 22 offline quality gates, PostgreSQL 16 integration, PostgreSQL 18 integration, AgentShield 1.4.0, and workflow/YAML validation. After merge, the production workflow's authorization job failed closed because the gate was false, and the deploy job was skipped; this was the intended disabled-state behavior, not a controller release proof.
 
 PR #36's exact reviewed head `281eb8f…` passed all five CI jobs before merge. Its ownership and recovery behavior is proven by offline suites and by disposable local PostgreSQL integration — including real advisory-lock contention and a `pg_terminate_backend` proof that a claim cannot commit after ownership loss. It is **deployed**, and its production evidence is the operator-reported 2026-08-27 bootstrap (a ~58-second ownership wait before readiness, and reconciliation of the August 10 stranded brief). That specific evidence was **not** re-examined by the 2026-08-28 final inspection, which verified current service SHAs, health, control settings, migration state, inventory, queue counts, and error absence — not the earlier bootstrap's provider-history reconciliation.
+
+PR #44's exact reviewed head `5b2ed96663643fe68d3cc72a64137cb9abd87e4e` passed all five GitHub CI jobs before merge: Node 22 offline quality gates, PostgreSQL 16 integration, PostgreSQL 18 integration, AgentShield 1.4.0, and workflow/YAML static validation. That is repository validation for the dormant Phase 0B.2 source, not deployment or production evidence.
 
 The Phase 0D release (`10098de…`) was, at the time, observed live on all three services through Render's previous native auto-deploy path: API pre-deploy completed with all migrations already recorded, API health returned the exact Phase 0D SHA, and the worker emitted the exact ready marker. That observation proved application deployment and health for that historical release, not GitHub controller authority — it does not describe the current release. **The current production release, `44d7336…`, was reached through the separately authorized manual migration-bearing rollout** in [ROLLOUT_PHASE_0B0.md](ROLLOUT_PHASE_0B0.md), not through the GitHub controller path, and was independently verified live on all three services on 2026-08-28. See [Testing](TESTING.md) for deterministic coverage and [Deployment control](DEPLOYMENT.md) for release semantics.
 

@@ -1,6 +1,6 @@
 # GCD Content Intelligence roadmap
 
-Last reviewed: 2026-08-27.
+Last reviewed: 2026-08-29.
 
 This roadmap is the canonical unfinished-work sequence and the current-phase cursor. It orders work; it does not grant authority to deploy, migrate, call providers, change external configuration, or begin a phase. [Status](STATUS.md) records what is verified true now. Where this file and verified production evidence disagree, resolve the discrepancy rather than following this text. Roadmap continuity is binding — see [`AGENTS.md`](../AGENTS.md).
 
@@ -236,11 +236,15 @@ Support source, source type, provenance, confidence, freshness, `observed_at`, `
 
 ### Phase 0B.2 — automotive-truth stage executor
 
-**State:** **`IMPLEMENTED`** — proposed in **draft PR #44**. **Not `MERGED`, not `DEPLOYED`, not `PRODUCTION-VALIDATED`.** No model call from this slice is reachable in production, and none is reachable at all without a caller constructing an invocation and supplying a runner.
+**State:** **`MERGED`** — deliberately dormant. **Not established as `DEPLOYED`; not `PRODUCTION-VALIDATED`.** No model call from this slice is reachable in production, and none is reachable at all without a caller constructing an invocation and supplying a runner.
 
-**Dormancy.** No worker, scheduler, orchestrator, approval path, image path, Slack path, provider, database, or HTTP route reaches the executor; the preview stays inert and never invokes it. All six registry entries still have `executionEnabled: false` — this slice did not change that field for any stage. The change added no route, migration, environment variable, dependency, workflow change, publishing path, approval path, or provider authority.
+**PR / merge:** PR #44, base `15e18ecfd5406b0afb4fd8ad2f833581f42451f4`, reviewed head `5b2ed96663643fe68d3cc72a64137cb9abd87e4e`, merge `52050b4d20d03b5cbaf2a98eaab71b2f77685d80`. The merge commit's first parent is the recorded base and its second parent is the exact reviewed head.
+
+**Dormancy.** No worker, scheduler, orchestrator, API, preview, approval, publication, provider, image, Slack, database, or evidence-write path reaches the executor. These boundaries are asserted against the concrete source paths in the offline suite, not inferred from deployment state. All six registry entries still have `executionEnabled: false` — this slice did not change that field for any stage. The change added no route, migration, environment variable, dependency, workflow change, publishing path, approval path, or provider authority. Merge changed repository state only; it is not evidence of deployment or production behavior.
 
 **Delivered:** the `automotive-truth` executor and its output contract (`src/harness/agents/automotiveTruth.ts`), a dedicated prompt (`agents/automotive-truth.md`), a narrowly scoped stage skill (`skills/claim-boundaries/SKILL.md`), and the registry repointing that goes with them. Two helpers moved to where they belong so both stages share one definition rather than diverging: the evidence projection and the unusable-id set now live beside the pack (`renderEvidencePackForStage`, `unusableEvidenceIds`), and the "declared evidence classes must be present" precondition lives on the shared boundary (`assertRequiredEvidenceKinds`). **No second model-call implementation, retry wrapper, repair call, tool mechanism, or model-policy table was created** — the stage reuses `invokeStage` and the central policy resolution unchanged.
+
+**Schema / migrations:** none. No configuration, workflow, dependency, environment contract, route, or deployment-authority change.
 
 **The one thing this stage had to make impossible.** A stage named "automotive-truth" is the obvious place to accidentally build a machine that lets a language model declare things true. **No sentence the model writes becomes a claim the pipeline may make.** A permission is a *binding to an evidence id*, not a sentence:
 
@@ -251,21 +255,37 @@ Support source, source type, provenance, confidence, freshness, `observed_at`, `
 
 **What is NOT guaranteed, stated plainly.** The model's prose is not verified, and a restatement is not checked for faithfulness to the fact it cites. `assessment`, `restatement`, `forbiddenClaims`, `requiredCaveats`, and `openQuestions` are length-bounded and nothing more. A restatement may overstate, mis-round, or add a superlative and still validate. **This stage does not make a language model a semantic prover of factual truth, and nothing in the code or these documents claims it does.** The gap is closed *structurally* rather than by keyword matching — which would be trivially evadable and would imply a check the code does not perform: prose returns branded `provisional_model_prose` (`verified: false`, `publishable: false`), each restatement is separately branded `restatementVerified: false`, and the permission channel is a separate branded type. `forbiddenClaims` is advisory prose in the provisional channel: nothing enforces it, and a claim absent from it is not thereby permitted.
 
+The limitation applies to **both stages**: Stage 1 does not semantically prove its angle, concept, rationale, hypotheses, or assumptions, and Stage 2 does not semantically prove either that inherited prose or its own assessment, restatements, caveats, questions, and forbidden-claim prose. The typed handoff and evidence-id binding contain what those strings can authorize; they do not make the strings true.
+
 **Missing evidence refuses before the model call.** The registry declares both `verified_automotive_fact` and `verified_business_fact` for this stage, and the shared precondition reads `pack.allowedFacts` only. Sourced research, observations, performance evidence, hypotheses, assumptions, and the raw approved-facts reference are **not** substitutes and cannot satisfy it. A pack missing either class costs no model request.
 
 **Why `skills/compliance-checklist/SKILL.md` was removed from this stage.** It was the registered skill for `automotive-truth` and would have been injected verbatim as its instructions. It is the **final package critic's** rubric — provider payloads, hashtag counts, image profiles and pixel ceilings, WCAG contrast ratios, GBP fields — and it directs a PASS/FAIL verdict on an already-built package. That is a different job from deciding what may be claimed, and a stage told to run it would have been running one contract while claiming another. It also states concrete facts (an address, a city, a slogan) that would have entered the instruction channel of the one stage whose entire purpose is refusing claims that lack evidence. It remains registered on `final-critic`, where it is exactly right, and a test asserts it is registered nowhere else. `skills/claim-boundaries/SKILL.md` replaces it with the claim-level subset that does belong here, written to contain **no facts of its own** — tests assert it names no approved-fact value, no vehicle make, and no automotive figure, and that it stays out of packaging, image, accessibility, and publishing scope. **No new unverified automotive fact was introduced in any prompt or skill.**
 
 **Also decided.** `config/approved-facts.json` stays declared as this stage's reference and is **omitted** from the invocation, with asset metadata recording `channel: "omitted"` — the classified evidence projection is the single factual input, and an unclassified raw duplicate competing with it would matter most in exactly this stage. The complete typed Stage 1 output is passed as one bounded **untrusted data block**, never as instruction; its prose and citations are subjects of review, not sources of truth or automatic permissions.
 
-**Testing.** The offline suite grew from 170 to 283 checks, all with an **injected runner**; nothing in it reaches Anthropic or any network, and this executor has no default runner to fall back to. The suite was confirmed to pass with a **nonempty `ANTHROPIC_API_KEY`** exported in the parent process. A pre-existing Phase 0B.1 assertion that read "only strategy-concept has an executor" was a tautology that could not fail; it is replaced with a check against the agents directory listing, so adding a third executor fails the test rather than passing silently.
+**Tool-free prompts.** Both `agents/strategy-concept.md` and `agents/automotive-truth.md` explicitly declare `tools: []` and state that the stage cannot browse, read files, call APIs, or run code. The shared boundary registers no tools and refuses capabilities beyond `read_evidence_pack`.
 
-**Accepted limitations.** The stage is dormant: nothing calls it. Prose truth is not verified, per the paragraph above. Determinism is proven for the validator and the boundary **with an injected runner** — real model output is not deterministic and is not claimed to be. Neither this stage nor `strategy-concept` has ever executed against a real model in this repository, and no output of either has been reviewed for quality.
+**Material rejected alternatives.** Keyword or semantic-prose matching was rejected because it would be evadable and would overclaim verification the code does not perform. A second model implementation, retry, repair call, model-policy table, or tool mechanism was rejected in favor of the existing single-shot boundary. The publishing-era `skills/compliance-checklist/SKILL.md` was rejected for this stage because it is the final package critic's rubric and contains concrete shop/publishing facts; it remains only on `final-critic`. The replacement `skills/claim-boundaries/SKILL.md` is narrowly claim-scoped and tested to contain no facts of its own.
+
+**Automated validation.** The content-intelligence offline suite grew from 170 to 283 checks, all with an **injected runner**; nothing in it reaches Anthropic or any network, and this executor has no default runner to fall back to. The suite was confirmed to pass with a **nonempty `ANTHROPIC_API_KEY`** exported in the parent process. A pre-existing Phase 0B.1 assertion that read "only strategy-concept has an executor" was a tautology that could not fail; it is replaced with a check against the agents directory listing, so adding a third executor fails the test rather than passing silently. On the exact reviewed head, all five GitHub CI jobs succeeded: Node 22 offline quality gates, PostgreSQL 16 integration, PostgreSQL 18 integration, AgentShield 1.4.0, and workflow/YAML static validation.
+
+**Production evidence:** none. Merge is not deployment evidence, and no production path can execute the stage.
+
+**Rollback / recovery:** no migration or external state exists to unwind. Source rollback is an ordinary application-code decision, but no rollback is currently required because the executor is dormant.
+
+**Security and privacy implications:** the complete Stage 1 value and evidence projection are bounded untrusted data; prompts are tool-free; reference data is omitted from the instruction channel; no prompt, evidence, model prose, credential, or unpublished content is logged by the boundary; and no output is publishable. The narrow binding prevents model prose from acquiring claim authority but does not verify its meaning.
+
+**Accepted limitations.** The stage is dormant: nothing calls it. Prose truth is not verified, per the paragraphs above. Determinism is proven for the validator and the boundary **with an injected runner** — real model output is not deterministic and is not claimed to be. Neither this stage nor `strategy-concept` has ever executed against a real model in this repository, and no output of either has been reviewed for quality.
+
+**Unresolved follow-up / product cursor:** Phase 0B.3 — dormant `hook-story-script` executor, by name only. Its contract is not designed or implemented in this reconciliation.
+
+**Documents updated at completion:** PR #44 updated `README.md`, `agents/automotive-truth.md`, `agents/strategy-concept.md`, `docs/AI_HANDOFF.md`, `docs/ARCHITECTURE.md`, `docs/ROADMAP.md`, `docs/SECURITY_AND_CONTINUITY.md`, `docs/STATUS.md`, `docs/TESTING.md`, and `skills/claim-boundaries/SKILL.md`. The post-merge reconciliation updates the active handoff, architecture, roadmap, security, and status documents that carry phase state.
 
 ## Phase 0B — Content Intelligence runtime
 
-**State:** foundation `MERGED` and `DEPLOYED`; `strategy-concept` executor **`MERGED`** and dormant, **not established as `DEPLOYED`**; `automotive-truth` executor **`IMPLEMENTED`** in draft PR #44 and dormant, **not `MERGED`**; the remaining four stages **not yet wired**.
+**State:** foundation `MERGED` and `DEPLOYED`; `strategy-concept` and `automotive-truth` executors **`MERGED`** and dormant, **neither established as `DEPLOYED` or `PRODUCTION-VALIDATED`**; the remaining four stages **not yet wired**.
 
-**Next product slice: Phase 0B.3 — dormant `hook-story-script` stage executor.** Stage 3 writes inside the claim boundary stage 2 establishes, which is why it comes after it. It is named here as the cursor only; **its contract is not designed and no part of it is implemented in this record**. Deployment-authority work remains an independent track and must not be combined with it.
+**Next product slice: Phase 0B.3 — dormant `hook-story-script` stage executor.** It is named here as the cursor only; **its contract is not designed and no part of it is implemented in this record**. Deployment-authority work remains an independent track and must not be combined with it.
 
 Phase 0B.0 delivered the two runtime primitives the rest of the phase depends on:
 
