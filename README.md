@@ -76,7 +76,7 @@ flowchart LR
 - `.github/workflows/ci.yml`: comprehensive Node 22, offline/static, PostgreSQL 16/18, AgentShield, and workflow validation.
 - `.github/workflows/deploy-production.yml`: exact-SHA serialized Render controller; currently disabled by the repository gate.
 
-The current reasoning flow is analytics, copywriter, image specification, hashtag/SEO/timing, platform formatter, and final critic under deterministic TypeScript control. Phase 0B.1 adds a **dormant** `strategy-concept` executor alongside it — merged, but not reachable from any production path and not established as deployed. Phase 0B.2 adds a second dormant executor, `automotive-truth`, which is **implemented in a draft pull request and not merged**. It is not yet the target six-stage Content OS architecture and implements no empirical learning. Phase 0B.0 added the registry and evidence substrate those stages use; Phase 0B.1 adds the first executor, which **does** inject prompt and skill assets into its instruction channel — references stay out of it. Neither changes this production flow. See [Architecture](docs/ARCHITECTURE.md) and [Roadmap](docs/ROADMAP.md).
+The current reasoning flow is analytics, copywriter, image specification, hashtag/SEO/timing, platform formatter, and final critic under deterministic TypeScript control. Phase 0B.1 adds a **dormant** `strategy-concept` executor alongside it — merged, but not reachable from any production path and not established as deployed. Phase 0B.2 adds a second dormant executor, `automotive-truth`, which is **implemented in draft PR #44 and not merged**. It is not yet the target six-stage Content OS architecture and implements no empirical learning. Phase 0B.0 added the registry and evidence substrate those stages use; Phase 0B.1 adds the first executor, which **does** inject prompt and skill assets into its instruction channel — references stay out of it. Neither changes this production flow. See [Architecture](docs/ARCHITECTURE.md) and [Roadmap](docs/ROADMAP.md).
 
 ## Phase 0A guarantees
 
@@ -167,7 +167,7 @@ Details in [Architecture](docs/ARCHITECTURE.md), [Roadmap](docs/ROADMAP.md), and
 
 ## Automotive-truth stage executor (Phase 0B.2)
 
-**`IMPLEMENTED` in a draft pull request — not merged, therefore not on `main`, not deployed, not production-validated, and deliberately dormant.**
+**`IMPLEMENTED` in draft PR #44 — not merged, therefore not on `main`, not deployed, not production-validated, and deliberately dormant.**
 
 Stage 2 decides what the content is allowed to assert. Nothing calls it — not the worker, scheduler, orchestrator, approval path, or any HTTP route; the preview stays inert; `executionEnabled` was not changed for any stage; and no route, migration, environment variable, dependency, workflow change, publishing path, approval path, or provider authority was added.
 

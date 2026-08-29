@@ -46,7 +46,7 @@ Ownership is **mutual exclusion, not a fencing token**: if an owner's connection
 
 ### Reasoning-stage execution (Phase 0B.1–0B.2) — dormant, not established as deployed
 
-`src/harness/agents/stageExecution.ts` is the reusable boundary through which a registered stage may reach a model. Two stages are built on it: `strategyConcept.ts`, **merged** through PR #42 (merge `8c8bd5b0fd500f9a28247f472fd6626bb05c6ebd`), and `automotiveTruth.ts`, **implemented in a draft pull request and not merged** — it is not on `main`. Neither is reachable: **nothing calls either one** — no worker, scheduler, orchestrator, approval path, or HTTP route, and the preview never invokes them. Every stage still reports `executionEnabled: false`.
+`src/harness/agents/stageExecution.ts` is the reusable boundary through which a registered stage may reach a model. Two stages are built on it: `strategyConcept.ts`, **merged** through PR #42 (merge `8c8bd5b0fd500f9a28247f472fd6626bb05c6ebd`), and `automotiveTruth.ts`, **implemented in draft PR #44 and not merged** — it is not on `main`. Neither is reachable: **nothing calls either one** — no worker, scheduler, orchestrator, approval path, or HTTP route, and the preview never invokes them. Every stage still reports `executionEnabled: false`.
 
 Stage 2 (`automotive-truth`) decides what content may assert. A permission there is a **binding to an evidence id**, never a sentence: the class the evidence system recorded overrides the model's declaration, and what may be claimed is read back from the records rather than from the model's restatement. It does **not** check whether the model's prose is true — a language model is not a semantic prover of factual truth here.
 

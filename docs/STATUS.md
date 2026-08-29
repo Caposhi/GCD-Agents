@@ -75,7 +75,7 @@ This closes the previously open item requiring observation of a normal scheduled
 | Phase 0B prerequisite — fact and evidence contract | `MERGED` · `DEPLOYED` — delivered by Phase 0B.0; migration 006 applied 2026-08-28 |
 | **Phase 0B.0 evidence and agent registry foundation** — merge `44d7336…` | **`MERGED`** · **`DEPLOYED`** — API, worker, and scheduler all at the target, migration 006 applied 2026-08-28 (independently verified 2026-08-28) |
 | **Phase 0B.1 `strategy-concept` stage executor** — merge `8c8bd5b…` | **`MERGED`** — **not established as `DEPLOYED`, not `PRODUCTION-VALIDATED`**; dormant, no production path reaches it |
-| **Phase 0B.2 `automotive-truth` stage executor** | **`IMPLEMENTED`** in a draft pull request — **not `MERGED`**, therefore not on `main`, **not `DEPLOYED`, not `PRODUCTION-VALIDATED`**; dormant, no production path reaches it |
+| **Phase 0B.2 `automotive-truth` stage executor** — draft PR #44 | **`IMPLEMENTED`** — **not `MERGED`**, therefore not on `main`, **not `DEPLOYED`, not `PRODUCTION-VALIDATED`**; dormant, no production path reaches it |
 | Phase 0B remaining four reasoning stages | `PLANNED` — registered but not wired |
 | Worker lease/reaper | `SUPERSEDED` by ownership plus startup recovery; rationale and re-entry condition in [Roadmap](ROADMAP.md) |
 
@@ -93,7 +93,7 @@ See [ROLLOUT_PHASE_0B0.md §0](ROLLOUT_PHASE_0B0.md) for the full record. Remain
 
 **Product.** Phase 0B continues, one stage at a time. **Phase 0B.1 is `MERGED`** through PR #42 (merge `8c8bd5b0fd500f9a28247f472fd6626bb05c6ebd`, reviewed head `2dc416f…`, base `aec3e805…`) and is **not established as deployed or production-validated**. It is dormant by design: no worker, scheduler, orchestrator, approval path, or HTTP route calls it, the preview stays inert, and all six registry entries still have `executionEnabled: false`. Phase 0B.0 shipped without touching deployment authority and 0B.1 did the same — no route, migration, environment variable, publishing path, approval path, or provider authority was added.
 
-**Phase 0B.2 is `IMPLEMENTED`, not `MERGED`.** The dormant `automotive-truth` executor sits in a **draft** pull request. It is not on `main`, so it is part of neither repository state as recorded above nor production state, and it is not deployed or production-validated. It, too, changed no `executionEnabled` field and added no route, migration, environment variable, dependency, workflow change, publishing path, approval path, or provider authority. Its guarantee is that **no sentence the model writes becomes a claim the pipeline may make** — not that the model's prose is checked for truth; see [Roadmap](ROADMAP.md).
+**Phase 0B.2 is `IMPLEMENTED`, not `MERGED`.** The dormant `automotive-truth` executor sits in **draft PR #44**. It is not on `main`, so it is part of neither repository state as recorded above nor production state, and it is not deployed or production-validated. It, too, changed no `executionEnabled` field and added no route, migration, environment variable, dependency, workflow change, publishing path, approval path, or provider authority. Its guarantee is that **no sentence the model writes becomes a claim the pipeline may make** — not that the model's prose is checked for truth; see [Roadmap](ROADMAP.md).
 
 **Next slice: Phase 0B.3 — dormant `hook-story-script` stage executor**, which writes inside the claim boundary stage 2 establishes. Not designed or implemented here. Deployment-authority work remains an independent track and must not be combined with it.
 

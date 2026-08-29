@@ -236,7 +236,7 @@ Support source, source type, provenance, confidence, freshness, `observed_at`, `
 
 ### Phase 0B.2 — automotive-truth stage executor
 
-**State:** **`IMPLEMENTED`** — proposed in a **draft** pull request. **Not `MERGED`, not `DEPLOYED`, not `PRODUCTION-VALIDATED`.** No model call from this slice is reachable in production, and none is reachable at all without a caller constructing an invocation and supplying a runner.
+**State:** **`IMPLEMENTED`** — proposed in **draft PR #44**. **Not `MERGED`, not `DEPLOYED`, not `PRODUCTION-VALIDATED`.** No model call from this slice is reachable in production, and none is reachable at all without a caller constructing an invocation and supplying a runner.
 
 **Dormancy.** No worker, scheduler, orchestrator, approval path, image path, Slack path, provider, database, or HTTP route reaches the executor; the preview stays inert and never invokes it. All six registry entries still have `executionEnabled: false` — this slice did not change that field for any stage. The change added no route, migration, environment variable, dependency, workflow change, publishing path, approval path, or provider authority.
 
@@ -262,7 +262,7 @@ Support source, source type, provenance, confidence, freshness, `observed_at`, `
 
 ## Phase 0B — Content Intelligence runtime
 
-**State:** foundation `MERGED` and `DEPLOYED`; `strategy-concept` executor **`MERGED`** and dormant, **not established as `DEPLOYED`**; `automotive-truth` executor **`IMPLEMENTED`** in a draft pull request and dormant, **not `MERGED`**; the remaining four stages **not yet wired**.
+**State:** foundation `MERGED` and `DEPLOYED`; `strategy-concept` executor **`MERGED`** and dormant, **not established as `DEPLOYED`**; `automotive-truth` executor **`IMPLEMENTED`** in draft PR #44 and dormant, **not `MERGED`**; the remaining four stages **not yet wired**.
 
 **Next product slice: Phase 0B.3 — dormant `hook-story-script` stage executor.** Stage 3 writes inside the claim boundary stage 2 establishes, which is why it comes after it. It is named here as the cursor only; **its contract is not designed and no part of it is implemented in this record**. Deployment-authority work remains an independent track and must not be combined with it.
 
