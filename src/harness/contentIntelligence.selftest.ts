@@ -1902,9 +1902,38 @@ async function run(): Promise<void> {
                evidencePack: bigPack, runner: countingRunner,
              })));
 
-      // The whole of AV must not have cost a single model call.
+      // The whole of AV up to this point must not have cost a single model call.
       check("AV23. every prior-stage refusal happened before any model request",
         runnerCalls.length === 0);
+
+      // The other side of the same boundary, stated honestly. The checks above
+      // are STRUCTURAL, not provenance or authenticity checks: nothing here
+      // establishes that a value came from a real prior-stage run. A value that
+      // survives a JSON round trip — the ordinary way stage outputs travel
+      // between processes or across a queue — is structurally identical and must
+      // execute normally. A hand-built value that binds cleanly to this pack is
+      // indistinguishable from it here, and passes for the same reason.
+      const roundTrip = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
+      const roundTrippedStrategy = roundTrip(validStrategyOutput);
+      const roundTrippedTruth = roundTrip(truthForScript);
+      const { runner: rtRunner, calls: rtCalls } = recordingRunner(okScript);
+      const rtResult = await executeHookStoryScript({
+        strategyOutput: roundTrippedStrategy, truthOutput: roundTrippedTruth,
+        evidencePack: scriptPack, runner: rtRunner,
+      });
+      check("AV24. JSON-round-tripped valid prior-stage outputs execute successfully",
+        rtResult.output.provisional.hook === validScriptOutput.hook
+          && rtResult.output.claimUse.used[0]!.factId === "auto-1");
+      check("AV25. the round trip costs exactly one injected runner call",
+        rtCalls.length === 1 && rtResult.metadata.modelRequests === 1);
+      check("AV26. the round-tripped run is identical to the typed-object run",
+        JSON.stringify(rtResult.output) === JSON.stringify(scriptResult.output));
+      check("AV27. revalidation is structural, not a provenance or authenticity check",
+        // Deep-equal to the originals, so nothing distinguished them but their
+        // construction — which the boundary does not and cannot inspect.
+        JSON.stringify(roundTrippedStrategy) === JSON.stringify(validStrategyOutput)
+          && JSON.stringify(roundTrippedTruth) === JSON.stringify(truthForScript)
+          && rtCalls.length === 1);
     }
 
     // --- AW. the zero-permitted-claims decision, made explicitly ------------

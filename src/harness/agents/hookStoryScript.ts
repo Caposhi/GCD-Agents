@@ -32,11 +32,20 @@
  *    permitted. Fabricated ids, ids from another evidence class, ids the pack
  *    marked conflicted, stale, or inactive, duplicates, and real pack facts
  *    outside stage 2's whitelist all fail.
- *  - Both prior-stage outputs are **revalidated at this boundary** against the
- *    same evidence pack that bound them, using the prior stages' own
- *    validators. A caller that hands over a cast, hand-built, deserialised, or
- *    tampered object gets a refusal, not a run. Branding fields are *checked*,
- *    never *trusted*.
+ *  - **Prior-stage values are treated as untrusted and revalidated against the
+ *    same evidence pack**, using the prior stages' own validators. Values that
+ *    fail the prior contracts — malformed shape, missing or extra fields,
+ *    incorrect branding, an oversized handoff, or a citation or permission that
+ *    does not bind to this pack — are refused **before the model call**.
+ *    Branding fields are *checked*, never *trusted*.
+ *
+ *    **This is structural validation, not provenance or authenticity
+ *    verification.** Nothing here establishes that a value actually came from a
+ *    prior stage run. A structurally valid deserialized or hand-built value —
+ *    one that satisfies both prior contracts against this pack — passes, and is
+ *    meant to: that is what makes a JSON round trip between stages work. What
+ *    the check buys is that such a value cannot be *inconsistent* with the
+ *    evidence, not that it is authentic.
  *  - Prior-stage prose reaches the model only inside bounded, labelled untrusted
  *    data blocks. None of it enters the instruction channel.
  *  - The claim text a downstream consumer reads back comes from the evidence
@@ -238,6 +247,9 @@ function requireObject(value: unknown, label: string): Record<string, unknown> {
  * the stage 1 validator's input and running it re-binds every citation against
  * this pack, so the branding fields are *checked* rather than treated as
  * authority.
+ *
+ * It does **not** verify provenance: a hand-built or deserialized value that
+ * satisfies the stage 1 contract against this pack is accepted, by design.
  */
 function revalidateStrategyOutput(value: unknown, pack: EvidencePack): StrategyConceptOutput {
   const output = requireObject(value, "strategyOutput");
@@ -285,8 +297,15 @@ function revalidateStrategyOutput(value: unknown, pack: EvidencePack): StrategyC
  * Same reasoning as stage 1's, and it matters more here: this object *is* the
  * factual authority for stage 3. Rebuilding stage 2's validator input re-binds
  * every permitted id against this pack, re-checks the recorded class against the
- * declared one, and rejects duplicated, conflicted, stale, or inactive ids —
- * so a tampered whitelist cannot widen what stage 3 may say.
+ * declared one, and rejects duplicated, conflicted, stale, or inactive ids — so
+ * a whitelist that names something this pack does not permit cannot widen what
+ * stage 3 may say.
+ *
+ * The limit is the same as stage 1's and worth stating where it bites hardest:
+ * this is structural validation, not provenance verification. A hand-built
+ * whitelist naming only ids the pack genuinely permits is indistinguishable
+ * here from one a real stage 2 run produced, and is accepted. What cannot pass
+ * is a whitelist inconsistent with the evidence.
  */
 function revalidateTruthOutput(value: unknown, pack: EvidencePack): AutomotiveTruthOutput {
   const output = requireObject(value, "truthOutput");
@@ -545,6 +564,10 @@ export function assertRequiredScriptEvidence(pack: EvidencePack, registry: Agent
  * non-strict JSON; any structural contract violation; and any claim use that is
  * fabricated, duplicated, or outside stage 2's whitelist. Performs no retry and
  * no second model call.
+ *
+ * The prior-stage checks are structural, not authenticity checks: a
+ * structurally valid deserialized or hand-built prior-stage value that binds
+ * cleanly to this pack executes normally.
  *
  * **The zero-permitted-claims decision, made explicitly.** When stage 2
  * permitted nothing, this stage **refuses before the model call** rather than

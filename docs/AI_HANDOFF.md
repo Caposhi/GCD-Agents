@@ -105,17 +105,17 @@ What it guarantees is narrow and should be quoted rather than paraphrased: **no 
 
 Five distinctions these slices deliberately preserve, and which the next session must not collapse:
 
-1. an executor **implemented in source** — true for `strategy-concept` and `automotive-truth`;
-2. **merged to `main`** — true for both executors;
-3. a stage **enabled in a production path** — true for none;
-4. **deployed** code — not claimed for either executor;
-5. **production-validated** behaviour — not claimed for either executor.
+1. an executor **implemented in source** — true for `strategy-concept`, `automotive-truth`, and `hook-story-script`;
+2. **merged to `main`** — true for `strategy-concept` and `automotive-truth`; **not** for `hook-story-script`, which is in a draft pull request;
+3. a stage **enabled in a production path** — true for none of the three;
+4. **deployed** code — not claimed for any of the three;
+5. **production-validated** behaviour — not claimed for any of the three.
 
 ### Phase 0B.3 — implemented, dormant, and not merged
 
 The `hook-story-script` stage executor is **`IMPLEMENTED`** and sits in a **draft** pull request. It is **not `MERGED`**, and therefore not on `main`, not deployed, not enabled, and not production-validated. It is dormant on the same terms as 0B.1 and 0B.2: nothing reaches it — worker, scheduler, orchestrator, API, preview, approval, publication, image, Slack, database, and evidence-write paths are all asserted unable to — and `executionEnabled` was not changed for any stage.
 
-Quote its guarantee rather than paraphrasing it: **stage 2's whitelist is the boundary, not the pack.** A real, citable fact that `automotive-truth` did not permit is absent from the projection stage 3 sees and fails validation if cited. The complete pack is never offered as an alternate claim source. The invocation takes the complete typed outputs of both prior stages — not free-form strings — and revalidates them against the same evidence pack rather than trusting their branding.
+Quote its guarantee rather than paraphrasing it: **stage 2's whitelist is the boundary, not the pack.** A real, citable fact that `automotive-truth` did not permit is absent from the projection stage 3 sees and fails validation if cited. The complete pack is never offered as an alternate claim source. The invocation takes the complete typed outputs of both prior stages — not free-form strings — and revalidates them against the same evidence pack rather than trusting their branding. That is **structural validation, not provenance or authenticity verification**: a structurally valid deserialized or hand-built value that binds cleanly to the pack passes, by design.
 
 What it does **not** do: verify that the script's prose faithfully restates the fact it cites, or detect every uncited factual implication. **No language model in this pipeline proves a statement true.** See [Roadmap](ROADMAP.md) for the full statement, the zero-permitted-claims decision, and why both registered placeholder assets were rejected.
 
