@@ -32,7 +32,7 @@ New AI agents should read [Start here](docs/START_HERE.md), then the concise [AI
 
 ## Handoff snapshot
 
-**Repository `main` and the live production release currently match at `44d7336…`.** They are still separate facts that may diverge again at any merge, so do not read exact SHAs from this file — [Status](docs/STATUS.md) is authoritative for every mutable identifier and records how fresh each one is.
+**Repository source and the live production release are separate facts and currently differ.** Production was last independently verified at `44d7336…` on 2026-08-28; the source lineage from PR #42's merge onward additionally carries the merged, dormant Phase 0B.1 executor, which is not established as deployed. Do not read exact SHAs from this file — [Status](docs/STATUS.md) is authoritative for every mutable identifier and records how fresh each one is, and the exact current `main` is a Git lookup.
 
 - `main` carries Phase 0A (PR #33), Phase 0D (PR #34), the documentation reconciliation (PR #35), the **worker ownership and recovery work (PR #36)**, roadmap-continuity governance (PR #37), **media publication normalization (PR #38)**, and the **Phase 0B.0 content evidence and agent foundation (PR #40)**. Migrations `001–006` are applied in production: `005_approval_integrity.sql` since Phase 0A, and `006_content_evidence.sql` since 2026-08-28. PR #40 is the only one of those pull requests that added a migration.
 - **PR #36 and PR #38 are deployed — their code is live in the current `44d7336…` release, independently verified 2026-08-28.** The earlier behavioral evidence — the ownership-wait timing, the August 10 provider-history reconciliation, and the PR #38 controlled brief — remains **operator-reported 2026-08-27** and was not independently re-examined. Treat that part as reported, and reconfirm before relying on it for a decision.
@@ -76,7 +76,7 @@ flowchart LR
 - `.github/workflows/ci.yml`: comprehensive Node 22, offline/static, PostgreSQL 16/18, AgentShield, and workflow validation.
 - `.github/workflows/deploy-production.yml`: exact-SHA serialized Render controller; currently disabled by the repository gate.
 
-The current reasoning flow is analytics, copywriter, image specification, hashtag/SEO/timing, platform formatter, and final critic under deterministic TypeScript control. Phase 0B.1 adds a **dormant** `strategy-concept` executor alongside it — implemented, not merged, and not reachable from any production path. It is not yet the target six-stage Content OS architecture and implements no empirical learning. Phase 0B.0 added the registry and evidence substrate those stages use; Phase 0B.1 adds the first executor, which **does** inject prompt and skill assets into its instruction channel — references stay out of it. Neither changes this production flow. See [Architecture](docs/ARCHITECTURE.md) and [Roadmap](docs/ROADMAP.md).
+The current reasoning flow is analytics, copywriter, image specification, hashtag/SEO/timing, platform formatter, and final critic under deterministic TypeScript control. Phase 0B.1 adds a **dormant** `strategy-concept` executor alongside it — merged, but not reachable from any production path and not established as deployed. It is not yet the target six-stage Content OS architecture and implements no empirical learning. Phase 0B.0 added the registry and evidence substrate those stages use; Phase 0B.1 adds the first executor, which **does** inject prompt and skill assets into its instruction channel — references stay out of it. Neither changes this production flow. See [Architecture](docs/ARCHITECTURE.md) and [Roadmap](docs/ROADMAP.md).
 
 ## Phase 0A guarantees
 
@@ -145,7 +145,9 @@ Details in [Data model](docs/DATA_MODEL.md) (schema and constraints), [Architect
 
 ## Strategy-concept stage executor (Phase 0B.1)
 
-**IMPLEMENTED; not merged, not deployed, and deliberately dormant.** Nothing calls it — not the worker, scheduler, orchestrator, approval path, or any HTTP route. `POST /console/content-intelligence/preview` remains inert and never invokes it. Every registered stage, including this one, still reports `executionEnabled: false`. Running it requires a caller to construct an invocation and supply a runner.
+**`MERGED` through PR #42 — not established as deployed, not production-validated, and deliberately dormant.** Merge commit `8c8bd5b0fd500f9a28247f472fd6626bb05c6ebd`; reviewed head `2dc416f1a49bb419531549e95cb31052ada28009`; base `aec3e805cecc2b99dc7a582292bef536cee8ae21`.
+
+Merging changed nothing about reachability. Nothing calls it — not the worker, scheduler, orchestrator, approval path, or any HTTP route. `POST /console/content-intelligence/preview` remains inert and never invokes it. Every registered stage, including this one, still reports `executionEnabled: false`, and only `strategy-concept` has an executor. No route, migration, environment variable, publishing path, approval path, or provider authority was added. Running it requires a caller to construct an invocation and supply a runner.
 
 This is the first Content Intelligence stage with a real execution path. The interesting part is not the model call — it is refusing to believe the result.
 

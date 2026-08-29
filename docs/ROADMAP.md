@@ -205,7 +205,11 @@ Support source, source type, provenance, confidence, freshness, `observed_at`, `
 
 ### Phase 0B.1 — strategy-concept stage executor
 
-**State:** `IMPLEMENTED` — **not `MERGED`, not `DEPLOYED`, not `PRODUCTION-VALIDATED`.** Implemented on a feature branch and proposed as a draft pull request. No model call from this slice is reachable in production.
+**State:** **`MERGED`** — **not established as `DEPLOYED`, not `PRODUCTION-VALIDATED`.** No model call from this slice is reachable in production.
+
+**PR / merge:** PR #42, reviewed head `2dc416f1a49bb419531549e95cb31052ada28009`, merge `8c8bd5b0fd500f9a28247f472fd6626bb05c6ebd`, base `aec3e805cecc2b99dc7a582292bef536cee8ae21`. Merged 2026-08-29 after all five CI jobs passed on the exact reviewed head.
+
+**Dormancy, restated because merging changes nothing about it.** No worker, scheduler, orchestrator, approval path, image path, Slack path, provider, database, or HTTP route reaches the executor; the preview stays inert and never invokes it. All six registry entries still have `executionEnabled: false`. Only `strategy-concept` has an executor; the remaining five stages do not. The change added no route, migration, environment variable, publishing path, approval path, or provider authority.
 
 **Delivered:** a reusable typed execution boundary (`src/harness/agents/stageExecution.ts`), central model-policy resolution (`modelPolicy.ts`), the `strategy-concept` executor and its output contract (`strategyConcept.ts`), a dedicated prompt (`agents/strategy-concept.md`), and a registry method that loads asset *contents* through the same allowlisted path mechanism.
 
@@ -222,11 +226,19 @@ Support source, source type, provenance, confidence, freshness, `observed_at`, `
 - **Model ids resolve in one module.** The registry still names only a policy class; the executor names none. A test asserts no `claude-` string appears in the registry.
 - **The evidence projection withholds provenance and confidence.** A confidence score in the prompt is an invitation to argue a disputed claim back into use.
 
-**Accepted limitations.** The stage is dormant: nothing calls it. Determinism is proven for the validator and the boundary with an injected runner — **real model output is not deterministic and is not claimed to be**. Only `strategy-concept` has an executor; the other five stages remain registered and unwired, and every stage including this one still has `executionEnabled: false`.
+**Corrections made under independent review, before merge.** All three findings were real:
+
+1. **The offline credential test could have contacted Anthropic.** `config.anthropicApiKey` is captured from the environment once at module initialization and `getClient()` reads that captured value, so clearing `process.env.ANTHROPIC_API_KEY` in the test changed nothing — on a machine whose parent process exported a real key, the production runner would have issued a live request. CI passed only because CI has no key. The test now clears `config.anthropicApiKey` inside `try/finally`, restores the exact prior value, and asserts the failure is the missing-credential error rather than any network outcome; it is verified to pass with a nonempty key exported.
+2. **The evidence guarantee was overclaimed.** The validator binds citation arrays to the pack but only length-bounds `angle`, `concept`, and `rationale`, so prose can assert a performance correlation as automotive fact, cite an unrelated valid id, and validate. "Every output field is validated against evidence" was wrong. Rather than keyword matching, the boundary was made structural and typed: prose returns as `provisional` (branded `provisional_model_prose`, `verified: false`, `publishable: false`) and evidence as a separate branded id channel, with `citedFactRecords()` — which takes ids and never reads prose — the only supported evidence accessor. Every claim was narrowed to the exact guarantee: **wrong-class and fabricated ids cannot enter the typed fact-citation channel**.
+3. **Factual references were entering the instruction channel.** `invokeStage` appended reference contents to the system prompt, making `config/approved-facts.json` instruction authority competing with the classified evidence projection. Prompts and skills stay in the instruction channel; references never do — omitted, or placed in an untrusted data block. `strategy-concept` omits its declared reference. Asset metadata gained a per-asset `channel` so it records what was used rather than what was declared. Separately, `skills/brand-voice/SKILL.md` — newly injected as instruction by this slice — claimed **Volvo** and **"two locations"**, neither supported by `config/approved-facts.json`; both were removed and the file now defers to approved facts as the factual authority.
+
+**Accepted limitations.** The stage is dormant: nothing calls it. **Prose truth is not verified** — the typed boundary contains the consequence of a false statement but does not detect one; that check belongs to the future `automotive-truth` stage, and nothing from this stage is publishable before it runs. Determinism is proven for the validator and the boundary with an injected runner — **real model output is not deterministic and is not claimed to be**. Only `strategy-concept` has an executor; the other five stages remain registered and unwired, and every stage including this one still has `executionEnabled: false`.
 
 ## Phase 0B — Content Intelligence runtime
 
-**State:** foundation `MERGED` and `DEPLOYED`; `strategy-concept` executor `IMPLEMENTED` (dormant); the remaining five stages **not yet wired**.
+**State:** foundation `MERGED` and `DEPLOYED`; `strategy-concept` executor **`MERGED`** and dormant, **not established as `DEPLOYED`**; the remaining five stages **not yet wired**.
+
+**Next product slice: Phase 0B.2 — dormant `automotive-truth` stage executor.** Stage 2 is where factual-truth validation belongs, and it is the reason nothing from `strategy-concept` is publishable yet. It is named here as the cursor only; its contract is not designed in this record. Deployment-authority work remains an independent track and must not be combined with it.
 
 Phase 0B.0 delivered the two runtime primitives the rest of the phase depends on:
 
