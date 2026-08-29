@@ -205,14 +205,40 @@ const STAGE_DEFINITIONS: AgentStageDefinition[] = [
   {
     id: "hook-story-script",
     order: 3,
-    purpose: "Write the hook, story beats, and script within the established truth constraints.",
+    purpose: "Write the channel-neutral hook, ordered story beats, and script using only the claims automotive-truth permitted.",
     modelPolicy: "reasoning-standard",
-    promptPaths: ["agents/copywriter.md"],
-    skillPaths: ["skills/brand-voice/SKILL.md"],
+    // Phase 0B.3: a dedicated tool-free prompt, and a craft-only skill.
+    //
+    // `agents/copywriter.md` was registered here and has been removed. It is a
+    // different contract: it pins its own model in frontmatter, declares
+    // `tools: Read, Skill`, reads a runtime brief this stage never receives, and
+    // returns per-platform × per-language post bodies with CTAs and character
+    // counts — platform adaptation and translation, both of which belong to
+    // later stages. Executing this stage against it would have meant running one
+    // contract while claiming another. It stays in the repository for the
+    // current orchestrator flow, which still uses it.
+    //
+    // `skills/brand-voice/SKILL.md` was registered here and has been removed
+    // too. It is a genuine style authority, but it also carries concrete facts —
+    // a founding year, a locality, a street address, a registered slogan, makes
+    // and models, and booking CTAs. Injecting it as instruction would let stage 3
+    // reacquire, from a style file, a fact stage 2 declined to permit. It stays
+    // registered on `strategy-concept` and remains the authority for the
+    // orchestrator's current copywriter path.
+    //
+    // `skills/script-craft/SKILL.md` replaces it with the craft-only subset that
+    // belongs here, written to contain no facts of its own.
+    promptPaths: ["agents/hook-story-script.md"],
+    skillPaths: ["skills/script-craft/SKILL.md"],
     referencePaths: [],
     allowedCapabilities: ["read_evidence_pack"],
+    // Inherited sanity check only. This stage's real authority gate is the
+    // claim whitelist `automotive-truth` produced, not the pack's contents.
     requiredEvidenceKinds: ["verified_business_fact"],
-    inputSchema: objectValidator("HookStoryScriptInput", ["concept", "allowedClaims"]),
+    inputSchema: objectValidator(
+      "HookStoryScriptInput",
+      ["strategyOutput", "truthOutput", "evidencePack"],
+    ),
     outputSchema: objectValidator("HookStoryScriptOutput", ["hook", "script"]),
     mandatory: true,
     prerequisites: ["automotive-truth"],
