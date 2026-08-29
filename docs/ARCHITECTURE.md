@@ -44,6 +44,25 @@ Ownership is **mutual exclusion, not a fencing token**: if an owner's connection
 
 **What this does not solve.** Interruption during a provider attempt still leaves an outcome the system cannot resolve by itself. It is surfaced and nothing retries automatically, but provider-level `withRetry` remains an independent path that can reissue a request after an ambiguous network outcome. There is no durable provider operation ledger, no idempotency key, and no provider reconciliation, so duplicate publication remains possible and a human must reconcile against the platform. That work is the first item under Next hardening in [Roadmap](ROADMAP.md).
 
+### Reasoning-stage execution (Phase 0B.1) — implemented, dormant
+
+`src/harness/agents/stageExecution.ts` is the reusable boundary through which a registered stage may reach a model. `strategyConcept.ts` is the only stage built on it so far. **Nothing calls either one**: no worker, scheduler, orchestrator, approval path, or HTTP route, and the preview never invokes them. Every stage still reports `executionEnabled: false`.
+
+The boundary's guarantees, and the reason each exists:
+
+| Guarantee | Why |
+|---|---|
+| At most one model request; no retry, no repair call | A silent retry turns one budgeted decision into unbounded spend; a repair pass is a second chance to argue into an unsupported claim |
+| No tools registered; capabilities closed to what the registry declared | Registration is not permission — a widened capability must be a reviewed code change, not a registry edit |
+| Instructions come only from registry assets | There is no way to pass free-form system text through the boundary, so the checked-in prompt is always the contract |
+| Untrusted inputs framed as labelled data blocks | A stage that concatenates a goal into its instructions is one brief away from executing whatever the author typed |
+| Fail closed on missing credentials, assets, timeout, runner error, or invalid output | Nothing degrades to a partial or best-effort result |
+| No logging of prompts, evidence, model text, or secrets | The module writes no log lines at all |
+
+Model selection resolves in `modelPolicy.ts` alone: the registry declares a class (`reasoning-heavy`), the executor names no id, and `deterministic-only` refuses to resolve rather than acquiring a model by default.
+
+Validation is where the epistemic contract is actually enforced. The model's cited ids are bound to the exact evidence section the contract assigns them, so a performance or hypothesis id cannot be returned as a verified fact, and conflicted, stale, or inactive ids are rejected even when the id is real.
+
 ### Content Intelligence foundation (Phase 0B.0) — merged and deployed
 
 Additive and inert. It changes no production behavior: the scheduled pipeline below is untouched, and no reasoning stage executes.

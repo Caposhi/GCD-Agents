@@ -203,9 +203,28 @@ Durable records distinguish:
 
 Support source, source type, provenance, confidence, freshness, `observed_at`, `reviewed_at`, expiry/review-by, conflicting evidence, and supersession. Define review and conflict rules. Content-performance correlation must never silently become automotive fact or causal truth.
 
+### Phase 0B.1 — strategy-concept stage executor
+
+**State:** `IMPLEMENTED` — **not `MERGED`, not `DEPLOYED`, not `PRODUCTION-VALIDATED`.** Implemented on a feature branch and proposed as a draft pull request. No model call from this slice is reachable in production.
+
+**Delivered:** a reusable typed execution boundary (`src/harness/agents/stageExecution.ts`), central model-policy resolution (`modelPolicy.ts`), the `strategy-concept` executor and its output contract (`strategyConcept.ts`), a dedicated prompt (`agents/strategy-concept.md`), and a registry method that loads asset *contents* through the same allowlisted path mechanism.
+
+**Why a dedicated prompt.** The registry pointed `strategy-concept` at `agents/analytics.md` as a placeholder. That file defines a performance-readout subagent: a different output contract (`headline`/`do_more_of`/`timing_rec`), its own pinned model in frontmatter, and declared tools. Executing this stage against it would have meant running one contract while claiming another, so the prompt was written and the registry repointed.
+
+**Material design decisions.**
+
+- **At most one model request per invocation, with no retry and no repair call.** A silent retry turns one budgeted decision into unbounded spend, and a "fix your JSON" round trip is a second chance for the model to argue itself into an unsupported claim. Asserted in source, not just documented.
+- **The model chooses an angle; it does not choose what counts as evidence.** Every cited id is checked against the pack the caller built, in the section the contract assigns it. A performance or hypothesis id placed in `supportingFactIds` fails validation because membership is tested against `allowedFacts` and nothing else — the forbidden promotion is structurally impossible rather than discouraged.
+- **Conflicted, stale, and inactive ids are rejected even when real**, and are shown to the model as a named exclusion list so it avoids them instead of inventing a replacement.
+- **Goal and evidence are framed as untrusted data** in delimited labelled blocks. That is a mitigation, not the defence: the defences are that no tool is registered, the capability set is closed to `read_evidence_pack`, and every output field is validated against evidence the model did not select.
+- **Model ids resolve in one module.** The registry still names only a policy class; the executor names none. A test asserts no `claude-` string appears in the registry.
+- **The evidence projection withholds provenance and confidence.** A confidence score in the prompt is an invitation to argue a disputed claim back into use.
+
+**Accepted limitations.** The stage is dormant: nothing calls it. Determinism is proven for the validator and the boundary with an injected runner — **real model output is not deterministic and is not claimed to be**. Only `strategy-concept` has an executor; the other five stages remain registered and unwired, and every stage including this one still has `executionEnabled: false`.
+
 ## Phase 0B — Content Intelligence runtime
 
-**State:** foundation `MERGED` and `DEPLOYED`; six-stage reasoning execution **not yet wired**.
+**State:** foundation `MERGED` and `DEPLOYED`; `strategy-concept` executor `IMPLEMENTED` (dormant); the remaining five stages **not yet wired**.
 
 Phase 0B.0 delivered the two runtime primitives the rest of the phase depends on:
 

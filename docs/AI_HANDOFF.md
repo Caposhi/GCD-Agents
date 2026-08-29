@@ -21,7 +21,7 @@ Build German Car Depot's governed Content Intelligence Platform / Content OS: an
 - `src/worker/index.ts`: exclusive ownership → recovery → queue → deterministic orchestration → approval → native publishing. Ownership, recovery, publication ordering, and exit behavior live in `src/harness/workerOwnership.ts`, `briefRecovery.ts`, `publicationRunner.ts`, `briefLifecycle.ts`, and `workerExit.ts`; startup ordering is in `src/worker/startup.ts`.
 - `src/scheduler/daily.ts`: daily brief enqueue only.
 - `src/harness/orchestrator.ts`: current manager/control flow. It directly invokes current agent prompt bodies; the master-prompt manager is dormant.
-- `src/harness/evidence/`: the Phase 0B.0 evidence contract, pack builder, approved-facts adapter, and the `evidence:sync` operator command. `src/harness/agents/registry.ts`: the six-stage agent registry, asset resolution, and stage planning — **no stage executes**. `src/harness/contentIntelligence.ts`: the deterministic, inert preview those two feed. Merged and deployed on all three services.
+- `src/harness/evidence/`: the Phase 0B.0 evidence contract, pack builder, approved-facts adapter, and the `evidence:sync` operator command. `src/harness/agents/registry.ts`: the six-stage agent registry, asset resolution, and stage planning. `src/harness/agents/stageExecution.ts`, `modelPolicy.ts`, `strategyConcept.ts`: the Phase 0B.1 execution boundary and the one stage built on it — **implemented, dormant, and called by nothing**. `src/harness/contentIntelligence.ts`: the deterministic, inert preview those two feed. Merged and deployed on all three services.
 - `src/mcp/`: imported provider libraries, not standalone MCP servers/model tools.
 - `state/migrations/`: forward-only PostgreSQL authority. **001–006 are applied in production**, 006 as of 2026-08-28. The release carrying it is fully deployed — see [Phase 0B.0 rollout runbook](ROLLOUT_PHASE_0B0.md).
 - `.github/workflows/ci.yml`: pull-request/`main` CI.
@@ -86,6 +86,19 @@ The migration-bearing rollout in [ROLLOUT_PHASE_0B0.md](ROLLOUT_PHASE_0B0.md) is
 4. A first production `evidence:sync` is its own operation, has **not** run, and is not implied by the rollout's completion.
 
 Never re-enable native Render auto-deploy while the GitHub gate is true. Do not combine the authority cutover with database networking or with a future Phase 0B migration release.
+
+### Phase 0B.1 — in progress on a branch
+
+The `strategy-concept` stage executor is `IMPLEMENTED` and proposed as a draft pull request. It is **not merged, not deployed, and not production-validated**, and it is dormant on purpose: no worker, scheduler, orchestrator, approval path, or HTTP route reaches it, and the preview stays inert. It adds no route, environment variable, or migration.
+
+Four distinctions this slice deliberately preserves, and which the next session must not collapse:
+
+1. an executor **implemented in source**;
+2. a stage **enabled in a production path** (none is);
+3. **deployed** code; and
+4. **production-validated** behaviour.
+
+Only `strategy-concept` has an executor. The other five stages remain registered and unwired.
 
 ## 8. Roadmap
 

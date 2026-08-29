@@ -76,7 +76,7 @@ flowchart LR
 - `.github/workflows/ci.yml`: comprehensive Node 22, offline/static, PostgreSQL 16/18, AgentShield, and workflow validation.
 - `.github/workflows/deploy-production.yml`: exact-SHA serialized Render controller; currently disabled by the repository gate.
 
-The current reasoning flow is analytics, copywriter, image specification, hashtag/SEO/timing, platform formatter, and final critic under deterministic TypeScript control. It is not yet the target six-stage Content OS architecture, does not inject skills/references at runtime, and does not implement empirical learning. Phase 0B.0 adds the registry and evidence substrate those stages will use, but changes nothing about this flow. See [Architecture](docs/ARCHITECTURE.md) and [Roadmap](docs/ROADMAP.md).
+The current reasoning flow is analytics, copywriter, image specification, hashtag/SEO/timing, platform formatter, and final critic under deterministic TypeScript control. Phase 0B.1 adds a **dormant** `strategy-concept` executor alongside it — implemented, not merged, and not reachable from any production path. It is not yet the target six-stage Content OS architecture, does not inject skills/references at runtime, and does not implement empirical learning. Phase 0B.0 adds the registry and evidence substrate those stages will use, but changes nothing about this flow. See [Architecture](docs/ARCHITECTURE.md) and [Roadmap](docs/ROADMAP.md).
 
 ## Phase 0A guarantees
 
@@ -142,6 +142,24 @@ Both rules are enforced twice, on purpose. The TypeScript contract in `src/harne
 The existing production path is untouched: the copywriter and critic still read `config/approved-facts.json`, and orchestration, approval, and publication behave exactly as before.
 
 Details in [Data model](docs/DATA_MODEL.md) (schema and constraints), [Architecture](docs/ARCHITECTURE.md) (component boundaries), [Operations](docs/OPERATIONS.md) (`evidence:sync` runbook), [Testing](docs/TESTING.md) (what is actually proven), and [the rollout runbook](docs/ROLLOUT_PHASE_0B0.md) (how it reaches production).
+
+## Strategy-concept stage executor (Phase 0B.1)
+
+**IMPLEMENTED; not merged, not deployed, and deliberately dormant.** Nothing calls it — not the worker, scheduler, orchestrator, approval path, or any HTTP route. `POST /console/content-intelligence/preview` remains inert and never invokes it. Every registered stage, including this one, still reports `executionEnabled: false`. Running it requires a caller to construct an invocation and supply a runner.
+
+This is the first Content Intelligence stage with a real execution path. The interesting part is not the model call — it is refusing to believe the result.
+
+- **The model chooses an angle; it does not choose what counts as evidence.** Every id it cites is checked against the evidence pack the caller built, in the section the contract assigns it. A performance or hypothesis id placed in `supportingFactIds` fails, because membership is tested against `allowedFacts` and nothing else. The forbidden promotion is structurally impossible, not discouraged.
+- **Conflicted, stale, and inactive ids are rejected even when the id is real.** They are shown to the model as a named exclusion list so it avoids them rather than inventing a replacement for something it never knew existed.
+- **One model request per invocation. No retry, no repair call.** A silent retry turns one budgeted decision into unbounded spend; a "fix your JSON" round trip is a second chance for the model to argue itself into an unsupported claim. Both are asserted against the source, not merely documented.
+- **No tools are registered and the capability set is closed** to the declared `read_evidence_pack`. A stage declaring anything else is refused by the boundary.
+- **Goal and evidence are framed as untrusted data** in delimited, labelled blocks. That is a mitigation; the real defences are the closed capability set and the fact that every output field is validated against evidence the model did not select.
+- **Model ids resolve in exactly one module.** The registry names a policy class (`reasoning-heavy`), never an id; a test asserts no `claude-` string appears in the registry.
+- **A dedicated prompt.** The registry previously pointed this stage at `agents/analytics.md`, which defines a performance-readout subagent with a different output contract, its own pinned model, and declared tools. Executing against it would have meant running one contract while claiming another.
+
+Determinism is proven for the validator and the boundary using an injected fake runner. **Real model output is not deterministic and is not claimed to be.**
+
+Details in [Architecture](docs/ARCHITECTURE.md), [Roadmap](docs/ROADMAP.md), and [Testing](docs/TESTING.md).
 
 ## Local validation
 
