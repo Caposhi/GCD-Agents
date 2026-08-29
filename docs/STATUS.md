@@ -1,6 +1,6 @@
 # Current status
 
-This file separates four things that are routinely confused: what is in the repository, what is running in production, what phase state each body of work is in, and what the single next safe operation is. **Repository state and production state currently match** at `44d7336…`, following the completed Phase 0B.0 migration-bearing rollout. They remain separate facts that may diverge again at any merge, and each is dated below.
+This file separates four things that are routinely confused: what is in the repository, what is running in production, what phase state each body of work is in, and what the single next safe operation is. **Repository state and production state are separate facts and currently differ.** Production was last independently verified at `44d7336…` on 2026-08-28. The source lineage beginning with PR #42's merge additionally carries the merged, dormant Phase 0B.1 `strategy-concept` executor, which is **not established as deployed or production-validated** — nothing calls it, so the difference changes no production behavior. **The exact current `main` is a Git/GitHub lookup, not a field this file maintains**: run `git rev-parse origin/main`. The dated baseline table below is historical evidence of a verified state, not a live mirror; it is deliberately not refreshed to chase the current tip.
 
 ## Repository state
 
