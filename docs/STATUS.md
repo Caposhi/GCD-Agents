@@ -74,7 +74,7 @@ This closes the previously open item requiring observation of a normal scheduled
 | PR #38 media publication normalization — merge `a6a4316…` | `MERGED` · `DEPLOYED` (independently verified 2026-08-28) · `PRODUCTION-VALIDATED` (operator-reported 2026-08-27, not independently re-examined) |
 | Phase 0B prerequisite — fact and evidence contract | `MERGED` · `DEPLOYED` — delivered by Phase 0B.0; migration 006 applied 2026-08-28 |
 | **Phase 0B.0 evidence and agent registry foundation** — merge `44d7336…` | **`MERGED`** · **`DEPLOYED`** — API, worker, and scheduler all at the target, migration 006 applied 2026-08-28 (independently verified 2026-08-28) |
-| **Phase 0B.1 `strategy-concept` stage executor** | **`IMPLEMENTED`** — not `MERGED`, not `DEPLOYED`, not `PRODUCTION-VALIDATED`; dormant, no production path reaches it |
+| **Phase 0B.1 `strategy-concept` stage executor** — merge `8c8bd5b…` | **`MERGED`** — **not established as `DEPLOYED`, not `PRODUCTION-VALIDATED`**; dormant, no production path reaches it |
 | Phase 0B remaining five reasoning stages | `PLANNED` — registered but not wired |
 | Worker lease/reaper | `SUPERSEDED` by ownership plus startup recovery; rationale and re-entry condition in [Roadmap](ROADMAP.md) |
 
@@ -90,7 +90,9 @@ Completion carried a **documented, authorization-governed variance at step 13**:
 
 See [ROLLOUT_PHASE_0B0.md §0](ROLLOUT_PHASE_0B0.md) for the full record. Remaining separately authorized follow-ups: a first production `evidence:sync` (not yet run), and the Phase 0D.1 authority cutover below.
 
-**Product.** Phase 0B continues, one stage at a time. **Phase 0B.1 implements the `strategy-concept` executor and is on a branch, not merged.** It is dormant by design: no worker, scheduler, orchestrator, approval path, or HTTP route calls it, and the preview stays inert. Phase 0B.0 shipped without touching deployment authority and 0B.1 does the same — it adds no route, environment variable, or migration.
+**Product.** Phase 0B continues, one stage at a time. **Phase 0B.1 is `MERGED`** through PR #42 (merge `8c8bd5b0fd500f9a28247f472fd6626bb05c6ebd`, reviewed head `2dc416f…`, base `aec3e805…`) and is **not established as deployed or production-validated**. It is dormant by design: no worker, scheduler, orchestrator, approval path, or HTTP route calls it, the preview stays inert, all six registry entries still have `executionEnabled: false`, and only `strategy-concept` has an executor. Phase 0B.0 shipped without touching deployment authority and 0B.1 did the same — no route, migration, environment variable, publishing path, approval path, or provider authority was added.
+
+**Next slice: Phase 0B.2 — dormant `automotive-truth` stage executor**, where factual-truth validation belongs. Not designed or implemented here. Deployment-authority work remains an independent track and must not be combined with it.
 
 **Operational follow-up.** The ownership bootstrap and handoff proof are complete (operator-reported 2026-08-27) and the Phase 0B.0 rollout is complete (independently verified 2026-08-28), so enabling `RENDER_DEPLOY_AUTOMATION_ENABLED` and proving the GitHub controller path are now **eligible** — they remain separately unauthorized, and the gate was confirmed `false` on 2026-08-28. Each still needs its own authorization and immediate re-verification. **This is explicitly not a blocker to Phase 0B.**
 

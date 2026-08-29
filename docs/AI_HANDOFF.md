@@ -21,7 +21,8 @@ Build German Car Depot's governed Content Intelligence Platform / Content OS: an
 - `src/worker/index.ts`: exclusive ownership → recovery → queue → deterministic orchestration → approval → native publishing. Ownership, recovery, publication ordering, and exit behavior live in `src/harness/workerOwnership.ts`, `briefRecovery.ts`, `publicationRunner.ts`, `briefLifecycle.ts`, and `workerExit.ts`; startup ordering is in `src/worker/startup.ts`.
 - `src/scheduler/daily.ts`: daily brief enqueue only.
 - `src/harness/orchestrator.ts`: current manager/control flow. It directly invokes current agent prompt bodies; the master-prompt manager is dormant.
-- `src/harness/evidence/`: the Phase 0B.0 evidence contract, pack builder, approved-facts adapter, and the `evidence:sync` operator command. `src/harness/agents/registry.ts`: the six-stage agent registry, asset resolution, and stage planning. `src/harness/agents/stageExecution.ts`, `modelPolicy.ts`, `strategyConcept.ts`: the Phase 0B.1 execution boundary and the one stage built on it — **implemented, dormant, and called by nothing**. `src/harness/contentIntelligence.ts`: the deterministic, inert preview those two feed. Merged and deployed on all three services.
+- **Phase 0B.0 — merged and deployed on all three services.** `src/harness/evidence/`: the evidence contract, pack builder, approved-facts adapter, and the `evidence:sync` operator command. `src/harness/agents/registry.ts`: the six-stage agent registry, asset resolution, and stage planning. `src/harness/contentIntelligence.ts`: the deterministic, inert preview.
+- **Phase 0B.1 — merged, dormant, and NOT established as deployed or production-validated.** `src/harness/agents/stageExecution.ts`, `modelPolicy.ts`, `strategyConcept.ts`: the execution boundary and the one stage built on it. The code is on `main`; **nothing calls it**, and no deployment or production-validation claim is made for it.
 - `src/mcp/`: imported provider libraries, not standalone MCP servers/model tools.
 - `state/migrations/`: forward-only PostgreSQL authority. **001–006 are applied in production**, 006 as of 2026-08-28. The release carrying it is fully deployed — see [Phase 0B.0 rollout runbook](ROLLOUT_PHASE_0B0.md).
 - `.github/workflows/ci.yml`: pull-request/`main` CI.
@@ -80,25 +81,27 @@ Take one action only, and only with explicit authorization.
 
 The migration-bearing rollout in [ROLLOUT_PHASE_0B0.md](ROLLOUT_PHASE_0B0.md) is **complete** against exactly `44d7336f2c75ff880cff0d8205d2fafe13eb91b5` — API, worker, and scheduler all report the target, and there is no remaining rollout step. It completed with one documented, authorization-governed variance at step 13: exactly one production preview was executed, as authorized, and deterministic equality came from the existing automated fixed-input test rather than a second production call. Available next actions, each separately authorized and none implied by the others:
 
-1. **Final reinspection of this documentation reconciliation** (this update to PR #41). The production claims were **independently reverified on 2026-08-28** by a separate final-inspection session with Render and read-only PostgreSQL access — service SHAs, native auto-deploy off, `/healthz` identity, `_migrations` = `001–006`, migration-006 inventory, queue and row counts, and error absence. The authoring engineering session still has no Render access (`/healthz` and `api.render.com` egress denied) and verified none of it directly. **Not covered by that inspection:** authenticated provider account history and the earlier PR #38 controlled brief, both of which remain operator-reported from 2026-08-27.
-2. On the **Phase 0B** track: wire the six reasoning stages onto the registry, one stage at a time with its own validation.
-3. On the **deployment authority** track: reverify the gate and configuration, then consider enabling `RENDER_DEPLOY_AUTOMATION_ENABLED` and proving the controller path.
+1. **Independent review of this Phase 0B.1 merge reconciliation.**
+2. On the **Phase 0B** track: the next product slice is **Phase 0B.2 — the dormant `automotive-truth` stage executor**, built on the boundary Phase 0B.1 delivered, one stage at a time with its own validation. Stage 2 is where factual-truth validation belongs, and it is the reason nothing from `strategy-concept` is publishable yet. **It is not designed or implemented here.**
+3. On the **deployment authority** track: reverify the gate and configuration, then consider enabling `RENDER_DEPLOY_AUTOMATION_ENABLED` and proving the controller path. This is an **independent track** and must not be combined with Phase 0B.2.
 4. A first production `evidence:sync` is its own operation, has **not** run, and is not implied by the rollout's completion.
+
+**Freshness of the production claims above.** They were **independently reverified on 2026-08-28** by a separate final-inspection session with Render and read-only PostgreSQL access — service SHAs, native auto-deploy off, `/healthz` identity, `_migrations` = `001–006`, migration-006 inventory, queue and row counts, and error absence. The authoring engineering session has no Render access (`/healthz` and `api.render.com` egress denied) and verified none of it directly. **Not covered by that inspection:** authenticated provider account history and the earlier PR #38 controlled brief, both of which remain operator-reported from 2026-08-27.
 
 Never re-enable native Render auto-deploy while the GitHub gate is true. Do not combine the authority cutover with database networking or with a future Phase 0B migration release.
 
-### Phase 0B.1 — in progress on a branch
+### Phase 0B.1 — merged and dormant
 
-The `strategy-concept` stage executor is `IMPLEMENTED` and proposed as a draft pull request. It is **not merged, not deployed, and not production-validated**, and it is dormant on purpose: no worker, scheduler, orchestrator, approval path, or HTTP route reaches it, and the preview stays inert. It adds no route, environment variable, or migration.
+The `strategy-concept` stage executor is **`MERGED`** through PR #42, merge commit `8c8bd5b0fd500f9a28247f472fd6626bb05c6ebd` (reviewed head `2dc416f1a49bb419531549e95cb31052ada28009`, base `aec3e805cecc2b99dc7a582292bef536cee8ae21`).
+
+It is **not established as deployed and not production-validated**, and it is dormant on purpose: no worker, scheduler, orchestrator, approval path, or HTTP route reaches it, and the preview stays inert. It added no route, migration, environment variable, publishing path, approval path, or provider authority. All six registry entries still have `executionEnabled: false`, and only `strategy-concept` has an executor — the remaining five stages do not.
 
 Four distinctions this slice deliberately preserves, and which the next session must not collapse:
 
-1. an executor **implemented in source**;
-2. a stage **enabled in a production path** (none is);
-3. **deployed** code; and
-4. **production-validated** behaviour.
-
-Only `strategy-concept` has an executor. The other five stages remain registered and unwired.
+1. an executor **implemented in source** — true for `strategy-concept`;
+2. a stage **enabled in a production path** — true for none;
+3. **deployed** code — not claimed for this executor;
+4. **production-validated** behaviour — not claimed for this executor.
 
 ## 8. Roadmap
 
