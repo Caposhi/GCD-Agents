@@ -96,11 +96,25 @@ const PLATFORM_MAP: Record<string, Platform> = {
   google: "gbp",
 };
 
-const GBP_SUMMARY_MAX = 1_500;
-const INSTAGRAM_CAPTION_MAX = 2_200;
-const FACEBOOK_TEXT_MAX = 63_206;
-const INSTAGRAM_HASHTAG_MIN = 8;
-const INSTAGRAM_HASHTAG_MAX = 15;
+/**
+ * The deterministic per-platform limits this module enforces on provider text.
+ *
+ * Exported so a reviewed reasoning stage can validate its *proposed* copy
+ * against exactly the same numbers instead of declaring a second, competing
+ * policy. Exporting them changes no behaviour here; it removes the only way the
+ * two could silently diverge.
+ */
+export const GBP_SUMMARY_MAX = 1_500;
+export const INSTAGRAM_CAPTION_MAX = 2_200;
+export const FACEBOOK_TEXT_MAX = 63_206;
+export const INSTAGRAM_HASHTAG_MIN = 8;
+export const INSTAGRAM_HASHTAG_MAX = 15;
+/** Facebook leans on local language; provider text allows at most two tags. */
+export const FACEBOOK_HASHTAG_MAX = 2;
+/** Google Business Profile provider text must carry no hashtag at all. */
+export const GBP_HASHTAG_MAX = 0;
+/** The single token shape provider-visible hashtags must match. */
+export const HASHTAG_TOKEN_PATTERN = /^#[\p{L}\p{N}_]+$/u;
 
 function normPlatform(value: unknown): Platform | undefined {
   return PLATFORM_MAP[String(value ?? "").trim().toLowerCase()];
@@ -406,7 +420,7 @@ export function validateFinalPackage(pkg: FinalPackage): PackageValidationResult
       if (!sameJson(visibleHashtags.map(canonicalHashtag), (preview.hashtags ?? []).map(canonicalHashtag))) {
         issues.push("instagram provider-visible hashtags differ from the canonical hashtag list");
       }
-      if ((preview.hashtags ?? []).some((tag) => !/^#[\p{L}\p{N}_]+$/u.test(tag))) {
+      if ((preview.hashtags ?? []).some((tag) => !HASHTAG_TOKEN_PATTERN.test(tag))) {
         issues.push("instagram canonical hashtag contains an invalid token");
       }
       if (new Set(visibleHashtags.map(canonicalHashtag)).size !== visibleHashtags.length) {
@@ -420,7 +434,9 @@ export function validateFinalPackage(pkg: FinalPackage): PackageValidationResult
 
     if (payload.platform === "facebook") {
       if (payload.text.length > FACEBOOK_TEXT_MAX) issues.push(`facebook text exceeds ${FACEBOOK_TEXT_MAX} characters`);
-      if (hashtagTokens(payload.text).length > 2) issues.push("facebook provider text allows at most 2 hashtags");
+      if (hashtagTokens(payload.text).length > FACEBOOK_HASHTAG_MAX) {
+        issues.push(`facebook provider text allows at most ${FACEBOOK_HASHTAG_MAX} hashtags`);
+      }
       if (payload.languageCode !== undefined) issues.push("facebook must not carry an ambiguous package languageCode");
       if (payload.images?.length && payload.facebook?.link) issues.push("facebook image posts cannot also carry an ignored link field");
       if (!sameJson(preview.languages, preview.languages.includes("es") ? ["en", "es"] : ["en"])) {
@@ -438,7 +454,9 @@ export function validateFinalPackage(pkg: FinalPackage): PackageValidationResult
       if (!sameJson(providerCta, preview.cta)) issues.push("gbp review CTA differs from provider CTA");
       if (providerCta && !validHttpsUrl(providerCta.url)) issues.push("gbp CTA URL must use https");
       if (providerCta && !approvedCtaUrls.has(providerCta.url)) issues.push("gbp CTA URL is not in canonical approved facts");
-      if (hashtagTokens(payload.text).length > 0) issues.push("gbp provider text must not contain hashtags");
+      if (hashtagTokens(payload.text).length > GBP_HASHTAG_MAX) {
+        issues.push("gbp provider text must not contain hashtags");
+      }
       if (preview.languages.length !== 1) issues.push("legacy gbp payload must have exactly one explicit language");
     } else if (payload.gbp !== undefined) {
       issues.push(`${payload.platform} contains GBP-only fields`);

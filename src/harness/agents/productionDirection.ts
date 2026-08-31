@@ -86,7 +86,7 @@
 
 import { EvidenceRecord } from "../evidence/contract.js";
 import { EvidencePack } from "../evidence/pack.js";
-import { AgentRegistry } from "./registry.js";
+import { AgentRegistry, AgentStageId } from "./registry.js";
 import type { AutomotiveTruthOutput } from "./automotiveTruth.js";
 import { revalidateAutomotiveTruthOutput } from "./automotiveTruth.js";
 import type { HookStoryScriptOutput } from "./hookStoryScript.js";
@@ -522,6 +522,118 @@ export function validateProductionDirectionOutput(
       used,
     },
   };
+}
+
+/**
+ * Revalidate a supplied `ProductionDirectionOutput` against the stage 3 chain and
+ * an evidence pack.
+ *
+ * Lives here, in the owning module, for the same reason stage 2's and stage 3's
+ * do: the next stage needs it, and a divergent copy could accept something this
+ * contract rejects. Rebuilding this stage's validator input re-binds every
+ * visual claim use against the stage 3 used-claim set and re-checks every shot
+ * index, so a value naming an id stage 3 never used — or a shot that does not
+ * exist — is refused.
+ *
+ * **The limit, stated exactly.** Prior-stage values are treated as untrusted and
+ * revalidated against the same evidence pack. Values that fail the prior
+ * contracts are refused before the model call. This is structural validation,
+ * not provenance or authenticity verification; a structurally valid deserialized
+ * or hand-built value can pass.
+ */
+export function revalidateProductionDirectionOutput(
+  value: unknown,
+  scriptOutput: HookStoryScriptOutput,
+  truthOutput: AutomotiveTruthOutput,
+  pack: EvidencePack,
+  stage: AgentStageId = PRODUCTION_DIRECTION_STAGE,
+  label = "directionOutput",
+): ProductionDirectionOutput {
+  const failHere = (message: string): never => {
+    throw new StageExecutionError(stage, message);
+  };
+  const obj = (v: unknown, name: string): Record<string, unknown> => {
+    if (!v || typeof v !== "object" || Array.isArray(v)) failHere(`"${name}" must be an object`);
+    return v as Record<string, unknown>;
+  };
+  const exact = (o: Record<string, unknown>, keys: string[], name: string): void => {
+    const extras = Object.keys(o).filter((k) => !keys.includes(k));
+    if (extras.length) failHere(`${name} has unknown field(s): ${extras.join(", ")}`);
+    for (const key of keys) if (!(key in o)) failHere(`${name} is missing "${key}"`);
+  };
+
+  const output = obj(value, label);
+  exact(output, ["provisional", "claimVisuals"], label);
+  const provisional = obj(output.provisional, `${label}.provisional`);
+  const claimVisuals = obj(output.claimVisuals, `${label}.claimVisuals`);
+  exact(
+    provisional,
+    ["kind", "publishable", "verified", "executable", "visualApproach", "shots",
+     "overlayText", "productionRequirements", "openQuestions"],
+    `${label}.provisional`,
+  );
+  exact(claimVisuals, ["kind", "used"], `${label}.claimVisuals`);
+  if (provisional.kind !== "provisional_model_prose"
+      || provisional.publishable !== false
+      || provisional.verified !== false
+      || provisional.executable !== false) {
+    failHere(`"${label}.provisional" has invalid boundary branding`);
+  }
+  if (claimVisuals.kind !== "typed_visual_claim_use") {
+    failHere(`"${label}.claimVisuals" has invalid boundary branding`);
+  }
+  if (!Array.isArray(provisional.overlayText)) failHere(`"${label}.provisional.overlayText" must be an array`);
+  if (!Array.isArray(provisional.productionRequirements)) {
+    failHere(`"${label}.provisional.productionRequirements" must be an array`);
+  }
+  if (!Array.isArray(claimVisuals.used)) failHere(`"${label}.claimVisuals.used" must be an array`);
+
+  const rebuiltOverlay = (provisional.overlayText as unknown[]).map((entry, index) => {
+    const o = obj(entry, `${label}.provisional.overlayText[${index}]`);
+    exact(o, ["text", "shotIndex", "role", "wordingVerified"], `${label}.provisional.overlayText[${index}]`);
+    if (o.wordingVerified !== false) {
+      failHere(`"${label}.provisional.overlayText[${index}]" has invalid boundary branding`);
+    }
+    return { text: o.text, shotIndex: o.shotIndex, role: o.role };
+  });
+  const rebuiltRequirements = (provisional.productionRequirements as unknown[]).map((entry, index) => {
+    const o = obj(entry, `${label}.provisional.productionRequirements[${index}]`);
+    exact(o, ["requirement", "category", "availabilityVerified"], `${label}.provisional.productionRequirements[${index}]`);
+    if (o.availabilityVerified !== false) {
+      failHere(`"${label}.provisional.productionRequirements[${index}]" has invalid boundary branding`);
+    }
+    return { requirement: o.requirement, category: o.category };
+  });
+  const rebuiltClaimVisuals = (claimVisuals.used as unknown[]).map((entry, index) => {
+    const o = obj(entry, `${label}.claimVisuals.used[${index}]`);
+    exact(
+      o,
+      ["kind", "factId", "factKind", "shotIndex", "provisionalDirectionSummary", "directionVerified"],
+      `${label}.claimVisuals.used[${index}]`,
+    );
+    if (o.kind !== "evidence_bound_visual_use" || o.directionVerified !== false) {
+      failHere(`"${label}.claimVisuals.used[${index}]" has invalid boundary branding`);
+    }
+    return {
+      factId: o.factId,
+      shotIndex: o.shotIndex,
+      directionSummary: o.provisionalDirectionSummary,
+    };
+  });
+
+  try {
+    return validateProductionDirectionOutput({
+      visualApproach: provisional.visualApproach,
+      shots: provisional.shots,
+      overlayText: rebuiltOverlay,
+      productionRequirements: rebuiltRequirements,
+      claimVisuals: rebuiltClaimVisuals,
+      openQuestions: provisional.openQuestions,
+    }, scriptOutput, truthOutput, pack);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return failHere(`"${label}" is invalid: ${detail}`);
+  }
 }
 
 /**
