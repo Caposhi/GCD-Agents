@@ -71,11 +71,11 @@
 
 import { EvidenceRecord } from "../evidence/contract.js";
 import { EvidencePack, unusableEvidenceIds } from "../evidence/pack.js";
-import { AgentRegistry } from "./registry.js";
+import { AgentRegistry, AgentStageId } from "./registry.js";
 import type { StrategyConceptOutput } from "./strategyConcept.js";
 import { validateStrategyConceptOutput } from "./strategyConcept.js";
 import type { AutomotiveTruthOutput } from "./automotiveTruth.js";
-import { validateAutomotiveTruthOutput } from "./automotiveTruth.js";
+import { revalidateAutomotiveTruthOutput } from "./automotiveTruth.js";
 import {
   StageExecutionError,
   StageExecutionMetadata,
@@ -294,69 +294,18 @@ function revalidateStrategyOutput(value: unknown, pack: EvidencePack): StrategyC
 /**
  * Revalidate stage 2's output at this boundary.
  *
- * Same reasoning as stage 1's, and it matters more here: this object *is* the
- * factual authority for stage 3. Rebuilding stage 2's validator input re-binds
- * every permitted id against this pack, re-checks the recorded class against the
- * declared one, and rejects duplicated, conflicted, stale, or inactive ids — so
- * a whitelist that names something this pack does not permit cannot widen what
- * stage 3 may say.
+ * Delegates to the owning module's shared helper so this stage and any later one
+ * enforce exactly the same contract; a second copy here would be free to drift.
+ * The stage tag is this stage's, so a refusal is attributed where it happened.
  *
- * The limit is the same as stage 1's and worth stating where it bites hardest:
- * this is structural validation, not provenance verification. A hand-built
- * whitelist naming only ids the pack genuinely permits is indistinguishable
- * here from one a real stage 2 run produced, and is accepted. What cannot pass
- * is a whitelist inconsistent with the evidence.
+ * The limit is worth restating where it bites hardest: this is structural
+ * validation, not provenance verification. A hand-built whitelist naming only
+ * ids the pack genuinely permits is indistinguishable here from one a real stage
+ * 2 run produced, and is accepted. What cannot pass is a whitelist inconsistent
+ * with the evidence.
  */
 function revalidateTruthOutput(value: unknown, pack: EvidencePack): AutomotiveTruthOutput {
-  const output = requireObject(value, "truthOutput");
-  requireExactKeys(output, ["provisional", "constraints"], "truthOutput");
-  const provisional = requireObject(output.provisional, "truthOutput.provisional");
-  const constraints = requireObject(output.constraints, "truthOutput.constraints");
-  requireExactKeys(
-    provisional,
-    ["kind", "publishable", "verified", "assessment", "forbiddenClaims", "requiredCaveats", "openQuestions"],
-    "truthOutput.provisional",
-  );
-  requireExactKeys(constraints, ["kind", "allowed"], "truthOutput.constraints");
-  if (provisional.kind !== "provisional_model_prose"
-      || provisional.publishable !== false
-      || provisional.verified !== false) {
-    fail('"truthOutput.provisional" has invalid boundary branding');
-  }
-  if (constraints.kind !== "typed_claim_constraints") {
-    fail('"truthOutput.constraints" has invalid boundary branding');
-  }
-  if (!Array.isArray(constraints.allowed)) fail('"truthOutput.constraints.allowed" must be an array');
-
-  const allowedClaims = (constraints.allowed as unknown[]).map((entry, index) => {
-    const binding = requireObject(entry, `truthOutput.constraints.allowed[${index}]`);
-    requireExactKeys(
-      binding,
-      ["kind", "factId", "factKind", "claimClass", "provisionalRestatement", "restatementVerified"],
-      `truthOutput.constraints.allowed[${index}]`,
-    );
-    if (binding.kind !== "evidence_bound_claim" || binding.restatementVerified !== false) {
-      fail(`"truthOutput.constraints.allowed[${index}]" has invalid boundary branding`);
-    }
-    return {
-      factId: binding.factId,
-      claimClass: binding.claimClass,
-      restatement: binding.provisionalRestatement,
-    };
-  });
-
-  try {
-    return validateAutomotiveTruthOutput({
-      assessment: provisional.assessment,
-      allowedClaims,
-      forbiddenClaims: provisional.forbiddenClaims,
-      requiredCaveats: provisional.requiredCaveats,
-      openQuestions: provisional.openQuestions,
-    }, pack);
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    return fail(`"truthOutput" is invalid: ${detail}`);
-  }
+  return revalidateAutomotiveTruthOutput(value, pack, HOOK_STORY_SCRIPT_STAGE, "truthOutput");
 }
 
 /**
@@ -505,6 +454,93 @@ export function validateHookStoryScriptOutput(
       used,
     },
   };
+}
+
+/**
+ * Revalidate a supplied `HookStoryScriptOutput` against stage 2's whitelist and
+ * an evidence pack.
+ *
+ * Lives here, in the owning module, for the same reason stage 2's does: the next
+ * stage needs it, and a divergent copy could accept something this contract
+ * rejects. Rebuilding this stage's validator input re-binds every claim use
+ * against the stage 2 whitelist, so a value naming an id stage 3 could not have
+ * used is refused.
+ *
+ * **The limit, stated exactly.** Prior-stage values are treated as untrusted and
+ * revalidated against the same evidence pack. Values that fail the prior
+ * contracts are refused before the model call. This is structural validation,
+ * not provenance or authenticity verification; a structurally valid deserialized
+ * or hand-built value can pass.
+ */
+export function revalidateHookStoryScriptOutput(
+  value: unknown,
+  truthOutput: AutomotiveTruthOutput,
+  pack: EvidencePack,
+  stage: AgentStageId = HOOK_STORY_SCRIPT_STAGE,
+  label = "scriptOutput",
+): HookStoryScriptOutput {
+  const failHere = (message: string): never => {
+    throw new StageExecutionError(stage, message);
+  };
+  const obj = (v: unknown, name: string): Record<string, unknown> => {
+    if (!v || typeof v !== "object" || Array.isArray(v)) failHere(`"${name}" must be an object`);
+    return v as Record<string, unknown>;
+  };
+  const exact = (o: Record<string, unknown>, keys: string[], name: string): void => {
+    const extras = Object.keys(o).filter((k) => !keys.includes(k));
+    if (extras.length) failHere(`${name} has unknown field(s): ${extras.join(", ")}`);
+    for (const key of keys) if (!(key in o)) failHere(`${name} is missing "${key}"`);
+  };
+
+  const output = obj(value, label);
+  exact(output, ["provisional", "claimUse"], label);
+  const provisional = obj(output.provisional, `${label}.provisional`);
+  const claimUse = obj(output.claimUse, `${label}.claimUse`);
+  exact(
+    provisional,
+    ["kind", "publishable", "verified", "hook", "storyBeats", "script", "openQuestions"],
+    `${label}.provisional`,
+  );
+  exact(claimUse, ["kind", "used"], `${label}.claimUse`);
+  if (provisional.kind !== "provisional_model_prose"
+      || provisional.publishable !== false
+      || provisional.verified !== false) {
+    failHere(`"${label}.provisional" has invalid boundary branding`);
+  }
+  if (claimUse.kind !== "typed_claim_use") {
+    failHere(`"${label}.claimUse" has invalid boundary branding`);
+  }
+  if (!Array.isArray(claimUse.used)) failHere(`"${label}.claimUse.used" must be an array`);
+
+  const rebuiltClaimUse = (claimUse.used as unknown[]).map((entry, index) => {
+    const binding = obj(entry, `${label}.claimUse.used[${index}]`);
+    exact(
+      binding,
+      ["kind", "factId", "factKind", "usedIn", "provisionalParaphrase", "paraphraseVerified"],
+      `${label}.claimUse.used[${index}]`,
+    );
+    if (binding.kind !== "evidence_bound_claim_use" || binding.paraphraseVerified !== false) {
+      failHere(`"${label}.claimUse.used[${index}]" has invalid boundary branding`);
+    }
+    return {
+      factId: binding.factId,
+      usedIn: binding.usedIn,
+      paraphrase: binding.provisionalParaphrase,
+    };
+  });
+
+  try {
+    return validateHookStoryScriptOutput({
+      hook: provisional.hook,
+      storyBeats: provisional.storyBeats,
+      script: provisional.script,
+      claimUse: rebuiltClaimUse,
+      openQuestions: provisional.openQuestions,
+    }, truthOutput, pack);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return failHere(`"${label}" is invalid: ${detail}`);
+  }
 }
 
 /**
