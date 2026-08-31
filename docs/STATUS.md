@@ -148,7 +148,7 @@ This is the second incident in the same family as the Phase 0A worker/migration-
 - authenticated reviewer/control identities or operator revocation UI;
 - encrypted provider-token persistence;
 - production execution through `AgentRegistry`, production skill/reference injection, or research retrieval;
-- the complete target six-stage Content Intelligence reasoning architecture — three dormant executors are merged and a fourth is implemented in a draft pull request and three stages remain registered but unwired; no stage is production-wired;
+- the complete target six-stage Content Intelligence reasoning architecture — three dormant executors are merged and a fourth is implemented in a draft pull request; two stages remain registered but unwired (`packaging-adaptation` and `final-critic`); no stage is production-wired;
 - populated production fact/evidence records, performance ingestion, active scorecard writes, hypothesis tracking, or governed improvement proposal generation;
 - autonomy B/C behavior; every parsed phase still requires the Phase A approval gate; and
 - browser-based video editing.

@@ -2581,39 +2581,70 @@ async function run(): Promise<void> {
             { ...truthForDirection.constraints.allowed[1]!, claimClass: "automotive" }] },
         })));
 
-      // Oversized aggregate handoff. Every individual stage 3 field is already
-      // bounded, so an oversized whole needs long pack ids — which stage 1 and 3
-      // do not bound, and which is exactly the gap this bound covers.
-      const longIds = Array.from({ length: SCRIPT_LIMITS.maxClaimUses },
-        (_, i) => `auto-long-${String(i).padStart(3, "0")}-${"z".repeat(1400)}`);
-      const bigDirPack = buildEvidencePack({
+      // Oversized aggregate handoff, proven by execution rather than by
+      // inspecting a constant.
+      //
+      // Every individual stage 3 field is bounded, ids included: stage 3 bounds
+      // `claimUse[].factId` to 200 characters. The aggregate bound is therefore
+      // not about unbounded ids — it exists because the *sum* of legitimately
+      // maximal fields still exceeds what this stage should hand a model. This
+      // fixture uses one matching pack throughout and only valid per-field
+      // maximums, so it is a value stage 3 could genuinely have produced.
+      const maxIdLength = 200;
+      const maxFactIds = Array.from(
+        { length: SCRIPT_LIMITS.maxClaimUses },
+        (_, i) => `auto-max-${String(i).padStart(2, "0")}-${"z".repeat(maxIdLength - 13)}`,
+      );
+      const maximalPack = buildEvidencePack({
         goal: "g",
-        records: [
-          wellFormed.verified_business_fact,
-          ...longIds.map((id, i) => verifiedAutomotive({ id, attribute: `attr-${i}` })),
-        ],
+        records: maxFactIds.map((id, i) => verifiedAutomotive({ id, attribute: `attr-${i}` })),
         now: NOW,
       });
-      const bigTruth = validateAutomotiveTruthOutput({
-        assessment: "All of them are citable.",
-        allowedClaims: longIds.map((id) => ({
-          factId: id.slice(0, 200), claimClass: "automotive", restatement: "r",
+      const maximalTruth = validateAutomotiveTruthOutput({
+        assessment: "Every fact in this pack is citable.",
+        allowedClaims: maxFactIds.map((factId) => ({
+          factId, claimClass: "automotive", restatement: "r",
         })),
         forbiddenClaims: [], requiredCaveats: [], openQuestions: [],
-      }, buildEvidencePack({
-        goal: "g",
-        records: [
-          wellFormed.verified_business_fact,
-          ...longIds.map((id, i) => verifiedAutomotive({ id: id.slice(0, 200), attribute: `attr-${i}` })),
-        ],
-        now: NOW,
-      }));
-      check("BE13. the oversized-handoff bound exists and is enforced",
-        typeof DIRECTION_LIMITS.scriptOutputChars === "number"
-          && bigDirPack.allowedFacts.length === longIds.length + 1
-          && bigTruth.constraints.allowed.length === longIds.length);
+      }, maximalPack);
+      const oversizedScriptOutput: HookStoryScriptOutput = validateHookStoryScriptOutput({
+        hook: "h".repeat(SCRIPT_LIMITS.hookChars),
+        storyBeats: Array.from({ length: SCRIPT_LIMITS.maxBeats }, () => ({
+          beat: "b".repeat(SCRIPT_LIMITS.beatChars), role: "setup",
+        })),
+        script: "s".repeat(SCRIPT_LIMITS.scriptChars),
+        claimUse: maxFactIds.map((factId) => ({
+          factId, usedIn: "script", paraphrase: "p".repeat(SCRIPT_LIMITS.paraphraseChars),
+        })),
+        openQuestions: Array.from(
+          { length: SCRIPT_LIMITS.maxOpenQuestions }, () => "q".repeat(SCRIPT_LIMITS.openQuestionChars),
+        ),
+      }, maximalTruth, maximalPack);
+      const oversizedLength = JSON.stringify(oversizedScriptOutput, null, 2).length;
+      check("BE13. a stage 3 output at every valid per-field maximum exceeds the aggregate bound",
+        maxFactIds.every((id) => id.length <= maxIdLength)
+          && maximalPack.allowedFacts.length === SCRIPT_LIMITS.maxClaimUses
+          && maximalTruth.constraints.allowed.length === SCRIPT_LIMITS.maxClaimUses
+          && oversizedScriptOutput.claimUse.used.length === SCRIPT_LIMITS.maxClaimUses
+          && oversizedLength > DIRECTION_LIMITS.scriptOutputChars);
 
-      check("BE14. every prior-stage refusal happened before any model request",
+      // Load-bearing: this executes the stage. Remove the aggregate
+      // `scriptOutputChars` check from the executor and the runner is reached,
+      // so the zero-call assertion below fails.
+      const oversizedCalls: StageRunnerRequest[] = [];
+      const oversizedRunner: StageRunner = async (request) => {
+        oversizedCalls.push(request);
+        return { text: okDirection };
+      };
+      check("BE14. the oversized handoff is refused with a StageExecutionError",
+        await rejectsWithStageError(() => executeProductionDirection({
+          scriptOutput: oversizedScriptOutput, truthOutput: maximalTruth,
+          evidencePack: maximalPack, runner: oversizedRunner,
+        })));
+      check("BE15. the oversized handoff reached the runner exactly zero times",
+        oversizedCalls.length === 0);
+
+      check("BE16. every prior-stage refusal happened before any model request",
         beCalls.length === 0);
 
       // The other side of the same boundary, stated honestly. The checks above
@@ -2630,22 +2661,22 @@ async function run(): Promise<void> {
         scriptOutput: rtScript, truthOutput: rtTruth,
         evidencePack: directionPack, runner: rtRunner,
       });
-      check("BE15. JSON-round-tripped valid prior-stage values execute successfully",
+      check("BE17. JSON-round-tripped valid prior-stage values execute successfully",
         rtResult.output.provisional.shots.length === 3
           && rtResult.output.claimVisuals.used[0]!.factId === "auto-1");
-      check("BE16. the round trip costs exactly one injected runner call",
+      check("BE18. the round trip costs exactly one injected runner call",
         rtCalls.length === 1 && rtResult.metadata.modelRequests === 1);
-      check("BE17. the round-tripped run is identical to the typed-object run",
+      check("BE19. the round-tripped run is identical to the typed-object run",
         JSON.stringify(rtResult.output) === JSON.stringify(dirResult.output));
-      check("BE18. revalidation is structural, not a provenance or authenticity check",
+      check("BE20. revalidation is structural, not a provenance or authenticity check",
         JSON.stringify(rtScript) === JSON.stringify(scriptForDirection)
           && JSON.stringify(rtTruth) === JSON.stringify(truthForDirection));
       const dirSource = await readFile(resolve(REPO_ROOT, "src/harness/agents/productionDirection.ts"), "utf8");
       const unwrappedDir = dirSource.replace(/\n\s*\*\s?/g, " ").replace(/\s+/g, " ");
-      check("BE19. the limit is documented, not merely implemented",
+      check("BE21. the limit is documented, not merely implemented",
         /structural validation, not provenance or authenticity verification/.test(unwrappedDir)
           && /a structurally valid deserialized or hand-built value can pass/.test(unwrappedDir));
-      check("BE20. one shared revalidator per owning stage, not a divergent copy",
+      check("BE22. one shared revalidator per owning stage, not a divergent copy",
         /revalidateAutomotiveTruthOutput/.test(dirSource)
           && /revalidateHookStoryScriptOutput/.test(dirSource)
           && !/function revalidate(Truth|Script)Output/.test(dirSource));
