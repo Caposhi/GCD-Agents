@@ -24,7 +24,7 @@ Build German Car Depot's governed Content Intelligence Platform / Content OS: an
 - **Phase 0B.0 — merged and deployed on all three services.** `src/harness/evidence/`: the evidence contract, pack builder, approved-facts adapter, and the `evidence:sync` operator command. `src/harness/agents/registry.ts`: the six-stage agent registry, asset resolution, and stage planning. `src/harness/contentIntelligence.ts`: the deterministic, inert preview.
 - **Phase 0B.1 — merged, dormant, and NOT established as deployed or production-validated.** `src/harness/agents/stageExecution.ts`, `modelPolicy.ts`, `strategyConcept.ts`: the execution boundary and the first stage built on it. The code is on `main`; **nothing calls it**, and no deployment or production-validation claim is made for it.
 - **Phase 0B.2 — `MERGED` through PR #44, deliberately dormant.** `src/harness/agents/automotiveTruth.ts` with `agents/automotive-truth.md` and `skills/claim-boundaries/SKILL.md`: the second stage on the same boundary. Nothing calls it, every registry entry remains `executionEnabled: false`, and it is **not established as deployed or production-validated**.
-- **Phase 0B.4 — `IMPLEMENTED` in a draft pull request, NOT merged.** `src/harness/agents/productionDirection.ts` with `agents/production-direction.md` and `skills/production-craft/SKILL.md`: the fourth stage on the same boundary. It is **not on `main`**, nothing calls it, `executionEnabled` is unchanged, and no merge, enablement, deployment, or production-validation claim is made for it.
+- **Phase 0B.4 — `MERGED` through PR #48, deliberately dormant.** `src/harness/agents/productionDirection.ts` with `agents/production-direction.md` and `skills/production-craft/SKILL.md`: the fourth stage on the same boundary. It is on `main`; nothing calls it, `executionEnabled` is unchanged, and it is **not enabled, not established as deployed, and not production-validated**.
 - **Phase 0B.3 — `MERGED` through PR #46, deliberately dormant.** `src/harness/agents/hookStoryScript.ts` with `agents/hook-story-script.md` and `skills/script-craft/SKILL.md`: the third stage on the same boundary. Nothing calls it, every registry entry remains `executionEnabled: false`, and it is not enabled, established as deployed, or production-validated.
 - `src/mcp/`: imported provider libraries, not standalone MCP servers/model tools.
 - `state/migrations/`: forward-only PostgreSQL authority. **001–006 are applied in production**, 006 as of 2026-08-28. The release carrying it is fully deployed — see [Phase 0B.0 rollout runbook](ROLLOUT_PHASE_0B0.md).
@@ -35,7 +35,7 @@ Read [Architecture](ARCHITECTURE.md), [Data model](DATA_MODEL.md), or [Testing](
 
 ## 4. Current state — repository versus production
 
-**These currently differ, and never assume either way.** Production was last independently verified at `44d7336…` on 2026-08-28; the source lineage now additionally carries the merged, dormant Phase 0B.1, Phase 0B.2, and Phase 0B.3 executors, none established as deployed. [Status](STATUS.md) is authoritative for the freshness of mutable production facts; the exact current `main` is a Git lookup, not a documented field. This section states only the semantics.
+**These currently differ, and never assume either way.** Production was last independently verified at `44d7336…` on 2026-08-28; the source lineage now additionally carries the merged, dormant Phase 0B.1, Phase 0B.2, Phase 0B.3, and Phase 0B.4 executors, none established as deployed. [Status](STATUS.md) is authoritative for the freshness of mutable production facts; the exact current `main` is a Git lookup, not a documented field. This section states only the semantics.
 
 - **PR #36 (worker ownership and recovery) and PR #38 (media publication normalization) are merged and deployed — their code is live in the current `44d7336…` release, independently verified 2026-08-28** by a separate final-inspection session with Render access. That inspection verified current service state; it **did not** re-examine the earlier bootstrap's behavioural evidence or any provider account history, so that part remains **operator-reported 2026-08-27, not independently verified**: an approximately 58-second wait for exclusive ownership before readiness, reconciliation of the August 10 stranded brief with `providerMutation = impossible`, and a controlled brief in which a 896x1120 provider render normalized to 1080x1350 and reached a real human approval with nothing published automatically.
 - **Phase 0B.0 is merged (`44d7336…`) and DEPLOYED.** **Independently verified 2026-08-28** by a separate final-inspection session with Render and read-only PostgreSQL access: the API, worker, and scheduler all report the target; `_migrations` holds `006` exactly once; the evidence tables exist and are empty; the six reasoning stages do not execute. The exact application timestamp (`15:24:18Z`) and that the API pre-deploy runner performed it, that the worker's ownership acquisition and readiness occurred on two separate deploys, and the scheduler's non-trigger action are **operator-reported**, not independently re-derived. See [ROLLOUT_PHASE_0B0.md §0](ROLLOUT_PHASE_0B0.md).
@@ -84,7 +84,7 @@ Take one action only, and only with explicit authorization.
 
 The migration-bearing rollout in [ROLLOUT_PHASE_0B0.md](ROLLOUT_PHASE_0B0.md) is **complete** against exactly `44d7336f2c75ff880cff0d8205d2fafe13eb91b5` — API, worker, and scheduler all report the target, and there is no remaining rollout step. It completed with one documented, authorization-governed variance at step 13: exactly one production preview was executed, as authorized, and deterministic equality came from the existing automated fixed-input test rather than a second production call. Available next actions, each separately authorized and none implied by the others:
 
-1. **Independent review of the Phase 0B.4 `production-direction` executor**, which is implemented in a **draft** pull request and is not merged. Reviewing it is not merging it, and merging is a separate authorization. After it merges, the product cursor is **Phase 0B.5 — the dormant `packaging-adaptation` stage executor**. It is named only; it is not designed or implemented in this reconciliation.
+1. On the **Phase 0B** track, the product cursor is **Phase 0B.5 — the dormant `packaging-adaptation` stage executor**. It is named only; it is not designed or implemented in this reconciliation.
 2. On the **deployment authority** track: reverify the gate and configuration, then consider enabling `RENDER_DEPLOY_AUTOMATION_ENABLED` and proving the controller path. This is an **independent track** and must not be combined with the Phase 0B work.
 3. A first production `evidence:sync` is its own operation, has **not** run, and is not implied by the rollout's completion.
 
@@ -107,7 +107,7 @@ What it guarantees is narrow and should be quoted rather than paraphrased: **no 
 Five distinctions these slices deliberately preserve, and which the next session must not collapse:
 
 1. an executor **implemented in source** — true for `strategy-concept`, `automotive-truth`, `hook-story-script`, and `production-direction`;
-2. **merged to `main`** — true for the first three; **not** for `production-direction`, which is in a draft pull request;
+2. **merged to `main`** — true for all four executors;
 3. a stage **enabled in a production path** — true for none of the four;
 4. **deployed** code — not claimed for any of the four;
 5. **production-validated** behaviour — not claimed for any of the four.
@@ -120,9 +120,9 @@ Quote its guarantee rather than paraphrasing it: **stage 2's whitelist is the bo
 
 What it does **not** do: verify that the script's prose faithfully restates the fact it cites, or detect every uncited factual implication. **No language model in this pipeline proves a statement true.** See [Roadmap](ROADMAP.md) for the full statement, the zero-permitted-claims decision, and why both registered placeholder assets were rejected.
 
-### Phase 0B.4 — implemented, dormant, and not merged
+### Phase 0B.4 — merged and dormant
 
-The `production-direction` stage executor is **`IMPLEMENTED`** and sits in a **draft** pull request. It is **not `MERGED`**, and therefore not on `main`, not enabled, not deployed, and not production-validated. It is dormant on the same terms as 0B.1–0B.3: nothing reaches it — worker, scheduler, orchestrator, API, preview, approval, publication, provider, image-generation, Slack, database, and evidence-write paths are all asserted unable to — and `executionEnabled` was not changed for any stage.
+The `production-direction` stage executor is **`MERGED`** through PR #48 at merge `5d3b2cafdfe11b5efc94fbc7fafd387d9a1a67f7`. It is on `main`, is **not enabled**, is **not established as deployed**, and is **not production-validated**; there is no production evidence for it. It is dormant on the same terms as 0B.1–0B.3: nothing reaches it — worker, scheduler, orchestrator, API, preview, approval, publication, provider, image-generation, Slack, database, and evidence-write paths are all asserted unable to — and `executionEnabled` was not changed for any stage.
 
 Quote its boundary rather than paraphrasing it: **stage 3's *used* claims are the authority — not stage 2's whitelist and not the evidence pack.** A fact stage 2 permitted but stage 3 never bound is absent from the projection stage 4 sees and fails validation if cited; so is any other pack fact. Stage 2's output is supplied only so stage 3's bindings can be revalidated — it is an input to the validator, never to the model, and its prose is not sent.
 
@@ -132,7 +132,7 @@ What it does **not** do: prove that a shot accurately represents reality; verify
 
 ## 8. Roadmap
 
-[Roadmap](ROADMAP.md) is authoritative and binding — see the roadmap-continuity rule in [`AGENTS.md`](../AGENTS.md). The Phase 0B evidence contract is now implemented (Phase 0B.0) rather than pending. Three stage executors are merged and dormant, a fourth is implemented in a draft pull request and not merged, and the other two target stages remain registered but unwired. Remaining work also includes provider idempotency/operation ledger; provider reconciliation; PostgreSQL network restriction; token lifecycle; control/reviewer identity; retention and backup/restore; the external readiness register; and the deployment-authority cutover proof. The worker lease/reaper item is superseded and is no longer active work.
+[Roadmap](ROADMAP.md) is authoritative and binding — see the roadmap-continuity rule in [`AGENTS.md`](../AGENTS.md). The Phase 0B evidence contract is now implemented (Phase 0B.0) rather than pending. Four stage executors are merged and dormant, and the other two target stages — `packaging-adaptation` and `final-critic` — remain registered but unwired. Remaining work also includes provider idempotency/operation ledger; provider reconciliation; PostgreSQL network restriction; token lifecycle; control/reviewer identity; retention and backup/restore; the external readiness register; and the deployment-authority cutover proof. The worker lease/reaper item is superseded and is no longer active work.
 
 ## 9. Outstanding risks
 
