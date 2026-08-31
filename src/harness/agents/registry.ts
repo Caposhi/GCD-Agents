@@ -247,15 +247,54 @@ const STAGE_DEFINITIONS: AgentStageDefinition[] = [
   {
     id: "production-direction",
     order: 4,
-    purpose: "Direct what is filmed or generated: shots, framing, on-image text, and production notes.",
+    purpose: "Direct the channel-neutral visual plan — approach, ordered shots, framing, movement, continuity, overlay wording, and production requirements — using only the claims hook-story-script actually used.",
     modelPolicy: "reasoning-standard",
-    promptPaths: ["agents/image.md"],
-    skillPaths: ["skills/image-brief/SKILL.md"],
+    // Phase 0B.4: a dedicated tool-free prompt, and a craft-only skill.
+    //
+    // `agents/image.md` was registered here and has been removed. It is a
+    // different contract: it pins its own model in frontmatter, declares
+    // `tools: Read, Skill`, expects a runtime brief and a `platforms` list,
+    // states that copy generation "runs concurrently and is not an input to this
+    // call" — so it never consumes Stage 3 — routes between image providers by
+    // content type, picks one of four runtime feed profiles, requests bilingual
+    // alt text, and writes CTAs and a URL into the frame. It also describes
+    // runtime generation, fetch, QC, and hosting. Executing this stage against it
+    // would have meant running one contract while claiming another. It stays in
+    // the repository for the existing image-generation flow, which still uses it.
+    //
+    // `skills/image-brief/SKILL.md` was registered here and has been removed
+    // too. It mixes genuine production craft with concrete brand assets, exact
+    // hex colors, the registered slogan, per-platform feed profiles, provider
+    // and model routing, generation, hosting, QC, accessibility, and
+    // publication-era checklist rules. Injecting it as instruction would let a
+    // stage that only directs reacquire factual and platform authority the
+    // pipeline deliberately withheld. Both files are preserved byte-for-byte:
+    // `agents/image.md` loads the skill by name, `skills/compliance-checklist`,
+    // `skills/model-routing`, `skills/brand-voice` and `skills/platform-specs`
+    // all cross-reference it, and `prompts/MASTER_PROMPT.md` names the image
+    // subagent. Removing them from this registry entry removes nothing from the
+    // existing image-generation flow.
+    //
+    // `skills/production-craft/SKILL.md` replaces it with the craft-only subset
+    // that belongs here, written to contain no facts of its own.
+    promptPaths: ["agents/production-direction.md"],
+    skillPaths: ["skills/production-craft/SKILL.md"],
+    // No factual reference asset. This stage's factual surface is the set of
+    // claims hook-story-script actually used; a reference here would be a second,
+    // wider source competing with it.
     referencePaths: [],
     allowedCapabilities: ["read_evidence_pack"],
+    // No pack-level requirement. This stage's authority gate is the Stage 3
+    // used-claim set, enforced by the executor, not a class present in the pack.
     requiredEvidenceKinds: [],
-    inputSchema: objectValidator("ProductionDirectionInput", ["script"]),
-    outputSchema: objectValidator("ProductionDirectionOutput", ["shots", "imageSpecification"]),
+    inputSchema: objectValidator(
+      "ProductionDirectionInput",
+      ["scriptOutput", "truthOutput", "evidencePack"],
+    ),
+    outputSchema: objectValidator(
+      "ProductionDirectionOutput",
+      ["visualApproach", "shots", "claimVisuals"],
+    ),
     mandatory: true,
     prerequisites: ["hook-story-script"],
     executionEnabled: false,

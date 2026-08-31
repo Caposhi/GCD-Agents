@@ -77,7 +77,8 @@ This closes the previously open item requiring observation of a normal scheduled
 | **Phase 0B.1 `strategy-concept` stage executor** — merge `8c8bd5b…` | **`MERGED`** — **not established as `DEPLOYED`, not `PRODUCTION-VALIDATED`**; dormant, no production path reaches it |
 | **Phase 0B.2 `automotive-truth` stage executor** — PR #44, merge `52050b4…` | **`MERGED`** — **not established as `DEPLOYED`, not `PRODUCTION-VALIDATED`**; deliberately dormant, no production path reaches it, `executionEnabled: false` |
 | **Phase 0B.3 `hook-story-script` stage executor** — PR #46, merge `c129bbf…` | **`MERGED`** — **not `ENABLED`, not established as `DEPLOYED`, not `PRODUCTION-VALIDATED`**; deliberately dormant, no production path reaches it, `executionEnabled: false` |
-| Phase 0B remaining three reasoning stages | `PLANNED` — registered but not wired |
+| **Phase 0B.4 `production-direction` stage executor** — draft PR | **`IMPLEMENTED`** — **not `MERGED`**, therefore not on `main`, **not `ENABLED`, not `DEPLOYED`, not `PRODUCTION-VALIDATED`**; deliberately dormant, no production path reaches it, `executionEnabled: false` |
+| Phase 0B remaining two reasoning stages | `PLANNED` — registered but not wired |
 | Worker lease/reaper | `SUPERSEDED` by ownership plus startup recovery; rationale and re-entry condition in [Roadmap](ROADMAP.md) |
 
 These states are not interchangeable. In particular: Phase 0B.0 is **merged and deployed**, and its migration 006 **has** been applied to production and all three services report the target commit. `MERGED` is a repository fact; `DEPLOYED` is a production fact; they happened to diverge for a period during this rollout (API deployed before worker and scheduler) and are recorded here as now reconciled. Migration 006 must never be manually re-run — the runner records it as applied and would skip it, but applying it by hand outside a transaction would silently disable its `SET LOCAL` timeout guards. See the [Phase 0B.0 rollout runbook](ROLLOUT_PHASE_0B0.md) for the completion record.
@@ -98,7 +99,9 @@ See [ROLLOUT_PHASE_0B0.md §0](ROLLOUT_PHASE_0B0.md) for the full record. Remain
 
 **Phase 0B.3 is `MERGED`, deliberately dormant, not enabled, and not established as deployed or production-validated.** PR #46 merged the `hook-story-script` executor without changing reachability: the worker, scheduler, orchestrator, API, preview, approval, publication, provider, image, Slack, database, and evidence-write paths cannot reach it, and all six stages remain `executionEnabled: false`. Its guarantee is that **stage 2's whitelist is the boundary — a fact's presence in the evidence pack is not permission to say it** — not that the script's prose is checked for truth or that a paraphrase is proved faithful. Merge is repository evidence, not deployment or production-validation evidence; see [Roadmap](ROADMAP.md).
 
-**Next slice: Phase 0B.4 — dormant `production-direction` stage executor.** Named only; not designed or implemented here. Deployment-authority work remains an independent track and must not be combined with it.
+**Phase 0B.4 is `IMPLEMENTED`, not `MERGED`.** The dormant `production-direction` executor sits in a **draft** pull request. It is not on `main`, so it is part of neither the repository state recorded above nor production state, and it is not enabled, deployed, or production-validated. It changed no `executionEnabled` field and added no route, migration, environment variable, credential, dependency, workflow change, `render.yaml` change, deployment authority, or provider mechanism. Its boundary narrows again: **stage 3's *used* claims are the authority — not stage 2's whitelist and not the evidence pack** — and stage 2's prose is never shown to the model. What it does not do is prove that a shot represents reality, that a requested asset exists or may lawfully be used, or that an action is safe; see [Roadmap](ROADMAP.md).
+
+**Next slice: Phase 0B.5 — dormant `packaging-adaptation` stage executor.** Named only; not designed or implemented here. Deployment-authority work remains an independent track and must not be combined with it.
 
 **Operational follow-up.** The ownership bootstrap and handoff proof are complete (operator-reported 2026-08-27) and the Phase 0B.0 rollout is complete (independently verified 2026-08-28), so enabling `RENDER_DEPLOY_AUTOMATION_ENABLED` and proving the GitHub controller path are now **eligible** — they remain separately unauthorized, and the gate was confirmed `false` on 2026-08-28. Each still needs its own authorization and immediate re-verification. **This is explicitly not a blocker to Phase 0B.**
 
@@ -145,7 +148,7 @@ This is the second incident in the same family as the Phase 0A worker/migration-
 - authenticated reviewer/control identities or operator revocation UI;
 - encrypted provider-token persistence;
 - production execution through `AgentRegistry`, production skill/reference injection, or research retrieval;
-- the complete target six-stage Content Intelligence reasoning architecture — three dormant executors are merged and three stages remain registered but unwired; no stage is production-wired;
+- the complete target six-stage Content Intelligence reasoning architecture — three dormant executors are merged and a fourth is implemented in a draft pull request; two stages remain registered but unwired (`packaging-adaptation` and `final-critic`); no stage is production-wired;
 - populated production fact/evidence records, performance ingestion, active scorecard writes, hypothesis tracking, or governed improvement proposal generation;
 - autonomy B/C behavior; every parsed phase still requires the Phase A approval gate; and
 - browser-based video editing.

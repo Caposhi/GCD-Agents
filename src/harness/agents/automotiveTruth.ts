@@ -64,7 +64,7 @@ import {
   renderEvidencePackForStage,
   unusableEvidenceIds,
 } from "../evidence/pack.js";
-import { AgentRegistry } from "./registry.js";
+import { AgentRegistry, AgentStageId } from "./registry.js";
 import type { StrategyConceptOutput } from "./strategyConcept.js";
 import { validateStrategyConceptOutput } from "./strategyConcept.js";
 import {
@@ -290,6 +290,97 @@ function validateStrategyOutputInput(
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     return fail(`"strategyOutput" is invalid: ${detail}`);
+  }
+}
+
+/**
+ * Revalidate a supplied `AutomotiveTruthOutput` against an evidence pack.
+ *
+ * This lives here, in the owning module, because more than one later stage needs
+ * it and a second copy would be free to drift from this contract. Callers pass
+ * their own `stage` so a failure is attributed to the stage that refused, not to
+ * `automotive-truth`.
+ *
+ * Rebuilding this stage's validator input re-binds every permitted id against
+ * the supplied pack, re-checks the recorded class against the declared one, and
+ * rejects duplicated, conflicted, stale, or inactive ids — so a whitelist that
+ * names something the pack does not permit cannot widen what a later stage may
+ * say.
+ *
+ * **The limit, stated exactly.** Prior-stage values are treated as untrusted and
+ * revalidated against the same evidence pack. Values that fail the prior
+ * contracts are refused before the model call. This is structural validation,
+ * not provenance or authenticity verification; a structurally valid deserialized
+ * or hand-built value can pass. Nothing here establishes that the value came
+ * from a real `automotive-truth` run.
+ */
+export function revalidateAutomotiveTruthOutput(
+  value: unknown,
+  pack: EvidencePack,
+  stage: AgentStageId = AUTOMOTIVE_TRUTH_STAGE,
+  label = "truthOutput",
+): AutomotiveTruthOutput {
+  const failHere = (message: string): never => {
+    throw new StageExecutionError(stage, message);
+  };
+  const obj = (v: unknown, name: string): Record<string, unknown> => {
+    if (!v || typeof v !== "object" || Array.isArray(v)) failHere(`"${name}" must be an object`);
+    return v as Record<string, unknown>;
+  };
+  const exact = (o: Record<string, unknown>, keys: string[], name: string): void => {
+    const extras = Object.keys(o).filter((k) => !keys.includes(k));
+    if (extras.length) failHere(`${name} has unknown field(s): ${extras.join(", ")}`);
+    for (const key of keys) if (!(key in o)) failHere(`${name} is missing "${key}"`);
+  };
+
+  const output = obj(value, label);
+  exact(output, ["provisional", "constraints"], label);
+  const provisional = obj(output.provisional, `${label}.provisional`);
+  const constraints = obj(output.constraints, `${label}.constraints`);
+  exact(
+    provisional,
+    ["kind", "publishable", "verified", "assessment", "forbiddenClaims", "requiredCaveats", "openQuestions"],
+    `${label}.provisional`,
+  );
+  exact(constraints, ["kind", "allowed"], `${label}.constraints`);
+  if (provisional.kind !== "provisional_model_prose"
+      || provisional.publishable !== false
+      || provisional.verified !== false) {
+    failHere(`"${label}.provisional" has invalid boundary branding`);
+  }
+  if (constraints.kind !== "typed_claim_constraints") {
+    failHere(`"${label}.constraints" has invalid boundary branding`);
+  }
+  if (!Array.isArray(constraints.allowed)) failHere(`"${label}.constraints.allowed" must be an array`);
+
+  const allowedClaims = (constraints.allowed as unknown[]).map((entry, index) => {
+    const binding = obj(entry, `${label}.constraints.allowed[${index}]`);
+    exact(
+      binding,
+      ["kind", "factId", "factKind", "claimClass", "provisionalRestatement", "restatementVerified"],
+      `${label}.constraints.allowed[${index}]`,
+    );
+    if (binding.kind !== "evidence_bound_claim" || binding.restatementVerified !== false) {
+      failHere(`"${label}.constraints.allowed[${index}]" has invalid boundary branding`);
+    }
+    return {
+      factId: binding.factId,
+      claimClass: binding.claimClass,
+      restatement: binding.provisionalRestatement,
+    };
+  });
+
+  try {
+    return validateAutomotiveTruthOutput({
+      assessment: provisional.assessment,
+      allowedClaims,
+      forbiddenClaims: provisional.forbiddenClaims,
+      requiredCaveats: provisional.requiredCaveats,
+      openQuestions: provisional.openQuestions,
+    }, pack);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return failHere(`"${label}" is invalid: ${detail}`);
   }
 }
 
