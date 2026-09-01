@@ -12,8 +12,10 @@
  *
  * It proposes review copy only. It does not publish, schedule, construct a
  * provider payload, select or name a destination, account, location, page, host,
- * endpoint or API version, emit a URL of any kind, create or describe media,
- * produce alt text, or return hosting, provenance, QC or approval state. It does
+ * endpoint or API version, expose a URL-bearing field, create or describe media,
+ * produce alt text, or return hosting, provenance, QC or approval state. Its
+ * prose validator rejects syntactically recognizable URL forms, while making no
+ * claim to detect obfuscated or semantic destination references. It does
  * not modify stage 4's direction. Those belong to deterministic runtime code, to
  * later stages, or to a human.
  *
@@ -45,8 +47,8 @@
  * This stage declares no competing numbers. Its platform identifiers are its own
  * closed enum - deliberately distinct from the provider-payload `Platform`
  * union, because a stage-5 package is review metadata and must never be mistaken
- * for a publishable payload - and `PACKAGING_PLATFORM_PRODUCTION_ID` pins the
- * one-to-one correspondence so the two cannot drift apart unnoticed.
+ * for a publishable payload. Exhaustive maps in both directions plus runtime
+ * round trips pin a reviewed bijection so the two cannot drift apart unnoticed.
  *
  * ## What this stage guarantees, exactly
  *
@@ -55,8 +57,12 @@
  *    used. Fabricated ids, pack-only ids, stage-2-permitted-but-unused ids,
  *    wrong-class ids, and within-platform duplicates all fail.
  *  - Exactly one package per requested platform, in the requested order.
- *  - Caption length and hashtag policy are enforced deterministically, per
- *    platform, against the production constants.
+ *  - Captions contain no hashtag token; canonical tags live only in the separate
+ *    array, and proposed provider-visible caption-plus-tag length is enforced
+ *    deterministically against the imported production constants.
+ *  - Dedicated URL-bearing fields are structurally absent, and recognizable URL
+ *    syntax is rejected from every model-authored prose channel. Obfuscated or
+ *    semantic destination references are not claimed detectable.
  *  - All three prior-stage values are revalidated against the same evidence pack,
  *    using the owning stages' own exported revalidators, before any model call.
  *  - A recommended time is a bounded `HH:MM ET` note. It carries no date and no
@@ -73,8 +79,8 @@
  * hashtag or local keyword is relevant or truthful, that a recommended time is
  * useful, or that every factual implication was cited. **No language model in
  * this pipeline proves any of those true.** The gap is contained by type and by
- * literal `false` branding - never by keyword matching, which would be trivially
- * evadable and would imply a semantic check the code does not perform.
+ * literal `false` branding - never by semantic keyword matching, which would be
+ * trivially evadable and would imply a truth check the code does not perform.
  */
 
 import { EvidenceRecord } from "../evidence/contract.js";
@@ -88,6 +94,7 @@ import {
   INSTAGRAM_CAPTION_MAX,
   INSTAGRAM_HASHTAG_MAX,
   INSTAGRAM_HASHTAG_MIN,
+  hashtagTokens,
 } from "../packageMap.js";
 import type { Platform } from "../../mcp/posting-tool/index.js";
 import { AgentRegistry } from "./registry.js";
@@ -113,24 +120,56 @@ export const PACKAGING_ADAPTATION_STAGE = "packaging-adaptation" as const;
  *
  * A closed enum, deliberately spelled out rather than reusing the
  * provider-payload `Platform` union: a stage-5 package is review metadata and
- * must never be mistaken for something publishable. The correspondence is pinned
- * below rather than left implicit.
+ * must never be mistaken for something publishable. Exhaustive maps in both
+ * directions plus runtime round trips pin the correspondence below.
  */
 export const PACKAGING_PLATFORMS = ["instagram", "facebook", "google_business_profile"] as const;
 export type PackagingPlatform = (typeof PACKAGING_PLATFORMS)[number];
 
 /**
- * One-to-one onto the repository's provider-payload `Platform` union.
+ * The forward half of the reviewed bijection with the repository's
+ * provider-payload `Platform` union.
  *
- * Total and injective by construction, and asserted as such by test, so adding,
- * removing or renaming a supported platform in the posting tool fails loudly
- * here instead of leaving two divergent vocabularies.
+ * `Record<PackagingPlatform, Platform>` makes this exhaustive over the stage
+ * vocabulary. The inverse below is separately exhaustive over the provider
+ * vocabulary; neither public spelling is collapsed into the other.
  */
 export const PACKAGING_PLATFORM_PRODUCTION_ID: Record<PackagingPlatform, Platform> = {
   instagram: "instagram",
   facebook: "facebook",
   google_business_profile: "gbp",
 };
+
+/** The inverse half: exhaustive over every provider-payload `Platform`. */
+export const PRODUCTION_PLATFORM_PACKAGING_ID: Record<Platform, PackagingPlatform> = {
+  instagram: "instagram",
+  facebook: "facebook",
+  gbp: "google_business_profile",
+};
+
+/**
+ * Assert both runtime round trips in addition to the two compile-time exhaustive maps.
+ *
+ * A future addition or rename on either union first fails typecheck until its
+ * corresponding `Record` is reviewed. A mismatched or duplicate pair then
+ * fails here rather than silently presenting the two vocabularies as bijective.
+ */
+export function assertPackagingPlatformBijection(): void {
+  for (const packaging of PACKAGING_PLATFORMS) {
+    const production = PACKAGING_PLATFORM_PRODUCTION_ID[packaging];
+    if (PRODUCTION_PLATFORM_PACKAGING_ID[production] !== packaging) {
+      throw new Error(`packaging platform mapping does not round-trip: ${packaging}`);
+    }
+  }
+  for (const production of Object.keys(PRODUCTION_PLATFORM_PACKAGING_ID) as Platform[]) {
+    const packaging = PRODUCTION_PLATFORM_PACKAGING_ID[production];
+    if (PACKAGING_PLATFORM_PRODUCTION_ID[packaging] !== production) {
+      throw new Error(`production platform mapping does not round-trip: ${production}`);
+    }
+  }
+}
+
+assertPackagingPlatformBijection();
 
 /**
  * The deterministic per-platform policy.
@@ -182,6 +221,16 @@ export const PACKAGING_LIMITS = {
  * scheduler instruction, which is a stronger guarantee than a comment saying so.
  */
 export const RECOMMENDED_TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d ET$/;
+
+/**
+ * Recognizable URL syntax refused from model-authored prose.
+ *
+ * This deliberately covers explicit URI schemes and `www.` tokens. It is a
+ * syntactic guard, not a semantic destination detector: bare domains,
+ * deliberately obfuscated destinations, and prose such as "our booking page"
+ * are not provably detectable and remain an accepted limitation.
+ */
+export const URL_SHAPED_TEXT_PATTERN = /(?:\b[a-z][a-z0-9+.-]*:(?:\/\/)?[^\s]+|\bwww\.[^\s]+)/iu;
 
 /** Exactly the fields the contract allows. Anything else is an extra field. */
 const ALLOWED_OUTPUT_FIELDS = ["packages", "claimUse"] as const;
@@ -319,6 +368,17 @@ function requireObject(value: unknown, label: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+function requireUrlFreeText(value: string, field: string): string {
+  if (URL_SHAPED_TEXT_PATTERN.test(value)) {
+    fail(`"${field}" must not contain a recognizable URL`);
+  }
+  return value;
+}
+
+function proposedProviderText(caption: string, hashtags: string[]): string {
+  return hashtags.length ? `${caption}\n\n${hashtags.join(" ")}` : caption;
+}
+
 function requirePlatform(value: unknown, field: string): PackagingPlatform {
   if (typeof value !== "string" || !(PACKAGING_PLATFORMS as readonly string[]).includes(value)) {
     fail(`"${field}" must be one of: ${PACKAGING_PLATFORMS.join(", ")}`);
@@ -390,8 +450,9 @@ export function renderPackagingScriptClaims(
  * Validate the model's object against the contract and the platform policy.
  *
  * **Scope of this function, stated precisely.** It validates *shape*, *bounds*,
- * *enums*, *per-platform caption and hashtag policy*, *exact requested-platform
- * membership and order*, and *membership in stage 3's used-claim set*. It does
+ * *enums*, *per-platform provider-visible caption and hashtag policy*,
+ * *recognizable URL syntax in model prose*, *exact requested-platform membership
+ * and order*, and *membership in stage 3's used-claim set*. It does
  * not evaluate whether a caption preserves the script, whether a shortening kept
  * the meaning, whether a hashtag or keyword is relevant or truthful, whether a
  * recommended time is useful, or whether the copy asserts something factual that
@@ -429,7 +490,16 @@ export function validatePackagingAdaptationOutput(
     }
     const policy = PLATFORM_PACKAGING_POLICY[platform];
 
-    const caption = requireBoundedString(obj.caption, `packages[${index}].caption`, policy.captionMax);
+    const caption = requireUrlFreeText(
+      requireBoundedString(obj.caption, `packages[${index}].caption`, policy.captionMax),
+      `packages[${index}].caption`,
+    );
+    if (hashtagTokens(caption).length) {
+      fail(
+        `"packages[${index}].caption" must not contain hashtag tokens: `
+        + "canonical hashtags belong only in the hashtags field",
+      );
+    }
 
     if (!Array.isArray(obj.hashtags)) fail(`"packages[${index}].hashtags" must be an array`);
     const rawHashtags = obj.hashtags as unknown[];
@@ -454,15 +524,23 @@ export function validatePackagingAdaptationOutput(
       return token;
     });
 
+    const providerText = proposedProviderText(caption, hashtags);
+    if (providerText.length > policy.captionMax) {
+      fail(
+        `${platform} proposed provider-visible text exceeds ${policy.captionMax} characters `
+        + "after appending canonical hashtags",
+      );
+    }
+
     const localKeywords = requireBoundedStringArray(
       obj.localKeywords, `packages[${index}].localKeywords`,
       PACKAGING_LIMITS.maxLocalKeywords, PACKAGING_LIMITS.localKeywordChars,
     );
     for (const keyword of localKeywords) {
-      if (keyword.includes("#")) fail(`"packages[${index}].localKeywords" must not contain hashtags`);
-      if (/https?:\/\//i.test(keyword)) {
-        fail(`"packages[${index}].localKeywords" must not contain a URL`);
+      if (hashtagTokens(keyword).length) {
+        fail(`"packages[${index}].localKeywords" must not contain hashtag tokens`);
       }
+      requireUrlFreeText(keyword, `packages[${index}].localKeywords[]`);
     }
 
     const recommendedTime = requireBoundedString(
@@ -479,6 +557,9 @@ export function validatePackagingAdaptationOutput(
       obj.openQuestions, `packages[${index}].openQuestions`,
       PACKAGING_LIMITS.maxOpenQuestions, PACKAGING_LIMITS.openQuestionChars,
     );
+    for (const question of openQuestions) {
+      requireUrlFreeText(question, `packages[${index}].openQuestions[]`);
+    }
 
     return {
       platform,
@@ -531,14 +612,19 @@ export function validatePackagingAdaptationOutput(
     }
     seenBindings.add(key);
 
+    const summary = requireUrlFreeText(
+      requireBoundedString(
+        obj.summary, `claimUse[${index}].summary`, PACKAGING_LIMITS.summaryChars,
+      ),
+      `claimUse[${index}].summary`,
+    );
+
     return {
       kind: "evidence_bound_platform_claim_use",
       platform,
       factId,
       factKind: record!.kind as PackagingClaimBinding["factKind"],
-      provisionalSummary: requireBoundedString(
-        obj.summary, `claimUse[${index}].summary`, PACKAGING_LIMITS.summaryChars,
-      ),
+      provisionalSummary: summary,
       wordingVerified: false,
     };
   });

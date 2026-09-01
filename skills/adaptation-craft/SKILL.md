@@ -53,7 +53,8 @@ An extra sentence with nothing behind it is not padding, it is a new claim.
 - Keep sentences short and the register plain. Restraint reads as confidence.
 - One idea per caption. A caption carrying three points carries none.
 - Respect the length and tag policy the runtime supplies for each channel. Those
-  numbers are enforced deterministically; treat them as hard, not as guidance.
+  numbers are enforced against the proposed provider-visible caption plus its
+  canonical tag list; treat them as hard, not as guidance.
 
 ## Tags and keywords assert
 
@@ -70,6 +71,20 @@ Treat both as claims, never as decoration:
 - No stacking, no repetition of the same term in variants, no lists of places.
   If a reader would notice the tags as tags, there are too many.
 - Tags are single tokens. Keywords are plain phrases — never tags, never links.
+- Keep every hashtag out of caption prose. The dedicated tag list is the only
+  place a canonical hashtag belongs; hiding one in caption makes the count and
+  uniqueness policy meaningless.
+
+## Destinations stay out of prose
+
+The contract exposes no URL-bearing, CTA, provider, account, location, or
+destination field. Do not smuggle one through prose instead. Captions, keywords,
+open questions, and claim-use summaries contain no explicit URI scheme or
+`www.`-style token.
+
+That is a syntactic boundary, not semantic understanding. Deliberately
+obfuscated destinations and indirect phrases are not provably detectable. Do
+not use that limitation as permission to imply one.
 
 ## Timing is a note, not a decision
 

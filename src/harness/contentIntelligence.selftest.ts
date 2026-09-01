@@ -95,8 +95,10 @@ import {
   PACKAGING_LIMITS,
   PACKAGING_PLATFORMS,
   PACKAGING_PLATFORM_PRODUCTION_ID,
+  PRODUCTION_PLATFORM_PACKAGING_ID,
   PLATFORM_PACKAGING_POLICY,
   RECOMMENDED_TIME_PATTERN,
+  assertPackagingPlatformBijection,
   executePackagingAdaptation,
   packagingClaimRecords,
   packagingClaimTexts,
@@ -3201,11 +3203,26 @@ async function run(): Promise<void> {
              b.kind === "evidence_bound_platform_claim_use" && b.wordingVerified === false));
     check("BJ8. the fact class comes from the evidence record, not the model",
       packResult.output.claimUse.used.every((b) => b.factKind === "verified_automotive_fact"));
-    check("BJ9. no provider payload, media, destination, URL or approval field is returned", (() => {
-      const rendered = JSON.stringify(packResult.output);
-      return !/https?:\/\//i.test(rendered)
-        && !/accountId|locationId|pageId|payload|endpoint|apiVersion|digest|contentSha256/i.test(rendered)
-        && !/hosted|provenance|"qc"|approval|scheduledAt|publishAt/i.test(rendered);
+    check("BJ9. no dedicated provider, media, destination, URL or approval field exists", (() => {
+      const keys = new Set<string>();
+      const collectKeys = (value: unknown): void => {
+        if (!value || typeof value !== "object") return;
+        if (Array.isArray(value)) {
+          value.forEach(collectKeys);
+          return;
+        }
+        for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+          keys.add(key);
+          collectKeys(child);
+        }
+      };
+      collectKeys(packResult.output);
+      return [
+        "url", "cta", "provider", "providerPayload", "media", "destination",
+        "accountId", "locationId", "pageId", "endpoint", "apiVersion",
+        "digest", "contentSha256", "hosted", "provenance", "qc", "approval",
+        "scheduledAt", "publishAt",
+      ].every((field) => !keys.has(field));
     })());
     check("BJ10. metadata carries no prior-stage prose, evidence text, or adapted copy", (() => {
       const metadata = JSON.stringify(packResult.metadata);
@@ -3294,11 +3311,13 @@ async function run(): Promise<void> {
         /^tools:\s*\[\]\s*$/m.test(packPrompt));
       check("BL3. the prompt pins no model",
         !/^model:/m.test(packPrompt) && !packPrompt.includes("claude-"));
-      check("BL4. the prompt forbids publication, scheduling, payloads, destinations and URLs",
+      check("BL4. the prompt forbids publication, payloads, URL fields and recognizable URL prose",
         /No publishing and no scheduling/.test(packPrompt)
           && /No provider payloads/.test(packPrompt)
           && /No destinations or identity/.test(packPrompt)
-          && /No URLs of any kind/.test(packPrompt)
+          && /No URL-bearing fields/.test(packPrompt)
+          && /No syntactically recognizable URLs in prose/.test(packPrompt)
+          && /cannot prove that disguised wording or a semantic reference/.test(packPrompt)
           && /No media/.test(packPrompt));
       check("BL5. all four rejected assets are absent from this stage's instruction channel",
         !sent.systemPrompt.includes("agents/platform-formatter.md")
@@ -3592,25 +3611,31 @@ async function run(): Promise<void> {
     {
       check("BP1. the platform enum is closed and matches the supported targets",
         PACKAGING_PLATFORMS.join() === "instagram,facebook,google_business_profile");
-      check("BP2. every packaging platform maps one-to-one onto a production Platform", (() => {
-        const mapped = PACKAGING_PLATFORMS.map((p) => PACKAGING_PLATFORM_PRODUCTION_ID[p]);
-        return mapped.join() === "instagram,facebook,gbp"
-          && new Set(mapped).size === PACKAGING_PLATFORMS.length;
+      check("BP2. every packaging platform round-trips through its provider Platform", (() => {
+        assertPackagingPlatformBijection();
+        return PACKAGING_PLATFORMS.every((packaging) => {
+          const production = PACKAGING_PLATFORM_PRODUCTION_ID[packaging];
+          return PRODUCTION_PLATFORM_PACKAGING_ID[production] === packaging;
+        });
       })());
-      check("BP3. caption and hashtag limits are the production constants, not a second policy",
+      check("BP3. every provider Platform round-trips through its packaging platform", (() => {
+        return Object.entries(PRODUCTION_PLATFORM_PACKAGING_ID).every(([production, packaging]) =>
+          PACKAGING_PLATFORM_PRODUCTION_ID[packaging] === production);
+      })());
+      check("BP4. caption and hashtag limits are the production constants, not a second policy",
         PLATFORM_PACKAGING_POLICY.instagram.captionMax === INSTAGRAM_CAPTION_MAX
           && PLATFORM_PACKAGING_POLICY.instagram.hashtagMin === INSTAGRAM_HASHTAG_MIN
           && PLATFORM_PACKAGING_POLICY.instagram.hashtagMax === INSTAGRAM_HASHTAG_MAX
           && PLATFORM_PACKAGING_POLICY.facebook.hashtagMax === FACEBOOK_HASHTAG_MAX
           && PLATFORM_PACKAGING_POLICY.google_business_profile.captionMax === GBP_SUMMARY_MAX
           && PLATFORM_PACKAGING_POLICY.google_business_profile.hashtagMax === GBP_HASHTAG_MAX);
-      check("BP4. the shared numbers are the ones production actually enforces", (() => {
+      check("BP5. the shared numbers are the ones production actually enforces", (() => {
         return PLATFORM_PACKAGING_POLICY.instagram.captionMax === 2_200
           && PLATFORM_PACKAGING_POLICY.google_business_profile.captionMax === 1_500
           && PLATFORM_PACKAGING_POLICY.facebook.hashtagMax === 2
           && PLATFORM_PACKAGING_POLICY.google_business_profile.hashtagMax === 0;
       })());
-      check("BP5. requested-platform validation is reusable and order-preserving",
+      check("BP6. requested-platform validation is reusable and order-preserving",
         validateRequestedPlatforms(["google_business_profile", "instagram"]).join()
           === "google_business_profile,instagram");
     }
@@ -3708,10 +3733,53 @@ async function run(): Promise<void> {
         (await patchPackage(2, { caption: "x".repeat(GBP_SUMMARY_MAX) }))
           .output.provisional.packages[2]!.caption.length === GBP_SUMMARY_MAX);
 
+      check("BQ33a. a GBP caption cannot hide a hashtag when its hashtag array is empty",
+        await rejectsWithStageError(() => patchPackage(2, {
+          caption: "Brake fluid service #anything", hashtags: [],
+        })));
+      check("BQ33b. Facebook cannot hide excess hashtags in caption prose",
+        await rejectsWithStageError(() => patchPackage(1, {
+          caption: "Brake care #one #two #three", hashtags: [],
+        })));
+      check("BQ33c. Instagram cannot hide an extra hashtag in caption prose",
+        await rejectsWithStageError(() => patchPackage(0, {
+          caption: "Brake fluid care #extra", hashtags: IG_TAGS,
+        })));
+      check("BQ33d. Instagram cannot hide a duplicate hashtag in caption prose",
+        await rejectsWithStageError(() => patchPackage(0, {
+          caption: "Brake fluid care #TAG0", hashtags: IG_TAGS,
+        })));
+
+      const instagramTagText = IG_TAGS.join(" ");
+      const exactInstagramCaption = "x".repeat(
+        INSTAGRAM_CAPTION_MAX - 2 - instagramTagText.length,
+      );
+      check("BQ33e. Instagram caption plus separator and canonical tags one character over fails",
+        await rejectsWithStageError(() => patchPackage(0, {
+          caption: `${exactInstagramCaption}x`, hashtags: IG_TAGS,
+        })));
+      check("BQ33f. Instagram caption plus separator and canonical tags at the exact limit passes",
+        (await patchPackage(0, {
+          caption: exactInstagramCaption, hashtags: IG_TAGS,
+        })).output.provisional.packages[0]!.caption.length + 2 + instagramTagText.length
+          === INSTAGRAM_CAPTION_MAX);
+
       check("BQ34. a local keyword containing a hashtag fails",
         await rejectsWithStageError(() => patchPackage(2, { localKeywords: ["#brakes near me"] })));
       check("BQ35. a local keyword containing a URL fails",
         await rejectsWithStageError(() => patchPackage(2, { localKeywords: ["book at https://example.com"] })));
+      check("BQ35a. a caption containing an explicit-scheme URL fails",
+        await rejectsWithStageError(() => patchPackage(1, {
+          caption: "Book at https://example.com",
+        })));
+      check("BQ35b. an open question containing a www-style URL fails",
+        await rejectsWithStageError(() => patchPackage(0, {
+          openQuestions: ["Should this mention www.example.com?"],
+        })));
+      check("BQ35c. a claim-use summary containing a URL fails",
+        await rejectsWithStageError(() => badPackaging({ claimUse: [{
+          platform: "instagram", factId: "auto-1", summary: "Review mailto:owner@example.com",
+        }] })));
       check("BQ36. too many local keywords fail",
         await rejectsWithStageError(() => patchPackage(2, {
           localKeywords: Array.from({ length: PACKAGING_LIMITS.maxLocalKeywords + 1 }, () => "k") })));
@@ -3921,7 +3989,7 @@ async function run(): Promise<void> {
           && /RECOMMENDED_TIME_PATTERN/.test(packCode));
       check("BS13. it touches no database or evidence-write module",
         !/syncContentEvidence|upsertEvidence|DATABASE_URL|state\.js|withClient/.test(packCode));
-      check("BS14. it constructs no provider payload and emits no URL or destination",
+      check("BS14. it constructs no provider payload or dedicated URL/destination field",
         !/providerPayloads|PublicationTarget|accountId|locationId|https?:\/\//.test(packCode));
 
       check("BS15. only read_evidence_pack is declared for this stage",

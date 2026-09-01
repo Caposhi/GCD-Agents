@@ -139,7 +139,8 @@ function stringArray(value: unknown): string[] | undefined {
   return values.length ? values : undefined;
 }
 
-function hashtagTokens(value: string): string[] {
+/** The one tokenizer used wherever provider-visible hashtag tokens are inspected. */
+export function hashtagTokens(value: string): string[] {
   return [...value.matchAll(/#[\p{L}\p{N}_]+/gu)].map((match) => match[0]);
 }
 
