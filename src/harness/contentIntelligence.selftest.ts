@@ -112,6 +112,7 @@ import type {
 } from "./agents/packagingAdaptation.js";
 import {
   FACEBOOK_HASHTAG_MAX,
+  FACEBOOK_TEXT_MAX,
   GBP_HASHTAG_MAX,
   GBP_SUMMARY_MAX,
   INSTAGRAM_CAPTION_MAX,
@@ -120,7 +121,8 @@ import {
 } from "./packageMap.js";
 import {
   CRITIC_FINDING_CATEGORIES,
-  CRITIC_FINDING_SCOPES,
+  CRITIC_FINDING_OWNERS,
+  CRITIC_FINDING_PLATFORMS,
   CRITIC_FINDING_SEVERITIES,
   CRITIC_VERDICTS,
   FINAL_CRITIC_LIMITS,
@@ -4055,14 +4057,14 @@ async function run(): Promise<void> {
     // ==========================================================================
 
     const validCriticOutput = {
-      verdict: "blocking_findings_present" as const,
+      verdict: "needs_revision" as const,
       summary: "One caption reads slightly wider than the claim cited for it.",
-      requiresHumanReview: true,
       findings: [
         {
           severity: "blocking" as const,
-          category: "unsupported_claim" as const,
+          category: "claim_fidelity" as const,
           platform: "instagram" as const,
+          owner: "packaging-adaptation" as const,
           issue: "The Instagram caption implies the fluid is replaced on every visit, wider than the cited claim.",
           suggestedAction: "Tighten the caption to match the cited claim's periodic-replacement wording exactly.",
         },
@@ -4100,7 +4102,7 @@ async function run(): Promise<void> {
     };
     const criticResult = await executeFinalCritic(typedCriticInvocation);
     check("BT1. a valid critic invocation produces a validated result",
-      criticResult.output.provisional.verdict === "blocking_findings_present"
+      criticResult.output.provisional.verdict === "needs_revision"
         && criticResult.output.provisional.findings.length === 1
         && criticResult.output.claimFindingUse.used.length === 1);
     check("BT2. exactly one model request is made",
@@ -4278,6 +4280,10 @@ async function run(): Promise<void> {
       check("BW6. it does cover the discipline this stage needs",
         /blocking/i.test(craft) && /advisory/i.test(craft) && /support/i.test(craft)
           && /no penalty for a short, calm review/i.test(craft));
+      check("BW7. it covers the owner field honestly, including the anti-evasion rule",
+        /owner/i.test(craft)
+          && /do not use human review as a way to avoid saying which stage is wrong/i.test(craft)
+          && /human_decision|human review only when no revision resolves it/i.test(craft));
     }
 
     // --- BX. prior-stage values are revalidated, and the platform sequence must match exactly -
@@ -4380,16 +4386,59 @@ async function run(): Promise<void> {
           && /revalidateProductionDirectionOutput/.test(criticSource)
           && /revalidatePackagingAdaptationOutput/.test(criticSource)
           && !/function revalidate(Truth|Script|Direction|Packaging)Output/.test(criticSource));
+
+      // --- the aggregate-bound correction: a valid Stage 5 output must not be
+      // rejected merely because a caption legitimately uses its full platform
+      // allowance. Facebook's own limit (FACEBOOK_TEXT_MAX) is far larger than
+      // the old, incorrect 20,000-character bound this stage used to apply.
+      const facebookOnlyRaw = {
+        packages: [{
+          platform: "facebook",
+          caption: "f".repeat(FACEBOOK_TEXT_MAX),
+          hashtags: [],
+          localKeywords: [],
+          recommendedTime: "09:30 ET",
+          openQuestions: [],
+        }],
+        claimUse: [
+          { platform: "facebook", factId: "auto-1", summary: "The caption uses the moisture fact." },
+        ],
+      };
+      const facebookOnlyPackaging = validatePackagingAdaptationOutput(
+        facebookOnlyRaw, ["facebook"], scriptForPackaging, truthForPackaging, packPack,
+      );
+      const facebookOnlyLength = JSON.stringify(facebookOnlyPackaging, null, 2).length;
+      const facebookOnlyCritic = {
+        ...validCriticOutput,
+        findings: [{ ...validCriticOutput.findings[0]!, platform: "facebook" as const }],
+        claimFindingUse: [{ findingIndex: 0, platform: "facebook", factId: "auto-1", summary: "s" }],
+      };
+      const { runner: fbRunner, calls: fbCalls } = recordingRunner(JSON.stringify(facebookOnlyCritic));
+      const fbResult = await executeFinalCritic({
+        scriptOutput: scriptForPackaging, directionOutput: directionForPackaging,
+        packagingOutput: facebookOnlyPackaging, truthOutput: truthForPackaging,
+        evidencePack: packPack, requestedPlatforms: ["facebook"], runner: fbRunner,
+      });
+      check("BX18. a structurally valid, maximal-caption Facebook-only Stage 5 output "
+        + "(over the old 20,000-character bound) is not rejected",
+        facebookOnlyLength > 20_000
+          && facebookOnlyLength <= FINAL_CRITIC_LIMITS.packagingOutputChars
+          && fbCalls.length === 1
+          && fbResult.metadata.modelRequests === 1);
+      check("BX19. the aggregate bound is documented as derived from the worst case, not chosen",
+        /96,387/.test(unwrappedCritic)
+          && /rounded up to \*\*100,000\*\* for indentation and formatting headroom/.test(unwrappedCritic)
+          && /not a smaller competing policy/.test(unwrappedCritic));
     }
 
-    // --- BY. verdict-consistency and claim-finding binding fail closed ---------
+    // --- BY. verdict/owner-consistency and claim-finding binding fail closed ---
     {
       check("BY1. malformed JSON fails", await rejectsWithStageError(() => runCritic("{not json")));
       check("BY2. a JSON array fails", await rejectsWithStageError(() => runCritic("[]")));
       check("BY3. an extra top-level field fails",
-        await rejectsWithStageError(() => badCritic({ approved: true })));
+        await rejectsWithStageError(() => badCritic({ approvalGranted: true })));
       check("BY4. a missing top-level field fails", await rejectsWithStageError(() => {
-        const { requiresHumanReview, ...rest } = validCriticOutput as Record<string, unknown>;
+        const { summary, ...rest } = validCriticOutput as Record<string, unknown>;
         return runCritic(JSON.stringify(rest));
       }));
       check("BY5. an unknown verdict enum value fails",
@@ -4400,29 +4449,44 @@ async function run(): Promise<void> {
       check("BY7. an unknown finding category fails",
         await rejectsWithStageError(() => badCritic({ findings: [
           { ...validCriticOutput.findings[0]!, category: "legal" }] })));
-      check("BY8. an unknown finding platform/scope fails",
+      check("BY8. an unknown finding platform fails",
         await rejectsWithStageError(() => badCritic({ findings: [
           { ...validCriticOutput.findings[0]!, platform: "x_twitter" }] })));
-      check("BY9. \"all\" is a valid cross-platform finding scope",
+      check("BY9. an unknown finding owner fails",
+        await rejectsWithStageError(() => badCritic({ findings: [
+          { ...validCriticOutput.findings[0]!, owner: "copywriter" }] })));
+      check("BY10. \"cross_platform\" is a valid finding platform, without a matching claimFindingUse entry",
         (await badCritic({
-          findings: [{ ...validCriticOutput.findings[0]!, platform: "all" }],
-        })).output.provisional.findings[0]!.platform === "all");
+          findings: [{ ...validCriticOutput.findings[0]!, platform: "cross_platform" }],
+          claimFindingUse: [],
+        })).output.provisional.findings[0]!.platform === "cross_platform");
 
-      check("BY10. verdict \"no_blocking_findings\" with a blocking finding present fails",
-        await rejectsWithStageError(() => badCritic({ verdict: "no_blocking_findings" })));
-      check("BY11. verdict \"blocking_findings_present\" with no blocking finding fails",
+      check("BY11. verdict \"provisional_pass\" with a blocking finding present fails",
+        await rejectsWithStageError(() => badCritic({ verdict: "provisional_pass" })));
+      check("BY12. verdict \"needs_revision\" with no blocking finding at all fails",
         await rejectsWithStageError(() => badCritic({
-          verdict: "blocking_findings_present",
           findings: [{ ...validCriticOutput.findings[0]!, severity: "advisory" }],
           claimFindingUse: [],
         })));
-      check("BY12. a blocking finding without requiresHumanReview=true fails",
-        await rejectsWithStageError(() => badCritic({ requiresHumanReview: false })));
-      check("BY13. verdict \"escalate_human_review\" without requiresHumanReview=true fails",
-        await rejectsWithStageError(() => badCritic({ verdict: "escalate_human_review", requiresHumanReview: false })));
-      check("BY14. a genuinely clean, no-concerns result is a legitimate, honest answer",
+      check("BY13. verdict \"needs_revision\" backed only by a human_review-owned blocking finding fails",
+        await rejectsWithStageError(() => badCritic({
+          findings: [{ ...validCriticOutput.findings[0]!, owner: "human_review" }],
+        })));
+      check("BY14. verdict \"needs_human_review\" with only advisory findings fails",
+        await rejectsWithStageError(() => badCritic({
+          verdict: "needs_human_review",
+          findings: [{ ...validCriticOutput.findings[0]!, severity: "advisory", owner: "human_review" }],
+        })));
+      check("BY15. verdict \"needs_human_review\" backed only by a revisable-owned blocking finding fails",
+        await rejectsWithStageError(() => badCritic({ verdict: "needs_human_review" })));
+      check("BY16. verdict \"needs_human_review\" validates when backed by a blocking human-owned finding",
         (await badCritic({
-          verdict: "no_blocking_findings", requiresHumanReview: false, findings: [], claimFindingUse: [],
+          verdict: "needs_human_review",
+          findings: [{ ...validCriticOutput.findings[0]!, owner: "human_review" }],
+        })).output.provisional.verdict === "needs_human_review");
+      check("BY17. a genuinely clean, no-concerns result is a legitimate, honest answer",
+        (await badCritic({
+          verdict: "provisional_pass", findings: [], claimFindingUse: [],
         })).output.provisional.findings.length === 0);
 
       // The honest-limit regression: even a wrongly optimistic model claiming
@@ -4431,63 +4495,79 @@ async function run(): Promise<void> {
       // fails closed rather than being silently ignored — a would-be escape
       // hatch that is merely ignored is not the same guarantee as one that does
       // not exist.
-      check("BY15. a model attempting to smuggle in an approval field is refused, not silently dropped",
+      check("BY18. a model attempting to smuggle in an approval field is refused, not silently dropped",
         await rejectsWithStageError(() => badCritic({
-          verdict: "no_blocking_findings", requiresHumanReview: false, findings: [], claimFindingUse: [],
-          approvalGranted: true,
+          verdict: "provisional_pass", findings: [], claimFindingUse: [], approvalGranted: true,
         })));
-      check("BY16. even a maximally confident clean verdict still carries every false brand",
+      check("BY19. even a maximally confident clean verdict still carries every false brand",
         (await badCritic({
-          verdict: "no_blocking_findings", requiresHumanReview: false, findings: [], claimFindingUse: [],
+          verdict: "provisional_pass", findings: [], claimFindingUse: [],
           summary: "Every claim is fully supported and this package is ready to publish immediately.",
         })).output.provisional.authoritative === false
           && (await badCritic({
-            verdict: "no_blocking_findings", requiresHumanReview: false, findings: [], claimFindingUse: [],
+            verdict: "provisional_pass", findings: [], claimFindingUse: [],
           })).output.provisional.approvalGranted === false);
 
-      check("BY17. a findingIndex referencing a nonexistent finding fails",
+      check("BY20. a findingIndex referencing a nonexistent finding fails",
         await rejectsWithStageError(() => badCritic({ claimFindingUse: [
           { findingIndex: 1, platform: "instagram", factId: "auto-1", summary: "s" }] })));
-      check("BY18. a negative findingIndex fails",
+      check("BY21. a negative findingIndex fails",
         await rejectsWithStageError(() => badCritic({ claimFindingUse: [
           { findingIndex: -1, platform: "instagram", factId: "auto-1", summary: "s" }] })));
-      check("BY19. a claimFindingUse platform that was not requested fails",
+      check("BY22. a claimFindingUse platform that was not requested fails",
         await rejectsWithStageError(() => runCritic(JSON.stringify(validCriticOutput), ["facebook", "google_business_profile"])));
-      check("BY20. a claimFindingUse factId not bound by stage 5 for that platform fails",
+      check("BY23. a claimFindingUse factId not bound by stage 5 for that platform fails",
         await rejectsWithStageError(() => badCritic({ claimFindingUse: [
           { findingIndex: 0, platform: "instagram", factId: "does-not-exist", summary: "s" }] })));
-      check("BY21. a fabricated factId fails even when it names a real pack fact",
+      check("BY24. a fabricated factId fails even when it names a real pack fact",
         await rejectsWithStageError(() => badCritic({ claimFindingUse: [
           { findingIndex: 0, platform: "instagram", factId: "biz-2", summary: "s" }] })));
-      check("BY22. a duplicated (platform, factId) pair fails",
+
+      check("BY25. an exact (findingIndex, platform, factId) triple repeated fails",
         await rejectsWithStageError(() => badCritic({
-          findings: [validCriticOutput.findings[0]!, { ...validCriticOutput.findings[0]!, issue: "A second, distinct issue about the same claim." }],
+          claimFindingUse: [
+            { findingIndex: 0, platform: "instagram", factId: "auto-1", summary: "s1" },
+            { findingIndex: 0, platform: "instagram", factId: "auto-1", summary: "s2" },
+          ],
+        })));
+      check("BY26. the same (platform, factId) pair may back two genuinely different findings",
+        (await badCritic({
+          findings: [
+            validCriticOutput.findings[0]!,
+            { ...validCriticOutput.findings[0]!, issue: "A second, distinct issue about the same claim." },
+          ],
           claimFindingUse: [
             { findingIndex: 0, platform: "instagram", factId: "auto-1", summary: "s1" },
             { findingIndex: 1, platform: "instagram", factId: "auto-1", summary: "s2" },
           ],
+        })).output.claimFindingUse.used.length === 2);
+      check("BY27. a platform-specific finding's binding naming a different platform fails",
+        await rejectsWithStageError(() => badCritic({
+          // finding 0 is scoped to "instagram"; binding it to "facebook" is incoherent.
+          claimFindingUse: [{ findingIndex: 0, platform: "facebook", factId: "auto-1", summary: "s" }],
         })));
-      check("BY23. the same fact may be bound once on each of two different findings' platforms",
+      check("BY28. a cross_platform finding may bind claims on more than one requested platform",
         (await badCritic({
-          findings: [validCriticOutput.findings[0]!, { ...validCriticOutput.findings[0]!, platform: "facebook", issue: "A distinct issue on Facebook." }],
+          findings: [{ ...validCriticOutput.findings[0]!, platform: "cross_platform" }],
           claimFindingUse: [
             { findingIndex: 0, platform: "instagram", factId: "auto-1", summary: "s1" },
-            { findingIndex: 1, platform: "facebook", factId: "auto-1", summary: "s2" },
+            { findingIndex: 0, platform: "facebook", factId: "auto-1", summary: "s2" },
           ],
         })).output.claimFindingUse.used.length === 2);
-      check("BY24. a claim-use summary containing a URL fails",
+
+      check("BY29. a claim-use summary containing a URL fails",
         await rejectsWithStageError(() => badCritic({ claimFindingUse: [
           { findingIndex: 0, platform: "instagram", factId: "auto-1", summary: "See https://example.com" }] })));
-      check("BY25. a finding issue containing a URL fails",
+      check("BY30. a finding issue containing a URL fails",
         await rejectsWithStageError(() => badCritic({ findings: [
           { ...validCriticOutput.findings[0]!, issue: "See www.example.com for details." }] })));
-      check("BY26. a summary containing a URL fails",
+      check("BY31. a summary containing a URL fails",
         await rejectsWithStageError(() => badCritic({ summary: "Full report at https://example.com/report" })));
-      check("BY27. too many findings fails",
+      check("BY32. too many findings fails",
         await rejectsWithStageError(() => badCritic({
           findings: Array.from({ length: FINAL_CRITIC_LIMITS.maxFindings + 1 }, () => validCriticOutput.findings[0]!),
         })));
-      check("BY28. output validation is reusable independently of the runner",
+      check("BY33. output validation is reusable independently of the runner",
         validateFinalCriticOutput(
           validCriticOutput, ALL_PLATFORMS, packResult.output, scriptForPackaging, truthForPackaging, packPack,
         ).provisional.findings.length === 1);
@@ -4657,11 +4737,14 @@ async function run(): Promise<void> {
           goal: "brake service", records: mixed, now: NOW, traceId: "fixed-trace", businessContext,
         })).executionDisabled === true);
       check("CB23. the enums used by this stage are all closed and exactly as documented",
-        CRITIC_VERDICTS.join() === "no_blocking_findings,blocking_findings_present,escalate_human_review"
+        CRITIC_VERDICTS.join() === "provisional_pass,needs_revision,needs_human_review"
           && CRITIC_FINDING_SEVERITIES.join() === "blocking,advisory"
           && CRITIC_FINDING_CATEGORIES.join()
-            === "unsupported_claim,brand_voice_risk,platform_policy_risk,consistency_risk,other"
-          && CRITIC_FINDING_SCOPES.join() === "instagram,facebook,google_business_profile,all");
+            === "claim_fidelity,uncited_implication,platform_semantics,voice_clarity,"
+              + "hashtag_keyword_relevance,timing,production_coherence,human_decision"
+          && CRITIC_FINDING_PLATFORMS.join() === "instagram,facebook,google_business_profile,cross_platform"
+          && CRITIC_FINDING_OWNERS.join()
+            === "hook-story-script,production-direction,packaging-adaptation,human_review");
     }
   }
 

@@ -92,15 +92,19 @@
  *  - Every entry in the typed claim-finding channel names a finding the model
  *    actually returned, a platform that was actually requested, and a fact id
  *    stage 5 actually bound **for that platform**. Fabricated ids,
- *    wrong-platform ids, out-of-range finding indices, and within-platform
- *    duplicates all fail.
+ *    wrong-platform ids, out-of-range finding indices, and exact-triple
+ *    duplicates (the same finding citing the same platform and fact twice)
+ *    all fail. A platform-specific finding's bindings must all name that
+ *    finding's own platform; a `cross_platform` finding's bindings may name
+ *    any requested platform, each still bound by stage 5 for that platform.
  *  - The evidence class attached to a claim-finding entry always comes from
  *    the record stage 5 bound, never from the model's declaration.
- *  - `verdict` and `requiresHumanReview` are checked for **structural**
- *    self-consistency against the findings actually returned: a verdict
- *    cannot claim blocking findings are present with none marked blocking, or
- *    absent with one marked blocking, and a blocking finding always requires
- *    `requiresHumanReview: true`.
+ *  - `verdict` is checked for **structural** self-consistency against each
+ *    finding's `severity` and `owner`: `provisional_pass` cannot coexist with
+ *    a blocking finding; `needs_revision` requires at least one blocking
+ *    finding owned by a revisable Stage 3/4/5 owner; `needs_human_review`
+ *    requires at least one blocking finding owned by human review — a
+ *    human-review verdict backed only by advisory findings fails.
  *  - All four prior-stage values (stage 2, 3, 4, 5) are revalidated against
  *    the same evidence pack, using the owning stages' own exported
  *    revalidators, before any model call, and the requested-platform sequence
@@ -121,9 +125,10 @@
  * ## The honest guarantee: this is an opinion, never a clearance
  *
  * This stage may flag an unsupported claim's presence in the used-claim
- * projection it was shown, a stated inconsistency between platforms, a brand
- * or voice risk, or a platform-policy risk, and it may recommend that a human
- * review the package before anything happens to it.
+ * projection it was shown, an uncited implication, a platform-semantics
+ * problem, a voice/clarity concern, a hashtag or keyword relevance problem, a
+ * timing concern, a production-coherence problem, or a matter it believes
+ * only a human should decide.
  *
  * **It does not, and cannot, prove correctness, grant approval, gate
  * publication, validate production readiness, or replace the existing
@@ -134,9 +139,12 @@
  * assessment this stage returns — including one where the model itself
  * expresses total confidence, invents an all-clear, or otherwise argues for
  * its own authority. Those fields are asserted by the validator, not copied
- * from the model, so a wrongly optimistic model output cannot escape them.
- * Verdict consistency above is a check that the model's own findings do not
- * contradict its own verdict; it is not a check that either is true.
+ * from the model, so a wrongly optimistic model output cannot escape them —
+ * the output contract has no field through which a model could set any of
+ * them, so an attempt to smuggle one in as an extra field is refused outright,
+ * not silently dropped. Verdict consistency above is a check that the
+ * model's own findings and their declared owners do not contradict its own
+ * verdict; it is not a check that either is true.
  *
  * ## What this stage is not allowed to do
  *
@@ -180,11 +188,29 @@ import {
 
 export const FINAL_CRITIC_STAGE = "final-critic" as const;
 
-/** Bounds on the model's output and on the prior-stage values it is shown. */
+/**
+ * Bounds on the model's output and on the prior-stage values it is shown.
+ *
+ * **`packagingOutputChars`, derived, not chosen.** A structurally valid
+ * `PackagingAdaptationOutput` can legitimately carry a Facebook caption up to
+ * `FACEBOOK_TEXT_MAX` (63,206 characters) with zero hashtags — the combined
+ * caption-plus-hashtag bound is satisfied trivially when there are no
+ * hashtags to add. The worst case admitted by `packageMap.ts`'s own limits is
+ * three packages (one per `PackagingPlatform`, the maximum
+ * `PACKAGING_LIMITS.maxRequestedPlatforms`), each at its platform's maximum
+ * caption length with the maximum local keywords and open questions, plus
+ * `PACKAGING_LIMITS.maxClaimUses` (24) claim-use entries each at its maximum
+ * summary length. Constructing that exact object and measuring
+ * `JSON.stringify(value, null, 2).length` gives **96,387** characters. This
+ * bound is rounded up to **100,000** for indentation and formatting headroom
+ * — a margin on the same computed worst case, not a smaller competing policy.
+ * A regression proves a genuinely maximal, structurally valid Stage 5 output
+ * reaches the injected runner exactly once rather than being rejected here.
+ */
 export const FINAL_CRITIC_LIMITS = {
   scriptOutputChars: 20_000,
   directionOutputChars: 24_000,
-  packagingOutputChars: 20_000,
+  packagingOutputChars: 100_000,
   summaryChars: 1_500,
   issueChars: 400,
   suggestedActionChars: 300,
@@ -195,11 +221,14 @@ export const FINAL_CRITIC_LIMITS = {
 
 /** Closed set. What kind of concern a finding raises. */
 export const CRITIC_FINDING_CATEGORIES = [
-  "unsupported_claim",
-  "brand_voice_risk",
-  "platform_policy_risk",
-  "consistency_risk",
-  "other",
+  "claim_fidelity",
+  "uncited_implication",
+  "platform_semantics",
+  "voice_clarity",
+  "hashtag_keyword_relevance",
+  "timing",
+  "production_coherence",
+  "human_decision",
 ] as const;
 export type CriticFindingCategory = (typeof CRITIC_FINDING_CATEGORIES)[number];
 
@@ -213,26 +242,45 @@ export type CriticFindingSeverity = (typeof CRITIC_FINDING_SEVERITIES)[number];
  * finding (a hook-level inconsistency, for instance) has a place to live
  * without being falsely pinned to one channel.
  */
-export const CRITIC_FINDING_SCOPES = [...PACKAGING_PLATFORMS, "all"] as const;
-export type CriticFindingScope = (typeof CRITIC_FINDING_SCOPES)[number];
+export const CRITIC_FINDING_PLATFORMS = [...PACKAGING_PLATFORMS, "cross_platform"] as const;
+export type CriticFindingPlatform = (typeof CRITIC_FINDING_PLATFORMS)[number];
+
+/**
+ * Closed set. Who would act on a finding, if anyone does.
+ *
+ * A revisable owner names the upstream stage whose output would need to
+ * change; `human_review` names a matter this pipeline cannot resolve by
+ * revision at all — a judgement call for a person. Every finding must name
+ * one, which is also the anchor for `verdict` consistency below.
+ */
+export const CRITIC_FINDING_OWNERS = [
+  "hook-story-script",
+  "production-direction",
+  "packaging-adaptation",
+  "human_review",
+] as const;
+export type CriticFindingOwner = (typeof CRITIC_FINDING_OWNERS)[number];
+
+/** The three owners naming an upstream stage that could revise its output. */
+const REVISABLE_OWNERS: ReadonlySet<CriticFindingOwner> = new Set([
+  "hook-story-script", "production-direction", "packaging-adaptation",
+]);
 
 /**
  * Closed set. The critic's opinion. Never an approval — see this module's
  * header for the honest guarantee this type does not weaken.
  */
 export const CRITIC_VERDICTS = [
-  "no_blocking_findings",
-  "blocking_findings_present",
-  "escalate_human_review",
+  "provisional_pass",
+  "needs_revision",
+  "needs_human_review",
 ] as const;
 export type CriticVerdict = (typeof CRITIC_VERDICTS)[number];
 
 /** Exactly the fields the contract allows. Anything else is an extra field. */
-const ALLOWED_OUTPUT_FIELDS = [
-  "verdict", "summary", "requiresHumanReview", "findings", "claimFindingUse",
-] as const;
+const ALLOWED_OUTPUT_FIELDS = ["verdict", "summary", "findings", "claimFindingUse"] as const;
 const ALLOWED_FINDING_FIELDS = [
-  "severity", "category", "platform", "issue", "suggestedAction",
+  "severity", "category", "platform", "owner", "issue", "suggestedAction",
 ] as const;
 const ALLOWED_CLAIM_FINDING_FIELDS = [
   "findingIndex", "platform", "factId", "summary",
@@ -248,8 +296,10 @@ const ALLOWED_CLAIM_FINDING_FIELDS = [
 export interface CriticFinding {
   severity: CriticFindingSeverity;
   category: CriticFindingCategory;
-  /** One requested platform, or `"all"` for a cross-platform concern. */
-  platform: CriticFindingScope;
+  /** One requested platform, or `"cross_platform"` for a cross-platform concern. */
+  platform: CriticFindingPlatform;
+  /** Who would act on this, if anyone does — a revisable stage, or a human. */
+  owner: CriticFindingOwner;
   issue: string;
   suggestedAction: string;
   /** Always false. A finding is an opinion, never an authoritative fact. */
@@ -312,8 +362,6 @@ export interface ProvisionalCriticAssessment {
   readonly productionValidated: false;
   verdict: CriticVerdict;
   summary: string;
-  /** Structurally consistent with `verdict` and with every finding's severity. */
-  requiresHumanReview: boolean;
   /** Order is preserved exactly as returned; it is part of the contract. */
   findings: CriticFinding[];
 }
@@ -391,11 +439,6 @@ function requireEnum<T extends string>(value: unknown, allowed: readonly T[], fi
   return value as T;
 }
 
-function requireBoolean(value: unknown, field: string): boolean {
-  if (typeof value !== "boolean") fail(`"${field}" must be a boolean`);
-  return value as boolean;
-}
-
 function requirePlatform(value: unknown, field: string): PackagingPlatform {
   if (typeof value !== "string" || !(PACKAGING_PLATFORMS as readonly string[]).includes(value)) {
     fail(`"${field}" must be one of: ${PACKAGING_PLATFORMS.join(", ")}`);
@@ -448,12 +491,13 @@ export function renderPlatformClaims(
  * **Scope of this function, stated precisely.** It validates *shape*,
  * *bounds*, *enums*, *finding-index and platform membership*, *membership in
  * stage 5's per-platform bound-claim set*, *recognizable URL syntax in every
- * model prose field*, and *structural consistency between `verdict`, each
- * finding's severity, and `requiresHumanReview`*. It does not evaluate
- * whether a finding is correct, whether the package actually has the problem
- * described, whether a suggested action would fix it, or whether the verdict
- * is the right call. **No language model in this pipeline proves any of that
- * true, and nothing here treats one as though it did.**
+ * model prose field*, *platform coherence between a finding and its own
+ * claim-finding bindings*, and *structural consistency between `verdict` and
+ * each finding's `severity`/`owner`*. It does not evaluate whether a finding
+ * is correct, whether the package actually has the problem described,
+ * whether a suggested action would fix it, or whether the verdict is the
+ * right call. **No language model in this pipeline proves any of that true,
+ * and nothing here treats one as though it did.**
  */
 export function validateFinalCriticOutput(
   raw: Record<string, unknown>,
@@ -469,7 +513,6 @@ export function validateFinalCriticOutput(
   const summary = requireUrlFreeText(
     requireBoundedString(raw.summary, "summary", FINAL_CRITIC_LIMITS.summaryChars), "summary",
   );
-  const requiresHumanReview = requireBoolean(raw.requiresHumanReview, "requiresHumanReview");
 
   if (!Array.isArray(raw.findings)) fail('"findings" must be an array');
   const rawFindings = raw.findings as unknown[];
@@ -482,7 +525,8 @@ export function validateFinalCriticOutput(
     return {
       severity: requireEnum(obj.severity, CRITIC_FINDING_SEVERITIES, `findings[${index}].severity`),
       category: requireEnum(obj.category, CRITIC_FINDING_CATEGORIES, `findings[${index}].category`),
-      platform: requireEnum(obj.platform, CRITIC_FINDING_SCOPES, `findings[${index}].platform`),
+      platform: requireEnum(obj.platform, CRITIC_FINDING_PLATFORMS, `findings[${index}].platform`),
+      owner: requireEnum(obj.owner, CRITIC_FINDING_OWNERS, `findings[${index}].owner`),
       issue: requireUrlFreeText(
         requireBoundedString(obj.issue, `findings[${index}].issue`, FINAL_CRITIC_LIMITS.issueChars),
         `findings[${index}].issue`,
@@ -498,18 +542,28 @@ export function validateFinalCriticOutput(
   });
 
   // --- structural verdict consistency: never a correctness proof ------------
-  const hasBlocking = findings.some((f) => f.severity === "blocking");
-  if (hasBlocking && verdict === "no_blocking_findings") {
-    fail('"verdict" is "no_blocking_findings", but a finding is marked severity "blocking"');
+  //
+  // Anchored on each finding's *severity* and *owner*, not a separate
+  // model-supplied boolean: a verdict claiming a shape of blocking work that
+  // no finding's own severity+owner combination actually backs is refused.
+  const blockingFindings = findings.filter((f) => f.severity === "blocking");
+  const hasRevisableBlocking = blockingFindings.some((f) => REVISABLE_OWNERS.has(f.owner));
+  const hasHumanBlocking = blockingFindings.some((f) => f.owner === "human_review");
+
+  if (verdict === "provisional_pass" && blockingFindings.length > 0) {
+    fail('"verdict" is "provisional_pass", but a finding is marked severity "blocking"');
   }
-  if (!hasBlocking && verdict === "blocking_findings_present") {
-    fail('"verdict" is "blocking_findings_present", but no finding is marked severity "blocking"');
+  if (verdict === "needs_revision" && !hasRevisableBlocking) {
+    fail(
+      '"verdict" is "needs_revision", but no finding is both severity "blocking" and owned by a '
+      + "revisable stage (hook-story-script, production-direction, or packaging-adaptation)",
+    );
   }
-  if (hasBlocking && !requiresHumanReview) {
-    fail('a "blocking" finding requires "requiresHumanReview" to be true');
-  }
-  if (verdict === "escalate_human_review" && !requiresHumanReview) {
-    fail('"verdict" is "escalate_human_review", which requires "requiresHumanReview" to be true');
+  if (verdict === "needs_human_review" && !hasHumanBlocking) {
+    fail(
+      '"verdict" is "needs_human_review", but no finding is both severity "blocking" and owned by '
+      + '"human_review" — a human-review verdict backed only by advisory findings is refused',
+    );
   }
 
   // --- binding: stage 5's per-platform bound claims are the boundary --------
@@ -530,7 +584,11 @@ export function validateFinalCriticOutput(
   if (rawClaimFindingUse.length > FINAL_CRITIC_LIMITS.maxClaimFindingUses) {
     fail(`"claimFindingUse" exceeds ${FINAL_CRITIC_LIMITS.maxClaimFindingUses} entries`);
   }
-  const seenBindings = new Set<string>();
+  // Keyed by the exact (findingIndex, platform, factId) triple. A duplicate
+  // triple is a repeated entry; the SAME (platform, factId) pair cited by two
+  // genuinely different findings is not — each finding's use of a claim is
+  // its own, independent citation.
+  const seenTriples = new Set<string>();
   const used: CriticClaimFindingBinding[] = rawClaimFindingUse.map((entry, index) => {
     const obj = requireObject(entry, `claimFindingUse[${index}]`);
     requireExactKeys(obj, [...ALLOWED_CLAIM_FINDING_FIELDS], "claimFindingUse entry");
@@ -545,10 +603,19 @@ export function validateFinalCriticOutput(
         + "finding(s) were returned",
       );
     }
+    const finding = findings[findingIndex]!;
 
     const platform = requirePlatform(obj.platform, `claimFindingUse[${index}].platform`);
     if (!requestedSet.has(platform)) {
       fail(`claimFindingUse[${index}] names "${platform}", which was not requested`);
+    }
+    // Platform-specific findings may only bind claims on their own platform.
+    // A cross_platform finding may bind any requested platform.
+    if (finding.platform !== "cross_platform" && finding.platform !== platform) {
+      fail(
+        `claimFindingUse[${index}] names platform "${platform}", but finding ${findingIndex} is `
+        + `scoped to "${finding.platform}" — a platform-specific finding's bindings must name its own platform`,
+      );
     }
 
     const factId = requireBoundedString(obj.factId, `claimFindingUse[${index}].factId`, 200);
@@ -560,11 +627,14 @@ export function validateFinalCriticOutput(
         + "different platform)",
       );
     }
-    const key = `${platform} ${factId}`;
-    if (seenBindings.has(key)) {
-      fail(`claimFindingUse cites "${factId}" more than once for "${platform}"`);
+    const triple = `${findingIndex} ${platform} ${factId}`;
+    if (seenTriples.has(triple)) {
+      fail(
+        `claimFindingUse repeats the exact (finding, platform, fact) triple: finding ${findingIndex}, `
+        + `"${platform}", "${factId}"`,
+      );
     }
-    seenBindings.add(key);
+    seenTriples.add(triple);
 
     const summary = requireUrlFreeText(
       requireBoundedString(
@@ -594,7 +664,6 @@ export function validateFinalCriticOutput(
       productionValidated: false,
       verdict,
       summary,
-      requiresHumanReview,
       findings,
     },
     claimFindingUse: {
@@ -608,7 +677,7 @@ export function validateFinalCriticOutput(
  * The only supported way to turn this stage's output into evidence records.
  *
  * Reads the platform and the bound ids and nothing else. It never reads a
- * verdict, a summary, a finding's issue or suggested action, or a
+ * verdict, a summary, a finding's issue, owner, or suggested action, or a
  * claim-finding summary.
  */
 export function criticClaimRecords(
@@ -671,8 +740,9 @@ export function assertRequiredFinalCriticEvidence(pack: EvidencePack, registry: 
  * package sequence; an empty stage 3 used-claim set; a missing asset; a
  * runner error or timeout; non-strict JSON; any structural or policy
  * violation; and any claim-finding use that is fabricated, wrong-platform,
- * out-of-range, duplicated, or structurally inconsistent with its own
- * verdict. Performs no retry and no second model call.
+ * out-of-range, an exact-triple duplicate, incoherent with its own finding's
+ * platform, or structurally inconsistent with its own verdict. Performs no
+ * retry and no second model call.
  *
  * **The zero-used-claims decision, made explicitly.** Stage 5 already refuses
  * when stage 3 bound nothing, and stage 4 refuses before it. This stage does

@@ -87,6 +87,29 @@ Calling everything advisory to avoid a hard call is its own kind of
 dishonesty. So is calling everything blocking to appear thorough. Match the
 severity to what you actually found.
 
+## Naming who should act — the owner field
+
+Every finding names an owner: one of the three upstream stages whose output
+could be revised, or a human-review owner for a matter no revision resolves.
+Choose honestly, not defensively:
+
+- **Name a revisable stage when revising its output is genuinely how this
+  gets fixed.** A caption overstating a claim is `packaging-adaptation`'s to
+  revise; a shot depicting something uncited is `production-direction`'s; a
+  script line asserting more than its claim allows is `hook-story-script`'s.
+- **Name human review only when no revision resolves it.** A judgement call
+  about tone, a genuinely ambiguous claim, or a concern this pipeline has no
+  mechanism to settle by rewriting a stage's output belongs here — not every
+  concern you are unsure about.
+- **Do not use human review as a way to avoid saying which stage is wrong.**
+  If the fix is "packaging-adaptation should shorten this caption," say that;
+  routing it to a person instead when a revision would plainly resolve it
+  wastes the distinction the field exists to draw.
+- **A blocking finding's owner is what a verdict of "needs revision" or
+  "needs human review" is actually backed by.** A verdict claiming one of
+  those without a blocking finding whose owner matches is refused — so the
+  owner is not decoration; it is what makes the verdict honest.
+
 ## Say plainly when you have no concerns
 
 There is no penalty for a short, calm review. A confident, well-supported
