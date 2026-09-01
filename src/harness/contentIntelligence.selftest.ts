@@ -4419,16 +4419,119 @@ async function run(): Promise<void> {
         packagingOutput: facebookOnlyPackaging, truthOutput: truthForPackaging,
         evidencePack: packPack, requestedPlatforms: ["facebook"], runner: fbRunner,
       });
-      check("BX18. a structurally valid, maximal-caption Facebook-only Stage 5 output "
-        + "(over the old 20,000-character bound) is not rejected",
+      check("BX18. a structurally valid, ordinary-character maximal-caption Facebook-only Stage 5 "
+        + "output (over the old 20,000-character bound) is not rejected",
         facebookOnlyLength > 20_000
           && facebookOnlyLength <= FINAL_CRITIC_LIMITS.packagingOutputChars
           && fbCalls.length === 1
           && fbResult.metadata.modelRequests === 1);
-      check("BX19. the aggregate bound is documented as derived from the worst case, not chosen",
-        /96,387/.test(unwrappedCritic)
-          && /rounded up to \*\*100,000\*\* for indentation and formatting headroom/.test(unwrappedCritic)
-          && /not a smaller competing policy/.test(unwrappedCritic));
+
+      // --- the escaping correction. Stage 5 bounds caption *code units*; this
+      // stage bounds the *serialized* string. A caption made entirely of
+      // quotation marks is valid under every Stage 5 caption, hashtag, URL and
+      // combined provider-visible rule, yet each character costs two once
+      // serialized. A bound measured with characters JSON does not escape
+      // cannot see that, which is exactly how the previous 100,000-character
+      // value came to reject valid Stage 5 output.
+      //
+      // The caption length here is the largest all-quote caption whose
+      // assembled payload still fits the SHARED MAX_PAYLOAD_CHARS boundary in
+      // stageExecution.ts, which this stage does not change. BX21 records what
+      // happens above that shared boundary.
+      const ESCAPING_CAPTION_CHARS = 52_000;
+      const escapingRaw = {
+        packages: [{
+          platform: "facebook",
+          caption: '"'.repeat(ESCAPING_CAPTION_CHARS),
+          hashtags: [],
+          localKeywords: [],
+          recommendedTime: "09:30 ET",
+          openQuestions: [],
+        }],
+        claimUse: [
+          { platform: "facebook", factId: "auto-1", summary: "The caption uses the moisture fact." },
+        ],
+      };
+      const escapingPackaging = validatePackagingAdaptationOutput(
+        escapingRaw, ["facebook"], scriptForPackaging, truthForPackaging, packPack,
+      );
+      const escapingSerializedLength = JSON.stringify(escapingPackaging, null, 2).length;
+      const { runner: escRunner, calls: escCalls } = recordingRunner(JSON.stringify(facebookOnlyCritic));
+      // Captured rather than awaited bare, so a stage that wrongly refuses this
+      // valid input reports a named failing assertion instead of aborting the
+      // suite.
+      let escResult: Awaited<ReturnType<typeof executeFinalCritic>> | undefined;
+      let escRefusal = "";
+      try {
+        escResult = await executeFinalCritic({
+          scriptOutput: scriptForPackaging, directionOutput: directionForPackaging,
+          packagingOutput: escapingPackaging, truthOutput: truthForPackaging,
+          evidencePack: packPack, requestedPlatforms: ["facebook"], runner: escRunner,
+        });
+      } catch (error) {
+        escRefusal = error instanceof Error ? error.message : String(error);
+      }
+      check("BX19. Stage 5 accepts an all-quote caption, and JSON escaping doubles its serialized size",
+        escapingPackaging.provisional.packages[0]!.caption.length === ESCAPING_CAPTION_CHARS
+          && escapingSerializedLength > ESCAPING_CAPTION_CHARS * 2);
+      check("BX20. that valid Stage 5 output serializes past the old 100,000-character bound "
+        + "and still reaches the injected runner exactly once",
+        escRefusal === ""
+          && escapingSerializedLength > 100_000
+          && escapingSerializedLength <= FINAL_CRITIC_LIMITS.packagingOutputChars
+          && escCalls.length === 1
+          && escResult?.metadata.modelRequests === 1);
+      check("BX21. it is forwarded whole — no truncation, no rewriting", (() => {
+        if (escRefusal !== "" || !escCalls.length) return false;
+        const forwarded = JSON.parse(untrustedBlock(escCalls[0]!.prompt, "PACKAGING_OUTPUT"));
+        return JSON.stringify(forwarded) === JSON.stringify(escapingPackaging)
+          && forwarded.provisional.packages[0].caption.length === ESCAPING_CAPTION_CHARS;
+      })());
+
+      // The honest limit above that size, stated rather than hidden: a
+      // full-length all-quote caption is accepted by Stage 5 and is NOT
+      // rejected by this stage's aggregate bound any more, but it still cannot
+      // reach a model, because the SHARED payload boundary every stage uses is
+      // smaller. That boundary is merged, shared with the five stages before
+      // this one, and deliberately not changed here.
+      const fullEscapingRaw = {
+        ...escapingRaw,
+        packages: [{ ...escapingRaw.packages[0]!, caption: '"'.repeat(FACEBOOK_TEXT_MAX) }],
+      };
+      const fullEscapingPackaging = validatePackagingAdaptationOutput(
+        fullEscapingRaw, ["facebook"], scriptForPackaging, truthForPackaging, packPack,
+      );
+      const fullEscapingLength = JSON.stringify(fullEscapingPackaging, null, 2).length;
+      const sharedBoundCalls: StageRunnerRequest[] = [];
+      let sharedBoundMessage = "";
+      try {
+        await executeFinalCritic({
+          scriptOutput: scriptForPackaging, directionOutput: directionForPackaging,
+          packagingOutput: fullEscapingPackaging, truthOutput: truthForPackaging,
+          evidencePack: packPack, requestedPlatforms: ["facebook"],
+          runner: async (request) => {
+            sharedBoundCalls.push(request);
+            return { text: JSON.stringify(facebookOnlyCritic) };
+          },
+        });
+      } catch (error) {
+        sharedBoundMessage = error instanceof StageExecutionError ? error.message : String(error);
+      }
+      check("BX22. at full FACEBOOK_TEXT_MAX the refusal comes from the shared payload boundary, "
+        + "not from this stage's aggregate bound, and costs zero model calls",
+        fullEscapingLength > MAX_PAYLOAD_CHARS
+          && fullEscapingLength <= FINAL_CRITIC_LIMITS.packagingOutputChars
+          && /assembled input exceeds the bound/.test(sharedBoundMessage)
+          && !/packagingOutput" exceeds/.test(sharedBoundMessage)
+          && sharedBoundCalls.length === 0);
+
+      check("BX23. the ceiling is escaping-aware and mechanically derived, not a measured sample",
+        FINAL_CRITIC_LIMITS.packagingOutputChars >= FACEBOOK_TEXT_MAX * 6
+          && FINAL_CRITIC_LIMITS.packagingOutputChars > 100_000
+          && /conservative safe upper bound/.test(unwrappedCritic)
+          && /derived mechanically from Stage 5's own exported field and array maxima/.test(unwrappedCritic)
+          && /six-character `\\uXXXX` escape/.test(unwrappedCritic)
+          && !/true worst case/.test(unwrappedCritic));
     }
 
     // --- BY. verdict/owner-consistency and claim-finding binding fail closed ---

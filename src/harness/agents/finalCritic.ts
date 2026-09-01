@@ -170,7 +170,9 @@ import { revalidateProductionDirectionOutput } from "./productionDirection.js";
 import type { PackagingAdaptationOutput, PackagingPlatform } from "./packagingAdaptation.js";
 import {
   URL_SHAPED_TEXT_PATTERN,
+  PACKAGING_LIMITS,
   PACKAGING_PLATFORMS,
+  PLATFORM_PACKAGING_POLICY,
   packagingClaimRecords,
   revalidatePackagingAdaptationOutput,
   scriptUsedClaimRecordsForPackaging,
@@ -189,28 +191,107 @@ import {
 export const FINAL_CRITIC_STAGE = "final-critic" as const;
 
 /**
+ * Maximum characters `JSON.stringify` can emit for a single UTF-16 code unit
+ * of string content.
+ *
+ * `"` and `\` expand to two characters. A control character expands to either
+ * a two-character short escape (`\n`, `\t`, …) or a six-character `\uXXXX`
+ * escape, and an unpaired surrogate expands to a six-character `\uXXXX`
+ * escape. Every other code unit is emitted as itself. **Six is therefore a
+ * safe ceiling for any code unit Stage 5 permits** — and Stage 5 permits all
+ * of them, because its validators bound *code-unit length*, not serialized
+ * size: a caption of 63,206 quotation marks satisfies every Stage 5 caption,
+ * hashtag, URL and combined provider-visible rule while serializing to
+ * 126,412 characters.
+ */
+const MAX_JSON_ESCAPE_EXPANSION = 6;
+
+/**
+ * Generous allowance for the short fields Stage 5 bounds but does not export
+ * a constant for: the platform identifier, the `HH:MM ET` recommended time,
+ * `factId`, `factKind`, and the `kind` brand literals. Stage 5 bounds each of
+ * them at 200 characters or fewer, so this is an order of magnitude above
+ * their combined maximum and cannot become the reason a valid output is
+ * rejected.
+ */
+const PACKAGING_SHORT_FIELD_ALLOWANCE = 2_048;
+
+/**
+ * Generous allowance for the JSON skeleton itself — every key name, brace,
+ * bracket, colon, comma, quotation mark and two-space indent in a maximal
+ * `PackagingAdaptationOutput`. That shape carries fewer than 250 fields, no
+ * key longer than 32 characters and no indent deeper than ten levels, so this
+ * sits far above any reachable skeleton.
+ */
+const PACKAGING_OUTPUT_SKELETON_ALLOWANCE = 32_768;
+
+/**
+ * A **conservative safe upper bound** — deliberately not the exact
+ * mathematical maximum — on `JSON.stringify(packagingOutput, null, 2).length`
+ * for any Stage 5 output `revalidatePackagingAdaptationOutput` accepts.
+ *
+ * It is derived mechanically from Stage 5's own exported field and array
+ * maxima rather than measured from a sample. A measured sample is only as
+ * good as the characters it happened to use: an earlier version of this bound
+ * was measured with ordinary filler characters, which JSON does not escape,
+ * and consequently rejected valid Stage 5 output whose captions used
+ * characters that JSON does escape.
+ *
+ * The derivation, and where it deliberately over-approximates:
+ *
+ *  - Every string field is counted at its Stage 5 maximum **code-unit** length
+ *    and multiplied by `MAX_JSON_ESCAPE_EXPANSION`, so no permitted character
+ *    can exceed it.
+ *  - Caption and hashtag content are each allowed a full `captionMax` per
+ *    package, although Stage 5's combined provider-visible rule requires them
+ *    to *share* one `captionMax`. Over-approximating a cross-field rule is
+ *    safe; under-approximating one is the defect this replaces.
+ *  - The largest per-platform `captionMax` is applied to all three packages.
+ *  - Short enumerated and pattern-bounded fields, and the JSON skeleton, get
+ *    generous fixed allowances rather than exact counts.
+ *
+ * Nothing Stage 5 accepts can serialize larger than this, so **this bound
+ * cannot be the reason a valid Stage 5 output is refused**. Note what that
+ * implies: the operative ceiling on what actually reaches a model is the
+ * shared `MAX_PAYLOAD_CHARS` boundary in `stageExecution.ts`, which every
+ * stage shares and which this stage does not change. This per-block bound
+ * exists so that *this stage* never becomes the thing that rejects a valid
+ * handoff, not to compete with either that boundary or Stage 5's own limits.
+ */
+function conservativePackagingOutputCeiling(): number {
+  const maxCaptionChars = Math.max(
+    ...PACKAGING_PLATFORMS.map((platform) => PLATFORM_PACKAGING_POLICY[platform].captionMax),
+  );
+  const perPackageChars =
+    maxCaptionChars                                                                   // caption
+    + maxCaptionChars                                                                 // every hashtag token, jointly
+    + PACKAGING_LIMITS.maxLocalKeywords * PACKAGING_LIMITS.localKeywordChars
+    + PACKAGING_LIMITS.maxOpenQuestions * PACKAGING_LIMITS.openQuestionChars
+    + PACKAGING_SHORT_FIELD_ALLOWANCE;
+  const perClaimUseChars = PACKAGING_LIMITS.summaryChars + PACKAGING_SHORT_FIELD_ALLOWANCE;
+  const stringContentChars =
+    PACKAGING_LIMITS.maxRequestedPlatforms * perPackageChars
+    + PACKAGING_LIMITS.maxClaimUses * perClaimUseChars
+    + PACKAGING_SHORT_FIELD_ALLOWANCE;
+  return stringContentChars * MAX_JSON_ESCAPE_EXPANSION + PACKAGING_OUTPUT_SKELETON_ALLOWANCE;
+}
+
+/** The conservative serialized-size ceiling described above. */
+export const PACKAGING_OUTPUT_SERIALIZED_CEILING = conservativePackagingOutputCeiling();
+
+/**
  * Bounds on the model's output and on the prior-stage values it is shown.
  *
- * **`packagingOutputChars`, derived, not chosen.** A structurally valid
- * `PackagingAdaptationOutput` can legitimately carry a Facebook caption up to
- * `FACEBOOK_TEXT_MAX` (63,206 characters) with zero hashtags — the combined
- * caption-plus-hashtag bound is satisfied trivially when there are no
- * hashtags to add. The worst case admitted by `packageMap.ts`'s own limits is
- * three packages (one per `PackagingPlatform`, the maximum
- * `PACKAGING_LIMITS.maxRequestedPlatforms`), each at its platform's maximum
- * caption length with the maximum local keywords and open questions, plus
- * `PACKAGING_LIMITS.maxClaimUses` (24) claim-use entries each at its maximum
- * summary length. Constructing that exact object and measuring
- * `JSON.stringify(value, null, 2).length` gives **96,387** characters. This
- * bound is rounded up to **100,000** for indentation and formatting headroom
- * — a margin on the same computed worst case, not a smaller competing policy.
- * A regression proves a genuinely maximal, structurally valid Stage 5 output
- * reaches the injected runner exactly once rather than being rejected here.
+ * `packagingOutputChars` is the conservative, escaping-aware ceiling derived
+ * above. `scriptOutputChars` and `directionOutputChars` intentionally mirror
+ * the values Stage 5 already applies to those same two handoffs
+ * (`PACKAGING_LIMITS.scriptOutputChars` / `.directionOutputChars`), so this
+ * stage neither tightens nor loosens what the merged stage before it accepts.
  */
 export const FINAL_CRITIC_LIMITS = {
   scriptOutputChars: 20_000,
   directionOutputChars: 24_000,
-  packagingOutputChars: 100_000,
+  packagingOutputChars: PACKAGING_OUTPUT_SERIALIZED_CEILING,
   summaryChars: 1_500,
   issueChars: 400,
   suggestedActionChars: 300,
