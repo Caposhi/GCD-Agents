@@ -355,15 +355,59 @@ const STAGE_DEFINITIONS: AgentStageDefinition[] = [
   {
     id: "final-critic",
     order: 6,
-    purpose: "Adversarially check the finished package against brand, compliance, and evidence constraints.",
+    purpose: "Adversarially review the finished, per-platform-adapted package against what hook-story-script actually used and packaging-adaptation actually bound, and return a non-authoritative verdict, summary, and findings — never an approval, and never a replacement for the existing brand-compliance-critic publishing gate.",
     modelPolicy: "critic",
-    promptPaths: ["agents/brand-compliance-critic.md"],
-    skillPaths: ["skills/compliance-checklist/SKILL.md"],
-    referencePaths: ["config/approved-facts.json"],
+    // Phase 0B.6: a dedicated tool-free prompt, and a craft-only skill.
+    //
+    // `agents/brand-compliance-critic.md` was registered here and has been
+    // removed. It pins a concrete model, declares `tools: Read, Skill`, reads
+    // `brief.approvedFacts` (a runtime-injected fact set this stage never
+    // receives), evaluates the exact provider payloads GCD's live posting path
+    // builds (account/location ids, API hosts and versions, image digests, alt
+    // text as transmitted), and returns a routing field naming one of the
+    // *legacy* subagents (`copywriter`/`image`/`hashtag-seo-timing`/
+    // `platform-formatter`) as the owner of a fix. None of that exists in this
+    // pipeline: there is no provider payload, no brief, no approved-facts
+    // injection, and no legacy subagent to route a fix to. It stays in the
+    // repository for the existing orchestrator flow, which still uses it.
+    //
+    // `skills/compliance-checklist/SKILL.md` was registered here and has been
+    // removed too. It is that critic's rubric, and it states concrete facts of
+    // its own — an address, a city, a warranty term, a slogan, image pixel and
+    // file-size ceilings, WCAG contrast numbers, and GBP field policy.
+    // Injecting it here would hand a stage whose only job is to critique what
+    // hook-story-script and packaging-adaptation actually claimed a second,
+    // wider, unclassified source of "fact" to reach for.
+    //
+    // `config/approved-facts.json` was registered here and has been removed as
+    // well. It is GCD's canonical business-fact reference, already the
+    // evidence system's source for `verified_business_fact` records; a second,
+    // raw copy handed straight to this stage's model would compete with the
+    // classified, pack-bound projection that is supposed to be the sole
+    // factual input.
+    //
+    // All three are preserved byte-for-byte: the orchestrator's existing
+    // critic call site, and the checklist the critic loads, are unchanged.
+    //
+    // `skills/critique-discipline/SKILL.md` replaces the checklist with the
+    // craft-only subset that belongs here, written to state no fact and name
+    // no legacy subagent.
+    promptPaths: ["agents/final-critic.md"],
+    skillPaths: ["skills/critique-discipline/SKILL.md"],
+    // No factual reference asset, for the same reason stage 4 and stage 5
+    // declare none: this stage's factual surface is hook-story-script's used
+    // claims, narrowed per platform by packaging-adaptation's own bindings. A
+    // reference here would be a second, wider source competing with it.
+    referencePaths: [],
     allowedCapabilities: ["read_evidence_pack"],
-    requiredEvidenceKinds: ["verified_business_fact"],
-    inputSchema: objectValidator("FinalCriticInput", ["package", "evidencePack"]),
-    outputSchema: objectValidator("FinalCriticOutput", ["verdict", "findings"]),
+    // No pack-level requirement. This stage's authority gate is the stage 3
+    // used-claim set, enforced by the executor, not a class present in the pack.
+    requiredEvidenceKinds: [],
+    inputSchema: objectValidator(
+      "FinalCriticInput",
+      ["scriptOutput", "directionOutput", "packagingOutput", "truthOutput", "evidencePack", "requestedPlatforms"],
+    ),
+    outputSchema: objectValidator("FinalCriticOutput", ["provisional", "claimFindingUse"]),
     mandatory: true,
     prerequisites: ["packaging-adaptation"],
     executionEnabled: false,

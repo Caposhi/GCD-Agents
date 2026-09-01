@@ -97,7 +97,7 @@ import {
   hashtagTokens,
 } from "../packageMap.js";
 import type { Platform } from "../../mcp/posting-tool/index.js";
-import { AgentRegistry } from "./registry.js";
+import { AgentRegistry, AgentStageId } from "./registry.js";
 import type { AutomotiveTruthOutput } from "./automotiveTruth.js";
 import { revalidateAutomotiveTruthOutput } from "./automotiveTruth.js";
 import type { HookStoryScriptOutput } from "./hookStoryScript.js";
@@ -642,6 +642,134 @@ export function validatePackagingAdaptationOutput(
       used,
     },
   };
+}
+
+/**
+ * Revalidate a supplied `PackagingAdaptationOutput` against the stage 3 chain
+ * and an evidence pack.
+ *
+ * Lives here, in the owning module, for the same reason stage 2's, stage 3's
+ * and stage 4's do: a caller one step further down the chain (stage 6) needs
+ * it, and a divergent copy could accept something this contract rejects.
+ * Rebuilding this stage's validator input from the branded shape — never
+ * trusting the branding itself as proof — re-binds every claim-use entry
+ * against the stage 3 used-claim set, re-checks every platform's hashtag and
+ * caption policy, the combined provider-visible length bound, the
+ * recognizable-URL guard, the recommended-time shape, and per-platform
+ * duplicate rules, all by delegating to `validatePackagingAdaptationOutput`
+ * rather than re-implementing any of it.
+ *
+ * The "requested platforms" this revalidation checks against are derived from
+ * the packages' own platform sequence: a legitimate output already satisfies
+ * "exactly one package per requested platform, in the requested order", so
+ * that sequence *is* the requested set it was produced against. A caller that
+ * additionally needs to confirm the value covers a *specific* platform list —
+ * stage 6 does, against its own invocation's `requestedPlatforms` — must
+ * compare that list to this function's result separately; this function
+ * cannot do that comparison itself without being handed the caller's list,
+ * and accepting an unchecked list here would just move the trust problem
+ * rather than remove it.
+ *
+ * **The limit, stated exactly.** Prior-stage values are treated as untrusted
+ * and revalidated against the same evidence pack. Values that fail the prior
+ * contracts are refused before the model call. This is structural validation,
+ * not provenance or authenticity verification; a structurally valid
+ * deserialized or hand-built value can pass.
+ */
+export function revalidatePackagingAdaptationOutput(
+  value: unknown,
+  scriptOutput: HookStoryScriptOutput,
+  truthOutput: AutomotiveTruthOutput,
+  pack: EvidencePack,
+  stage: AgentStageId = PACKAGING_ADAPTATION_STAGE,
+  label = "packagingOutput",
+): PackagingAdaptationOutput {
+  const failHere = (message: string): never => {
+    throw new StageExecutionError(stage, message);
+  };
+  const obj = (v: unknown, name: string): Record<string, unknown> => {
+    if (!v || typeof v !== "object" || Array.isArray(v)) failHere(`"${name}" must be an object`);
+    return v as Record<string, unknown>;
+  };
+  const exact = (o: Record<string, unknown>, keys: string[], name: string): void => {
+    const extras = Object.keys(o).filter((k) => !keys.includes(k));
+    if (extras.length) failHere(`${name} has unknown field(s): ${extras.join(", ")}`);
+    for (const key of keys) if (!(key in o)) failHere(`${name} is missing "${key}"`);
+  };
+
+  const output = obj(value, label);
+  exact(output, ["provisional", "claimUse"], label);
+  const provisional = obj(output.provisional, `${label}.provisional`);
+  const claimUse = obj(output.claimUse, `${label}.claimUse`);
+  exact(
+    provisional,
+    ["kind", "publishable", "verified", "executable", "packages"],
+    `${label}.provisional`,
+  );
+  exact(claimUse, ["kind", "used"], `${label}.claimUse`);
+  if (provisional.kind !== "provisional_model_prose"
+      || provisional.publishable !== false
+      || provisional.verified !== false
+      || provisional.executable !== false) {
+    failHere(`"${label}.provisional" has invalid boundary branding`);
+  }
+  if (claimUse.kind !== "typed_platform_claim_use") {
+    failHere(`"${label}.claimUse" has invalid boundary branding`);
+  }
+  if (!Array.isArray(provisional.packages)) failHere(`"${label}.provisional.packages" must be an array`);
+  if (!Array.isArray(claimUse.used)) failHere(`"${label}.claimUse.used" must be an array`);
+
+  const rebuiltPackages = (provisional.packages as unknown[]).map((entry, index) => {
+    const o = obj(entry, `${label}.provisional.packages[${index}]`);
+    exact(
+      o,
+      ["platform", "caption", "captionVerified", "hashtags", "localKeywords", "selectionVerified",
+       "recommendedTime", "timingVerified", "schedulable", "openQuestions"],
+      `${label}.provisional.packages[${index}]`,
+    );
+    if (o.captionVerified !== false || o.selectionVerified !== false
+        || o.timingVerified !== false || o.schedulable !== false) {
+      failHere(`"${label}.provisional.packages[${index}]" has invalid boundary branding`);
+    }
+    return {
+      platform: o.platform,
+      caption: o.caption,
+      hashtags: o.hashtags,
+      localKeywords: o.localKeywords,
+      recommendedTime: o.recommendedTime,
+      openQuestions: o.openQuestions,
+    };
+  });
+  const rebuiltClaimUse = (claimUse.used as unknown[]).map((entry, index) => {
+    const o = obj(entry, `${label}.claimUse.used[${index}]`);
+    exact(
+      o,
+      ["kind", "platform", "factId", "factKind", "provisionalSummary", "wordingVerified"],
+      `${label}.claimUse.used[${index}]`,
+    );
+    if (o.kind !== "evidence_bound_platform_claim_use" || o.wordingVerified !== false) {
+      failHere(`"${label}.claimUse.used[${index}]" has invalid boundary branding`);
+    }
+    return { platform: o.platform, factId: o.factId, summary: o.provisionalSummary };
+  });
+
+  let derivedRequestedPlatforms: PackagingPlatform[];
+  try {
+    derivedRequestedPlatforms = validateRequestedPlatforms(rebuiltPackages.map((p) => p.platform));
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return failHere(`"${label}" names an invalid requested-platform sequence: ${detail}`);
+  }
+
+  try {
+    return validatePackagingAdaptationOutput(
+      { packages: rebuiltPackages, claimUse: rebuiltClaimUse },
+      derivedRequestedPlatforms, scriptOutput, truthOutput, pack,
+    );
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return failHere(`"${label}" is invalid: ${detail}`);
+  }
 }
 
 /**
