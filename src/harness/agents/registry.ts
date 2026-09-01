@@ -302,15 +302,52 @@ const STAGE_DEFINITIONS: AgentStageDefinition[] = [
   {
     id: "packaging-adaptation",
     order: 5,
-    purpose: "Adapt the package per platform: caption, hashtags, timing, and platform constraints.",
+    purpose: "Adapt the written script into proposed per-platform captions, hashtags, local-keyword suggestions, and review-only timing, using only the claims hook-story-script actually used.",
     modelPolicy: "reasoning-standard",
-    promptPaths: ["agents/platform-formatter.md", "agents/hashtag-seo-timing.md"],
-    skillPaths: ["skills/platform-specs/SKILL.md", "skills/local-seo/SKILL.md"],
+    // Phase 0B.5: one dedicated tool-free prompt, and a craft-only skill.
+    //
+    // Four assets were registered here and have all been removed. Verified from
+    // the merged files:
+    //
+    //  - `agents/platform-formatter.md` pins a concrete model id in its own
+    //    frontmatter, declares `tools: Read, Skill`, consumes a runtime brief and an "assembled
+    //    candidate (copy, image ref, hashtags, alt text)", reads
+    //    `brief.approvedFacts`, emits per-platform CTAs with URLs, and describes
+    //    what deterministic application code does when it builds provider
+    //    payloads.
+    //  - `agents/hashtag-seo-timing.md` pins a different concrete model id, declares
+    //    `tools: Read, Skill`, consumes a runtime brief plus an analytics readout,
+    //    and names concrete locations. It is a *separate* subagent call from the
+    //    formatter, so registering both would have implied two model contracts
+    //    where this stage has exactly one.
+    //  - `skills/platform-specs/SKILL.md` mixes genuinely useful format guidance
+    //    with media profiles, provider payload construction, the `ACTIVE_PLATFORMS`
+    //    environment state, runtime publication behaviour, CTA behaviour, alt-text
+    //    handling, scheduling behaviour, and current production implementation
+    //    detail.
+    //  - `skills/local-seo/SKILL.md` states concrete business, location, make and
+    //    service claims - a street address, a list of cities, positioning
+    //    slogans, and makes that the classified evidence may not establish.
+    //    Injecting it would let this stage reacquire factual authority from a
+    //    keyword file, which is exactly what the pipeline withholds.
+    //
+    // All four are preserved byte-for-byte for the orchestrator flow and the
+    // subagents that still load them by name.
+    promptPaths: ["agents/packaging-adaptation.md"],
+    skillPaths: ["skills/adaptation-craft/SKILL.md"],
+    // No factual reference asset. This stage's factual surface is the set of
+    // claims hook-story-script actually used; a reference here would be a second,
+    // wider source competing with it.
     referencePaths: [],
     allowedCapabilities: ["read_evidence_pack"],
+    // No pack-level requirement. This stage's authority gate is the Stage 3
+    // used-claim set, enforced by the executor and subordinate to nothing here.
     requiredEvidenceKinds: [],
-    inputSchema: objectValidator("PackagingAdaptationInput", ["script", "platforms"]),
-    outputSchema: objectValidator("PackagingAdaptationOutput", ["perPlatform"]),
+    inputSchema: objectValidator(
+      "PackagingAdaptationInput",
+      ["scriptOutput", "directionOutput", "truthOutput", "evidencePack", "requestedPlatforms"],
+    ),
+    outputSchema: objectValidator("PackagingAdaptationOutput", ["packages", "claimUse"]),
     mandatory: true,
     prerequisites: ["production-direction"],
     executionEnabled: false,
