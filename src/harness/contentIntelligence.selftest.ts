@@ -68,6 +68,7 @@ import {
   StageRunner,
   StageRunnerRequest,
   anthropicStageRunner,
+  createAnthropicStageRunner,
   invokeStage,
   parseStrictJsonObject,
 } from "./agents/stageExecution.js";
@@ -75,9 +76,12 @@ import {
   ModelPolicyError,
   POLICY_MAX_TOKENS,
   POLICY_MODEL_OUTPUT_CAPS,
+  POLICY_THINKING,
   modelBearingPolicies,
   resolveModelPolicy,
 } from "./agents/modelPolicy.js";
+import { runAgentWithMessageCreator } from "./sdk.js";
+import type { AgentRunOptions } from "./sdk.js";
 import {
   LIMITS,
   citedFactRecords,
@@ -833,6 +837,7 @@ async function run(): Promise<void> {
         try {
           await anthropicStageRunner({
             systemPrompt: "s", prompt: "p", model: "claude-opus-5", maxTokens: 16,
+            thinking: { type: "disabled" },
           });
           return false;
         } catch (e) { credentialErrorMessage = (e as Error).message; return true; }
@@ -905,7 +910,9 @@ async function run(): Promise<void> {
     check("AE3. the stage path registers no model tools",
       !/tools\s*:/.test(combined));
     check("AE4. the boundary's only model entry point is the injected runner",
-      /runAgent\(/.test(boundarySource) && !/runVision|messages\.create/.test(combined));
+      /createAnthropicStageRunner/.test(boundarySource)
+        && /return async \(request\) => run\(\{/.test(boundarySource)
+        && !/runVision|messages\.create/.test(combined));
   }
 
   // --- AF. the preview stays inert and the other five stages stay unwired ----
@@ -5295,7 +5302,23 @@ async function run(): Promise<void> {
       createdAt: "2026-08-01T00:00:00Z",
       lifecycle: "active",
       reviewBy: "2027-08-01T00:00:00Z",
-      ...(kind === "gcd_direct_observation" ? { generalizable: false as const } : {}),
+      ...(kind === "verified_automotive_fact" || kind === "verified_business_fact"
+        ? {
+            sourceRef: "r".repeat(EVIDENCE_LIMITS.sourceRefChars),
+            provenance: "p".repeat(EVIDENCE_LIMITS.provenanceChars),
+            reviewedAt: "2026-08-01T00:00:00Z",
+          }
+        : {}),
+      ...(kind === "gcd_direct_observation"
+        ? {
+            generalizable: false as const,
+            observedAt: "2026-08-01T00:00:00Z",
+            provenance: "p".repeat(EVIDENCE_LIMITS.provenanceChars),
+          }
+        : {}),
+      ...(kind === "gcd_performance_evidence"
+        ? { observedAt: "2026-08-01T00:00:00Z" }
+        : {}),
     } as EvidenceRecord);
 
     const ccFacts = Array.from({ length: LIMITS.maxIds },
@@ -5555,7 +5578,7 @@ async function run(): Promise<void> {
     ];
     const shortBudgets = BUDGETS
       .filter(([, policy, ceiling]) =>
-        POLICY_MAX_TOKENS[policy as keyof typeof POLICY_MAX_TOKENS]
+        resolveModelPolicy(policy as keyof typeof POLICY_MAX_TOKENS).visibleOutputTokens
           < minimumOutputTokens(ceiling.transportChars))
       .map(([stage, policy, ceiling]) =>
         `${stage}/${policy}: budget=${POLICY_MAX_TOKENS[policy as keyof typeof POLICY_MAX_TOKENS]} `
@@ -5575,10 +5598,16 @@ async function run(): Promise<void> {
         && /POLICY_OUTPUT_TOKEN_FLOORS/.test(
              await readFile(resolve(REPO_ROOT, "src/harness/agents/modelPolicy.ts"), "utf8")));
     check("CC22. every derived budget uses the serialized byte worst case and remains within "
-      + "the documented centralized model output cap",
+      + "the documented centralized model output cap, with hidden thinking disabled",
       Number(MAX_TOKENS_PER_UTF8_BYTE) === 1
         && minimumOutputTokens(3) === 3
         && minimumOutputTokens(4) === 4
+        && Object.values(POLICY_THINKING).every((thinking) => thinking.type === "disabled")
+        && modelBearingPolicies().every((policy) => {
+             const resolved = resolveModelPolicy(policy);
+             return resolved.visibleOutputTokens === resolved.maxTokens
+               && resolved.thinking.type === "disabled";
+           })
         && Object.entries(POLICY_MAX_TOKENS).every(([policy, budget]) =>
              budget <= POLICY_MODEL_OUTPUT_CAPS[policy as keyof typeof POLICY_MODEL_OUTPUT_CAPS]));
 
@@ -5669,6 +5698,55 @@ async function run(): Promise<void> {
         !/anthropicStageRunner/.test(src) && !/ANTHROPIC_API_KEY/.test(src))
         && !/ANTHROPIC_API_KEY/.test(payloadSource)
         && typeof anthropicStageRunner === "function");
+
+    let mappedAgentRequest: AgentRunOptions | undefined;
+    const injectedProductionRunner = createAnthropicStageRunner(async (request) => {
+      mappedAgentRequest = request;
+      return { text: "{}", totalCostUsd: undefined, usage: undefined };
+    });
+    await injectedProductionRunner(credentialCalls[0]!);
+    let sdkRequest: Record<string, unknown> | undefined;
+    let sdkTimeout: number | undefined;
+    await runAgentWithMessageCreator(mappedAgentRequest!, async (request, options) => {
+      sdkRequest = request as unknown as Record<string, unknown>;
+      sdkTimeout = options.timeout;
+      return {
+        id: "msg_offline",
+        type: "message",
+        role: "assistant",
+        model: String(request.model),
+        content: [{ type: "text", text: "{}", citations: null }],
+        stop_reason: "end_turn",
+        stop_sequence: null,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      } as any;
+    });
+    let legacySdkRequest: Record<string, unknown> | undefined;
+    await runAgentWithMessageCreator({
+      systemPrompt: "legacy-system", prompt: "legacy-prompt",
+    }, async (request) => {
+      legacySdkRequest = request as unknown as Record<string, unknown>;
+      return {
+        id: "msg_legacy_offline", type: "message", role: "assistant",
+        model: String(request.model),
+        content: [{ type: "text", text: "{}", citations: null }],
+        stop_reason: "end_turn", stop_sequence: null,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      } as any;
+    });
+    check("CC36. the exact production stage request explicitly disables thinking so the full "
+      + "derived max_tokens ceiling is available to visible JSON, while legacy runAgent stays unchanged",
+      credentialCalls[0]!.model === "claude-opus-5"
+        && credentialCalls[0]!.thinking.type === "disabled"
+        && mappedAgentRequest?.thinking?.type === "disabled"
+        && sdkRequest?.thinking !== undefined
+        && (sdkRequest!.thinking as { type?: string }).type === "disabled"
+        && sdkRequest?.max_tokens === POLICY_MAX_TOKENS["reasoning-heavy"]
+        && sdkRequest?.model === "claude-opus-5"
+        && !("tools" in sdkRequest!)
+        && sdkTimeout === 90_000
+        && legacySdkRequest !== undefined
+        && !("thinking" in legacySdkRequest));
 
     // --- CC-H. review corrections: adversarial cardinality and representation
     const detailCounterexample = Object.fromEntries(Array.from({ length: 410 }, (_, index) => [
@@ -5761,6 +5839,68 @@ async function run(): Promise<void> {
       /t IS NOT NULL/.test(migrationSql)
         && /length\(t\) <= max_len/.test(migrationSql)
         && /octet_length\(t\) <= max_len/.test(migrationSql));
+
+    const signedMinimumNumberDetail = {
+      a: [...Array(12).fill(-5e-324), "x".repeat(53)],
+    };
+    const exactDetail = { a: "x".repeat(3_991) };
+    const excessDetail = { a: "x".repeat(3_992) };
+    check("CC37. PostgreSQL JSONB numeric expansion includes the sign byte, and exact 4,000-byte "
+      + "detail is accepted while 4,001 and the -5e-324 counterexample are refused",
+      postgresJsonbTextUpperBoundBytes(exactDetail) === 4_000
+        && validateEvidenceRecord({
+             ...wellFormed.verified_automotive_fact, detail: exactDetail,
+           } as EvidenceRecord).ok
+        && postgresJsonbTextUpperBoundBytes(excessDetail) === 4_001
+        && !validateEvidenceRecord({
+             ...wellFormed.verified_automotive_fact, detail: excessDetail,
+           } as EvidenceRecord).ok
+        && postgresJsonbTextUpperBoundBytes(signedMinimumNumberDetail) === 4_012
+        && !validateEvidenceRecord({
+             ...wellFormed.verified_automotive_fact, detail: signedMinimumNumberDetail,
+           } as EvidenceRecord).ok);
+
+    const invalidPackInputs: EvidenceRecord[] = [
+      { ...wellFormed.verified_automotive_fact,
+        claim: "x".repeat(EVIDENCE_LIMITS.claimChars + 1) },
+      { ...wellFormed.verified_automotive_fact, id: "invalid-control", claim: "bad\u0001claim" },
+    ];
+    let invalidRecordRunnerCalls = 0;
+    for (const record of invalidPackInputs) {
+      try {
+        const invalidPack = buildEvidencePack({ goal: "invalid", records: [record], now: NOW });
+        await executeStrategyConcept({
+          goal: "invalid", evidencePack: invalidPack, registry,
+          runner: async () => {
+            invalidRecordRunnerCalls += 1;
+            return { text: "{}" };
+          },
+        });
+      } catch {
+        // Refusal is the asserted outcome.
+      }
+    }
+    const handBuiltInvalidPack = {
+      ...ccPack,
+      allowedFacts: [{ ...ccPack.allowedFacts[0]!, claim: "bad\u0001claim" }],
+    };
+    await executeStrategyConcept({
+      goal: "invalid hand-built pack", evidencePack: handBuiltInvalidPack, registry,
+      runner: async () => {
+        invalidRecordRunnerCalls += 1;
+        return { text: "{}" };
+      },
+    }).catch(() => undefined);
+    check("CC38. builder inputs and hand-built pre-model packs reuse the evidence-record validator: "
+      + "overlong/control text is refused, 64 maximum valid records still build, and no model runs",
+      invalidPackInputs.every((record) => throws(() => buildEvidencePack({
+        goal: "invalid", records: [record], now: NOW,
+      })))
+        && conflictRecords.length === EVIDENCE_LIMITS.maxProjectedRecords
+        && conflictRecords.every((record) => validateEvidenceRecord(record).ok)
+        && buildEvidencePack({ goal: "maximum valid", records: conflictRecords, now: NOW })
+             .conflicts.length === 2_016
+        && invalidRecordRunnerCalls === 0);
   }
 
   console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURE(S)`);

@@ -192,15 +192,17 @@ function boundedText(value: string, field: string, max: number, push: (issue: st
  * Conservative UTF-8 byte ceiling for PostgreSQL's canonical `jsonb::text`.
  *
  * PostgreSQL inserts one ASCII space after every object colon and comma. It may
- * also expand any finite JavaScript number into ordinary decimal notation; 326
- * bytes covers the longest IEEE-754 value (`5e-324`) in that representation.
+ * also expand any finite JavaScript number into ordinary decimal notation; 327
+ * bytes covers the signed longest IEEE-754 value (`-5e-324`) in that
+ * representation. The sign is load-bearing: PostgreSQL renders that value as
+ * 327 bytes, one more than the unsigned form.
  * Object key order is irrelevant to length. The result can overestimate, but
  * never underestimates the canonical database representation.
  */
 function normalizedJsonbTextUpperBoundBytes(value: unknown): number {
   if (value === null) return 4;
   if (typeof value === "boolean") return value ? 4 : 5;
-  if (typeof value === "number") return 326;
+  if (typeof value === "number") return 327;
   if (typeof value === "string") return utf8ByteLength(JSON.stringify(value));
   if (Array.isArray(value)) {
     return 2 + value.reduce((total, entry) => total + normalizedJsonbTextUpperBoundBytes(entry), 0)

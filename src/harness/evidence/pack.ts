@@ -19,6 +19,7 @@
 import {
   EvidenceRecord,
   EvidenceRelation,
+  assertValidEvidenceRecord,
   assertValidEvidenceRelation,
   isCitableAsFact,
   isStale,
@@ -166,6 +167,11 @@ export function buildEvidencePack(input: BuildEvidencePackInput): EvidencePack {
   const { goal, now } = input;
   if (typeof goal !== "string" || !goal.trim()) throw new Error("evidence pack requires a goal");
 
+  // Validate every supplied record before scoping. An invalid record does not
+  // become safe merely because the caller's subject/tag filter would omit it,
+  // and aggregate rendered-block bounds cannot substitute for per-field
+  // validation.
+  for (const record of input.records) assertValidEvidenceRecord(record);
   const relations = input.relations ?? [];
   for (const relation of relations) assertValidEvidenceRelation(relation);
   const scoped = input.records
@@ -296,6 +302,15 @@ export function evidencePackProjectionViolations(pack: EvidencePack): string[] {
   // id across sections still serializes each copy and must not evade the bound.
   const recordCount = RECORD_SECTIONS.reduce((total, section) => total + pack[section].length, 0);
   const violations: string[] = [];
+  for (const section of RECORD_SECTIONS) {
+    for (const record of pack[section]) {
+      try {
+        assertValidEvidenceRecord(record);
+      } catch (error) {
+        violations.push(`${section} contains invalid record ${record.id}: ${(error as Error).message}`);
+      }
+    }
+  }
   if (recordCount > EVIDENCE_LIMITS.maxProjectedRecords) {
     violations.push(`records ${recordCount} exceeds ${EVIDENCE_LIMITS.maxProjectedRecords}`);
   }

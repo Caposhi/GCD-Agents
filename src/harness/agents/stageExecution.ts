@@ -40,7 +40,7 @@
 import { runAgent } from "../sdk.js";
 import { EvidencePack, assertEvidencePackProjectionBounds } from "../evidence/pack.js";
 import { AgentRegistry, AgentStageId, ResolvedStageAsset } from "./registry.js";
-import { resolveModelPolicy } from "./modelPolicy.js";
+import { resolveModelPolicy, type StageThinkingPolicy } from "./modelPolicy.js";
 import { MAX_INSTRUCTION_CHARS, MAX_PAYLOAD_CHARS } from "./payloadContract.js";
 
 /**
@@ -78,6 +78,8 @@ export interface StageRunnerRequest {
   prompt: string;
   model: string;
   maxTokens: number;
+  /** Explicit: hidden thinking must not consume the visible JSON allowance. */
+  thinking: StageThinkingPolicy;
 }
 
 export interface StageRunnerResult {
@@ -95,13 +97,20 @@ export type StageRunner = (request: StageRunnerRequest) => Promise<StageRunnerRe
  * and throws when `ANTHROPIC_API_KEY` is unset — which is the fail-closed
  * behaviour this stage needs on missing credentials.
  */
-export const anthropicStageRunner: StageRunner = async (request) =>
-  runAgent({
+type AgentRunner = typeof runAgent;
+
+/** Injectable factory so tests can inspect the exact production run request. */
+export function createAnthropicStageRunner(run: AgentRunner = runAgent): StageRunner {
+  return async (request) => run({
     systemPrompt: request.systemPrompt,
     prompt: request.prompt,
     model: request.model,
     maxTokens: request.maxTokens,
+    thinking: request.thinking,
   });
+}
+
+export const anthropicStageRunner: StageRunner = createAnthropicStageRunner();
 
 /**
  * Where an asset's contents actually went.
@@ -287,6 +296,7 @@ export async function invokeStage(invocation: StageInvocation): Promise<StageInv
       prompt,
       model: resolved.model,
       maxTokens: resolved.maxTokens,
+      thinking: resolved.thinking,
     });
   } catch (err) {
     // The message may carry provider text; it is surfaced to the caller as an

@@ -34,6 +34,7 @@ const FINAL_CRITIC = "src/harness/agents/finalCritic.ts";
 const MODEL_POLICY = "src/harness/agents/modelPolicy.ts";
 const EVIDENCE_CONTRACT = "src/harness/evidence/contract.ts";
 const EVIDENCE_PACK = "src/harness/evidence/pack.ts";
+const STAGE_EXECUTION = "src/harness/agents/stageExecution.ts";
 
 /**
  * Each mutation names the derivation it breaks, the single edit that breaks it,
@@ -167,6 +168,27 @@ const MUTATIONS = [
     from: "CREATE FUNCTION gcd_content_evidence_tags_within_v007(tags text[], max_len integer)",
     to: "CREATE OR REPLACE FUNCTION gcd_content_evidence_tags_within_v007(tags text[], max_len integer)",
     expect: ["CC4.", "CC34."],
+  },
+  {
+    name: "the structured stage request regains adaptive thinking inside the visible output ceiling",
+    file: STAGE_EXECUTION,
+    from: "      thinking: resolved.thinking,",
+    to: '      thinking: { type: "adaptive" } as never,',
+    expect: ["CC36."],
+  },
+  {
+    name: "the JSONB numeric upper bound loses the sign byte for -5e-324",
+    file: EVIDENCE_CONTRACT,
+    from: '  if (typeof value === "number") return 327;',
+    to: '  if (typeof value === "number") return 326;',
+    expect: ["CC37."],
+  },
+  {
+    name: "the pack builder stops validating its input evidence records",
+    file: EVIDENCE_PACK,
+    from: "  for (const record of input.records) assertValidEvidenceRecord(record);",
+    to: "  for (const record of input.records) if (false) assertValidEvidenceRecord(record);",
+    expect: ["CC38."],
   },
 ];
 

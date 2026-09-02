@@ -10,6 +10,7 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import { config } from "./config.js";
+import type { StageThinkingPolicy } from "./agents/modelPolicy.js";
 
 let client: Anthropic | undefined;
 function getClient(): Anthropic {
@@ -45,20 +46,44 @@ export interface AgentRunOptions {
   prompt: string;
   model?: string;
   maxTokens?: number;
+  /** Omitted for legacy calls; Content Intelligence stages set this explicitly. */
+  thinking?: StageThinkingPolicy;
 }
 
-export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
+export type AgentMessageCreator = (
+  request: Anthropic.MessageCreateParamsNonStreaming,
+  options: { timeout: number },
+) => Promise<Anthropic.Message>;
+
+/**
+ * Execute the exact production text request through an injectable Messages
+ * creator. The seam exists so an offline regression can inspect every byte of
+ * the SDK request without a credential or provider call.
+ */
+export async function runAgentWithMessageCreator(
+  opts: AgentRunOptions,
+  createMessage: AgentMessageCreator,
+): Promise<AgentRunResult> {
   const model = opts.model || "claude-sonnet-4-6";
-  const res = await getClient().messages.create(
-    {
-      model,
-      max_tokens: opts.maxTokens ?? 3000,
-      system: opts.systemPrompt,
-      messages: [{ role: "user", content: opts.prompt }],
-    },
+  const request: Anthropic.MessageCreateParamsNonStreaming = {
+    model,
+    max_tokens: opts.maxTokens ?? 3000,
+    system: opts.systemPrompt,
+    messages: [{ role: "user", content: opts.prompt }],
+    ...(opts.thinking ? { thinking: opts.thinking } : {}),
+  };
+  const res = await createMessage(
+    request,
     { timeout: 90_000 },
   );
   return collect(res, model);
+}
+
+export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
+  return runAgentWithMessageCreator(
+    opts,
+    (request, options) => getClient().messages.create(request, options),
+  );
 }
 
 export interface VisionRunOptions {

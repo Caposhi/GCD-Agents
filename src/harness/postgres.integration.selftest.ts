@@ -616,6 +616,62 @@ async function assertContentEvidenceSchema(
                'manufacturer_documentation',$1::jsonb,'r','p',now())`,
     [detailJson],
   );
+  const exactDetail = { a: "x".repeat(3_991) };
+  const excessDetail = { a: "x".repeat(3_992) };
+  const signedMinimumNumberDetail = {
+    a: [...Array(12).fill(-5e-324), "x".repeat(53)],
+  };
+  const numericCanonical = await pool.query(
+    `SELECT octet_length($1::jsonb::text) AS bytes`,
+    [JSON.stringify(signedMinimumNumberDetail)],
+  );
+  check(group, "[evidence] TypeScript and PostgreSQL agree on exact 4,000-byte detail",
+    postgresJsonbTextUpperBoundBytes(exactDetail) === 4_000
+      && validateEvidenceRecord({
+        id: "detail-exact", kind: "verified_automotive_fact", claim: "c", subject: "s",
+        tags: [], sourceType: "manufacturer_documentation", sourceRef: "r", provenance: "p",
+        reviewedAt: "2026-09-02T00:00:00Z", createdAt: "2026-09-02T00:00:00Z",
+        lifecycle: "active", detail: exactDetail,
+      }).ok);
+  let exactDetailInserted = false;
+  try {
+    await pool.query(
+      `${base}, detail, source_ref, provenance, reviewed_at)
+       VALUES ('bound-detail-exact','verified_automotive_fact','c','s',
+               'manufacturer_documentation',$1::jsonb,'r','p',now())`,
+      [JSON.stringify(exactDetail)],
+    );
+    exactDetailInserted = true;
+  } catch {
+    exactDetailInserted = false;
+  }
+  check(group, "[evidence] PostgreSQL accepts detail at exactly 4,000 canonical bytes",
+    exactDetailInserted);
+  await pool.query(`DELETE FROM content_evidence WHERE id='bound-detail-exact'`);
+  await rejects(
+    "[evidence] PostgreSQL rejects detail at 4,001 canonical bytes",
+    `${base}, detail, source_ref, provenance, reviewed_at)
+       VALUES ('bound-detail-excess','verified_automotive_fact','c','s',
+               'manufacturer_documentation',$1::jsonb,'r','p',now())`,
+    [JSON.stringify(excessDetail)],
+  );
+  check(group, "[evidence] -5e-324 expands to 327 bytes and the exact counterexample is 4,012 bytes",
+    Number(numericCanonical.rows[0]?.bytes) === 4_012
+      && postgresJsonbTextUpperBoundBytes(signedMinimumNumberDetail) === 4_012
+      && !validateEvidenceRecord({
+        id: "detail-numeric-counterexample", kind: "verified_automotive_fact",
+        claim: "c", subject: "s", tags: [], sourceType: "manufacturer_documentation",
+        sourceRef: "r", provenance: "p", reviewedAt: "2026-09-02T00:00:00Z",
+        createdAt: "2026-09-02T00:00:00Z", lifecycle: "active",
+        detail: signedMinimumNumberDetail,
+      }).ok);
+  await rejects(
+    "[evidence] PostgreSQL rejects the -5e-324 4,012-byte detail counterexample",
+    `${base}, detail, source_ref, provenance, reviewed_at)
+       VALUES ('bound-detail-numeric','verified_automotive_fact','c','s',
+               'manufacturer_documentation',$1::jsonb,'r','p',now())`,
+    [JSON.stringify(signedMinimumNumberDetail)],
+  );
   await rejects(
     "[evidence] a relation note over the bound is rejected by the database",
     `INSERT INTO content_evidence_relations (from_id, to_id, kind, note)
@@ -691,6 +747,27 @@ async function assertContentEvidenceSchema(
         && stored.every((r) => r.kind === "verified_business_fact"));
     check(group, "[evidence] provenance survives the database round-trip",
       stored.every((r) => (r.provenance ?? "").includes(adapted.contentSha256)));
+
+    // PostgreSQL permits this control character in text, but the application
+    // evidence contract does not. The durable read boundary must therefore
+    // validate reconstructed rows rather than trust database shape alone.
+    await pool.query(
+      `INSERT INTO content_evidence
+         (id, kind, claim, subject, tags, source_type, source_ref, provenance,
+          reviewed_at, created_at, lifecycle)
+       VALUES ('malformed-durable-read','verified_automotive_fact',$1,'s',ARRAY[]::text[],
+               'manufacturer_documentation','r','p',now(),now(),'active')`,
+      ["bad\u0001claim"],
+    );
+    let malformedDurableReadRejected = false;
+    try {
+      await listContentEvidence();
+    } catch {
+      malformedDurableReadRejected = true;
+    }
+    check(group, "[evidence] durable row reconstruction rejects contract-invalid record text",
+      malformedDurableReadRejected);
+    await pool.query(`DELETE FROM content_evidence WHERE id='malformed-durable-read'`);
 
     // A changed claim is an update, not a duplicate row.
     const mutated = adapted.records.map((r, i) => (i === 0 ? { ...r, claim: `${r.claim} (revised)` } : r));

@@ -1121,7 +1121,7 @@ export async function listContentEvidence(): Promise<EvidenceRecord[]> {
   const res = await pool.query(
     `SELECT * FROM content_evidence ORDER BY subject ASC, kind ASC, id ASC`,
   );
-  return res.rows.map(evidenceRowToRecord);
+  return res.rows.map((row: any) => assertValidEvidenceRecord(evidenceRowToRecord(row)));
 }
 
 export async function listContentEvidenceRelations(): Promise<EvidenceRelation[]> {

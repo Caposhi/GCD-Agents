@@ -70,6 +70,27 @@ export const POLICY_MODEL_OUTPUT_CAPS: Record<Exclude<ModelPolicy, "deterministi
 };
 
 /**
+ * Structured stage calls need their complete `max_tokens` allowance for the
+ * contract-valid visible JSON response. Opus 5 otherwise enables adaptive
+ * thinking by default, and thinking tokens share that same hard ceiling.
+ *
+ * Disabling thinking is therefore a correctness policy, not a quality hint:
+ * it makes the visible-output guarantee exactly equal to `maxTokens`, with no
+ * heuristic hidden-token reserve. This policy belongs beside model selection
+ * and output caps so a model change cannot silently change request semantics.
+ */
+export type StageThinkingPolicy = Readonly<{ type: "disabled" }>;
+
+export const POLICY_THINKING: Record<
+  Exclude<ModelPolicy, "deterministic-only">,
+  StageThinkingPolicy
+> = {
+  "reasoning-heavy": { type: "disabled" },
+  "reasoning-standard": { type: "disabled" },
+  critic: { type: "disabled" },
+};
+
+/**
  * The contract-derived floor each policy must meet, re-exported so a regression
  * can assert the configured budget never drops below the contract it carries.
  */
@@ -79,6 +100,9 @@ export interface ResolvedModelPolicy {
   policy: ModelPolicy;
   model: string;
   maxTokens: number;
+  thinking: StageThinkingPolicy;
+  /** Hard visible-token guarantee under the selected thinking policy. */
+  visibleOutputTokens: number;
 }
 
 /**
@@ -95,7 +119,17 @@ export function resolveModelPolicy(policy: ModelPolicy): ResolvedModelPolicy {
   }
   const model = POLICY_MODELS[policy];
   if (!model) throw new ModelPolicyError(`unknown model policy: ${String(policy)}`);
-  return { policy, model, maxTokens: POLICY_MAX_TOKENS[policy] };
+  const maxTokens = POLICY_MAX_TOKENS[policy];
+  const thinking = POLICY_THINKING[policy];
+  return {
+    policy,
+    model,
+    maxTokens,
+    thinking,
+    // Every output token is available to visible text because thinking is
+    // explicitly disabled. Tools are also absent from the stage boundary.
+    visibleOutputTokens: maxTokens,
+  };
 }
 
 /** Every policy that maps to a model. Used by tests to pin the table. */
