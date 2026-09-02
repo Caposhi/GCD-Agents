@@ -37,6 +37,9 @@ jobs:
       - name: Offline self-tests
         run: npm run test:offline
 
+      - name: Payload-contract mutation tests
+        run: npm run test:payload-mutation
+
       - name: Simulated dry run
         run: npm run dryrun
 

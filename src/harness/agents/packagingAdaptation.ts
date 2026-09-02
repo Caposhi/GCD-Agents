@@ -112,6 +112,7 @@ import {
   invokeStage,
   parseStrictJsonObject,
 } from "./stageExecution.js";
+import { PACKAGING_FIELD_LIMITS, EVIDENCE_LIMITS, HANDOFF_GUARDS, PACKAGING_OUTPUT, isSerializableText } from "./payloadContract.js";
 
 export const PACKAGING_ADAPTATION_STAGE = "packaging-adaptation" as const;
 
@@ -203,15 +204,9 @@ export const PLATFORM_PACKAGING_POLICY: Record<PackagingPlatform, PlatformPackag
 
 /** Bounds on the model's output and on the prior-stage values it is shown. */
 export const PACKAGING_LIMITS = {
-  localKeywordChars: 120,
-  summaryChars: 400,
-  openQuestionChars: 300,
-  maxLocalKeywords: 6,
-  maxOpenQuestions: 6,
-  maxClaimUses: 24,
-  scriptOutputChars: 20_000,
-  directionOutputChars: 24_000,
-  maxRequestedPlatforms: 3,
+  ...PACKAGING_FIELD_LIMITS,
+  scriptOutputChars: HANDOFF_GUARDS.scriptOutputChars,
+  directionOutputChars: HANDOFF_GUARDS.directionOutputChars,
 } as const;
 
 /**
@@ -341,6 +336,12 @@ function requireBoundedString(value: unknown, field: string, max: number): strin
   const text = (value as string).trim();
   if (!text) fail(`"${field}" must not be empty`);
   if (text.length > max) fail(`"${field}" exceeds ${max} characters`);
+  // Serializable text only. Control characters and unpaired surrogates are the
+  // only things JSON.stringify expands sixfold; excluding them is what lets
+  // every payload derivation in payloadContract.ts use a factor of two.
+  if (!isSerializableText(text)) {
+    fail(`"${field}" contains a control character or unpaired surrogate`);
+  }
   return text;
 }
 
@@ -489,9 +490,17 @@ export function validatePackagingAdaptationOutput(
       );
     }
     const policy = PLATFORM_PACKAGING_POLICY[platform];
+    // The effective cap is the smaller of the provider's limit and the
+    // pipeline's own. Facebook's provider limit is 63,206 characters; a caption
+    // at that length alone exceeds every derived payload ceiling in
+    // `payloadContract.ts`, and no output-token budget could produce three of
+    // them. Taking the minimum here is what makes `pipelineCaptionChars` a real
+    // bound rather than a comment: a provider-policy change cannot widen it.
+    const captionMax = Math.min(policy.captionMax, PACKAGING_LIMITS.pipelineCaptionChars);
+    const hashtagMax = Math.min(policy.hashtagMax, PACKAGING_LIMITS.maxHashtags);
 
     const caption = requireUrlFreeText(
-      requireBoundedString(obj.caption, `packages[${index}].caption`, policy.captionMax),
+      requireBoundedString(obj.caption, `packages[${index}].caption`, captionMax),
       `packages[${index}].caption`,
     );
     if (hashtagTokens(caption).length) {
@@ -503,9 +512,9 @@ export function validatePackagingAdaptationOutput(
 
     if (!Array.isArray(obj.hashtags)) fail(`"packages[${index}].hashtags" must be an array`);
     const rawHashtags = obj.hashtags as unknown[];
-    if (rawHashtags.length < policy.hashtagMin || rawHashtags.length > policy.hashtagMax) {
+    if (rawHashtags.length < policy.hashtagMin || rawHashtags.length > hashtagMax) {
       fail(
-        `${platform} requires ${policy.hashtagMin}-${policy.hashtagMax} hashtags, `
+        `${platform} requires ${policy.hashtagMin}-${hashtagMax} hashtags, `
         + `received ${rawHashtags.length}`,
       );
     }
@@ -525,9 +534,9 @@ export function validatePackagingAdaptationOutput(
     });
 
     const providerText = proposedProviderText(caption, hashtags);
-    if (providerText.length > policy.captionMax) {
+    if (providerText.length > captionMax) {
       fail(
-        `${platform} proposed provider-visible text exceeds ${policy.captionMax} characters `
+        `${platform} proposed provider-visible text exceeds ${captionMax} characters `
         + "after appending canonical hashtags",
       );
     }
@@ -598,7 +607,7 @@ export function validatePackagingAdaptationOutput(
       fail(`claimUse[${index}] names "${platform}", which was not requested`);
     }
 
-    const factId = requireBoundedString(obj.factId, `claimUse[${index}].factId`, 200);
+    const factId = requireBoundedString(obj.factId, `claimUse[${index}].factId`, EVIDENCE_LIMITS.idChars);
     const record = usedById.get(factId);
     if (!record) {
       fail(

@@ -41,11 +41,20 @@ import { runAgent } from "../sdk.js";
 import { EvidencePack } from "../evidence/pack.js";
 import { AgentRegistry, AgentStageId, ResolvedStageAsset } from "./registry.js";
 import { resolveModelPolicy } from "./modelPolicy.js";
+import { MAX_INSTRUCTION_CHARS, MAX_PAYLOAD_CHARS } from "./payloadContract.js";
 
-/** Hard ceiling on the assembled instruction text, in characters. */
-export const MAX_INSTRUCTION_CHARS = 200_000;
-/** Hard ceiling on the assembled user payload, in characters. */
-export const MAX_PAYLOAD_CHARS = 120_000;
+/**
+ * Hard ceilings on the assembled instruction text and user payload.
+ *
+ * Both are **derived**, not chosen, and both live in `payloadContract.ts` —
+ * the one authority for every bound in this pipeline. `MAX_PAYLOAD_CHARS` is
+ * the largest assembled payload any of the six stages can produce from its own
+ * bounded contracts, so a structurally valid handoff can never be refused here;
+ * a derivation regression asserts that stage by stage. They are re-exported
+ * from this module because it is where the check lives and where every existing
+ * caller imports them from.
+ */
+export { MAX_INSTRUCTION_CHARS, MAX_PAYLOAD_CHARS } from "./payloadContract.js";
 
 export class StageExecutionError extends Error {
   readonly stage: AgentStageId;

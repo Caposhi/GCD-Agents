@@ -99,26 +99,14 @@ import {
   invokeStage,
   parseStrictJsonObject,
 } from "./stageExecution.js";
+import { DIRECTION_FIELD_LIMITS, EVIDENCE_LIMITS, HANDOFF_GUARDS, isSerializableText } from "./payloadContract.js";
 
 export const PRODUCTION_DIRECTION_STAGE = "production-direction" as const;
 
 /** Bounds on the model's output and on the prior-stage values it is shown. */
 export const DIRECTION_LIMITS = {
-  visualApproachChars: 1_500,
-  subjectChars: 300,
-  actionChars: 400,
-  compositionChars: 400,
-  continuityChars: 300,
-  overlayTextChars: 200,
-  requirementChars: 300,
-  directionSummaryChars: 400,
-  openQuestionChars: 300,
-  maxShots: 10,
-  maxOverlayText: 10,
-  maxRequirements: 12,
-  maxClaimVisuals: 12,
-  maxOpenQuestions: 6,
-  scriptOutputChars: 20_000,
+  ...DIRECTION_FIELD_LIMITS,
+  scriptOutputChars: HANDOFF_GUARDS.scriptOutputChars,
 } as const;
 
 /** Exactly the fields the contract allows. Anything else is an extra field. */
@@ -289,6 +277,12 @@ function requireBoundedString(value: unknown, field: string, max: number): strin
   const text = (value as string).trim();
   if (!text) fail(`"${field}" must not be empty`);
   if (text.length > max) fail(`"${field}" exceeds ${max} characters`);
+  // Serializable text only. Control characters and unpaired surrogates are the
+  // only things JSON.stringify expands sixfold; excluding them is what lets
+  // every payload derivation in payloadContract.ts use a factor of two.
+  if (!isSerializableText(text)) {
+    fail(`"${field}" contains a control character or unpaired surrogate`);
+  }
   return text;
 }
 
@@ -482,7 +476,7 @@ export function validateProductionDirectionOutput(
     const obj = requireObject(entry, `claimVisuals[${index}]`);
     requireExactKeys(obj, ["factId", "shotIndex", "directionSummary"], "claimVisuals entry");
 
-    const factId = requireBoundedString(obj.factId, "claimVisuals[].factId", 200);
+    const factId = requireBoundedString(obj.factId, "claimVisuals[].factId", EVIDENCE_LIMITS.idChars);
     const record = usedById.get(factId);
     if (!record) {
       fail(

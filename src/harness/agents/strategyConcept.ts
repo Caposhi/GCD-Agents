@@ -55,21 +55,20 @@ import {
   invokeStage,
   parseStrictJsonObject,
 } from "./stageExecution.js";
+import { STRATEGY_LIMITS, HANDOFF_GUARDS, isSerializableText } from "./payloadContract.js";
 
 export const STRATEGY_CONCEPT_STAGE = "strategy-concept" as const;
 
-/** Bounds on the model's output. Generous enough to be useful, small enough to be safe. */
-export const LIMITS = {
-  angleChars: 400,
-  conceptChars: 1_200,
-  rationaleChars: 2_000,
-  hypothesisChars: 400,
-  assumptionChars: 400,
-  maxIds: 12,
-  maxHypotheses: 6,
-  maxAssumptions: 6,
-  goalChars: 2_000,
-} as const;
+/**
+ * Bounds on this stage, owned by `payloadContract.ts`.
+ *
+ * Re-exported under the established name so existing callers are unchanged.
+ * Field limits live in one place because every downstream handoff guard and the
+ * shared assembled-payload boundary are derived from them; the guards this
+ * stage applies to its own inputs are likewise derived from the *producer's*
+ * contract, so a structurally valid upstream result can never be refused here.
+ */
+export const LIMITS = STRATEGY_LIMITS;
 
 /** Exactly the fields the contract allows. Anything else is an extra field. */
 const ALLOWED_OUTPUT_FIELDS = [
@@ -152,6 +151,12 @@ function requireBoundedString(value: unknown, field: string, max: number): strin
   const text = (value as string).trim();
   if (!text) fail(`"${field}" must not be empty`);
   if (text.length > max) fail(`"${field}" exceeds ${max} characters`);
+  // Serializable text only. Control characters and unpaired surrogates are the
+  // only things JSON.stringify expands sixfold; excluding them is what lets
+  // every payload derivation in payloadContract.ts use a factor of two.
+  if (!isSerializableText(text)) {
+    fail(`"${field}" contains a control character or unpaired surrogate`);
+  }
   return text;
 }
 
@@ -346,6 +351,15 @@ export async function executeStrategyConcept(
   }
   assertRequiredEvidence(invocation.evidencePack, registry);
 
+  // The evidence pack is the one input this stage does not itself bound: its
+  // cardinality is decided by whatever the classifier produced. Guarded here
+  // against the derived ceiling so an oversized pack is refused before any
+  // model call rather than assembling a payload nothing sized for.
+  const renderedEvidence = renderEvidenceForStage(invocation.evidencePack);
+  if (renderedEvidence.length > HANDOFF_GUARDS.evidencePackChars) {
+    fail(`"evidencePack" exceeds ${HANDOFF_GUARDS.evidencePackChars} characters`);
+  }
+
   const { rawText, metadata } = await invokeStage({
     stage: STRATEGY_CONCEPT_STAGE,
     registry,
@@ -358,7 +372,7 @@ export async function executeStrategyConcept(
     referenceChannel: "omit",
     dataBlocks: [
       { label: "GOAL", body: goal },
-      { label: "EVIDENCE", body: renderEvidenceForStage(invocation.evidencePack) },
+      { label: "EVIDENCE", body: renderedEvidence },
     ],
   });
 

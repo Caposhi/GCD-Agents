@@ -158,6 +158,31 @@ export interface EvidenceValidationResult {
   issues: string[];
 }
 
+import { EVIDENCE_LIMITS, isSerializableText } from "../agents/payloadContract.js";
+
+/**
+ * Bounded, serializable text.
+ *
+ * Two rules, both new and both load-bearing downstream:
+ *
+ *  - **A maximum length.** Before this, `claim` and every other text field were
+ *    bounded only by "non-empty", so every projection built from a record was
+ *    structurally unbounded and no payload derived from one had a finite
+ *    maximum. The limits live in `payloadContract.ts` beside the derivations
+ *    that consume them, and `state/migrations/007_evidence_bounds.sql` states
+ *    the same numbers as database constraints.
+ *  - **A bounded character set.** `isSerializableText` refuses control
+ *    characters and unpaired surrogates — the only things `JSON.stringify`
+ *    expands sixfold. Excluding them is what lets every payload derivation use
+ *    a factor of two instead of six.
+ */
+function boundedText(value: string, field: string, max: number, push: (issue: string) => void): void {
+  if (value.length > max) push(`${field} exceeds ${max} characters`);
+  if (!isSerializableText(value)) {
+    push(`${field} contains a control character or unpaired surrogate`);
+  }
+}
+
 const ISO_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$/;
 
 function isInstant(value: unknown): value is string {
@@ -181,10 +206,48 @@ export function validateEvidenceRecord(record: EvidenceRecord): EvidenceValidati
   const push = (issue: string) => issues.push(issue);
 
   if (!nonEmpty(record.id)) push("id is required");
+  else boundedText(record.id, "id", EVIDENCE_LIMITS.idChars, push);
   if (!EVIDENCE_KINDS.includes(record.kind)) push(`unknown evidence kind: ${String(record.kind)}`);
   if (!nonEmpty(record.claim)) push("claim is required");
+  else boundedText(record.claim, "claim", EVIDENCE_LIMITS.claimChars, push);
   if (!nonEmpty(record.subject)) push("subject is required");
+  else boundedText(record.subject, "subject", EVIDENCE_LIMITS.subjectChars, push);
+  if (record.attribute !== undefined) {
+    boundedText(record.attribute, "attribute", EVIDENCE_LIMITS.attributeChars, push);
+  }
   if (!Array.isArray(record.tags) || record.tags.some((t) => typeof t !== "string")) push("tags must be an array of strings");
+  else {
+    if (record.tags.length > EVIDENCE_LIMITS.maxTags) {
+      push(`tags exceeds ${EVIDENCE_LIMITS.maxTags} entries`);
+    }
+    record.tags.forEach((tag, index) => boundedText(tag, `tags[${index}]`, EVIDENCE_LIMITS.tagChars, push));
+  }
+  for (const [field, value, max] of [
+    ["sourceRef", record.sourceRef, EVIDENCE_LIMITS.sourceRefChars],
+    ["provenance", record.provenance, EVIDENCE_LIMITS.provenanceChars],
+    ["reviewedBy", record.reviewedBy, EVIDENCE_LIMITS.reviewedByChars],
+    ["supersededById", record.supersededById, EVIDENCE_LIMITS.idChars],
+  ] as const) {
+    if (value !== undefined) boundedText(value, field, max, push);
+  }
+  if (record.detail !== undefined) {
+    if (record.detail === null || typeof record.detail !== "object" || Array.isArray(record.detail)) {
+      push("detail must be an object when present");
+    } else {
+      let serialized: string | undefined;
+      try {
+        serialized = JSON.stringify(record.detail);
+      } catch {
+        push("detail must be JSON-serializable");
+      }
+      if (serialized === undefined) {
+        // JSON.stringify returns undefined for a value it cannot represent.
+        if (!issues.some((issue) => issue.startsWith("detail"))) push("detail must be JSON-serializable");
+      } else {
+        boundedText(serialized, "detail", EVIDENCE_LIMITS.detailSerializedChars, push);
+      }
+    }
+  }
   if (!EVIDENCE_SOURCE_TYPES.includes(record.sourceType)) push(`unknown source type: ${String(record.sourceType)}`);
   if (!EVIDENCE_LIFECYCLE_STATES.includes(record.lifecycle)) push(`unknown lifecycle state: ${String(record.lifecycle)}`);
   if (!isInstant(record.createdAt)) push("createdAt must be an ISO instant");

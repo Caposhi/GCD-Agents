@@ -84,21 +84,15 @@ import {
   invokeStage,
   parseStrictJsonObject,
 } from "./stageExecution.js";
+import { SCRIPT_FIELD_LIMITS, EVIDENCE_LIMITS, HANDOFF_GUARDS, isSerializableText } from "./payloadContract.js";
 
 export const HOOK_STORY_SCRIPT_STAGE = "hook-story-script" as const;
 
 /** Bounds on the model's output and on the prior-stage inputs it is shown. */
 export const SCRIPT_LIMITS = {
-  hookChars: 300,
-  beatChars: 400,
-  scriptChars: 6_000,
-  paraphraseChars: 400,
-  openQuestionChars: 300,
-  maxBeats: 8,
-  maxClaimUses: 12,
-  maxOpenQuestions: 6,
-  strategyOutputChars: 12_000,
-  truthOutputChars: 16_000,
+  ...SCRIPT_FIELD_LIMITS,
+  strategyOutputChars: HANDOFF_GUARDS.strategyOutputChars,
+  truthOutputChars: HANDOFF_GUARDS.truthOutputChars,
 } as const;
 
 /** Exactly the fields the contract allows. Anything else is an extra field. */
@@ -212,6 +206,12 @@ function requireBoundedString(value: unknown, field: string, max: number): strin
   const text = (value as string).trim();
   if (!text) fail(`"${field}" must not be empty`);
   if (text.length > max) fail(`"${field}" exceeds ${max} characters`);
+  // Serializable text only. Control characters and unpaired surrogates are the
+  // only things JSON.stringify expands sixfold; excluding them is what lets
+  // every payload derivation in payloadContract.ts use a factor of two.
+  if (!isSerializableText(text)) {
+    fail(`"${field}" contains a control character or unpaired surrogate`);
+  }
   return text;
 }
 
@@ -411,7 +411,7 @@ export function validateHookStoryScriptOutput(
     const obj = requireObject(entry, `claimUse[${index}]`);
     requireExactKeys(obj, ["factId", "usedIn", "paraphrase"], "claimUse entry");
 
-    const factId = requireBoundedString(obj.factId, "claimUse[].factId", 200);
+    const factId = requireBoundedString(obj.factId, "claimUse[].factId", EVIDENCE_LIMITS.idChars);
     const record = permittedById.get(factId);
     if (!record) {
       fail(
