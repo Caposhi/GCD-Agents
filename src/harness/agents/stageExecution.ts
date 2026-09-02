@@ -38,7 +38,7 @@
  */
 
 import { runAgent } from "../sdk.js";
-import { EvidencePack } from "../evidence/pack.js";
+import { EvidencePack, assertEvidencePackProjectionBounds } from "../evidence/pack.js";
 import { AgentRegistry, AgentStageId, ResolvedStageAsset } from "./registry.js";
 import { resolveModelPolicy } from "./modelPolicy.js";
 import { MAX_INSTRUCTION_CHARS, MAX_PAYLOAD_CHARS } from "./payloadContract.js";
@@ -176,6 +176,7 @@ export function assertRequiredEvidenceKinds(
   registry: AgentRegistry,
   pack: EvidencePack,
 ): void {
+  assertEvidencePackProjectionBounds(pack);
   const definition = registry.get(stage);
   const available = new Set(pack.allowedFacts.map((r) => r.kind));
   const missing = definition.requiredEvidenceKinds.filter((kind) => !available.has(kind));

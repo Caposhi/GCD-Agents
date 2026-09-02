@@ -112,7 +112,7 @@ import {
   invokeStage,
   parseStrictJsonObject,
 } from "./stageExecution.js";
-import { PACKAGING_FIELD_LIMITS, EVIDENCE_LIMITS, HANDOFF_GUARDS, PACKAGING_OUTPUT, isSerializableText } from "./payloadContract.js";
+import { PACKAGING_FIELD_LIMITS, EVIDENCE_LIMITS, HANDOFF_GUARDS, PACKAGING_OUTPUT, isBoundedSerializableText } from "./payloadContract.js";
 
 export const PACKAGING_ADAPTATION_STAGE = "packaging-adaptation" as const;
 
@@ -337,10 +337,10 @@ function requireBoundedString(value: unknown, field: string, max: number): strin
   if (!text) fail(`"${field}" must not be empty`);
   if (text.length > max) fail(`"${field}" exceeds ${max} characters`);
   // Serializable text only. Control characters and unpaired surrogates are the
-  // only things JSON.stringify expands sixfold; excluding them is what lets
-  // every payload derivation in payloadContract.ts use a factor of two.
-  if (!isSerializableText(text)) {
-    fail(`"${field}" contains a control character or unpaired surrogate`);
+  // only things JSON.stringify expands sixfold; the shared helper also enforces
+  // the UTF-8 byte allowance used by the worst-case token proof.
+  if (!isBoundedSerializableText(text, max)) {
+    fail(`"${field}" exceeds ${max} UTF-8 bytes or contains non-serializable text`);
   }
   return text;
 }

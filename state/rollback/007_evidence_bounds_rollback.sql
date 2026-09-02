@@ -29,8 +29,8 @@
 -- applied and never re-run it. The DELETE below is part of the rollback, not an
 -- optional extra.
 --
--- Not applied. No production database has run this file, and running it is a
--- separately authorized operator action.
+-- Not applied to production. Disposable PostgreSQL tests exercise it; any
+-- production run remains a separately authorized operator action.
 
 BEGIN;
 
@@ -52,9 +52,10 @@ ALTER TABLE content_evidence
 ALTER TABLE content_evidence_relations
   DROP CONSTRAINT IF EXISTS content_evidence_relations_note_bounded;
 
--- The helper 007 creates for the per-tag bound. Dropped after the constraint
--- that calls it, never before: the reverse order would fail on the dependency.
-DROP FUNCTION IF EXISTS content_evidence_tag_length_within(text[], integer);
+-- The uniquely versioned helper 007 creates for the per-tag bound. Migration
+-- 007 uses plain CREATE, so it can never replace an unrelated helper that this
+-- rollback would later remove. Dropped after the calling constraint.
+DROP FUNCTION IF EXISTS gcd_content_evidence_tags_within_v007(text[], integer);
 
 DELETE FROM _migrations WHERE name = '007_evidence_bounds.sql';
 

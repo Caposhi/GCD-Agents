@@ -19,9 +19,11 @@
 import {
   EvidenceRecord,
   EvidenceRelation,
+  assertValidEvidenceRelation,
   isCitableAsFact,
   isStale,
 } from "./contract.js";
+import { EVIDENCE_LIMITS } from "../agents/payloadContract.js";
 
 export interface EvidenceConflict {
   /** Sorted pair, so the same disagreement always reports identically. */
@@ -67,6 +69,15 @@ export interface BuildEvidencePackInput {
   /** Optional subject/tag narrowing. Absent means "everything". */
   subjects?: string[];
   tags?: string[];
+}
+
+export class EvidencePackBoundsError extends Error {
+  readonly violations: string[];
+  constructor(violations: string[]) {
+    super(`evidence pack exceeds projection contract: ${violations.join("; ")}`);
+    this.name = "EvidencePackBoundsError";
+    this.violations = violations;
+  }
 }
 
 /** Stable ordering: subject, then kind, then id. Never insertion or clock order. */
@@ -156,10 +167,16 @@ export function buildEvidencePack(input: BuildEvidencePackInput): EvidencePack {
   if (typeof goal !== "string" || !goal.trim()) throw new Error("evidence pack requires a goal");
 
   const relations = input.relations ?? [];
+  for (const relation of relations) assertValidEvidenceRelation(relation);
   const scoped = input.records
     .filter((r) => matchesScope(r, input.subjects, input.tags))
     .slice()
     .sort(compareRecords);
+  if (scoped.length > EVIDENCE_LIMITS.maxProjectedRecords) {
+    throw new EvidencePackBoundsError([
+      `records ${scoped.length} exceeds ${EVIDENCE_LIMITS.maxProjectedRecords}`,
+    ]);
+  }
 
   const active = scoped.filter((r) => r.lifecycle === "active");
   const inactiveEvidence = scoped.filter((r) => r.lifecycle !== "active");
@@ -249,7 +266,7 @@ export function buildEvidencePack(input: BuildEvidencePackInput): EvidencePack {
  * separation has been broken and no downstream output can be trusted.
  */
 export function evidencePackInvariants(pack: EvidencePack, now: number): string[] {
-  const violations: string[] = [];
+  const violations: string[] = evidencePackProjectionViolations(pack);
   for (const record of pack.allowedFacts) {
     if (!isCitableAsFact(record, now)) violations.push(`allowedFacts contains non-citable ${record.id} (${record.kind})`);
     if (record.kind === "unsupported_assumption") violations.push(`allowedFacts contains an unsupported assumption: ${record.id}`);
@@ -262,6 +279,36 @@ export function evidencePackInvariants(pack: EvidencePack, now: number): string[
     if (record.generalizable === true) violations.push(`observation ${record.id} claims generalizability`);
   }
   return violations;
+}
+
+const RECORD_SECTIONS: ReadonlyArray<keyof Pick<EvidencePack,
+  "allowedFacts" | "sourcedResearch" | "gcdObservations" | "performanceEvidence"
+  | "creativeHypotheses" | "causalHypotheses" | "staleEvidence"
+  | "unsupportedAssumptions" | "inactiveEvidence">> = [
+  "allowedFacts", "sourcedResearch", "gcdObservations", "performanceEvidence",
+  "creativeHypotheses", "causalHypotheses", "staleEvidence",
+  "unsupportedAssumptions", "inactiveEvidence",
+];
+
+/** Validate the two independent projection cardinalities without dropping data. */
+export function evidencePackProjectionViolations(pack: EvidencePack): string[] {
+  // Count projected entries, not unique ids. A hand-built pack that repeats one
+  // id across sections still serializes each copy and must not evade the bound.
+  const recordCount = RECORD_SECTIONS.reduce((total, section) => total + pack[section].length, 0);
+  const violations: string[] = [];
+  if (recordCount > EVIDENCE_LIMITS.maxProjectedRecords) {
+    violations.push(`records ${recordCount} exceeds ${EVIDENCE_LIMITS.maxProjectedRecords}`);
+  }
+  if (pack.conflicts.length > EVIDENCE_LIMITS.maxProjectedConflicts) {
+    violations.push(`conflicts ${pack.conflicts.length} exceeds ${EVIDENCE_LIMITS.maxProjectedConflicts}`);
+  }
+  return violations;
+}
+
+export function assertEvidencePackProjectionBounds(pack: EvidencePack): EvidencePack {
+  const violations = evidencePackProjectionViolations(pack);
+  if (violations.length) throw new EvidencePackBoundsError(violations);
+  return pack;
 }
 
 /**
@@ -277,6 +324,7 @@ export function evidencePackInvariants(pack: EvidencePack, now: number): string[
  * than of any one stage. Two stages sharing one definition cannot drift apart.
  */
 export function unusableEvidenceIds(pack: EvidencePack): Set<string> {
+  assertEvidencePackProjectionBounds(pack);
   const unusable = new Set<string>();
   for (const conflict of pack.conflicts) {
     unusable.add(conflict.aId);
@@ -305,6 +353,7 @@ export function unusableEvidenceIds(pack: EvidencePack): Set<string> {
  * claiming to have read it.
  */
 export function renderEvidencePackForStage(pack: EvidencePack): string {
+  assertEvidencePackProjectionBounds(pack);
   const brief = (records: EvidenceRecord[]) =>
     records.map((r) => ({
       id: r.id,

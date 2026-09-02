@@ -14,24 +14,34 @@ import {
   EvidenceRecord,
   isCitableAsFact,
   isStale,
+  postgresJsonbTextUpperBoundBytes,
+  validateEvidenceRelation,
   validateEvidenceRecord,
 } from "./evidence/contract.js";
-import { buildEvidencePack, evidencePackInvariants } from "./evidence/pack.js";
+import {
+  EvidencePackBoundsError,
+  buildEvidencePack,
+  evidencePackInvariants,
+  renderEvidencePackForStage,
+} from "./evidence/pack.js";
 import {
   CRITIC_OUTPUT,
   DIRECTION_OUTPUT,
   EVIDENCE_LIMITS,
   HANDOFF_GUARDS,
   MAX_JSON_ESCAPE_EXPANSION,
+  MAX_TOKENS_PER_UTF8_BYTE,
   PACKAGING_OUTPUT,
   PLATFORM_CLAIMS_BLOCK_CHARS,
   POLICY_OUTPUT_TOKEN_FLOORS,
   SCRIPT_OUTPUT,
   STAGE_ASSEMBLED_CEILINGS,
+  STRATEGY_ID_CHANNELS,
   STRATEGY_OUTPUT,
   TRUTH_OUTPUT,
   isSerializableText,
   minimumOutputTokens,
+  utf8ByteLength,
 } from "./agents/payloadContract.js";
 import { config } from "./config.js";
 import {
@@ -64,6 +74,7 @@ import {
 import {
   ModelPolicyError,
   POLICY_MAX_TOKENS,
+  POLICY_MODEL_OUTPUT_CAPS,
   modelBearingPolicies,
   resolveModelPolicy,
 } from "./agents/modelPolicy.js";
@@ -5177,7 +5188,7 @@ async function run(): Promise<void> {
       + "TypeScript numbers, through a helper rather than a subquery a CHECK cannot contain",
       new RegExp(`cardinality\\(tags\\) <= ${EVIDENCE_LIMITS.maxTags}\\b`).test(migrationSql)
         && new RegExp(
-             `content_evidence_tag_length_within\\(tags, ${EVIDENCE_LIMITS.tagChars}\\)`,
+             `gcd_content_evidence_tags_within_v007\\(tags, ${EVIDENCE_LIMITS.tagChars}\\)`,
            ).test(migrationSql)
         && /IMMUTABLE/.test(migrationSql)
         && !/CHECK \([^)]*SELECT/i.test(migrationSql));
@@ -5190,9 +5201,10 @@ async function run(): Promise<void> {
       EXPECTED_SQL_BOUNDS.every(([name]) =>
         new RegExp(`DROP CONSTRAINT IF EXISTS ${name}`).test(rollbackSql))
         && /DROP CONSTRAINT IF EXISTS content_evidence_tags_bounded/.test(rollbackSql)
-        && /DROP FUNCTION IF EXISTS content_evidence_tag_length_within\(text\[\], integer\)/
+        && /DROP FUNCTION IF EXISTS gcd_content_evidence_tags_within_v007\(text\[\], integer\)/
              .test(rollbackSql)
-        && /CREATE OR REPLACE FUNCTION content_evidence_tag_length_within/.test(migrationSql)
+        && /CREATE FUNCTION gcd_content_evidence_tags_within_v007/.test(migrationSql)
+        && !/CREATE OR REPLACE FUNCTION gcd_content_evidence_tags_within_v007/.test(migrationSql)
         && /DELETE FROM _migrations WHERE name = '007_evidence_bounds\.sql'/.test(rollbackSql));
     check("CC5. the rollback lives outside the forward-only runner's directory, and neither "
       + "file claims to have been applied to production",
@@ -5200,8 +5212,8 @@ async function run(): Promise<void> {
          .some((f) => /rollback/i.test(f))
         && (await readdir(resolve(REPO_ROOT, "state/rollback")))
              .includes("007_evidence_bounds_rollback.sql")
-        && /Not applied\./.test(rollbackSql)
-        && /It has not been applied\./.test(migrationSql)
+        && /Not applied to production\./.test(rollbackSql)
+        && /It has not been applied to production\./.test(migrationSql)
         && /SEPARATE, SEPARATELY AUTHORIZED/.test(migrationSql));
 
     // --- CC-B. the evidence bounds are real, and invalidate nothing valid ---
@@ -5441,10 +5453,11 @@ async function run(): Promise<void> {
     check("CC11. every stage's maximal valid output fits its own derived transport ceiling"
       + (overCeiling.length ? ` (over: ${overCeiling.join("; ")})` : ""),
       overCeiling.length === 0 && MAXIMAL.every(([, value]) => serialized(value) > 0));
-    check("CC12. every stage's maximal valid output fits its ordinary-character ceiling too, "
-      + "which is the one the token budget is derived from",
+    check("CC12. every maximal output fits its serialized UTF-8 byte ceiling and Stage 1 "
+      + "still derives all three id channels",
       MAXIMAL.every(([, value, ceiling]) =>
-        JSON.stringify(value).length <= ceiling.contractChars));
+        utf8ByteLength(JSON.stringify(value, null, 2)) <= ceiling.transportChars)
+        && Number(STRATEGY_ID_CHANNELS) === 3);
 
     // The adjacency proof: for each producer/consumer pair, the guard the
     // consumer applies is EXACTLY the producer's ceiling, and the producer's
@@ -5519,19 +5532,20 @@ async function run(): Promise<void> {
         && HANDOFF_GUARDS.directionOutputChars === DIRECTION_OUTPUT.transportChars
         && Object.values(STAGE_ASSEMBLED_CEILINGS).every((c) => c <= MAX_PAYLOAD_CHARS)
         && Object.keys(STAGE_ASSEMBLED_CEILINGS).length === TARGET_STAGE_IDS.length);
-    check("CC18. the escape factor and the characters-per-token floor each have exactly one "
+    check("CC18. the escape factor and worst-case tokens-per-byte ceiling each have exactly one "
       + "definition, in the authority module",
       /export const MAX_JSON_ESCAPE_EXPANSION = 2;/.test(payloadSource)
-        && /export const MIN_CHARS_PER_TOKEN = 3;/.test(payloadSource)
+        && /export const MAX_TOKENS_PER_UTF8_BYTE = 1;/.test(payloadSource)
         && stageSources.every(([, src]) =>
-             !/MAX_JSON_ESCAPE_EXPANSION\s*=/.test(src) && !/MIN_CHARS_PER_TOKEN\s*=/.test(src)));
+             !/MAX_JSON_ESCAPE_EXPANSION\s*=/.test(src)
+             && !/MAX_TOKENS_PER_UTF8_BYTE\s*=/.test(src)));
 
     // --- CC-E. output contracts fit the token budgets ----------------------
     //
     // The other direction of the same reconciliation: a stage whose contract
     // can produce more text than its budget allows cannot complete a valid
     // response, and would fail at run time rather than at review time.
-    const BUDGETS: Array<[string, string, { contractChars: number }]> = [
+    const BUDGETS: Array<[string, string, { transportChars: number }]> = [
       ["strategy-concept", "reasoning-heavy", STRATEGY_OUTPUT],
       ["automotive-truth", "reasoning-heavy", TRUTH_OUTPUT],
       ["hook-story-script", "reasoning-standard", SCRIPT_OUTPUT],
@@ -5542,10 +5556,10 @@ async function run(): Promise<void> {
     const shortBudgets = BUDGETS
       .filter(([, policy, ceiling]) =>
         POLICY_MAX_TOKENS[policy as keyof typeof POLICY_MAX_TOKENS]
-          < minimumOutputTokens(ceiling.contractChars))
+          < minimumOutputTokens(ceiling.transportChars))
       .map(([stage, policy, ceiling]) =>
         `${stage}/${policy}: budget=${POLICY_MAX_TOKENS[policy as keyof typeof POLICY_MAX_TOKENS]} `
-        + `needs=${minimumOutputTokens(ceiling.contractChars)}`);
+        + `needs=${minimumOutputTokens(ceiling.transportChars)}`);
     check("CC19. every stage's maximal output contract fits its policy's token budget"
       + (shortBudgets.length ? ` (short: ${shortBudgets.join("; ")})` : ""),
       shortBudgets.length === 0 && BUDGETS.length === TARGET_STAGE_IDS.length);
@@ -5560,12 +5574,13 @@ async function run(): Promise<void> {
         && POLICY_MAX_TOKENS.critic === POLICY_OUTPUT_TOKEN_FLOORS.critic
         && /POLICY_OUTPUT_TOKEN_FLOORS/.test(
              await readFile(resolve(REPO_ROOT, "src/harness/agents/modelPolicy.ts"), "utf8")));
-    check("CC22. the characters-per-token floor is documented as a conservative assumption, "
-      + "not presented as a measurement",
-      /MIN_CHARS_PER_TOKEN/.test(payloadSource)
-        && /conservative/.test(payloadSource)
-        && minimumOutputTokens(3) === 1
-        && minimumOutputTokens(4) === 2);
+    check("CC22. every derived budget uses the serialized byte worst case and remains within "
+      + "the documented centralized model output cap",
+      Number(MAX_TOKENS_PER_UTF8_BYTE) === 1
+        && minimumOutputTokens(3) === 3
+        && minimumOutputTokens(4) === 4
+        && Object.entries(POLICY_MAX_TOKENS).every(([policy, budget]) =>
+             budget <= POLICY_MODEL_OUTPUT_CAPS[policy as keyof typeof POLICY_MODEL_OUTPUT_CAPS]));
 
     // --- CC-F. the narrowing that is a narrowing, recorded as one ----------
     check("CC23. the pipeline caption cap is smaller than the largest provider limit, is "
@@ -5654,6 +5669,98 @@ async function run(): Promise<void> {
         !/anthropicStageRunner/.test(src) && !/ANTHROPIC_API_KEY/.test(src))
         && !/ANTHROPIC_API_KEY/.test(payloadSource)
         && typeof anthropicStageRunner === "function");
+
+    // --- CC-H. review corrections: adversarial cardinality and representation
+    const detailCounterexample = Object.fromEntries(Array.from({ length: 410 }, (_, index) => [
+      index.toString(36).padStart(2, "0"),
+      index === 0 ? "x".repeat(710) : "",
+    ]));
+    const detailCompactLength = JSON.stringify(detailCounterexample).length;
+    const detailCanonicalUpperBound = postgresJsonbTextUpperBoundBytes(detailCounterexample);
+    check("CC29. the 3,991/4,810 detail counterexample is refused against PostgreSQL's "
+      + "canonical jsonb representation, not accepted from compact JavaScript JSON",
+      detailCompactLength === 3_991
+        && detailCanonicalUpperBound === 4_810
+        && !validateEvidenceRecord({
+             ...wellFormed.verified_automotive_fact, detail: detailCounterexample,
+           } as EvidenceRecord).ok
+        && !validateEvidenceRecord({
+             ...wellFormed.verified_automotive_fact, detail: { incompatible: "\uD800" },
+           } as EvidenceRecord).ok);
+
+    const relationBase = {
+      fromId: "fact-a", toId: "fact-b", kind: "supports" as const,
+      createdAt: "2026-09-02T00:00:00Z",
+    };
+    check("CC30. relation notes use the owning bound in TypeScript, including the UTF-8 byte edge",
+      validateEvidenceRelation({ ...relationBase, note: "n".repeat(EVIDENCE_LIMITS.relationNoteChars) }).ok
+        && !validateEvidenceRelation({
+             ...relationBase, note: "n".repeat(EVIDENCE_LIMITS.relationNoteChars + 1),
+           }).ok
+        && !validateEvidenceRelation({ ...relationBase, note: "é".repeat(251) }).ok);
+
+    const conflictRecords = Array.from({ length: EVIDENCE_LIMITS.maxProjectedRecords }, (_, index) => {
+      const stem = `conflict-${String(index).padStart(2, "0")}-`;
+      return {
+        ...wellFormed.verified_automotive_fact,
+        id: stem + "i".repeat(EVIDENCE_LIMITS.idChars - stem.length),
+        claim: `${String(index).padStart(2, "0")}-`
+          + "c".repeat(EVIDENCE_LIMITS.claimChars - 3),
+        subject: "s".repeat(EVIDENCE_LIMITS.subjectChars),
+        attribute: "a".repeat(EVIDENCE_LIMITS.attributeChars),
+      } as EvidenceRecord;
+    });
+    const fanoutPack = buildEvidencePack({ goal: "fan-out", records: conflictRecords, now: NOW });
+    let fanoutRendererError: unknown;
+    try {
+      renderEvidencePackForStage(fanoutPack);
+    } catch (error) {
+      fanoutRendererError = error;
+    }
+    let fanoutRunnerCalls = 0;
+    await executeStrategyConcept({
+      goal: "fan-out",
+      evidencePack: fanoutPack,
+      registry,
+      runner: async () => {
+        fanoutRunnerCalls += 1;
+        return { text: "{}" };
+      },
+    }).catch(() => undefined);
+    check("CC31. 64 valid same-subject/same-attribute facts produce all 2,016 conflicts and "
+      + "the renderer and shared executor boundary refuse the intact pack before a model call",
+      fanoutPack.conflicts.length === 2_016
+        && fanoutRendererError instanceof EvidencePackBoundsError
+        && /conflicts 2016 exceeds 64/.test((fanoutRendererError as Error).message)
+        && fanoutRunnerCalls === 0);
+    check("CC32. maxProjectedRecords is an enforced builder contract, not only a derivation input",
+      throws(() => buildEvidencePack({
+        goal: "too many", records: [...conflictRecords, {
+          ...conflictRecords[0]!, id: "one-record-too-many",
+        }], now: NOW,
+      })));
+
+    const multibyteStrategy = {
+      angle: "é".repeat(Math.floor(LIMITS.angleChars / 2)),
+      concept: "C", rationale: "R", hypotheses: [], assumptions: [],
+      supportingFactIds: [ccFacts[0]!.id], observationIds: [], performanceSignalIds: [],
+    };
+    check("CC33. non-ordinary contract text is accepted only while its UTF-8 bytes fit, and a "
+      + "string that defeats the former three-characters-per-token assumption is refused",
+      validateStrategyConceptOutput(multibyteStrategy, ccPack).provisional.angle.length
+        === Math.floor(LIMITS.angleChars / 2)
+        && throws(() => validateStrategyConceptOutput({
+             ...multibyteStrategy, angle: "é".repeat(LIMITS.angleChars),
+           }, ccPack)));
+    check("CC34. migration 007's helper is collision-safe additive SQL",
+      /CREATE FUNCTION gcd_content_evidence_tags_within_v007/.test(migrationSql)
+        && !/CREATE OR REPLACE FUNCTION gcd_content_evidence_tags_within_v007/.test(migrationSql)
+        && /gcd_content_evidence_tags_within_v007/.test(rollbackSql));
+    check("CC35. the PostgreSQL tag helper rejects NULL elements and enforces both character "
+      + "and UTF-8 byte bounds",
+      /t IS NOT NULL/.test(migrationSql)
+        && /length\(t\) <= max_len/.test(migrationSql)
+        && /octet_length\(t\) <= max_len/.test(migrationSql));
   }
 
   console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURE(S)`);

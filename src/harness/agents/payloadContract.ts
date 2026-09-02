@@ -44,12 +44,12 @@
  *    Over-approximating a cross-field rule is safe; under-approximating one was
  *    the original defect.
  *
- * **Stated limitation.** These are character bounds, not token bounds. The
- * token estimates used to reconcile output contracts with model budgets apply a
- * deliberately conservative characters-per-token divisor; see
- * `MIN_CHARS_PER_TOKEN`. No tokenizer is invoked, no provider is contacted, and
- * a real tokenizer may segment differently. The divisor is chosen low enough
- * that the estimate over-counts tokens rather than under-counting them.
+ * **Token guarantee.** Every bounded output string is limited by UTF-8 bytes as
+ * well as JavaScript code units. The escaping-aware transport ceiling is
+ * therefore also a serialized UTF-8 byte ceiling. A lossless tokenizer cannot
+ * emit more ordinary text tokens than the non-empty byte sequences those
+ * tokens represent, so pricing the whole transport at one token per byte is a
+ * tokenizer-independent worst case. No provider or tokenizer is contacted.
  */
 
 /**
@@ -104,20 +104,25 @@ export function isSerializableText(value: string): boolean {
 }
 
 /**
- * A conservative characters-per-token divisor for output-budget estimates.
- *
- * English prose runs nearer four characters per token; JSON structure with its
- * punctuation and quoting runs nearer three. Three is at or below both, so an
- * estimate built from it over-counts the tokens a contract-valid response
- * needs. That is the safe direction: it can only make a budget look tighter
- * than it is, never looser.
- *
- * **Limitation.** No tokenizer is invoked and no provider is contacted. A real
- * tokenizer segments differently, and unusual text can exceed this ratio. The
- * budgets derived from it are a floor for ordinary contract-valid content, not
- * a guarantee for every possible string.
+ * UTF-8 byte length without a Node import. `TextEncoder` is available in the
+ * Node 22 runtime and keeps this authority module free of dependencies.
  */
-export const MIN_CHARS_PER_TOKEN = 3;
+export function utf8ByteLength(value: string): number {
+  return new TextEncoder().encode(value).length;
+}
+
+/** One token per serialized UTF-8 byte is the lossless worst-case ceiling. */
+export const MAX_TOKENS_PER_UTF8_BYTE = 1;
+
+/**
+ * Every bounded field uses one numeric allowance for both code units and bytes.
+ * ASCII can fill the whole allowance; multibyte text remains valid but reaches
+ * the byte boundary sooner. This is what makes the serialized byte proof cover
+ * unusual, contract-valid text rather than only ordinary prose.
+ */
+export function isBoundedSerializableText(value: string, max: number): boolean {
+  return value.length <= max && utf8ByteLength(value) <= max && isSerializableText(value);
+}
 
 // ---------------------------------------------------------------------------
 // Evidence bounds
@@ -161,7 +166,7 @@ export const EVIDENCE_LIMITS = {
   sourceRefChars: 500,
   provenanceChars: 500,
   reviewedByChars: 200,
-  /** Serialized length of the `detail` object, not its key count. */
+  /** PostgreSQL-canonical `jsonb::text` UTF-8 bytes, not compact JSON or key count. */
   detailSerializedChars: 4_000,
   relationNoteChars: 500,
   /**
@@ -178,6 +183,13 @@ export const EVIDENCE_LIMITS = {
    * classified records needs a narrower brief, not a larger payload.
    */
   maxProjectedRecords: 64,
+  /**
+   * The most conflict entries a consumer may accept from one pack. Conflict
+   * detection is intentionally exhaustive and can produce n(n-1)/2 pairs; a
+   * pack over this boundary is refused intact before every consumer. No pair is
+   * dropped and no side is chosen as truth.
+   */
+  maxProjectedConflicts: 64,
 } as const;
 
 /**
@@ -349,11 +361,10 @@ export function serializedCeiling(
  * `transportChars` is what a *guard* compares against: it assumes every code
  * unit escapes to the maximum, so a valid value can never exceed it.
  *
- * `contractChars` is what an *output budget* is sized against: it assumes
- * ordinary characters, because a model asked for a caption types a caption, not
- * a wall of escapes. A budget sized on `transportChars` would be twice what any
- * real response needs. The distinction is deliberate and the two are never
- * interchanged: guards read the first, budgets the second.
+ * `contractChars` is retained as a useful ordinary-character measurement only.
+ * It is never used for the token guarantee: output budgets use the escaping-
+ * aware `transportChars`, which is also a byte ceiling because every bounded
+ * string applies the same numeric UTF-8 byte cap.
  */
 export interface ContractCeiling {
   transportChars: number;
@@ -417,8 +428,9 @@ const evidenceRecordWitness = () => ({
  *
  * `maxProjectedRecords` bounds the pack **in total**, so the content term counts
  * each record once no matter which section classified it, plus the unusable
- * lists, which reference at most those same records by id, plus one conflict
- * entry per record.
+ * lists, which reference at most those same records by id. Conflict entries
+ * have their own independently enforced cardinality bound because exhaustive
+ * pairwise detection can otherwise grow as n(n-1)/2.
  *
  * The skeleton witness puts every record in a single section. Per-record
  * punctuation and indentation are identical across sections, so this measures
@@ -434,7 +446,7 @@ export const EVIDENCE_PACK_BLOCK_CHARS = serializedCeiling(
     creativeHypotheses: [],
     causalHypotheses: [],
     unusable: {
-      conflicted: times(EVIDENCE_LIMITS.maxProjectedRecords, () => ({ aId: "", bId: "", subject: "" })),
+      conflicted: times(EVIDENCE_LIMITS.maxProjectedConflicts, () => ({ aId: "", bId: "", subject: "" })),
       stale: times(EVIDENCE_LIMITS.maxProjectedRecords, () => ""),
       inactive: times(EVIDENCE_LIMITS.maxProjectedRecords, () => ""),
       unsupportedAssumptions: times(EVIDENCE_LIMITS.maxProjectedRecords, () => ""),
@@ -446,11 +458,12 @@ export const EVIDENCE_PACK_BLOCK_CHARS = serializedCeiling(
   EVIDENCE_LIMITS.maxProjectedRecords * (
     // Each record, projected once into whichever section classified it.
     PROJECTED_EVIDENCE_STRING_CHARS
-    // One conflict entry per record: two ids and a subject.
-    + (2 * EVIDENCE_LIMITS.idChars + EVIDENCE_LIMITS.subjectChars)
     // The three unusable id lists.
     + 3 * EVIDENCE_LIMITS.idChars
-  ),
+  )
+  // Conflicts are separate from record cardinality and never discarded.
+  + EVIDENCE_LIMITS.maxProjectedConflicts
+    * (2 * EVIDENCE_LIMITS.idChars + EVIDENCE_LIMITS.subjectChars),
 );
 
 /** A bounded list of projected claim records, as every claim block renders. */
@@ -872,18 +885,14 @@ export const MAX_INSTRUCTION_CHARS = 200_000;
 /**
  * The minimum output-token budget a contract-valid response needs.
  *
- * Sized against `contractChars` — the ordinary-character ceiling — not against
- * the escaping-aware transport ceiling. A model asked for a caption types a
- * caption; sizing a budget for a response made entirely of escape sequences
- * would double every budget to buy nothing.
- *
- * The result is still an over-estimate in two ways, both deliberate: it prices
- * the *branded, pretty-printed* value although a model emits the raw object
- * without indentation, and it divides by a characters-per-token ratio below
- * what ordinary JSON achieves.
+ * Sized against the escaping-aware serialized UTF-8 byte ceiling. Every field
+ * validator applies the same numeric bound to UTF-8 bytes, so the transport
+ * ceiling covers punctuation, escaping, ASCII, multibyte text, and adversarial
+ * mixtures. One token per byte is a lossless worst case; this is a guarantee
+ * for every contract-valid output, not an ordinary-prose estimate.
  */
-export function minimumOutputTokens(contractChars: number): number {
-  return Math.ceil(contractChars / MIN_CHARS_PER_TOKEN);
+export function minimumOutputTokens(transportBytes: number): number {
+  return Math.ceil(transportBytes * MAX_TOKENS_PER_UTF8_BYTE);
 }
 
 /**
@@ -902,16 +911,16 @@ export const POLICY_OUTPUT_TOKEN_FLOORS: Record<string, number> = (() => {
   return {
     // Stages 1 and 2.
     "reasoning-heavy": ceil(Math.max(
-      minimumOutputTokens(STRATEGY_OUTPUT.contractChars),
-      minimumOutputTokens(TRUTH_OUTPUT.contractChars),
+      minimumOutputTokens(STRATEGY_OUTPUT.transportChars),
+      minimumOutputTokens(TRUTH_OUTPUT.transportChars),
     )),
     // Stages 3, 4 and 5.
     "reasoning-standard": ceil(Math.max(
-      minimumOutputTokens(SCRIPT_OUTPUT.contractChars),
-      minimumOutputTokens(DIRECTION_OUTPUT.contractChars),
-      minimumOutputTokens(PACKAGING_OUTPUT.contractChars),
+      minimumOutputTokens(SCRIPT_OUTPUT.transportChars),
+      minimumOutputTokens(DIRECTION_OUTPUT.transportChars),
+      minimumOutputTokens(PACKAGING_OUTPUT.transportChars),
     )),
     // Stage 6.
-    critic: ceil(minimumOutputTokens(CRITIC_OUTPUT.contractChars)),
+    critic: ceil(minimumOutputTokens(CRITIC_OUTPUT.transportChars)),
   };
 })();

@@ -32,6 +32,8 @@ const MIGRATION = "state/migrations/007_evidence_bounds.sql";
 const PACKAGING = "src/harness/agents/packagingAdaptation.ts";
 const FINAL_CRITIC = "src/harness/agents/finalCritic.ts";
 const MODEL_POLICY = "src/harness/agents/modelPolicy.ts";
+const EVIDENCE_CONTRACT = "src/harness/evidence/contract.ts";
+const EVIDENCE_PACK = "src/harness/evidence/pack.ts";
 
 /**
  * Each mutation names the derivation it breaks, the single edit that breaks it,
@@ -73,8 +75,8 @@ const MUTATIONS = [
   {
     name: "the migration diverges from the TypeScript bound it mirrors",
     file: MIGRATION,
-    from: "    CHECK (length(claim) <= 1000),",
-    to: "    CHECK (length(claim) <= 1200),",
+    from: "    CHECK (length(claim) <= 1000 AND octet_length(claim) <= 1000),",
+    to: "    CHECK (length(claim) <= 1200 AND octet_length(claim) <= 1200),",
     expect: ["CC1."],
   },
   {
@@ -85,15 +87,15 @@ const MUTATIONS = [
     // same mistake is caught without a database.
     name: "the per-tag bound is written as a subquery a CHECK cannot contain",
     file: MIGRATION,
-    from: "      AND content_evidence_tag_length_within(tags, 60)",
+    from: "      AND gcd_content_evidence_tags_within_v007(tags, 60)",
     to: "      AND NOT EXISTS (SELECT 1 FROM unnest(tags) AS t WHERE length(t) > 60)",
     expect: ["CC2."],
   },
   {
-    name: "the characters-per-token floor is loosened past what a token can hold",
+    name: "the worst-case tokens-per-byte ceiling is loosened below the lossless bound",
     file: PAYLOAD,
-    from: "export const MIN_CHARS_PER_TOKEN = 3;",
-    to: "export const MIN_CHARS_PER_TOKEN = 30;",
+    from: "export const MAX_TOKENS_PER_UTF8_BYTE = 1;",
+    to: "export const MAX_TOKENS_PER_UTF8_BYTE = 0.1;",
     expect: ["CC18.", "CC22."],
   },
   {
@@ -118,15 +120,53 @@ const MUTATIONS = [
     expect: ["BX18."],
   },
   {
-    // Tightened, not loosened: loosening it raises every ceiling derived from
-    // it in lockstep and violates nothing, which is the derivation working.
-    // Tightening it below a real maximal pack is the change that breaks
-    // something, and a stage refusing a valid pack is what must report it.
-    name: "the pack projection bound is tightened below a real maximal pack",
+    name: "the pack builder stops enforcing maxProjectedRecords",
+    file: EVIDENCE_PACK,
+    from: "  if (scoped.length > EVIDENCE_LIMITS.maxProjectedRecords) {",
+    to: "  if (false && scoped.length > EVIDENCE_LIMITS.maxProjectedRecords) {",
+    expect: ["CC32."],
+  },
+  {
+    name: "the consumer boundary stops enforcing maxProjectedConflicts",
+    file: EVIDENCE_PACK,
+    from: "  if (pack.conflicts.length > EVIDENCE_LIMITS.maxProjectedConflicts) {",
+    to: "  if (false && pack.conflicts.length > EVIDENCE_LIMITS.maxProjectedConflicts) {",
+    expect: ["CC31."],
+  },
+  {
+    name: "detail validation falls back to compact JavaScript JSON length",
+    file: EVIDENCE_CONTRACT,
+    from: "      const canonicalUpperBound = postgresJsonbTextUpperBoundBytes(record.detail);",
+    to: "      const canonicalUpperBound = JSON.stringify(record.detail).length;",
+    expect: ["CC29."],
+  },
+  {
+    name: "the TypeScript relation-note validator exceeds its owning bound",
+    file: EVIDENCE_CONTRACT,
+    from: "    boundedText(relation.note, \"note\", EVIDENCE_LIMITS.relationNoteChars, push);",
+    to: "    boundedText(relation.note, \"note\", EVIDENCE_LIMITS.relationNoteChars + 1, push);",
+    expect: ["CC30."],
+  },
+  {
+    name: "bounded output text stops enforcing its UTF-8 byte allowance",
     file: PAYLOAD,
-    from: "  maxProjectedRecords: 64,",
-    to: "  maxProjectedRecords: 4,",
-    expect: ["CC27."],
+    from: "  return value.length <= max && utf8ByteLength(value) <= max && isSerializableText(value);",
+    to: "  return value.length <= max && isSerializableText(value);",
+    expect: ["CC33."],
+  },
+  {
+    name: "the PostgreSQL tag helper accepts NULL elements",
+    file: MIGRATION,
+    from: "    t IS NOT NULL AND length(t) <= max_len AND octet_length(t) <= max_len",
+    to: "    (t IS NULL OR length(t) <= max_len) AND octet_length(coalesce(t, '')) <= max_len",
+    expect: ["CC35."],
+  },
+  {
+    name: "migration 007 regains overwrite authority over a pre-existing helper",
+    file: MIGRATION,
+    from: "CREATE FUNCTION gcd_content_evidence_tags_within_v007(tags text[], max_len integer)",
+    to: "CREATE OR REPLACE FUNCTION gcd_content_evidence_tags_within_v007(tags text[], max_len integer)",
+    expect: ["CC4.", "CC34."],
   },
 ];
 

@@ -23,6 +23,7 @@ import { promisify } from "node:util";
 import type { Pool as PgPool } from "pg";
 import { config } from "./config.js";
 import { adaptApprovedFactsFile } from "./evidence/approvedFacts.js";
+import { postgresJsonbTextUpperBoundBytes, validateEvidenceRecord } from "./evidence/contract.js";
 import { buildEvidencePack } from "./evidence/pack.js";
 import { assertPublishAllowed, SOCIAL_POST_APPROVAL_SUBJECT } from "./hitl.js";
 import { assertPlatformSafePublicationJpeg, MAX_PUBLICATION_JPEG_BYTES } from "./mediaPolicy.js";
@@ -200,14 +201,55 @@ async function runCompiledMigrations(
   }
 }
 
-async function partialMigrationRoot(repoRoot: string): Promise<string> {
+async function partialMigrationRoot(repoRoot: string, count = 4): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "gcd-phase0a-migrations-"));
   const target = join(root, "state", "migrations");
   await mkdir(target, { recursive: true });
-  for (const file of EXPECTED_MIGRATIONS.slice(0, 4)) {
+  for (const file of EXPECTED_MIGRATIONS.slice(0, count)) {
     await copyFile(resolve(repoRoot, "state/migrations", file), join(target, file));
   }
   return root;
+}
+
+async function assertMigration007RollbackReapply(
+  repoRoot: string,
+  databaseUrl: string,
+  pool: PgPool,
+): Promise<void> {
+  const rollback = await readFile(
+    resolve(repoRoot, "state/rollback/007_evidence_bounds_rollback.sql"), "utf8",
+  );
+  await pool.query(rollback);
+  const rolledBack = await pool.query(
+    `SELECT
+       NOT EXISTS (SELECT 1 FROM _migrations WHERE name='007_evidence_bounds.sql') AS row_absent,
+       to_regprocedure('gcd_content_evidence_tags_within_v007(text[],integer)') IS NULL AS helper_absent,
+       NOT EXISTS (
+         SELECT 1 FROM pg_constraint
+         WHERE conname IN ('content_evidence_claim_bounded','content_evidence_relations_note_bounded')
+       ) AS constraints_absent`,
+  );
+  check("fresh", "migration 007 rollback removes only its recorded row, constraints, and helper",
+    rolledBack.rows[0]?.row_absent === true
+      && rolledBack.rows[0]?.helper_absent === true
+      && rolledBack.rows[0]?.constraints_absent === true);
+
+  const reapplied = await runCompiledMigrations(repoRoot, databaseUrl, repoRoot);
+  check("fresh", "the compiled runner reapplies migration 007 after its documented rollback",
+    EXPECTED_MIGRATIONS.slice(0, 6).every((name) => reapplied.stdout.includes(`[migrate] skip ${name}`))
+      && reapplied.stdout.includes("[migrate] applied 007_evidence_bounds.sql")
+      && JSON.stringify(await migrationNames(pool)) === JSON.stringify([...EXPECTED_MIGRATIONS]));
+  const restored = await pool.query(
+    `SELECT
+       to_regprocedure('gcd_content_evidence_tags_within_v007(text[],integer)') IS NOT NULL AS helper_present,
+       EXISTS (
+         SELECT 1 FROM pg_constraint
+         WHERE conname='content_evidence_detail_bounded' AND convalidated
+       ) AS detail_constraint_present`,
+  );
+  check("fresh", "migration 007 reapply restores its validated constraint and owned helper",
+    restored.rows[0]?.helper_present === true
+      && restored.rows[0]?.detail_constraint_present === true);
 }
 
 async function migrationNames(pool: PgPool): Promise<string[]> {
@@ -531,10 +573,48 @@ async function assertContentEvidenceSchema(
                ARRAY[repeat('t',61)],'r','p',now())`,
   );
   await rejects(
+    "[evidence] an all-NULL tags array is rejected by the database",
+    `${base}, tags, source_ref, provenance, reviewed_at)
+       VALUES ('bound-null-tags','verified_automotive_fact','c','s','manufacturer_documentation',
+               ARRAY[NULL]::text[],'r','p',now())`,
+  );
+  await rejects(
+    "[evidence] a mixed valid/NULL tags array is rejected by the database",
+    `${base}, tags, source_ref, provenance, reviewed_at)
+       VALUES ('bound-mixed-tags','verified_automotive_fact','c','s','manufacturer_documentation',
+               ARRAY['valid',NULL]::text[],'r','p',now())`,
+  );
+  await rejects(
     "[evidence] a detail object over the serialized bound is rejected by the database",
     `${base}, detail, source_ref, provenance, reviewed_at)
        VALUES ('bound-10','verified_automotive_fact','c','s','manufacturer_documentation',
                jsonb_build_object('b', repeat('d',4000)),'r','p',now())`,
+  );
+  const detailCounterexample = Object.fromEntries(Array.from({ length: 410 }, (_, index) => [
+    index.toString(36).padStart(2, "0"),
+    index === 0 ? "x".repeat(710) : "",
+  ]));
+  const detailJson = JSON.stringify(detailCounterexample);
+  const detailCanonical = await pool.query(
+    `SELECT octet_length($1::jsonb::text) AS bytes`, [detailJson],
+  );
+  check(group, "[evidence] the compact 3,991-byte detail expands to 4,810 canonical jsonb bytes",
+    detailJson.length === 3_991
+      && Number(detailCanonical.rows[0]?.bytes) === 4_810
+      && postgresJsonbTextUpperBoundBytes(detailCounterexample) === 4_810);
+  check(group, "[evidence] TypeScript rejects the same 3,991/4,810 detail counterexample",
+    !validateEvidenceRecord({
+      id: "detail-counterexample", kind: "verified_automotive_fact", claim: "c", subject: "s",
+      tags: [], sourceType: "manufacturer_documentation", sourceRef: "r", provenance: "p",
+      reviewedAt: "2026-09-02T00:00:00Z", createdAt: "2026-09-02T00:00:00Z",
+      lifecycle: "active", detail: detailCounterexample,
+    }).ok);
+  await rejects(
+    "[evidence] PostgreSQL rejects the same 3,991/4,810 detail counterexample",
+    `${base}, detail, source_ref, provenance, reviewed_at)
+       VALUES ('bound-detail-counterexample','verified_automotive_fact','c','s',
+               'manufacturer_documentation',$1::jsonb,'r','p',now())`,
+    [detailJson],
   );
   await rejects(
     "[evidence] a relation note over the bound is rejected by the database",
@@ -565,7 +645,7 @@ async function assertContentEvidenceSchema(
   await pool.query(`DELETE FROM content_evidence WHERE id = repeat('i',200)`);
 
   const tagHelper = await pool.query(
-    `SELECT provolatile, proisstrict FROM pg_proc WHERE proname = 'content_evidence_tag_length_within'`,
+    `SELECT provolatile, proisstrict FROM pg_proc WHERE proname = 'gcd_content_evidence_tags_within_v007'`,
   );
   check(group,
     "[evidence] the per-tag bound's helper exists and is immutable, which is what lets a "
@@ -1549,6 +1629,7 @@ async function main(): Promise<void> {
   const admin = new pg.Pool({ connectionString: adminUrl, max: 1, connectionTimeoutMillis: 10_000 });
   const created: string[] = [];
   let partialRoot: string | undefined;
+  let pre007Root: string | undefined;
   let freshMigrationMs = 0;
   let pre005MigrationMs = 0;
   let upgrade005MigrationMs = 0;
@@ -1577,6 +1658,7 @@ async function main(): Promise<void> {
       );
       await assertSchemaObjects(freshPool, "fresh");
       await assertStartupProbe(freshUrl, "fresh");
+      await assertMigration007RollbackReapply(repoRoot, freshUrl, freshPool);
       await assertContentEvidenceSchema(freshPool, freshUrl, "fresh");
       await assertDurableBehavior(freshPool, freshUrl);
       await assertOwnershipAndRecovery(freshPool, freshUrl);
@@ -1600,16 +1682,47 @@ async function main(): Promise<void> {
       );
       const legacy = await seedLegacyState(upgradePool);
       await assertMigrationLockTimeout(repoRoot, upgradeUrl, upgradePool);
-      const upgradeRun = await runCompiledMigrations(repoRoot, upgradeUrl, repoRoot);
-      upgrade005MigrationMs = upgradeRun.elapsedMs;
+      pre007Root = await partialMigrationRoot(repoRoot, 6);
+      const pre007Run = await runCompiledMigrations(repoRoot, upgradeUrl, pre007Root);
+      upgrade005MigrationMs = pre007Run.elapsedMs;
       check(
         "upgrade",
-        "real compiled runner skips 001-004 and applies migration 005",
-        EXPECTED_MIGRATIONS.slice(0, 4).every((name) => upgradeRun.stdout.includes(`[migrate] skip ${name}`))
-          && upgradeRun.stdout.includes("[migrate] applied 005_approval_integrity.sql")
-          && JSON.stringify(await migrationNames(upgradePool)) === JSON.stringify([...EXPECTED_MIGRATIONS]),
+        "real compiled runner skips 001-004 and applies migrations 005 and 006",
+        EXPECTED_MIGRATIONS.slice(0, 4).every((name) => pre007Run.stdout.includes(`[migrate] skip ${name}`))
+          && pre007Run.stdout.includes("[migrate] applied 005_approval_integrity.sql")
+          && pre007Run.stdout.includes("[migrate] applied 006_content_evidence.sql")
+          && JSON.stringify(await migrationNames(upgradePool))
+            === JSON.stringify(EXPECTED_MIGRATIONS.slice(0, 6)),
       );
       await assertLegacyUpgrade(upgradePool, legacy);
+
+      await upgradePool.query(
+        `CREATE FUNCTION gcd_content_evidence_tags_within_v007(text[], integer)
+           RETURNS boolean LANGUAGE sql IMMUTABLE STRICT AS $$ SELECT false $$`,
+      );
+      let collisionFailure = "";
+      try {
+        await runCompiledMigrations(repoRoot, upgradeUrl, repoRoot);
+      } catch (error) {
+        collisionFailure = (error as Error).message;
+      }
+      const collisionState = await upgradePool.query(
+        `SELECT
+           gcd_content_evidence_tags_within_v007(ARRAY['valid']::text[], 60) AS original_result,
+           NOT EXISTS (SELECT 1 FROM _migrations WHERE name='007_evidence_bounds.sql') AS row_absent`,
+      );
+      check("upgrade", "migration 007 fails closed on a pre-existing helper-name collision",
+        /already exists/i.test(collisionFailure)
+          && collisionState.rows[0]?.row_absent === true);
+      check("upgrade", "migration 007 does not overwrite the unrelated pre-existing helper",
+        collisionState.rows[0]?.original_result === false);
+      await upgradePool.query(
+        `DROP FUNCTION gcd_content_evidence_tags_within_v007(text[], integer)`,
+      );
+      const upgradeRun = await runCompiledMigrations(repoRoot, upgradeUrl, repoRoot);
+      check("upgrade", "migration 007 applies after the disposable collision fixture is removed",
+        upgradeRun.stdout.includes("[migrate] applied 007_evidence_bounds.sql")
+          && JSON.stringify(await migrationNames(upgradePool)) === JSON.stringify([...EXPECTED_MIGRATIONS]));
       await assertSchemaObjects(upgradePool, "upgrade");
       await assertStartupProbe(upgradeUrl, "upgrade");
       await assertContentEvidenceSchema(upgradePool, upgradeUrl, "upgrade");
@@ -1637,6 +1750,9 @@ async function main(): Promise<void> {
     await admin.end().catch((err) => cleanupFailures.push(err as Error));
     if (partialRoot) {
       await rm(partialRoot, { recursive: true, force: true }).catch((err) => cleanupFailures.push(err as Error));
+    }
+    if (pre007Root) {
+      await rm(pre007Root, { recursive: true, force: true }).catch((err) => cleanupFailures.push(err as Error));
     }
     if (cleanupFailures.length) {
       throw new AggregateError(cleanupFailures, "disposable PostgreSQL integration cleanup failed");

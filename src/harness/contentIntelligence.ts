@@ -16,7 +16,12 @@
 import { randomUUID } from "node:crypto";
 
 import { EvidenceKind, EvidenceRecord, EvidenceRelation } from "./evidence/contract.js";
-import { EvidencePack, buildEvidencePack, evidencePackInvariants } from "./evidence/pack.js";
+import {
+  EvidencePack,
+  assertEvidencePackProjectionBounds,
+  buildEvidencePack,
+  evidencePackInvariants,
+} from "./evidence/pack.js";
 import { AgentRegistry, StagePlanEntry } from "./agents/registry.js";
 
 export const MAX_PREVIEW_GOAL_CHARS = 2_000;
@@ -97,6 +102,7 @@ export function buildContentIntelligenceContext(input: BuildContextInput): Conte
     relations: input.relations,
     now: input.now,
   });
+  assertEvidencePackProjectionBounds(evidencePack);
 
   // Only classes actually present and usable count as available. Stale or
   // conflicted facts do not silently satisfy a stage's requirement.

@@ -42,8 +42,8 @@ const POLICY_MODELS: Record<Exclude<ModelPolicy, "deterministic-only">, string> 
  *
  * Each is the floor `payloadContract.ts` computes for the stages that resolve
  * through this policy: the largest contract-valid response any of them can
- * return, priced at a conservative characters-per-token ratio and rounded up to
- * a whole thousand.
+ * return, priced at the escaping-aware serialized UTF-8 byte ceiling and one
+ * token per byte, then rounded up to a whole thousand.
  *
  * They replace 4,000 / 3,000 / 2,000, which were set before the contracts were
  * bounded and which every stage's maximum valid output exceeded — a
@@ -52,7 +52,7 @@ const POLICY_MODELS: Record<Exclude<ModelPolicy, "deterministic-only">, string> 
  * instead; that was rejected because it would narrow product behaviour (fewer
  * findings, shorter scripts) to fit a number nothing derived.
  *
- * The floors sit far below the 128,000-token output cap both configured models
+ * The floors stay below the 128,000-token output cap both configured models
  * offer, so no policy asks for more than its model can return. These paths
  * remain dormant and none has ever executed against a real model.
  */
@@ -60,6 +60,13 @@ export const POLICY_MAX_TOKENS: Record<Exclude<ModelPolicy, "deterministic-only"
   "reasoning-heavy": POLICY_OUTPUT_TOKEN_FLOORS["reasoning-heavy"]!,
   "reasoning-standard": POLICY_OUTPUT_TOKEN_FLOORS["reasoning-standard"]!,
   critic: POLICY_OUTPUT_TOKEN_FLOORS.critic!,
+};
+
+/** Documented output cap of each centrally selected model. */
+export const POLICY_MODEL_OUTPUT_CAPS: Record<Exclude<ModelPolicy, "deterministic-only">, number> = {
+  "reasoning-heavy": 128_000,
+  "reasoning-standard": 128_000,
+  critic: 128_000,
 };
 
 /**
