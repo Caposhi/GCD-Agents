@@ -656,7 +656,10 @@ async function assertContentEvidenceSchema(
     [JSON.stringify(excessDetail)],
   );
   check(group, "[evidence] -5e-324 expands to 327 bytes and the exact counterexample is 4,012 bytes",
-    Number(numericCanonical.rows[0]?.bytes) === 4_012
+    postgresJsonbTextUpperBoundBytes(signedMinimumNumberDetail)!
+        - signedMinimumNumberDetail.a.filter((value) => typeof value === "number").length
+      === 4_000
+      && Number(numericCanonical.rows[0]?.bytes) === 4_012
       && postgresJsonbTextUpperBoundBytes(signedMinimumNumberDetail) === 4_012
       && !validateEvidenceRecord({
         id: "detail-numeric-counterexample", kind: "verified_automotive_fact",

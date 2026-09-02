@@ -5855,6 +5855,9 @@ async function run(): Promise<void> {
         && !validateEvidenceRecord({
              ...wellFormed.verified_automotive_fact, detail: excessDetail,
            } as EvidenceRecord).ok
+        && postgresJsonbTextUpperBoundBytes(signedMinimumNumberDetail)!
+             - signedMinimumNumberDetail.a.filter((value) => typeof value === "number").length
+           === 4_000
         && postgresJsonbTextUpperBoundBytes(signedMinimumNumberDetail) === 4_012
         && !validateEvidenceRecord({
              ...wellFormed.verified_automotive_fact, detail: signedMinimumNumberDetail,
