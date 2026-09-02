@@ -9,7 +9,10 @@
 -- hand under its own authorization, and the runner never sees it.
 --
 -- **When this is the right operation.** Migration 007 only adds CHECK
--- constraints; it changes no column type, writes no row, and drops nothing.
+-- constraints and the one IMMUTABLE helper function the per-tag bound needs
+-- (PostgreSQL forbids a subquery in a CHECK, and arrays have no per-element
+-- length operator); it changes no column type, writes no row, and drops
+-- nothing.
 -- Rolling it back therefore cannot lose data — it only stops the database
 -- enforcing the bounds. The situation it exists for is a bound found to be too
 -- tight against real evidence after 007 has been applied: dropping the
@@ -48,6 +51,10 @@ ALTER TABLE content_evidence
 
 ALTER TABLE content_evidence_relations
   DROP CONSTRAINT IF EXISTS content_evidence_relations_note_bounded;
+
+-- The helper 007 creates for the per-tag bound. Dropped after the constraint
+-- that calls it, never before: the reverse order would fail on the dependency.
+DROP FUNCTION IF EXISTS content_evidence_tag_length_within(text[], integer);
 
 DELETE FROM _migrations WHERE name = '007_evidence_bounds.sql';
 

@@ -78,6 +78,18 @@ const MUTATIONS = [
     expect: ["CC1."],
   },
   {
+    // The first draft of this migration wrote the per-tag bound as
+    // `NOT EXISTS (SELECT 1 FROM unnest(tags) ...)`. PostgreSQL rejects a
+    // subquery inside a CHECK, so it failed at apply time in the PostgreSQL
+    // job rather than offline. CC2 now refuses the shape outright, so the
+    // same mistake is caught without a database.
+    name: "the per-tag bound is written as a subquery a CHECK cannot contain",
+    file: MIGRATION,
+    from: "      AND content_evidence_tag_length_within(tags, 60)",
+    to: "      AND NOT EXISTS (SELECT 1 FROM unnest(tags) AS t WHERE length(t) > 60)",
+    expect: ["CC2."],
+  },
+  {
     name: "the characters-per-token floor is loosened past what a token can hold",
     file: PAYLOAD,
     from: "export const MIN_CHARS_PER_TOKEN = 3;",

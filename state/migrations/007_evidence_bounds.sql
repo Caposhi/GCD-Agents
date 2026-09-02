@@ -28,6 +28,22 @@
 SET LOCAL lock_timeout = '10s';
 SET LOCAL statement_timeout = '5min';
 
+-- PostgreSQL forbids a subquery inside a CHECK constraint, and there is no
+-- per-element length operator for arrays, so bounding each tag needs a helper.
+-- It is IMMUTABLE (its result depends only on its arguments), STRICT (a NULL
+-- array yields NULL, which a CHECK accepts, matching every other optional
+-- column here), and PARALLEL SAFE. `coalesce` makes the empty array pass rather
+-- than yield NULL.
+CREATE OR REPLACE FUNCTION content_evidence_tag_length_within(tags text[], max_len integer)
+  RETURNS boolean
+  LANGUAGE sql
+  IMMUTABLE
+  STRICT
+  PARALLEL SAFE
+AS $$
+  SELECT coalesce(max(length(t)), 0) <= max_len FROM unnest(tags) AS t;
+$$;
+
 ALTER TABLE content_evidence
   -- Identity and the two required text fields.
   ADD CONSTRAINT content_evidence_id_bounded
@@ -53,7 +69,7 @@ ALTER TABLE content_evidence
   ADD CONSTRAINT content_evidence_tags_bounded
     CHECK (
       cardinality(tags) <= 16
-      AND NOT EXISTS (SELECT 1 FROM unnest(tags) AS t WHERE length(t) > 60)
+      AND content_evidence_tag_length_within(tags, 60)
     ),
 
   -- `detail` is bounded by its serialized size, which is what a payload would

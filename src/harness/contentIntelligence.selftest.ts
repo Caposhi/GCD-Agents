@@ -5170,19 +5170,29 @@ async function run(): Promise<void> {
     check("CC1. every bound migration 007 enforces is exactly the TypeScript bound"
       + (sqlMismatches.length ? ` (mismatched: ${sqlMismatches.join("; ")})` : ""),
       sqlMismatches.length === 0);
+    // PostgreSQL forbids a subquery inside a CHECK, and arrays have no
+    // per-element length operator, so the per-tag bound goes through one
+    // IMMUTABLE helper. The number it is called with is the TypeScript number.
     check("CC2. the tags constraint bounds per-tag length as well as cardinality, at the "
-      + "TypeScript numbers",
+      + "TypeScript numbers, through a helper rather than a subquery a CHECK cannot contain",
       new RegExp(`cardinality\\(tags\\) <= ${EVIDENCE_LIMITS.maxTags}\\b`).test(migrationSql)
-        && new RegExp(`length\\(t\\) > ${EVIDENCE_LIMITS.tagChars}\\b`).test(migrationSql));
+        && new RegExp(
+             `content_evidence_tag_length_within\\(tags, ${EVIDENCE_LIMITS.tagChars}\\)`,
+           ).test(migrationSql)
+        && /IMMUTABLE/.test(migrationSql)
+        && !/CHECK \([^)]*SELECT/i.test(migrationSql));
     check("CC3. the migration is additive — it adds constraints and drops, alters and "
       + "writes nothing",
       /ADD CONSTRAINT/.test(migrationSql)
         && !/\b(DROP|UPDATE|DELETE|INSERT|TRUNCATE)\b/i.test(migrationSql));
-    check("CC4. an explicit rollback exists, drops exactly the constraints 007 adds, and "
-      + "removes 007's `_migrations` row",
+    check("CC4. an explicit rollback exists, reverses everything 007 adds — every constraint, "
+      + "the per-tag helper, and 007's `_migrations` row",
       EXPECTED_SQL_BOUNDS.every(([name]) =>
         new RegExp(`DROP CONSTRAINT IF EXISTS ${name}`).test(rollbackSql))
         && /DROP CONSTRAINT IF EXISTS content_evidence_tags_bounded/.test(rollbackSql)
+        && /DROP FUNCTION IF EXISTS content_evidence_tag_length_within\(text\[\], integer\)/
+             .test(rollbackSql)
+        && /CREATE OR REPLACE FUNCTION content_evidence_tag_length_within/.test(migrationSql)
         && /DELETE FROM _migrations WHERE name = '007_evidence_bounds\.sql'/.test(rollbackSql));
     check("CC5. the rollback lives outside the forward-only runner's directory, and neither "
       + "file claims to have been applied to production",

@@ -76,6 +76,7 @@ const EXPECTED_MIGRATIONS = [
   "004_events.sql",
   "005_approval_integrity.sql",
   "006_content_evidence.sql",
+  "007_evidence_bounds.sql",
 ] as const;
 const GROUPS = ["fresh", "upgrade", "durable"] as const;
 type Group = typeof GROUPS[number];
@@ -474,6 +475,104 @@ async function assertContentEvidenceSchema(
     "[evidence] a self-referential relation is rejected",
     `INSERT INTO content_evidence_relations (from_id, to_id, kind) VALUES ('x','x','supports')`,
   );
+
+  // Migration 007's bounds, enforced by the database rather than only mirrored
+  // in TypeScript. The offline suite proves the two sets of numbers agree; this
+  // is the only place the constraints themselves run.
+  const bounded = `${base}, source_ref, provenance, reviewed_at)`;
+  const verified = (id: string, claim: string, subject: string) =>
+    `${bounded} VALUES ('${id}','verified_automotive_fact',${claim},${subject},` +
+    `'manufacturer_documentation','r','p',now())`;
+  await rejects(
+    "[evidence] a claim over the bound is rejected by the database",
+    verified("bound-1", "repeat('c',1001)", "'s'"),
+  );
+  await rejects(
+    "[evidence] a subject over the bound is rejected by the database",
+    verified("bound-2", "'c'", "repeat('s',201)"),
+  );
+  await rejects(
+    "[evidence] an id over the bound is rejected by the database",
+    `${bounded} VALUES (repeat('z',201),'verified_automotive_fact','c','s',` +
+    `'manufacturer_documentation','r','p',now())`,
+  );
+  await rejects(
+    "[evidence] an attribute over the bound is rejected by the database",
+    `${base}, attribute, source_ref, provenance, reviewed_at)
+       VALUES ('bound-4','verified_automotive_fact','c','s','manufacturer_documentation',
+               repeat('a',121),'r','p',now())`,
+  );
+  await rejects(
+    "[evidence] a source ref over the bound is rejected by the database",
+    `${bounded} VALUES ('bound-5','verified_automotive_fact','c','s',
+       'manufacturer_documentation',repeat('r',501),'p',now())`,
+  );
+  await rejects(
+    "[evidence] a provenance over the bound is rejected by the database",
+    `${bounded} VALUES ('bound-6','verified_automotive_fact','c','s',
+       'manufacturer_documentation','r',repeat('p',501),now())`,
+  );
+  await rejects(
+    "[evidence] a reviewer over the bound is rejected by the database",
+    `${base}, source_ref, provenance, reviewed_at, reviewed_by)
+       VALUES ('bound-7','verified_automotive_fact','c','s','manufacturer_documentation',
+               'r','p',now(),repeat('b',201))`,
+  );
+  await rejects(
+    "[evidence] too many tags are rejected by the database",
+    `${base}, tags, source_ref, provenance, reviewed_at)
+       VALUES ('bound-8','verified_automotive_fact','c','s','manufacturer_documentation',
+               array_fill('t'::text, array[17]),'r','p',now())`,
+  );
+  await rejects(
+    "[evidence] one over-long tag is rejected by the database, not just the tag count",
+    `${base}, tags, source_ref, provenance, reviewed_at)
+       VALUES ('bound-9','verified_automotive_fact','c','s','manufacturer_documentation',
+               ARRAY[repeat('t',61)],'r','p',now())`,
+  );
+  await rejects(
+    "[evidence] a detail object over the serialized bound is rejected by the database",
+    `${base}, detail, source_ref, provenance, reviewed_at)
+       VALUES ('bound-10','verified_automotive_fact','c','s','manufacturer_documentation',
+               jsonb_build_object('b', repeat('d',4000)),'r','p',now())`,
+  );
+  await rejects(
+    "[evidence] a relation note over the bound is rejected by the database",
+    `INSERT INTO content_evidence_relations (from_id, to_id, kind, note)
+       VALUES ('bound-ok-a','bound-ok-b','supports',repeat('n',501))`,
+  );
+
+  // The other half: a record built to every bound EXACTLY must still insert.
+  // A bound that is off by one in the database would fail here, not silently
+  // narrow what the system can store.
+  let boundaryAccepted = false;
+  try {
+    await pool.query(
+      `INSERT INTO content_evidence
+         (id, kind, claim, subject, attribute, tags, source_type, source_ref,
+          provenance, reviewed_at, reviewed_by, created_at, lifecycle)
+       VALUES (repeat('i',200),'verified_automotive_fact',repeat('c',1000),repeat('s',200),
+               repeat('a',120),array_fill(repeat('t',60), array[16]),
+               'manufacturer_documentation',repeat('r',500),repeat('p',500),now(),
+               repeat('b',200),now(),'active')`,
+    );
+    boundaryAccepted = true;
+  } catch {
+    boundaryAccepted = false;
+  }
+  check(group, "[evidence] a record at every bound exactly is accepted by the database",
+    boundaryAccepted);
+  await pool.query(`DELETE FROM content_evidence WHERE id = repeat('i',200)`);
+
+  const tagHelper = await pool.query(
+    `SELECT provolatile, proisstrict FROM pg_proc WHERE proname = 'content_evidence_tag_length_within'`,
+  );
+  check(group,
+    "[evidence] the per-tag bound's helper exists and is immutable, which is what lets a "
+    + "CHECK constraint call it at all",
+    tagHelper.rowCount === 1
+      && String(tagHelper.rows[0]?.provolatile) === "i"
+      && tagHelper.rows[0]?.proisstrict === true);
 
   const relationKinds = await pool.query(
     `SELECT conname FROM pg_constraint WHERE conname = 'content_evidence_relations_kind_check'`,
@@ -1467,7 +1566,7 @@ async function main(): Promise<void> {
     try {
       check(
         "fresh",
-        "compiled migration runner applies migrations 001-005 in lexical order",
+        "compiled migration runner applies every migration in lexical order",
         JSON.stringify(await migrationNames(freshPool)) === JSON.stringify([...EXPECTED_MIGRATIONS]),
       );
       check(
