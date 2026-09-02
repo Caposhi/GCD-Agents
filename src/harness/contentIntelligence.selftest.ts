@@ -4532,6 +4532,166 @@ async function run(): Promise<void> {
           && /derived mechanically from Stage 5's own exported field and array maxima/.test(unwrappedCritic)
           && /six-character `\\uXXXX` escape/.test(unwrappedCritic)
           && !/true worst case/.test(unwrappedCritic));
+
+      // --- the other half of the same shared-boundary mismatch, recorded
+      // rather than implied.
+      //
+      // `EvidenceRecord.claim` has NO maximum: the TypeScript contract requires
+      // only that it be non-empty (`src/harness/evidence/contract.ts`), and
+      // migration 006 enforces only `length(btrim(claim)) > 0`. `SCRIPT_CLAIMS`
+      // and `PLATFORM_CLAIMS` therefore have no finite structural maximum, and
+      // a record bound for several platforms is projected once PER PLATFORM.
+      //
+      // So the payload available to `PACKAGING_OUTPUT` is not a constant. It is
+      // `MAX_PAYLOAD_CHARS` minus whatever the other five framed blocks
+      // actually occupy, and with large enough VALID claim text that remainder
+      // is zero or negative even for a minimal Stage 5 package.
+      const HUGE_CLAIM_CHARS = 40_000;
+      const hugeClaimText = `Brake fluid absorbs moisture over time. ${"e".repeat(HUGE_CLAIM_CHARS)}`;
+      const hugeClaimRecords = [...mixed, packUnpermitted].map((record) =>
+        (record.id === "auto-1" ? { ...record, claim: hugeClaimText } : record));
+      const hugeClaimPack = buildEvidencePack({
+        goal: "brake service content", records: hugeClaimRecords, now: NOW,
+      });
+      const hugeTruth = validateAutomotiveTruthOutput({
+        assessment: "One fact is citable for this concept.",
+        allowedClaims: [
+          { factId: "auto-1", claimClass: "automotive", restatement: "Brake fluid takes on moisture." },
+        ],
+        forbiddenClaims: [],
+        requiredCaveats: [],
+        openQuestions: [],
+      }, hugeClaimPack);
+      const hugeScript = validateHookStoryScriptOutput({
+        hook: "Brake fluid quietly picks up water.",
+        storyBeats: [{ beat: "It absorbs moisture over time.", role: "insight" }],
+        script: "Brake fluid quietly picks up water, which is why it is replaced periodically.",
+        claimUse: [
+          { factId: "auto-1", usedIn: "script", paraphrase: "Brake fluid absorbs moisture." },
+        ],
+        openQuestions: [],
+      }, hugeTruth, hugeClaimPack);
+      const hugeDirection = validateProductionDirectionOutput({
+        visualApproach: "Stay at the reservoir and let it carry the idea.",
+        shots: [{
+          purpose: "detail", subject: "The brake fluid reservoir.", framing: "macro",
+          movement: "static", action: "Hold on the cap.", composition: "Reservoir centred.",
+          continuityNote: "Hood stays open.",
+        }],
+        overlayText: [],
+        productionRequirements: [],
+        claimVisuals: [
+          { factId: "auto-1", shotIndex: 0, directionSummary: "The reservoir carries the moisture fact." },
+        ],
+        openQuestions: [],
+      }, hugeScript, hugeTruth, hugeClaimPack);
+      const hugePackaging = validatePackagingAdaptationOutput({
+        packages: [
+          { platform: "instagram", caption: "Brake fluid takes on water.", hashtags: IG_TAGS,
+            localKeywords: [], recommendedTime: "09:30 ET", openQuestions: [] },
+          { platform: "facebook", caption: "Brake fluid takes on water.", hashtags: [],
+            localKeywords: [], recommendedTime: "12:15 ET", openQuestions: [] },
+          { platform: "google_business_profile", caption: "Brake fluid takes on water.", hashtags: [],
+            localKeywords: [], recommendedTime: "08:00 ET", openQuestions: [] },
+        ],
+        claimUse: [
+          { platform: "instagram", factId: "auto-1", summary: "Uses the moisture fact." },
+          { platform: "facebook", factId: "auto-1", summary: "Uses the moisture fact." },
+          { platform: "google_business_profile", factId: "auto-1", summary: "Uses the moisture fact." },
+        ],
+      }, ALL_PLATFORMS, hugeScript, hugeTruth, hugeClaimPack);
+
+      // The framing overhead is taken from a REAL assembled prompt rather than
+      // from a second copy of the delimiter text, so this measurement cannot
+      // drift away from `renderDataBlock`.
+      const SIX_BLOCKS = [
+        "SCRIPT_OUTPUT", "PRODUCTION_OUTPUT", "PACKAGING_OUTPUT",
+        "REQUESTED_PLATFORMS", "SCRIPT_CLAIMS", "PLATFORM_CLAIMS",
+      ] as const;
+      const framedPrompt = criticCalls[0]!.prompt;
+      // A missing block must produce a named failing assertion below rather
+      // than aborting the suite, so a payload-shape mutation is reportable.
+      const framedBody = (label: string): string => {
+        try { return untrustedBlock(framedPrompt, label); } catch { return ""; }
+      };
+      const framedBodiesPresent = SIX_BLOCKS.every((label) => framedBody(label).length > 0);
+      const framingOverhead = framedPrompt.length - SIX_BLOCKS.reduce(
+        (total, label) => total + framedBody(label).length, 0);
+      const hugeBodies: Record<(typeof SIX_BLOCKS)[number], string> = {
+        SCRIPT_OUTPUT: JSON.stringify(hugeScript, null, 2),
+        PRODUCTION_OUTPUT: JSON.stringify(hugeDirection, null, 2),
+        PACKAGING_OUTPUT: JSON.stringify(hugePackaging, null, 2),
+        REQUESTED_PLATFORMS: JSON.stringify(ALL_PLATFORMS, null, 2),
+        SCRIPT_CLAIMS: renderPackagingScriptClaims(hugeScript, hugeTruth, hugeClaimPack),
+        PLATFORM_CLAIMS: renderPlatformClaims(
+          hugePackaging, ALL_PLATFORMS, hugeScript, hugeTruth, hugeClaimPack),
+      };
+      const hugePackagingAllowance = MAX_PAYLOAD_CHARS - (framingOverhead + SIX_BLOCKS
+        .filter((label) => label !== "PACKAGING_OUTPUT")
+        .reduce((total, label) => total + hugeBodies[label].length, 0));
+
+      const hugeCalls: StageRunnerRequest[] = [];
+      let hugeMessage = "";
+      let hugeStage = "";
+      try {
+        await executeFinalCritic({
+          scriptOutput: hugeScript, directionOutput: hugeDirection,
+          packagingOutput: hugePackaging, truthOutput: hugeTruth,
+          evidencePack: hugeClaimPack, requestedPlatforms: ALL_PLATFORMS,
+          runner: async (request) => {
+            hugeCalls.push(request);
+            return { text: JSON.stringify(validCriticOutput) };
+          },
+        });
+      } catch (error) {
+        // Typed refusal from THIS stage required; an incidental TypeError must
+        // not be able to satisfy these assertions.
+        if (error instanceof StageExecutionError) {
+          hugeMessage = error.message;
+          hugeStage = error.stage;
+        }
+      }
+
+      check("BX24. an oversized evidence claim is valid under the current contract, so the "
+        + "claim projections have no finite structural maximum either",
+        validateEvidenceRecord(hugeClaimRecords.find((r) => r.id === "auto-1")!).ok
+          && hugeClaimPack.allowedFacts.some((r) => r.id === "auto-1" && r.claim === hugeClaimText));
+      check("BX25. with minimal Stage 2–5 handoffs the duplicated claim projections alone "
+        + "leave no packaging allowance inside the shared boundary",
+        hugeBodies.SCRIPT_CLAIMS.length > HUGE_CLAIM_CHARS
+          && hugeBodies.PLATFORM_CLAIMS.length > HUGE_CLAIM_CHARS * ALL_PLATFORMS.length
+          && hugeBodies.PACKAGING_OUTPUT.length < 5_000
+          && hugePackagingAllowance <= 0);
+      check("BX26. the refusal is the shared payload boundary's, typed from this stage, "
+        + "and costs zero model calls",
+        hugeStage === "final-critic"
+          && /assembled input exceeds the bound/.test(hugeMessage)
+          && !/packagingOutput" exceeds/.test(hugeMessage)
+          && hugeCalls.length === 0);
+
+      // The available packaging payload is a DIFFERENCE from the exported
+      // MAX_PAYLOAD_CHARS, measured against the real framed-block construction
+      // — never a fixed envelope constant. The nominal allowance below is
+      // computed from the actual assembled prompt of the BT invocation; it is
+      // an example for those particular evidence-claim lengths, and the huge-
+      // claim case above proves it is not a floor.
+      const nominalPackagingAllowance = MAX_PAYLOAD_CHARS - (framingOverhead + SIX_BLOCKS
+        .filter((label) => label !== "PACKAGING_OUTPUT")
+        .reduce((total, label) => total + framedBody(label).length, 0));
+      check("BX27. the packaging allowance is a dynamic difference from MAX_PAYLOAD_CHARS, "
+        + "not a constant: nominal claims leave a positive allowance, large valid claims leave none",
+        framedBodiesPresent
+          && nominalPackagingAllowance > 0
+          && nominalPackagingAllowance < MAX_PAYLOAD_CHARS
+          && hugePackagingAllowance <= 0
+          && nominalPackagingAllowance !== hugePackagingAllowance);
+      check("BX28. the source states the dynamic relationship and claims no fixed envelope",
+        /available packaging payload/.test(unwrappedCritic)
+          && /MAX_PAYLOAD_CHARS minus the serialized sizes of the other five framed blocks/
+               .test(unwrappedCritic)
+          && /no fixed positive packaging allowance exists until evidence text is bounded/
+               .test(unwrappedCritic)
+          && !/54,460|54460/.test(criticSource));
     }
 
     // --- BY. verdict/owner-consistency and claim-finding binding fail closed ---

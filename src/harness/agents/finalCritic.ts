@@ -251,12 +251,34 @@ const PACKAGING_OUTPUT_SKELETON_ALLOWANCE = 32_768;
  *    generous fixed allowances rather than exact counts.
  *
  * Nothing Stage 5 accepts can serialize larger than this, so **this bound
- * cannot be the reason a valid Stage 5 output is refused**. Note what that
- * implies: the operative ceiling on what actually reaches a model is the
- * shared `MAX_PAYLOAD_CHARS` boundary in `stageExecution.ts`, which every
- * stage shares and which this stage does not change. This per-block bound
- * exists so that *this stage* never becomes the thing that rejects a valid
- * handoff, not to compete with either that boundary or Stage 5's own limits.
+ * cannot be the reason a valid Stage 5 output is refused**. This per-block
+ * bound exists so that *this stage* never becomes the thing that rejects a
+ * valid handoff, not to compete with either the shared boundary or Stage 5's
+ * own limits.
+ *
+ * **What this bound does not do, stated here so the two facts stay adjacent.**
+ * It does not make this stage accept every structurally valid Stage 5 handoff.
+ * The operative ceiling on what actually reaches a model is the *shared*
+ * `MAX_PAYLOAD_CHARS` boundary (120,000) in `stageExecution.ts`, which every
+ * stage uses and which this stage does not change. That boundary applies to
+ * the whole assembled payload, so there is no fixed per-block envelope to
+ * quote. The relationship is a difference, not a constant:
+ *
+ *     available packaging payload
+ *       = MAX_PAYLOAD_CHARS minus the serialized sizes of the other five framed blocks
+ *
+ * and the two claim blocks on the right-hand side have **no finite structural
+ * maximum**. `EvidenceRecord.claim` is bounded only by a non-empty check in
+ * `src/harness/evidence/contract.ts` and by `length(btrim(claim)) > 0` in
+ * `state/migrations/006_content_evidence.sql`, so `SCRIPT_CLAIMS` and
+ * `PLATFORM_CLAIMS` can be arbitrarily large — a record bound for several
+ * platforms is projected once per platform. Consequently
+ * **no fixed positive packaging allowance exists until evidence text is bounded**:
+ * with large enough valid claim text the remainder is zero or negative even
+ * for a minimal Stage 5 package. `BX24`-`BX28` assert exactly that, including
+ * that the refusal is the shared boundary's and costs zero model calls. Any
+ * figure quoted for this allowance is an example computed from particular
+ * evidence-claim lengths, never a contract or a guaranteed envelope.
  */
 function conservativePackagingOutputCeiling(): number {
   const maxCaptionChars = Math.max(
@@ -287,6 +309,31 @@ export const PACKAGING_OUTPUT_SERIALIZED_CEILING = conservativePackagingOutputCe
  * the values Stage 5 already applies to those same two handoffs
  * (`PACKAGING_LIMITS.scriptOutputChars` / `.directionOutputChars`), so this
  * stage neither tightens nor loosens what the merged stage before it accepts.
+ *
+ * **Those two mirrored values are smaller than the structural maxima of the
+ * handoffs they gate**, and so are the equivalent guards in the five merged
+ * stages before this one: Stage 1's output can serialize larger than the
+ * ceilings Stages 2 and 3 apply to it, Stage 2's larger than Stage 3's, Stage
+ * 3's larger than the 20,000 Stages 4, 5 and 6 apply, and Stage 4's larger
+ * than the 24,000 Stages 5 and 6 apply. Diverging here would make this stage
+ * accept handoffs merged Stage 5 refuses, so the values stay aligned and the
+ * mismatch is recorded instead. These are **accepted dormant limitations, not
+ * production validation** — every stage reports `executionEnabled: false`,
+ * nothing reaches an executor, and oversized input fails closed before any
+ * model call. Reconciling every producer/consumer bound, the shared assembled
+ * boundary, and the unbounded evidence text is a separately scoped
+ * payload-contract reconciliation that is a **hard prerequisite to production
+ * wiring and to enabling any stage**; see `docs/ROADMAP.md`.
+ *
+ * The same mismatch exists on the **output** side and is not fixed here
+ * either: a structurally valid output of this contract — `maxFindings`
+ * findings at `issueChars` plus `suggestedActionChars`, `summaryChars`, and
+ * `maxClaimFindingUses` bindings at `claimFindingSummaryChars` — is
+ * substantially larger than the `critic` policy's configured 2,000-token
+ * output budget in `modelPolicy.ts`, and Stage 5 has the equivalent problem
+ * with its 3,000-token budget and provider-sized captions. Changing a
+ * merged, shared token budget is out of scope for this slice; the
+ * reconciliation above owns it.
  */
 export const FINAL_CRITIC_LIMITS = {
   scriptOutputChars: 20_000,
