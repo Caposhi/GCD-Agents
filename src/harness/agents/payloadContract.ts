@@ -924,3 +924,87 @@ export const POLICY_OUTPUT_TOKEN_FLOORS: Record<string, number> = (() => {
     critic: ceil(minimumOutputTokens(CRITIC_OUTPUT.transportChars)),
   };
 })();
+
+// ---------------------------------------------------------------------------
+// Provider request policy
+// ---------------------------------------------------------------------------
+
+/**
+ * Retries the SDK may take for a Content Intelligence stage request: **none**.
+ *
+ * The Anthropic SDK defaults `maxRetries` to 2, retrying 408/409/429/5xx and
+ * connection errors — so one wrapper call was up to **three** wire requests, and
+ * because timeouts are retried too, one 90-second budget was really up to 270
+ * seconds of wall clock. Every "exactly one model request" guarantee in this
+ * pipeline, and the `modelRequests: 1` metadata every stage returns, described
+ * one *wrapper invocation* rather than one *provider request*.
+ *
+ * Setting this to zero is what makes those statements true. It is the right
+ * default for these stages regardless: a stage is a single-shot "produce JSON
+ * per your contract" call with no idempotency key, so a silent retry can bill
+ * twice for one logical request and — on a timeout that the server actually
+ * completed — generate content twice.
+ *
+ * Legacy `runAgent` and `runVision` keep the SDK default; nothing here changes
+ * their behaviour.
+ */
+export const STAGE_REQUEST_MAX_RETRIES = 0;
+
+/**
+ * The output rate a stage request's timeout is sized against.
+ *
+ * **A deliberately pessimistic floor, not a measurement.** No stage in this
+ * repository has ever executed against a real model, so there is nothing to
+ * measure; this is the slowest sustained rate the timeout is willing to call a
+ * live request rather than a hung one. Observed rates for the configured models
+ * are several times this, which is the point — a timeout is a safety bound, and
+ * one that trips on a merely slow response is a defect, not a protection.
+ */
+export const MIN_OUTPUT_TOKENS_PER_SECOND = 20;
+
+/** Connection, queueing and first-token latency, above the generation time. */
+export const STAGE_REQUEST_OVERHEAD_MS = 60_000;
+
+/**
+ * How long a stage request may take, derived from what the stage may return.
+ *
+ * The 90-second non-streaming budget this replaces could not carry the output
+ * contracts it was paired with: at the derived budgets — 8,000 tokens for
+ * `reasoning-heavy`, 15,000 for `reasoning-standard` and `critic` — a
+ * contract-valid maximum response cannot be generated in 90 seconds by any
+ * model, so the timeout, not the contract, decided what the pipeline could
+ * produce. Deriving the bound from the declared maximum is what makes the
+ * limit, the timeout, the tests and the documentation describe one operational
+ * contract instead of three.
+ *
+ * Rounded up to a whole minute so the number reads as the coarse safety bound
+ * it is rather than a false precision.
+ *
+ * **Why these numbers are large, stated rather than buried.** They are a direct
+ * consequence of `minimumOutputTokens` being a *lossless* bound — one token per
+ * escaping-aware UTF-8 byte — which guarantees every contract-valid response
+ * fits and therefore over-states what any real response needs by several times.
+ * An ordinary contract-valid JSON response completes in a small fraction of
+ * these budgets. A timeout that tripped before the declared maximum could be
+ * produced would mean the timeout, not the contract, decided what the pipeline
+ * could return, which is precisely the defect this replaces; so the bound is
+ * sized to the contract and the contract is what the reader should judge.
+ * Nothing here has executed against a real model, so these are derived bounds,
+ * not measured latencies.
+ */
+export function stageRequestTimeoutMs(maxOutputTokens: number): number {
+  const generationMs = (maxOutputTokens / MIN_OUTPUT_TOKENS_PER_SECOND) * 1_000;
+  return Math.ceil((generationMs + STAGE_REQUEST_OVERHEAD_MS) / 60_000) * 60_000;
+}
+
+/**
+ * The per-policy timeouts, derived from the per-policy output budgets.
+ *
+ * Exported so a regression can assert the timeout a stage actually sends is the
+ * one its own budget implies, rather than a constant that happens to agree.
+ */
+export const POLICY_REQUEST_TIMEOUT_MS: Record<string, number> = Object.fromEntries(
+  Object.entries(POLICY_OUTPUT_TOKEN_FLOORS).map(
+    ([policy, tokens]) => [policy, stageRequestTimeoutMs(tokens)],
+  ),
+);

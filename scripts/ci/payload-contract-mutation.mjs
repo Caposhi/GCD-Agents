@@ -35,6 +35,7 @@ const MODEL_POLICY = "src/harness/agents/modelPolicy.ts";
 const EVIDENCE_CONTRACT = "src/harness/evidence/contract.ts";
 const EVIDENCE_PACK = "src/harness/evidence/pack.ts";
 const STAGE_EXECUTION = "src/harness/agents/stageExecution.ts";
+const SDK = "src/harness/sdk.ts";
 
 /**
  * Each mutation names the derivation it breaks, the single edit that breaks it,
@@ -190,6 +191,89 @@ const MUTATIONS = [
     to: "  for (const record of input.records) if (false) assertValidEvidenceRecord(record);",
     expect: ["CC38."],
   },
+  {
+    // The semantic validator is the whole of findings 1 and 2. If the shared
+    // executor boundary stops calling it, a hand-built pack that promotes a
+    // hypothesis into `allowedFacts` reaches a model again — which is exactly
+    // the state this branch was reviewed in.
+    name: "the shared executor boundary stops validating pack semantics",
+    file: STAGE_EXECUTION,
+    // Removed rather than swapped for the weaker bounds-only assert: that
+    // symbol is no longer imported here, so a swap would be a type error and
+    // the mutation would prove nothing about the runtime.
+    from: "  assertUsableEvidencePack(pack);",
+    to: "",
+    // Only the cases this boundary alone catches. Removing it does NOT reopen
+    // the hypothesis- and stale-promotion cases, because `unusableEvidenceIds`
+    // and the pack renderer call the same validator on the same synchronous
+    // path — defense in depth working as intended, recorded here rather than
+    // papered over with a wider expectation that would quietly stop meaning
+    // anything.
+    expect: ["CC56.", "CC67."],
+  },
+  {
+    // Section membership without a kind rule is how a valid hypothesis became
+    // a citable fact: every field validated, every bound respected, wrong
+    // section. Widening one section's permitted kinds is the smallest edit
+    // that reopens it.
+    name: "a section stops constraining which evidence kinds it may hold",
+    file: EVIDENCE_PACK,
+    from: "  allowedFacts: new Set([\"verified_automotive_fact\", \"verified_business_fact\"]),",
+    to: "  allowedFacts: new Set(EVIDENCE_KINDS),",
+    expect: ["CC48."],
+  },
+  {
+    // Freshness anchored at builtAt is the documented decision. Removing the
+    // citability check leaves a lapsed fact citable.
+    name: "allowedFacts stops being checked for citability at builtAt",
+    file: EVIDENCE_PACK,
+    from: "    if (!isCitableAsFact(record, builtAt)) {",
+    to: "    if (false && !isCitableAsFact(record, builtAt)) {",
+    expect: ["CC49."],
+  },
+  {
+    // The conflict projection was cardinality-only. Dropping the per-field
+    // bound restores the 50,000-character subject the reviewer found.
+    name: "conflict fields stop being bounded, leaving only the cardinality check",
+    file: EVIDENCE_PACK,
+    from: '    boundedField(conflict.subject, "subject", EVIDENCE_LIMITS.subjectChars, true);',
+    to: "",
+    expect: ["CC55.", "CC56."],
+  },
+  {
+    name: "counts stop being compared against the sections they describe",
+    file: EVIDENCE_PACK,
+    from: "      if (value !== expected) {",
+    to: "      if (false && value !== expected) {",
+    expect: ["CC62."],
+  },
+  {
+    // Finding 3. The SDK default is two retries, so removing the explicit
+    // zero silently restores up to three wire requests behind a documented
+    // one-request guarantee.
+    name: "stage requests stop disabling SDK retries, restoring the default of two",
+    file: SDK,
+    from: "    maxRetries: STAGE_REQUEST_MAX_RETRIES,",
+    to: "    maxRetries: undefined,",
+    expect: ["CC39."],
+  },
+  {
+    name: "the stage timeout is pinned to the old 90-second value instead of derived",
+    file: SDK,
+    from: "    timeout: stageRequestTimeoutMs(request.max_tokens),",
+    to: "    timeout: 90_000,",
+    expect: ["CC41.", "CC46."],
+  },
+  {
+    // The declared max_tokens cannot be received on a non-streaming
+    // connection; reverting to `create` is the change that makes the timeout,
+    // the budget and the transport disagree again.
+    name: "the stage request stops streaming and returns to a non-streaming create",
+    file: SDK,
+    from: "    (request, options) => getClient().messages\n      .stream(request, { timeout: options.timeout, maxRetries: options.maxRetries })\n      .finalMessage(),",
+    to: "    (request, options) => getClient().messages.create(request, { timeout: options.timeout }),",
+    expect: ["CC44."],
+  },
 ];
 
 const sha256 = (text) => createHash("sha256").update(text, "utf8").digest("hex");
@@ -218,6 +302,41 @@ const runSuite = () => {
     return { failed, crashed: failed.length === 0 };
   }
 };
+
+/**
+ * Files mutated right now, so a signal that kills this process mid-mutation
+ * still restores the tree.
+ *
+ * A `finally` block only runs when the process survives to reach it. An earlier
+ * run of this harness was killed by an external timeout inside the mutation
+ * window and left one source file mutated, which then made the NEXT run's
+ * baseline red — a failure mode that looks like a broken test and is really a
+ * dirty tree. These handlers close that window.
+ */
+const inFlight = new Map();
+let restoringOnSignal = false;
+const restoreAll = () => {
+  for (const [path, original] of inFlight) {
+    try {
+      writeFileSync(path, original, "utf8");
+    } catch {
+      // Best effort: report below rather than mask the original signal.
+    }
+  }
+  if (inFlight.size) {
+    console.error(`\n[mutation] restored ${inFlight.size} file(s) after interruption`);
+  }
+  inFlight.clear();
+};
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+  process.on(signal, () => {
+    if (restoringOnSignal) return;
+    restoringOnSignal = true;
+    restoreAll();
+    process.exit(130);
+  });
+}
+process.on("exit", restoreAll);
 
 let failures = 0;
 const check = (name, ok, detail = "") => {
@@ -258,6 +377,7 @@ async function main() {
     }
 
     try {
+      inFlight.set(path, original);
       writeFileSync(path, original.replace(mutation.from, mutation.to), "utf8");
       let result;
       let buildFailed = false;
@@ -278,6 +398,7 @@ async function main() {
           : `reported: ${result.failed.map((l) => l.split(".")[0]).join(", ") || "nothing"}`);
     } finally {
       writeFileSync(path, original, "utf8");
+      inFlight.delete(path);
       const restored = readFileSync(path, "utf8");
       check(`${id}r. ${mutation.file} is restored byte-for-byte`,
         restored === original && sha256(restored) === originalDigest,

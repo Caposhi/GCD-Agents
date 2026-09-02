@@ -18,7 +18,7 @@ import { randomUUID } from "node:crypto";
 import { EvidenceKind, EvidenceRecord, EvidenceRelation } from "./evidence/contract.js";
 import {
   EvidencePack,
-  assertEvidencePackProjectionBounds,
+  assertUsableEvidencePack,
   buildEvidencePack,
   evidencePackInvariants,
 } from "./evidence/pack.js";
@@ -102,7 +102,10 @@ export function buildContentIntelligenceContext(input: BuildContextInput): Conte
     relations: input.relations,
     now: input.now,
   });
-  assertEvidencePackProjectionBounds(evidencePack);
+  // The preview holds an invocation clock, so it closes the freshness gap the
+  // builtAt-anchored check documents: a pack that has gone stale since it was
+  // assembled is refused here rather than previewed as usable.
+  assertUsableEvidencePack(evidencePack, { now: input.now });
 
   // Only classes actually present and usable count as available. Stale or
   // conflicted facts do not silently satisfy a stage's requirement.

@@ -17,6 +17,8 @@
  */
 
 import {
+  EVIDENCE_KINDS,
+  EvidenceKind,
   EvidenceRecord,
   EvidenceRelation,
   assertValidEvidenceRecord,
@@ -24,7 +26,10 @@ import {
   isCitableAsFact,
   isStale,
 } from "./contract.js";
-import { EVIDENCE_LIMITS } from "../agents/payloadContract.js";
+// `STRATEGY_LIMITS.goalChars` is the bound the `GOAL` block derivation already
+// assumes for the pack's goal; taking it from the same authority is what keeps
+// the derivation and this validator from drifting apart.
+import { EVIDENCE_LIMITS, STRATEGY_LIMITS, isSerializableText } from "../agents/payloadContract.js";
 
 export interface EvidenceConflict {
   /** Sorted pair, so the same disagreement always reports identically. */
@@ -287,10 +292,12 @@ export function evidencePackInvariants(pack: EvidencePack, now: number): string[
   return violations;
 }
 
-const RECORD_SECTIONS: ReadonlyArray<keyof Pick<EvidencePack,
+export type PackRecordSection = keyof Pick<EvidencePack,
   "allowedFacts" | "sourcedResearch" | "gcdObservations" | "performanceEvidence"
   | "creativeHypotheses" | "causalHypotheses" | "staleEvidence"
-  | "unsupportedAssumptions" | "inactiveEvidence">> = [
+  | "unsupportedAssumptions" | "inactiveEvidence">;
+
+const RECORD_SECTIONS: ReadonlyArray<PackRecordSection> = [
   "allowedFacts", "sourcedResearch", "gcdObservations", "performanceEvidence",
   "creativeHypotheses", "causalHypotheses", "staleEvidence",
   "unsupportedAssumptions", "inactiveEvidence",
@@ -339,7 +346,7 @@ export function assertEvidencePackProjectionBounds(pack: EvidencePack): Evidence
  * than of any one stage. Two stages sharing one definition cannot drift apart.
  */
 export function unusableEvidenceIds(pack: EvidencePack): Set<string> {
-  assertEvidencePackProjectionBounds(pack);
+  assertUsableEvidencePack(pack);
   const unusable = new Set<string>();
   for (const conflict of pack.conflicts) {
     unusable.add(conflict.aId);
@@ -368,7 +375,7 @@ export function unusableEvidenceIds(pack: EvidencePack): Set<string> {
  * claiming to have read it.
  */
 export function renderEvidencePackForStage(pack: EvidencePack): string {
-  assertEvidencePackProjectionBounds(pack);
+  assertUsableEvidencePack(pack);
   const brief = (records: EvidenceRecord[]) =>
     records.map((r) => ({
       id: r.id,
@@ -395,4 +402,305 @@ export function renderEvidencePackForStage(pack: EvidencePack): string {
     null,
     2,
   );
+}
+
+// ---------------------------------------------------------------------------
+// The authoritative runtime pack validator
+// ---------------------------------------------------------------------------
+
+/**
+ * Exactly which evidence kinds each record section may hold.
+ *
+ * This table is the machine-readable form of what `buildEvidencePack` does. A
+ * pack that disagrees with it was not produced by the builder — it was hand
+ * built, deserialized from somewhere, or mutated — and the difference is
+ * exactly the promotion this pipeline exists to refuse: a hypothesis sitting in
+ * `allowedFacts` is citable as established fact by every stage downstream.
+ */
+const SECTION_PERMITTED_KINDS: Record<PackRecordSection, ReadonlySet<EvidenceKind>> = {
+  allowedFacts: new Set(["verified_automotive_fact", "verified_business_fact"]),
+  sourcedResearch: new Set(["sourced_research"]),
+  gcdObservations: new Set(["gcd_direct_observation"]),
+  performanceEvidence: new Set(["gcd_performance_evidence"]),
+  creativeHypotheses: new Set(["creative_hypothesis"]),
+  causalHypotheses: new Set(["causal_hypothesis"]),
+  // The builder routes any fact-class or freshness-bearing kind here once it
+  // has lapsed. Observations and hypotheses never become stale, so they can
+  // never legitimately appear.
+  staleEvidence: new Set([
+    "verified_automotive_fact", "verified_business_fact",
+    "sourced_research", "gcd_performance_evidence",
+  ]),
+  unsupportedAssumptions: new Set(["unsupported_assumption"]),
+  // Lifecycle, not kind, is what puts a record here.
+  inactiveEvidence: new Set(EVIDENCE_KINDS),
+};
+
+/** Sections a stage may cite from. Everything else is shown only as exclusion. */
+const USABLE_SECTIONS: ReadonlyArray<PackRecordSection> = [
+  "allowedFacts", "sourcedResearch", "gcdObservations",
+  "performanceEvidence", "creativeHypotheses", "causalHypotheses",
+];
+
+/** Every key `counts` must carry, and no others. */
+const COUNT_KEYS: ReadonlyArray<string> = [
+  ...RECORD_SECTIONS, "conflicts",
+];
+
+const CONFLICT_BASES: ReadonlySet<string> = new Set(["declared", "same_attribute_fact"]);
+
+/**
+ * A pack's freshness is evaluated **at its own `builtAt`**, never at the
+ * moment a validator happens to run.
+ *
+ * The decision, and its cost, stated rather than left implicit. A pack is a
+ * self-describing artifact: it records when it was assembled, and every section
+ * must be exactly what `buildEvidencePack` would have produced at that instant.
+ * Anchoring there makes this validator deterministic — the same pack is always
+ * valid or always invalid, and a regression cannot pass or fail according to
+ * the wall clock. Anchoring at invocation time instead would make validity a
+ * property of *when you looked*, which is not something a deterministic
+ * boundary can assert, and would make every fixture in the offline suite decay.
+ *
+ * **What that does not cover, said plainly:** a pack built before a fact's
+ * `reviewBy` and consumed after it would still present that fact as citable.
+ * Three things bound that gap. `builtAt` is itself validated as a real instant
+ * (a malformed or non-round-tripping value is refused, so the anchor cannot be
+ * forged into the future by accident). Every caller in this repository builds
+ * the pack inside the same operation that consumes it — nothing persists,
+ * caches, or replays a pack. And a caller that *does* hold a pack across time
+ * can close the gap explicitly by passing `now`, which adds an
+ * invocation-time freshness check on top of the internal-consistency one.
+ */
+export interface EvidencePackSemanticOptions {
+  /**
+   * Optional invocation-time clock. When supplied, `allowedFacts` must be fresh
+   * at this instant as well as at `builtAt`. Callers that build and consume a
+   * pack in one operation do not need it; a caller holding a pack across time
+   * should pass it.
+   */
+  now?: number;
+}
+
+function isIsoInstant(value: unknown): value is string {
+  if (typeof value !== "string" || !value) return false;
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) return false;
+  // Round-trip, so "2026-13-45" and "2026-08-27" (a date, not an instant) are
+  // both refused rather than silently normalized into something else.
+  return new Date(parsed).toISOString() === value;
+}
+
+/**
+ * Every semantic rule a pack must satisfy before any consumer reads it.
+ *
+ * `evidencePackProjectionViolations` answers "is every value inside the
+ * bounds the payload derivations assume?". This answers the question that one
+ * cannot: "does this pack mean what its shape claims?" — that each record sits
+ * in a section its kind and lifecycle permit, that nothing unusable is also
+ * usable, that the conflict list refers to records that exist, and that the
+ * counts are honest. Both run at every boundary; neither is sufficient alone.
+ */
+export function evidencePackSemanticViolations(
+  pack: EvidencePack,
+  options: EvidencePackSemanticOptions = {},
+): string[] {
+  const violations: string[] = [...evidencePackProjectionViolations(pack)];
+  const push = (message: string) => violations.push(message);
+
+  // --- the anchor itself ---------------------------------------------------
+  if (!isIsoInstant(pack.builtAt)) {
+    push(`builtAt is not an ISO-8601 instant: ${JSON.stringify(pack.builtAt)}`);
+    // Without a usable anchor no freshness rule below can be evaluated
+    // honestly, so stop rather than report a cascade of derived failures.
+    return violations;
+  }
+  const builtAt = Date.parse(pack.builtAt);
+  if (typeof pack.goal !== "string" || !pack.goal.trim()) {
+    push("goal must be a non-empty string");
+  } else if (!isSerializableText(pack.goal)) {
+    push("goal contains a control character or unpaired surrogate");
+  } else if (pack.goal.length > STRATEGY_LIMITS.goalChars) {
+    push(`goal exceeds ${STRATEGY_LIMITS.goalChars} characters`);
+  }
+
+  // --- section membership, and one home per record -------------------------
+  const sectionById = new Map<string, PackRecordSection>();
+  for (const section of RECORD_SECTIONS) {
+    for (const record of pack[section]) {
+      const permitted = SECTION_PERMITTED_KINDS[section];
+      if (!permitted.has(record.kind)) {
+        push(`${section} contains ${record.id}, whose kind ${record.kind} does not belong there`);
+      }
+      const existing = sectionById.get(record.id);
+      if (existing !== undefined) {
+        push(`${record.id} appears in both ${existing} and ${section}; a record has exactly one section`);
+      } else {
+        sectionById.set(record.id, section);
+      }
+
+      // Lifecycle is what separates inactiveEvidence from everything else.
+      if (section === "inactiveEvidence") {
+        if (record.lifecycle === "active") {
+          push(`inactiveEvidence contains active record ${record.id}`);
+        }
+      } else if (record.lifecycle !== "active") {
+        push(`${section} contains ${record.lifecycle} record ${record.id}`);
+      }
+    }
+  }
+
+  // --- freshness, anchored at builtAt --------------------------------------
+  for (const record of pack.allowedFacts) {
+    if (!isCitableAsFact(record, builtAt)) {
+      push(`allowedFacts contains ${record.id} (${record.kind}), which is not citable as fact at builtAt`);
+    }
+    if (options.now !== undefined && !isCitableAsFact(record, options.now)) {
+      push(`allowedFacts contains ${record.id}, which is no longer citable at the supplied invocation time`);
+    }
+  }
+  for (const section of ["sourcedResearch", "performanceEvidence"] as const) {
+    for (const record of pack[section]) {
+      if (isStale(record, builtAt)) {
+        push(`${section} contains stale record ${record.id}; stale material belongs in staleEvidence`);
+      }
+    }
+  }
+  for (const record of pack.staleEvidence) {
+    if (!isStale(record, builtAt)) {
+      push(`staleEvidence contains ${record.id}, which is not stale at builtAt`);
+    }
+  }
+  for (const record of pack.gcdObservations) {
+    if (record.generalizable === true) {
+      push(`observation ${record.id} claims generalizability`);
+    }
+  }
+
+  // --- conflicts: every field, not merely the cardinality ------------------
+  const seenConflicts = new Set<string>();
+  pack.conflicts.forEach((conflict, index) => {
+    const at = `conflicts[${index}]`;
+    if (!conflict || typeof conflict !== "object") {
+      push(`${at} is not an object`);
+      return;
+    }
+    const boundedField = (value: unknown, field: string, max: number, required: boolean) => {
+      if (value === undefined || value === null) {
+        if (required) push(`${at}.${field} is required`);
+        return;
+      }
+      if (typeof value !== "string") {
+        push(`${at}.${field} must be a string`);
+        return;
+      }
+      if (required && !value.trim()) push(`${at}.${field} must not be empty`);
+      if (value.length > max) push(`${at}.${field} exceeds ${max} characters`);
+      if (!isSerializableText(value)) {
+        push(`${at}.${field} contains a control character or unpaired surrogate`);
+      }
+    };
+    boundedField(conflict.aId, "aId", EVIDENCE_LIMITS.idChars, true);
+    boundedField(conflict.bId, "bId", EVIDENCE_LIMITS.idChars, true);
+    boundedField(conflict.subject, "subject", EVIDENCE_LIMITS.subjectChars, true);
+    boundedField(conflict.aClaim, "aClaim", EVIDENCE_LIMITS.claimChars, true);
+    boundedField(conflict.bClaim, "bClaim", EVIDENCE_LIMITS.claimChars, true);
+    boundedField(conflict.note, "note", EVIDENCE_LIMITS.relationNoteChars, false);
+
+    if (!CONFLICT_BASES.has(conflict.basis as string)) {
+      push(`${at}.basis is not one of ${[...CONFLICT_BASES].join(", ")}: ${String(conflict.basis)}`);
+    }
+    if (conflict.aId === conflict.bId) {
+      push(`${at} names ${conflict.aId} on both sides`);
+    } else if (typeof conflict.aId === "string" && typeof conflict.bId === "string"
+      && conflict.aId > conflict.bId) {
+      // Canonical order, so one disagreement always reports identically and a
+      // duplicate cannot hide behind a swapped pair.
+      push(`${at} is not in canonical id order (${conflict.aId} > ${conflict.bId})`);
+    }
+    // NUL-separated so two ids cannot combine into the same key by accident.
+    const key = `${conflict.aId}\u0000${conflict.bId}`;
+    if (seenConflicts.has(key)) push(`${at} repeats the pair ${conflict.aId}/${conflict.bId}`);
+    seenConflicts.add(key);
+
+    for (const side of ["aId", "bId"] as const) {
+      const id = conflict[side];
+      const home = typeof id === "string" ? sectionById.get(id) : undefined;
+      if (home === undefined) {
+        push(`${at}.${side} names ${String(id)}, which is not a record in this pack`);
+        continue;
+      }
+      if (USABLE_SECTIONS.includes(home)) {
+        push(
+          `${at}.${side} names ${String(id)}, which is also usable in ${home}; `
+          + "a record in a live conflict must not remain citable",
+        );
+      }
+    }
+  });
+
+  // --- counts: the exact keys, integers, and the truth ---------------------
+  const counts = pack.counts;
+  if (!counts || typeof counts !== "object" || Array.isArray(counts)) {
+    push("counts must be an object");
+  } else {
+    const actual = new Map<string, number>(
+      RECORD_SECTIONS.map((section) => [section, pack[section].length] as const),
+    );
+    actual.set("conflicts", pack.conflicts.length);
+    const present = Object.keys(counts);
+    const unexpected = present.filter((key) => !COUNT_KEYS.includes(key));
+    const missing = COUNT_KEYS.filter((key) => !present.includes(key));
+    if (unexpected.length) push(`counts has unknown key(s): ${unexpected.join(", ")}`);
+    if (missing.length) push(`counts is missing key(s): ${missing.join(", ")}`);
+    for (const key of COUNT_KEYS) {
+      if (!present.includes(key)) continue;
+      const value = counts[key];
+      if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+        push(`counts.${key} must be a non-negative integer, received ${JSON.stringify(value)}`);
+        continue;
+      }
+      const expected = actual.get(key)!;
+      if (value !== expected) {
+        push(`counts.${key} says ${value} but the section holds ${expected}`);
+      }
+    }
+  }
+
+  return violations;
+}
+
+/**
+ * A pack refused by the authoritative validator.
+ *
+ * It extends `EvidencePackBoundsError` deliberately: the semantic contract is a
+ * strict superset of the projection bounds — `evidencePackSemanticViolations`
+ * begins with every bounds violation — so a caller that already catches a pack
+ * refusal keeps catching one, and no boundary can be made weaker by narrowing
+ * its catch. The `violations` array is the authoritative detail; the class is
+ * only the family.
+ */
+export class EvidencePackSemanticError extends EvidencePackBoundsError {
+  constructor(violations: string[]) {
+    super(violations);
+    this.name = "EvidencePackSemanticError";
+    this.message = `evidence pack fails its semantic contract: ${violations.join("; ")}`;
+  }
+}
+
+/**
+ * The one call every pack consumer makes before reading a pack.
+ *
+ * Bounds and meaning are checked together, because either alone is a hole: a
+ * pack can be perfectly bounded and still promote a hypothesis to fact, and it
+ * can be semantically coherent and still carry a 50,000-character conflict
+ * subject that no payload derivation allowed for.
+ */
+export function assertUsableEvidencePack(
+  pack: EvidencePack,
+  options: EvidencePackSemanticOptions = {},
+): EvidencePack {
+  const violations = evidencePackSemanticViolations(pack, options);
+  if (violations.length) throw new EvidencePackSemanticError(violations);
+  return pack;
 }

@@ -457,7 +457,11 @@ export function validateAutomotiveTruthOutput(
   );
 
   // --- binding: every permission must name a citable fact in this pack ------
-  const factsById = new Map(pack.allowedFacts.map((r) => [r.id, r]));
+  // Defense in depth: a record only counts as a citable fact here if its own
+  // kind says so, not merely because it was found in `allowedFacts`.
+  const factsById = new Map(
+    pack.allowedFacts.filter((r) => CLASS_OF_KIND[r.kind]).map((r) => [r.id, r]),
+  );
   const blocked = unusableEvidenceIds(pack);
   const seen = new Set<string>();
 
@@ -545,7 +549,9 @@ export function allowedClaimRecords(
   output: AutomotiveTruthOutput,
   pack: EvidencePack,
 ): EvidenceRecord[] {
-  const byId = new Map(pack.allowedFacts.map((r) => [r.id, r]));
+  const byId = new Map(
+    pack.allowedFacts.filter((r) => CLASS_OF_KIND[r.kind]).map((r) => [r.id, r]),
+  );
   return output.constraints.allowed
     .map((binding) => byId.get(binding.factId))
     .filter((r): r is EvidenceRecord => r !== undefined);

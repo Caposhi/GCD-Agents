@@ -22,8 +22,10 @@ import {
   EvidencePackBoundsError,
   buildEvidencePack,
   evidencePackInvariants,
+  evidencePackSemanticViolations,
   renderEvidencePackForStage,
 } from "./evidence/pack.js";
+import type { EvidenceConflict, EvidencePack } from "./evidence/pack.js";
 import {
   CRITIC_OUTPUT,
   DIRECTION_OUTPUT,
@@ -37,8 +39,12 @@ import {
   SCRIPT_OUTPUT,
   STAGE_ASSEMBLED_CEILINGS,
   STRATEGY_ID_CHANNELS,
+  MIN_OUTPUT_TOKENS_PER_SECOND,
+  POLICY_REQUEST_TIMEOUT_MS,
+  STAGE_REQUEST_MAX_RETRIES,
   STRATEGY_OUTPUT,
   TRUTH_OUTPUT,
+  stageRequestTimeoutMs,
   isSerializableText,
   minimumOutputTokens,
   utf8ByteLength,
@@ -80,7 +86,11 @@ import {
   modelBearingPolicies,
   resolveModelPolicy,
 } from "./agents/modelPolicy.js";
-import { runAgentWithMessageCreator } from "./sdk.js";
+import {
+  runAgentWithMessageCreator,
+  runStageAgentWithMessageCreator,
+} from "./sdk.js";
+import type { SdkRequestOptions } from "./sdk.js";
 import type { AgentRunOptions } from "./sdk.js";
 import {
   LIMITS,
@@ -5705,35 +5715,38 @@ async function run(): Promise<void> {
       return { text: "{}", totalCostUsd: undefined, usage: undefined };
     });
     await injectedProductionRunner(credentialCalls[0]!);
+
+    // The STAGE boundary, inspected byte for byte — including the retry policy,
+    // which is what the "exactly one model request" guarantee actually rests on.
     let sdkRequest: Record<string, unknown> | undefined;
-    let sdkTimeout: number | undefined;
-    await runAgentWithMessageCreator(mappedAgentRequest!, async (request, options) => {
+    let sdkOptions: SdkRequestOptions | undefined;
+    const cannedMessage = (request: { model: unknown }) => ({
+      id: "msg_offline",
+      type: "message",
+      role: "assistant",
+      model: String(request.model),
+      content: [{ type: "text", text: "{}", citations: null }],
+      stop_reason: "end_turn",
+      stop_sequence: null,
+      usage: { input_tokens: 1, output_tokens: 1 },
+    } as any);
+    await runStageAgentWithMessageCreator(mappedAgentRequest!, async (request, options) => {
       sdkRequest = request as unknown as Record<string, unknown>;
-      sdkTimeout = options.timeout;
-      return {
-        id: "msg_offline",
-        type: "message",
-        role: "assistant",
-        model: String(request.model),
-        content: [{ type: "text", text: "{}", citations: null }],
-        stop_reason: "end_turn",
-        stop_sequence: null,
-        usage: { input_tokens: 1, output_tokens: 1 },
-      } as any;
+      sdkOptions = options;
+      return cannedMessage(request);
     });
+
+    // The LEGACY boundary, asserted unchanged in the same breath.
     let legacySdkRequest: Record<string, unknown> | undefined;
+    let legacySdkOptions: SdkRequestOptions | undefined;
     await runAgentWithMessageCreator({
       systemPrompt: "legacy-system", prompt: "legacy-prompt",
-    }, async (request) => {
+    }, async (request, options) => {
       legacySdkRequest = request as unknown as Record<string, unknown>;
-      return {
-        id: "msg_legacy_offline", type: "message", role: "assistant",
-        model: String(request.model),
-        content: [{ type: "text", text: "{}", citations: null }],
-        stop_reason: "end_turn", stop_sequence: null,
-        usage: { input_tokens: 1, output_tokens: 1 },
-      } as any;
+      legacySdkOptions = options;
+      return cannedMessage(request);
     });
+
     check("CC36. the exact production stage request explicitly disables thinking so the full "
       + "derived max_tokens ceiling is available to visible JSON, while legacy runAgent stays unchanged",
       credentialCalls[0]!.model === "claude-opus-5"
@@ -5744,9 +5757,93 @@ async function run(): Promise<void> {
         && sdkRequest?.max_tokens === POLICY_MAX_TOKENS["reasoning-heavy"]
         && sdkRequest?.model === "claude-opus-5"
         && !("tools" in sdkRequest!)
-        && sdkTimeout === 90_000
         && legacySdkRequest !== undefined
         && !("thinking" in legacySdkRequest));
+
+    // --- CC-I. one request means one WIRE request ---------------------------
+    //
+    // The Anthropic SDK defaults `maxRetries` to 2, retrying 408/409/429/5xx and
+    // connection errors — and timeouts too, so a 90-second budget was really up
+    // to 270 seconds across three attempts. Until this was set explicitly,
+    // "exactly one model request" and `modelRequests: 1` described one wrapper
+    // invocation, not one provider request. These checks read the option the
+    // stage boundary actually sends, so a silent return to the SDK default
+    // fails here rather than in production.
+    check("CC39. the stage request boundary disables SDK retries explicitly, so one wrapper "
+      + "invocation is one wire request and the modelRequests metadata is true of the network",
+      sdkOptions !== undefined
+        && sdkOptions!.maxRetries === 0
+        && sdkOptions!.maxRetries === STAGE_REQUEST_MAX_RETRIES);
+    check("CC40. the legacy agent boundary is deliberately untouched: SDK-default retries and "
+      + "its original 90-second non-streaming budget",
+      legacySdkOptions !== undefined
+        && legacySdkOptions!.maxRetries === undefined
+        && legacySdkOptions!.timeout === 90_000);
+
+    // --- CC-J. the timeout can carry the response the contract declares -----
+    //
+    // The replaced 90-second budget could not: at the derived per-policy
+    // ceilings a contract-valid maximum response cannot be produced in 90
+    // seconds by any model, so the timeout — not the output contract — decided
+    // what the pipeline could return. The bound is now derived from the same
+    // budget, and asserted to be derived rather than to merely agree.
+    const stageBudget = POLICY_MAX_TOKENS["reasoning-heavy"];
+    check("CC41. the stage timeout is derived from the stage's own output budget, not a fixed "
+      + "value, and is large enough to carry that budget at the documented throughput floor",
+      sdkOptions !== undefined
+        && sdkOptions!.timeout === stageRequestTimeoutMs(stageBudget)
+        && sdkOptions!.timeout === POLICY_REQUEST_TIMEOUT_MS["reasoning-heavy"]
+        && sdkOptions!.timeout > 90_000
+        && sdkOptions!.timeout
+             >= (stageBudget / MIN_OUTPUT_TOKENS_PER_SECOND) * 1_000);
+    check("CC42. every policy's timeout carries its own budget, and a larger budget is never "
+      + "given a smaller timeout",
+      (Object.keys(POLICY_MAX_TOKENS) as Array<keyof typeof POLICY_MAX_TOKENS>).every((policy) => {
+        const budget = POLICY_MAX_TOKENS[policy];
+        const timeout = POLICY_REQUEST_TIMEOUT_MS[policy];
+        return timeout === stageRequestTimeoutMs(budget)
+          && timeout >= (budget / MIN_OUTPUT_TOKENS_PER_SECOND) * 1_000;
+      })
+        && POLICY_REQUEST_TIMEOUT_MS["reasoning-standard"]!
+             >= POLICY_REQUEST_TIMEOUT_MS["reasoning-heavy"]!);
+    check("CC43. the throughput floor is documented as a conservative bound rather than a "
+      + "measurement, and the source says no stage has run against a real model",
+      /deliberately pessimistic floor, not a measurement/
+        .test(payloadSource.replace(/\n\s*\*\s?/g, " "))
+        && /derived bounds, not measured latencies/
+             .test(payloadSource.replace(/\n\s*\*\s?/g, " "))
+        && MIN_OUTPUT_TOKENS_PER_SECOND > 0);
+
+    // --- CC-K. the stage path streams, because the budget requires it -------
+    const sdkSource = await readFile(resolve(REPO_ROOT, "src/harness/sdk.ts"), "utf8");
+    const stageRunnerBody = /export async function runStageAgent\(([\s\S]*?)\n}/.exec(sdkSource)?.[1] ?? "";
+    const legacyRunnerBody = /export async function runAgent\(([\s\S]*?)\n}/.exec(sdkSource)?.[1] ?? "";
+    check("CC44. the production stage runner streams and reassembles with finalMessage, while "
+      + "the legacy runner keeps its non-streaming create call",
+      /messages\s*\n?\s*\.stream\(/.test(stageRunnerBody)
+        && /finalMessage\(\)/.test(stageRunnerBody)
+        && /maxRetries: options\.maxRetries/.test(stageRunnerBody)
+        && /messages\.create\(/.test(legacyRunnerBody)
+        && !/\.stream\(/.test(legacyRunnerBody));
+    check("CC45. the stage runner is what the registry's production runner resolves to, so the "
+      + "policy is not merely available but actually the one on the path",
+      /import \{ runStageAgent \} from "\.\.\/sdk\.js";/.test(
+        await readFile(resolve(REPO_ROOT, "src/harness/agents/stageExecution.ts"), "utf8"))
+        && /createAnthropicStageRunner\(run: AgentRunner = runStageAgent\)/.test(
+             await readFile(resolve(REPO_ROOT, "src/harness/agents/stageExecution.ts"), "utf8")));
+    // The whole stage path, not one function body: the timeout is chosen in
+    // `runStageAgentWithMessageCreator` and applied in `runStageAgent`, so a
+    // scan of either alone would miss a literal reintroduced in the other.
+    const stagePathSource = [
+      /export async function runStageAgentWithMessageCreator\(([\s\S]*?)\n}/.exec(sdkSource)?.[1] ?? "",
+      stageRunnerBody,
+    ].join("\n");
+    check("CC46. no 90-second literal survives anywhere on the Content Intelligence stage path",
+      stagePathSource.length > 0
+        && !/90_000|90000/.test(stagePathSource)
+        && !/90_000|90000/.test(
+             await readFile(resolve(REPO_ROOT, "src/harness/agents/stageExecution.ts"), "utf8"))
+        && !/90_000|90000/.test(payloadSource));
 
     // --- CC-H. review corrections: adversarial cardinality and representation
     const detailCounterexample = Object.fromEntries(Array.from({ length: 410 }, (_, index) => [
@@ -5905,6 +6002,305 @@ async function run(): Promise<void> {
              .conflicts.length === 2_016
         && invalidRecordRunnerCalls === 0);
   }
+
+    const evidencePackSource = await readFile(
+      resolve(REPO_ROOT, "src/harness/evidence/pack.ts"), "utf8");
+
+    // --- CC-L. the pack means what its shape claims -------------------------
+    //
+    // `evidencePackProjectionViolations` answers "is every value inside the
+    // bounds the payload derivations assume?". It cannot answer "does this pack
+    // mean what its shape claims?" — and that second question is where the
+    // promotions live. Every case below was a pack that reached a stage runner
+    // and was accepted before this group existed.
+    //
+    // Each one executes the stage. A check that only called the validator would
+    // pass even if no boundary invoked it, which is exactly the gap that let
+    // `evidencePackInvariants` detect a hypothesis promotion for five phases
+    // while no stage boundary ever called it.
+    const packBiz = wellFormed.verified_business_fact;
+    const packAuto = wellFormed.verified_automotive_fact;
+    const packHypo = wellFormed.creative_hypothesis;
+    const basePack = buildEvidencePack({
+      goal: "semantic-pack", records: [packBiz, packAuto, packHypo], now: NOW,
+    });
+
+    /** Execute stage 1 against a pack and report refusal plus runner calls. */
+    const runWithPack = async (
+      pack: EvidencePack,
+      citedIds: string[] = [packBiz.id],
+    ): Promise<{ refusal: string; calls: number; typed: boolean }> => {
+      const calls: StageRunnerRequest[] = [];
+      let refusal = "";
+      let typed = false;
+      try {
+        await executeStrategyConcept({
+          goal: "semantic-pack", evidencePack: pack, registry,
+          runner: async (request) => {
+            calls.push(request);
+            return { text: JSON.stringify({
+              angle: "A short angle.", concept: "A short concept.",
+              rationale: "A short rationale.", hypotheses: [], assumptions: [],
+              supportingFactIds: citedIds, observationIds: [], performanceSignalIds: [],
+            }) };
+          },
+        });
+      } catch (error) {
+        refusal = error instanceof Error ? error.message : String(error);
+        typed = error instanceof EvidencePackBoundsError;
+      }
+      return { refusal, calls: calls.length, typed };
+    };
+
+    // A control: the unmodified pack must still execute, so every refusal below
+    // is attributable to the mutation and not to the fixture.
+    const packControl = await runWithPack(basePack);
+    check("CC47. the unmodified pack still executes and reaches the runner exactly once",
+      packControl.refusal === "" && packControl.calls === 1);
+
+    // (1) hypothesis promotion — a valid creative_hypothesis hand-placed in
+    // allowedFacts beside a valid business fact.
+    const promotedPack: EvidencePack = {
+      ...basePack,
+      allowedFacts: [...basePack.allowedFacts, packHypo],
+      creativeHypotheses: [],
+      counts: { ...basePack.counts, allowedFacts: basePack.counts.allowedFacts! + 1, creativeHypotheses: 0 },
+    };
+    const promoted = await runWithPack(promotedPack, [packHypo.id]);
+    check("CC48. a hypothesis hand-placed in allowedFacts is refused before any model call, by "
+      + "kind and by citability, and costs zero runner calls",
+      promoted.calls === 0
+        && promoted.typed
+        && /whose kind creative_hypothesis does not belong there/.test(promoted.refusal)
+        && /not citable as fact at builtAt/.test(promoted.refusal));
+
+    // (2) stale-fact promotion — an active verified fact whose reviewBy
+    // predates the pack's own builtAt, left in allowedFacts.
+    const stalePromoted: EvidencePack = {
+      ...basePack,
+      allowedFacts: [...basePack.allowedFacts, { ...packAuto, id: "auto-stale", reviewBy: PAST }],
+      counts: { ...basePack.counts, allowedFacts: basePack.counts.allowedFacts! + 1 },
+    };
+    const stale = await runWithPack(stalePromoted, ["auto-stale"]);
+    check("CC49. an active verified fact whose reviewBy precedes builtAt cannot remain in "
+      + "allowedFacts, and the refusal costs zero runner calls",
+      stale.calls === 0
+        && stale.typed
+        && /auto-stale .*which is not citable as fact at builtAt/.test(stale.refusal));
+
+    // (3) wrong-section kinds, in both directions.
+    const wrongSection = await runWithPack({
+      ...basePack,
+      gcdObservations: [packAuto],
+      counts: { ...basePack.counts, gcdObservations: 1 },
+    });
+    check("CC50. a record in a section its kind does not permit is refused with zero runner calls",
+      wrongSection.calls === 0
+        && wrongSection.typed
+        && /gcdObservations contains .*whose kind verified_automotive_fact does not belong there/
+             .test(wrongSection.refusal));
+
+    // (4) the same record in two sections at once.
+    const duplicated = await runWithPack({
+      ...basePack,
+      sourcedResearch: [...basePack.sourcedResearch, packBiz as EvidenceRecord],
+      counts: { ...basePack.counts, sourcedResearch: basePack.counts.sourcedResearch! + 1 },
+    });
+    check("CC51. one record cannot appear in two sections at once, whatever the sections",
+      duplicated.calls === 0
+        && duplicated.typed
+        && /appears in both .*; a record has exactly one section/.test(duplicated.refusal));
+
+    // (5) lifecycle: an inactive record parked in a usable section, and an
+    // active record parked in inactiveEvidence.
+    const lifecycleWrong = await runWithPack({
+      ...basePack,
+      allowedFacts: [...basePack.allowedFacts, { ...packAuto, id: "auto-retired", lifecycle: "retired" }],
+      counts: { ...basePack.counts, allowedFacts: basePack.counts.allowedFacts! + 1 },
+    });
+    check("CC52. a non-active record cannot sit in a usable section",
+      lifecycleWrong.calls === 0
+        && lifecycleWrong.typed
+        && /allowedFacts contains retired record auto-retired/.test(lifecycleWrong.refusal));
+    const activeInInactive = await runWithPack({
+      ...basePack,
+      inactiveEvidence: [...basePack.inactiveEvidence, { ...packAuto, id: "auto-copy" }],
+      counts: { ...basePack.counts, inactiveEvidence: basePack.counts.inactiveEvidence! + 1 },
+    });
+    check("CC53. an active record cannot be parked in inactiveEvidence either — the rule runs "
+      + "in both directions",
+      activeInInactive.calls === 0
+        && activeInInactive.typed
+        && /inactiveEvidence contains active record auto-copy/.test(activeInInactive.refusal));
+
+    // (6) malformed builtAt, in the three shapes that matter: not a date, a
+    // date rather than an instant, and a value that does not round-trip.
+    for (const [label, builtAt] of ([
+      ["not a date at all", "not-a-date"],
+      ["a calendar date, not an instant", "2026-08-27"],
+      ["a value that does not round-trip", "2026-08-27T12:00:00+00:00"],
+    ] as const)) {
+      const malformed = await runWithPack({ ...basePack, builtAt });
+      check(`CC54${label === "not a date at all" ? "" : label.startsWith("a calendar") ? "a" : "b"}. `
+        + `builtAt (${label}) is refused before any model call`,
+        malformed.calls === 0
+          && malformed.typed
+          && /builtAt is not an ISO-8601 instant/.test(malformed.refusal));
+    }
+
+    // --- CC-M. the complete conflict and count projection -------------------
+    //
+    // The projection boundary used to check conflict CARDINALITY and nothing
+    // else, so a hand-built conflict with an invalid basis, fabricated ids and
+    // a 50,000-character subject rendered below EVIDENCE_PACK_BLOCK_CHARS and
+    // reached the runner. The block ceiling assumes each conflict subject is
+    // bounded at EVIDENCE_LIMITS.subjectChars; nothing made that true.
+    const oversizedConflict = await runWithPack({
+      ...basePack,
+      conflicts: [{
+        aId: "does-not-exist-a", bId: "does-not-exist-b",
+        aClaim: "x", bClaim: "y",
+        subject: "s".repeat(50_000),
+        basis: "totally_made_up" as unknown as EvidenceConflict["basis"],
+        note: "n".repeat(EVIDENCE_LIMITS.relationNoteChars + 1),
+      }],
+      counts: { ...basePack.counts, conflicts: 1 },
+    });
+    check("CC55. the reviewer's counterexample — an invalid basis, fabricated ids, a "
+      + "50,000-character subject and an over-long note — is refused on every one of those "
+      + "grounds, with zero runner calls",
+      oversizedConflict.calls === 0
+        && oversizedConflict.typed
+        && oversizedConflict.refusal.includes(
+             `conflicts[0].subject exceeds ${EVIDENCE_LIMITS.subjectChars} characters`)
+        && oversizedConflict.refusal.includes(
+             `conflicts[0].note exceeds ${EVIDENCE_LIMITS.relationNoteChars} characters`)
+        && /basis is not one of declared, same_attribute_fact/.test(oversizedConflict.refusal)
+        && /aId names does-not-exist-a, which is not a record in this pack/
+             .test(oversizedConflict.refusal)
+        && /bId names does-not-exist-b, which is not a record in this pack/
+             .test(oversizedConflict.refusal));
+
+    const conflictOf = (patch: Partial<EvidenceConflict>): EvidenceConflict => ({
+      aId: packAuto.id, bId: packBiz.id,
+      aClaim: packAuto.claim, bClaim: packBiz.claim,
+      subject: packAuto.subject, basis: "declared",
+      ...patch,
+    } as EvidenceConflict);
+    const withConflicts = (conflicts: EvidenceConflict[]): EvidencePack => ({
+      ...basePack,
+      allowedFacts: [],
+      conflicts,
+      counts: { ...basePack.counts, allowedFacts: 0, conflicts: conflicts.length },
+    });
+
+    const controlChar = await runWithPack(withConflicts([
+      conflictOf({ subject: "brake\u0001fluid" }),
+    ]), []);
+    check("CC56. a control character in a conflict field is refused — the same serializable-text "
+      + "rule every record field obeys, applied to pack-authored values too",
+      controlChar.calls === 0
+        && controlChar.typed
+        && /conflicts\[0\]\.subject contains a control character or unpaired surrogate/
+             .test(controlChar.refusal));
+    const longId = await runWithPack(withConflicts([
+      conflictOf({ aId: "z".repeat(EVIDENCE_LIMITS.idChars + 1) }),
+    ]), []);
+    check("CC57. a conflict id over the evidence id bound is refused",
+      longId.calls === 0
+        && longId.refusal.includes(
+             `conflicts[0].aId exceeds ${EVIDENCE_LIMITS.idChars} characters`));
+    const sameSide = await runWithPack(withConflicts([
+      conflictOf({ aId: packAuto.id, bId: packAuto.id }),
+    ]), []);
+    check("CC58. a conflict naming the same id on both sides is refused",
+      sameSide.calls === 0 && /names .* on both sides/.test(sameSide.refusal));
+    const unordered = await runWithPack(withConflicts([
+      conflictOf({ aId: packBiz.id, bId: packAuto.id }),
+    ]), []);
+    check("CC59. a conflict outside canonical id order is refused, so one disagreement cannot "
+      + "be reported twice under a swapped pair",
+      unordered.calls === 0 && /is not in canonical id order/.test(unordered.refusal));
+    const duplicatePair = await runWithPack(withConflicts([conflictOf({}), conflictOf({})]), []);
+    check("CC60. a repeated conflict pair is refused",
+      duplicatePair.calls === 0 && /repeats the pair/.test(duplicatePair.refusal));
+
+    // A conflicted record must not simultaneously remain citable.
+    const conflictedYetUsable = await runWithPack({
+      ...basePack,
+      conflicts: [conflictOf({})],
+      counts: { ...basePack.counts, conflicts: 1 },
+    });
+    check("CC61. a record named in a live conflict cannot also remain usable in allowedFacts — "
+      + "conflict membership and usable membership are checked against each other",
+      conflictedYetUsable.calls === 0
+        && conflictedYetUsable.typed
+        && /which is also usable in allowedFacts/.test(conflictedYetUsable.refusal));
+
+    // Counts: the exact key set, integer values, and the truth.
+    const wrongCount = await runWithPack({
+      ...basePack, counts: { ...basePack.counts, allowedFacts: 999 },
+    });
+    check("CC62. a count that disagrees with its section is refused",
+      wrongCount.calls === 0
+        && /counts\.allowedFacts says 999 but the section holds/.test(wrongCount.refusal));
+    const extraCount = await runWithPack({
+      ...basePack, counts: { ...basePack.counts, smuggled: 1 },
+    });
+    check("CC63. an unknown counts key is refused, so the projection carries no pack-authored "
+      + "value the contract does not name",
+      extraCount.calls === 0 && /counts has unknown key\(s\): smuggled/.test(extraCount.refusal));
+    const missingCount = await runWithPack({
+      ...basePack,
+      counts: Object.fromEntries(
+        Object.entries(basePack.counts).filter(([key]) => key !== "conflicts"),
+      ),
+    });
+    check("CC64. a missing counts key is refused",
+      missingCount.calls === 0 && /counts is missing key\(s\): conflicts/.test(missingCount.refusal));
+    const fractionalCount = await runWithPack({
+      ...basePack, counts: { ...basePack.counts, allowedFacts: 1.5 },
+    });
+    check("CC65. a non-integer or negative count is refused",
+      fractionalCount.calls === 0
+        && /counts\.allowedFacts must be a non-negative integer/.test(fractionalCount.refusal));
+
+    // The pack's own goal is a pack-authored value that reaches the model.
+    const longGoal = await runWithPack({
+      ...basePack, goal: "g".repeat(LIMITS.goalChars + 1),
+    });
+    check("CC66. the pack's goal is bounded and serializable-text checked, like every other "
+      + "pack-authored value in the projection",
+      longGoal.calls === 0 && /goal exceeds/.test(longGoal.refusal));
+
+    // --- CC-N. the validator is on every boundary, not merely available -----
+    check("CC67. every pack consumer calls the authoritative validator: the shared executor "
+      + "boundary, the renderer, the unusable-id set, and the preview",
+      /assertUsableEvidencePack\(pack\)/.test(
+        await readFile(resolve(REPO_ROOT, "src/harness/agents/stageExecution.ts"), "utf8"))
+        && (evidencePackSource.match(/assertUsableEvidencePack\(/g) ?? []).length >= 3
+        && /assertUsableEvidencePack\(evidencePack, \{ now: input\.now \}\)/.test(
+             await readFile(resolve(REPO_ROOT, "src/harness/contentIntelligence.ts"), "utf8")));
+    check("CC68. the freshness anchor is a documented decision, and the invocation-time option "
+      + "exists for a caller that holds a pack across time",
+      /evaluated \*\*at its own `builtAt`\*\*/.test(evidencePackSource)
+        && /What that does not cover, said plainly/.test(evidencePackSource)
+        && evidencePackSemanticViolations(basePack).length === 0
+        && evidencePackSemanticViolations(basePack, { now: NOW }).length === 0
+        && evidencePackSemanticViolations(
+             basePack, { now: Date.parse("2030-01-01T00:00:00Z") },
+           ).some((violation: string) => /no longer citable at the supplied invocation time/.test(violation)));
+    check("CC69. defense in depth: the stage's citation accessors bind on the record's own kind, "
+      + "not merely on the section it was found in",
+      /CITABLE_FACT_KINDS/.test(
+        await readFile(resolve(REPO_ROOT, "src/harness/agents/strategyConcept.ts"), "utf8"))
+        && /pack\.allowedFacts\.filter\(\(r\) => CLASS_OF_KIND\[r\.kind\]\)/.test(
+             await readFile(resolve(REPO_ROOT, "src/harness/agents/automotiveTruth.ts"), "utf8"))
+        && citedFactRecords(
+             { ...validStrategyOutput,
+               evidence: { ...validStrategyOutput.evidence, supportingFactIds: [packHypo.id] } },
+             promotedPack,
+           ).length === 0);
 
   console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURE(S)`);
   process.exit(failures === 0 ? 0 : 1);
