@@ -254,25 +254,81 @@ const MUTATIONS = [
     name: "stage requests stop disabling SDK retries, restoring the default of two",
     file: SDK,
     from: "    maxRetries: STAGE_REQUEST_MAX_RETRIES,",
-    to: "    maxRetries: undefined,",
+    // The SDK's own default, written literally. `undefined` would not compile
+    // now that `StageRequestOptions.maxRetries` is `number` rather than
+    // `number | undefined`, and a mutation that fails to build proves nothing.
+    to: "    maxRetries: 2,",
     expect: ["CC39."],
   },
   {
-    name: "the stage timeout is pinned to the old 90-second value instead of derived",
-    file: SDK,
-    from: "    timeout: stageRequestTimeoutMs(request.max_tokens),",
-    to: "    timeout: 90_000,",
-    expect: ["CC41.", "CC46."],
+    name: "the stage stream deadline is pinned to the old 90-second value instead of derived",
+    file: PAYLOAD,
+    from: "export function stageStreamDeadlineMs(maxOutputTokens: number): number {",
+    to: "export function stageStreamDeadlineMs(maxOutputTokens: number): number {\n  if (maxOutputTokens > 0) return 90_000;",
+    expect: ["CC41.", "CC42."],
   },
   {
-    // The declared max_tokens cannot be received on a non-streaming
-    // connection; reverting to `create` is the change that makes the timeout,
-    // the budget and the transport disagree again.
-    name: "the stage request stops streaming and returns to a non-streaming create",
+    // Finding 2. The SDK's `timeout` bounds the fetch only — for a streaming
+    // request it is cleared once headers arrive. Removing the abort leaves a
+    // stalled stream with nothing at all to stop it, which is the state this
+    // branch was reviewed in.
+    name: "the total stream deadline stops aborting a stalled stream",
     file: SDK,
-    from: "    (request, options) => getClient().messages\n      .stream(request, { timeout: options.timeout, maxRetries: options.maxRetries })\n      .finalMessage(),",
-    to: "    (request, options) => getClient().messages.create(request, { timeout: options.timeout }),",
+    from: "    deadlineExpired = true;\n    stream.abort();",
+    to: "    deadlineExpired = true;",
+    expect: ["CC45."],
+  },
+  {
+    name: "the deadline timer is never cleared, leaking a timer past every stage call",
+    file: SDK,
+    from: "    timers.clearTimeout(handle);",
+    to: "    void handle;",
     expect: ["CC44."],
+  },
+  {
+    name: "the request-setup timeout is conflated with the total stream deadline",
+    file: SDK,
+    from: "    requestSetupTimeoutMs: STAGE_REQUEST_SETUP_TIMEOUT_MS,",
+    to: "    requestSetupTimeoutMs: stageStreamDeadlineMs(maxOutputTokens),",
+    expect: ["CC41."],
+  },
+  {
+    // Finding 1. The semantic validator is where both conflict-pack defects
+    // lived. Reverting the endpoint rule to the pre-correction form — which
+    // demanded only that an endpoint exist somewhere — reopens the case a
+    // conflicted record left citable in a usable section.
+    name: "a conflict endpoint may live in any section again, not conflictedEvidence",
+    file: EVIDENCE_PACK,
+    from: '      if (home !== "conflictedEvidence") {',
+    to: "      if (false) {",
+    expect: ["CC61."],
+  },
+  {
+    // The snapshot rule. Without it a hand-built pack can show a model claim
+    // text no record in the pack ever made.
+    name: "conflict claim and subject snapshots stop being compared to their records",
+    file: EVIDENCE_PACK,
+    // Compared to itself rather than short-circuited: `false &&` would stop
+    // narrowing `recordA` for the body and the tree would not compile.
+    from: "    if (recordA && conflict.aClaim !== recordA.claim) {",
+    to: "    if (recordA && conflict.aClaim !== conflict.aClaim) {",
+    expect: ["CC76."],
+  },
+  {
+    name: "conflict fields lose their UTF-8 byte allowance, keeping only code units",
+    file: EVIDENCE_PACK,
+    from: '      if (utf8ByteLength(value) > max) push(`${at}.${field} exceeds ${max} UTF-8 bytes`);',
+    to: "",
+    expect: ["CC80.", "CC81."],
+  },
+  {
+    // The builder half of finding 1: routing conflicted records back to their
+    // ordinary sections is exactly what made legitimate packs invalid.
+    name: "the builder stops routing conflicted records into conflictedEvidence",
+    file: EVIDENCE_PACK,
+    from: "    if (conflicted.has(record.id)) {\n      conflictedEvidence.push(record);\n      continue;\n    }",
+    to: "",
+    expect: ["CC70.", "CC73."],
   },
 ];
 

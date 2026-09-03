@@ -446,6 +446,12 @@ export const EVIDENCE_PACK_BLOCK_CHARS = serializedCeiling(
     creativeHypotheses: [],
     causalHypotheses: [],
     unusable: {
+      // The conflict pairs. `conflictedEvidence` — the pack section holding the
+      // authoritative records behind these ids — is deliberately NOT a
+      // separate entry here: a pack invariant asserts the set of ids it holds
+      // is exactly the set of ids these pairs name, so the exclusion is
+      // already shown and a second list would only duplicate it. That
+      // equivalence is what makes this witness still cover the real shape.
       conflicted: times(EVIDENCE_LIMITS.maxProjectedConflicts, () => ({ aId: "", bId: "", subject: "" })),
       stale: times(EVIDENCE_LIMITS.maxProjectedRecords, () => ""),
       inactive: times(EVIDENCE_LIMITS.maxProjectedRecords, () => ""),
@@ -951,14 +957,18 @@ export const POLICY_OUTPUT_TOKEN_FLOORS: Record<string, number> = (() => {
 export const STAGE_REQUEST_MAX_RETRIES = 0;
 
 /**
- * The output rate a stage request's timeout is sized against.
+ * The output rate a stage's stream deadline is sized against.
  *
- * **A deliberately pessimistic floor, not a measurement.** No stage in this
- * repository has ever executed against a real model, so there is nothing to
- * measure; this is the slowest sustained rate the timeout is willing to call a
- * live request rather than a hung one. Observed rates for the configured models
- * are several times this, which is the point — a timeout is a safety bound, and
- * one that trips on a merely slow response is a defect, not a protection.
+ * **An explicit operational assumption, not a measurement and not a guarantee.**
+ * No stage in this repository has ever executed against a real model, so there
+ * is nothing here to measure and nothing is claimed about what a model does.
+ * This is a policy choice: the slowest sustained output rate the pipeline is
+ * willing to treat as a live stream rather than a hung one. Choosing it low
+ * makes the deadline generous, which is the safe direction for a bound whose
+ * only job is to stop an indefinite hang — a deadline that fires on a merely
+ * slow response is a defect, not a protection. If real runs ever produce
+ * measured rates, this number should be revisited against them; until then it
+ * carries no empirical backing.
  */
 export const MIN_OUTPUT_TOKENS_PER_SECOND = 20;
 
@@ -966,16 +976,35 @@ export const MIN_OUTPUT_TOKENS_PER_SECOND = 20;
 export const STAGE_REQUEST_OVERHEAD_MS = 60_000;
 
 /**
- * How long a stage request may take, derived from what the stage may return.
+ * How long request **setup** may take: the fetch up to streaming response
+ * headers, and nothing after that.
+ *
+ * This is the value the Anthropic SDK's `timeout` option actually bounds. In
+ * the pinned SDK the timer is armed around the underlying `fetch` and cleared
+ * in a `finally` as soon as that call resolves — which, for a streaming
+ * request, is when response headers arrive. Everything after that point is
+ * `MessageStream` consuming events with no timer of its own. So this bounds
+ * getting the connection, not receiving the answer, and it is deliberately
+ * small: a minute is generous for headers and says nothing about generation.
+ *
+ * `stageStreamDeadlineMs` is the bound that covers the rest. The two are
+ * named apart on purpose — collapsing them is exactly how a 90-second value
+ * came to be described as bounding a response it could not have bounded.
+ */
+export const STAGE_REQUEST_SETUP_TIMEOUT_MS = 60_000;
+
+/**
+ * The total deadline for one stage stream, derived from what the stage may
+ * return — from opening the request to the last event of the final message.
  *
  * The 90-second non-streaming budget this replaces could not carry the output
- * contracts it was paired with: at the derived budgets — 8,000 tokens for
- * `reasoning-heavy`, 15,000 for `reasoning-standard` and `critic` — a
- * contract-valid maximum response cannot be generated in 90 seconds by any
- * model, so the timeout, not the contract, decided what the pipeline could
- * produce. Deriving the bound from the declared maximum is what makes the
- * limit, the timeout, the tests and the documentation describe one operational
- * contract instead of three.
+ * contracts it was paired with: at the derived per-policy budgets — 40,000
+ * tokens for `reasoning-heavy`, 79,000 for `reasoning-standard`, 73,000 for
+ * `critic` — a contract-valid maximum response cannot be generated in 90
+ * seconds by any model, so the timeout, not the contract, decided what the
+ * pipeline could produce. Deriving the bound from the declared maximum is what
+ * makes the limit, the deadline, the tests and the documentation describe one
+ * operational contract instead of three.
  *
  * Rounded up to a whole minute so the number reads as the coarse safety bound
  * it is rather than a false precision.
@@ -985,26 +1014,30 @@ export const STAGE_REQUEST_OVERHEAD_MS = 60_000;
  * escaping-aware UTF-8 byte — which guarantees every contract-valid response
  * fits and therefore over-states what any real response needs by several times.
  * An ordinary contract-valid JSON response completes in a small fraction of
- * these budgets. A timeout that tripped before the declared maximum could be
- * produced would mean the timeout, not the contract, decided what the pipeline
+ * these budgets. A deadline that fired before the declared maximum could be
+ * produced would mean the deadline, not the contract, decided what the pipeline
  * could return, which is precisely the defect this replaces; so the bound is
  * sized to the contract and the contract is what the reader should judge.
  * Nothing here has executed against a real model, so these are derived bounds,
  * not measured latencies.
+ *
+ * **This bound is only real if something enforces it.** The SDK does not: see
+ * `STAGE_REQUEST_SETUP_TIMEOUT_MS`. `runStageAgent` arms its own timer for this
+ * duration and aborts the stream when it expires.
  */
-export function stageRequestTimeoutMs(maxOutputTokens: number): number {
+export function stageStreamDeadlineMs(maxOutputTokens: number): number {
   const generationMs = (maxOutputTokens / MIN_OUTPUT_TOKENS_PER_SECOND) * 1_000;
   return Math.ceil((generationMs + STAGE_REQUEST_OVERHEAD_MS) / 60_000) * 60_000;
 }
 
 /**
- * The per-policy timeouts, derived from the per-policy output budgets.
+ * The per-policy stream deadlines, derived from the per-policy output budgets.
  *
- * Exported so a regression can assert the timeout a stage actually sends is the
+ * Exported so a regression can assert the deadline a stage actually arms is the
  * one its own budget implies, rather than a constant that happens to agree.
  */
-export const POLICY_REQUEST_TIMEOUT_MS: Record<string, number> = Object.fromEntries(
+export const POLICY_STREAM_DEADLINE_MS: Record<string, number> = Object.fromEntries(
   Object.entries(POLICY_OUTPUT_TOKEN_FLOORS).map(
-    ([policy, tokens]) => [policy, stageRequestTimeoutMs(tokens)],
+    ([policy, tokens]) => [policy, stageStreamDeadlineMs(tokens)],
   ),
 );

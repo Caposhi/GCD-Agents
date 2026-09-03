@@ -11,7 +11,11 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { config } from "./config.js";
 import type { StageThinkingPolicy } from "./agents/modelPolicy.js";
-import { STAGE_REQUEST_MAX_RETRIES, stageRequestTimeoutMs } from "./agents/payloadContract.js";
+import {
+  STAGE_REQUEST_MAX_RETRIES,
+  STAGE_REQUEST_SETUP_TIMEOUT_MS,
+  stageStreamDeadlineMs,
+} from "./agents/payloadContract.js";
 
 let client: Anthropic | undefined;
 function getClient(): Anthropic {
@@ -59,7 +63,7 @@ export interface AgentRunOptions {
  * which is how the SDK's default of two retries survived unnoticed underneath a
  * documented "exactly one model request" guarantee.
  */
-export interface SdkRequestOptions {
+export interface LegacyRequestOptions {
   /** Milliseconds. The TypeScript SDK measures timeouts in milliseconds. */
   timeout: number;
   /** Wire-level retries the SDK may take. `undefined` means the SDK default. */
@@ -68,7 +72,7 @@ export interface SdkRequestOptions {
 
 export type AgentMessageCreator = (
   request: Anthropic.MessageCreateParamsNonStreaming,
-  options: SdkRequestOptions,
+  options: LegacyRequestOptions,
 ) => Promise<Anthropic.Message>;
 
 /**
@@ -78,7 +82,7 @@ export type AgentMessageCreator = (
  * agent and vision paths, which are unchanged by the Content Intelligence
  * request policy and are not covered by any one-request guarantee.
  */
-const LEGACY_REQUEST_OPTIONS: SdkRequestOptions = { timeout: 90_000, maxRetries: undefined };
+const LEGACY_REQUEST_OPTIONS: LegacyRequestOptions = { timeout: 90_000, maxRetries: undefined };
 
 function buildRequest(opts: AgentRunOptions): {
   model: string;
@@ -103,7 +107,7 @@ function buildRequest(opts: AgentRunOptions): {
  * the SDK request without a credential or provider call.
  *
  * **Legacy path.** Non-streaming, SDK-default retries, 90-second timeout —
- * unchanged. Content Intelligence stages use `runStageAgentWithMessageCreator`.
+ * unchanged. Content Intelligence stages use `runStageAgent` instead.
  */
 export async function runAgentWithMessageCreator(
   opts: AgentRunOptions,
@@ -140,36 +144,141 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
  *    open long enough to receive it. `finalMessage()` reassembles the complete
  *    response, so callers see the same `Anthropic.Message` either way and no
  *    stage handles stream events.
- *  - **The timeout is derived from the budget** rather than a fixed 90 seconds
- *    that could not carry any stage's declared maximum.
+ *  - **Two separate bounds, because the SDK only implements one of them.**
+ *    `requestSetupTimeoutMs` is the SDK's `timeout` option, and in the pinned
+ *    SDK that timer is armed around the underlying `fetch` and cleared in a
+ *    `finally` the moment it resolves — which for a streaming request is when
+ *    response *headers* arrive. Everything after that is `MessageStream`
+ *    consuming events with no timer at all, so a stalled stream would hang
+ *    indefinitely. `streamDeadlineMs` is therefore enforced here: a timer armed
+ *    before the stream is consumed, aborting it if the deadline passes, cleared
+ *    in a `finally` on both success and failure.
  *
  * A streaming request is still exactly one request: `messages.stream` opens one
- * HTTP connection and, with retries disabled, never opens a second.
+ * HTTP connection and, with retries disabled, never opens a second. The
+ * deadline aborts that one connection; it never opens another.
  */
-export type StageMessageCreator = (
-  request: Anthropic.MessageCreateParamsNonStreaming,
-  options: SdkRequestOptions,
-) => Promise<Anthropic.Message>;
 
-export async function runStageAgentWithMessageCreator(
+/** The complete set of SDK request options a stage request sends. */
+export interface StageRequestOptions {
+  /**
+   * Bounds request **setup** only — the fetch up to streaming response headers.
+   * This is what the SDK's `timeout` option actually covers.
+   */
+  requestSetupTimeoutMs: number;
+  /**
+   * Bounds the **entire** streaming lifecycle, including event consumption
+   * after headers. Enforced by this module, not by the SDK.
+   */
+  streamDeadlineMs: number;
+  /** Wire-level retries the SDK may take. Zero for every stage request. */
+  maxRetries: number;
+}
+
+/**
+ * The stream surface this module needs, and nothing more.
+ *
+ * Narrow on purpose: an offline test can supply a stream that never finishes,
+ * or one that finishes immediately, without a credential, a provider, or a
+ * real `MessageStream`.
+ */
+export interface StageStream {
+  finalMessage(): Promise<Anthropic.Message>;
+  abort(): void;
+}
+
+export type StageStreamOpener = (
+  request: Anthropic.MessageCreateParamsNonStreaming,
+  options: StageRequestOptions,
+) => StageStream;
+
+/**
+ * The timer surface, injectable so a test can prove the deadline fires and the
+ * timer is cleared without waiting the real 35–67 minutes.
+ */
+export interface StageTimers {
+  setTimeout(callback: () => void, ms: number): unknown;
+  clearTimeout(handle: unknown): void;
+}
+
+const REAL_TIMERS: StageTimers = {
+  setTimeout: (callback, ms) => setTimeout(callback, ms),
+  clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+};
+
+/**
+ * A stage stream aborted for exceeding its total deadline.
+ *
+ * Distinct from a request-setup timeout, which the SDK raises as its own abort
+ * error: this one means headers arrived and then the stream stopped producing.
+ * `invokeStage` wraps whatever a runner throws in a `StageExecutionError`, so
+ * this reaches a caller as the same fail-closed stage error as every other
+ * model-request failure, with its message preserved.
+ */
+export class StageStreamDeadlineError extends Error {
+  readonly deadlineMs: number;
+  readonly maxOutputTokens: number;
+  constructor(deadlineMs: number, maxOutputTokens: number) {
+    super(
+      `stage stream exceeded its ${deadlineMs}ms total deadline for ${maxOutputTokens} `
+      + "max output tokens and was aborted",
+    );
+    this.name = "StageStreamDeadlineError";
+    this.deadlineMs = deadlineMs;
+    this.maxOutputTokens = maxOutputTokens;
+  }
+}
+
+export function stageRequestOptionsFor(maxOutputTokens: number): StageRequestOptions {
+  return {
+    requestSetupTimeoutMs: STAGE_REQUEST_SETUP_TIMEOUT_MS,
+    streamDeadlineMs: stageStreamDeadlineMs(maxOutputTokens),
+    maxRetries: STAGE_REQUEST_MAX_RETRIES,
+  };
+}
+
+export async function runStageAgentWithStreamOpener(
   opts: AgentRunOptions,
-  createMessage: StageMessageCreator,
+  openStream: StageStreamOpener,
+  timers: StageTimers = REAL_TIMERS,
 ): Promise<AgentRunResult> {
   const { model, request } = buildRequest(opts);
-  const res = await createMessage(request, {
-    timeout: stageRequestTimeoutMs(request.max_tokens),
-    maxRetries: STAGE_REQUEST_MAX_RETRIES,
-  });
-  return collect(res, model);
+  const options = stageRequestOptionsFor(request.max_tokens);
+
+  // Opened once. The deadline aborts this stream; it never opens another.
+  const stream = openStream(request, options);
+  let deadlineExpired = false;
+  const handle = timers.setTimeout(() => {
+    deadlineExpired = true;
+    stream.abort();
+  }, options.streamDeadlineMs);
+
+  try {
+    return collect(await stream.finalMessage(), model);
+  } catch (error) {
+    // A deadline abort surfaces from the SDK as a generic user-abort error.
+    // Naming it here is what makes the failure legible instead of looking like
+    // an unexplained cancellation.
+    if (deadlineExpired) {
+      throw new StageStreamDeadlineError(options.streamDeadlineMs, request.max_tokens);
+    }
+    throw error;
+  } finally {
+    timers.clearTimeout(handle);
+  }
 }
 
 export async function runStageAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
-  return runStageAgentWithMessageCreator(
-    opts,
-    (request, options) => getClient().messages
-      .stream(request, { timeout: options.timeout, maxRetries: options.maxRetries })
-      .finalMessage(),
-  );
+  return runStageAgentWithStreamOpener(opts, (request, options) => {
+    const stream = getClient().messages.stream(request, {
+      timeout: options.requestSetupTimeoutMs,
+      maxRetries: options.maxRetries,
+    });
+    return {
+      finalMessage: () => stream.finalMessage(),
+      abort: () => stream.abort(),
+    };
+  });
 }
 
 export interface VisionRunOptions {

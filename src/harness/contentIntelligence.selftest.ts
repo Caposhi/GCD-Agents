@@ -24,6 +24,7 @@ import {
   evidencePackInvariants,
   evidencePackSemanticViolations,
   renderEvidencePackForStage,
+  unusableEvidenceIds,
 } from "./evidence/pack.js";
 import type { EvidenceConflict, EvidencePack } from "./evidence/pack.js";
 import {
@@ -40,11 +41,12 @@ import {
   STAGE_ASSEMBLED_CEILINGS,
   STRATEGY_ID_CHANNELS,
   MIN_OUTPUT_TOKENS_PER_SECOND,
-  POLICY_REQUEST_TIMEOUT_MS,
+  POLICY_STREAM_DEADLINE_MS,
   STAGE_REQUEST_MAX_RETRIES,
+  STAGE_REQUEST_SETUP_TIMEOUT_MS,
   STRATEGY_OUTPUT,
   TRUTH_OUTPUT,
-  stageRequestTimeoutMs,
+  stageStreamDeadlineMs,
   isSerializableText,
   minimumOutputTokens,
   utf8ByteLength,
@@ -87,10 +89,11 @@ import {
   resolveModelPolicy,
 } from "./agents/modelPolicy.js";
 import {
+  StageStreamDeadlineError,
   runAgentWithMessageCreator,
-  runStageAgentWithMessageCreator,
+  runStageAgentWithStreamOpener,
 } from "./sdk.js";
-import type { SdkRequestOptions } from "./sdk.js";
+import type { LegacyRequestOptions, StageRequestOptions, StageTimers } from "./sdk.js";
 import type { AgentRunOptions } from "./sdk.js";
 import {
   LIMITS,
@@ -5716,10 +5719,14 @@ async function run(): Promise<void> {
     });
     await injectedProductionRunner(credentialCalls[0]!);
 
-    // The STAGE boundary, inspected byte for byte — including the retry policy,
-    // which is what the "exactly one model request" guarantee actually rests on.
+    const unwrappedPayload = payloadSource.replace(/\n\s*\*\s?/g, " ").replace(/\s+/g, " ");
+    const stageExecutionSource = await readFile(
+      resolve(REPO_ROOT, "src/harness/agents/stageExecution.ts"), "utf8");
+    // The STAGE boundary, inspected byte for byte — including both bounds and
+    // the retry policy, which is what the "exactly one model request"
+    // guarantee actually rests on.
     let sdkRequest: Record<string, unknown> | undefined;
-    let sdkOptions: SdkRequestOptions | undefined;
+    let sdkOptions: StageRequestOptions | undefined;
     const cannedMessage = (request: { model: unknown }) => ({
       id: "msg_offline",
       type: "message",
@@ -5730,15 +5737,48 @@ async function run(): Promise<void> {
       stop_sequence: null,
       usage: { input_tokens: 1, output_tokens: 1 },
     } as any);
-    await runStageAgentWithMessageCreator(mappedAgentRequest!, async (request, options) => {
+
+    /** A controllable offline stream and timer pair. Nothing waits in real time. */
+    interface FakeClock {
+      armed: Array<{ ms: number; fire: () => void; cleared: boolean }>;
+      timers: StageTimers;
+      fireAll: () => void;
+    }
+    const fakeClock = (): FakeClock => {
+      const armed: FakeClock["armed"] = [];
+      return {
+        armed,
+        timers: {
+          setTimeout: (callback, ms) => {
+            const entry = { ms, fire: callback, cleared: false };
+            armed.push(entry);
+            return entry;
+          },
+          clearTimeout: (handle) => {
+            const entry = handle as FakeClock["armed"][number];
+            if (entry) entry.cleared = true;
+          },
+        },
+        fireAll: () => armed.filter((e) => !e.cleared).forEach((e) => e.fire()),
+      };
+    };
+
+    const completing = fakeClock();
+    let opened = 0;
+    let aborted = 0;
+    await runStageAgentWithStreamOpener(mappedAgentRequest!, (request, options) => {
+      opened += 1;
       sdkRequest = request as unknown as Record<string, unknown>;
       sdkOptions = options;
-      return cannedMessage(request);
-    });
+      return {
+        finalMessage: async () => cannedMessage(request),
+        abort: () => { aborted += 1; },
+      };
+    }, completing.timers);
 
     // The LEGACY boundary, asserted unchanged in the same breath.
     let legacySdkRequest: Record<string, unknown> | undefined;
-    let legacySdkOptions: SdkRequestOptions | undefined;
+    let legacySdkOptions: LegacyRequestOptions | undefined;
     await runAgentWithMessageCreator({
       systemPrompt: "legacy-system", prompt: "legacy-prompt",
     }, async (request, options) => {
@@ -5766,9 +5806,7 @@ async function run(): Promise<void> {
     // connection errors — and timeouts too, so a 90-second budget was really up
     // to 270 seconds across three attempts. Until this was set explicitly,
     // "exactly one model request" and `modelRequests: 1` described one wrapper
-    // invocation, not one provider request. These checks read the option the
-    // stage boundary actually sends, so a silent return to the SDK default
-    // fails here rather than in production.
+    // invocation, not one provider request.
     check("CC39. the stage request boundary disables SDK retries explicitly, so one wrapper "
       + "invocation is one wire request and the modelRequests metadata is true of the network",
       sdkOptions !== undefined
@@ -5780,70 +5818,167 @@ async function run(): Promise<void> {
         && legacySdkOptions!.maxRetries === undefined
         && legacySdkOptions!.timeout === 90_000);
 
-    // --- CC-J. the timeout can carry the response the contract declares -----
+    // --- CC-J. TWO bounds, because the SDK only implements one --------------
     //
-    // The replaced 90-second budget could not: at the derived per-policy
-    // ceilings a contract-valid maximum response cannot be produced in 90
-    // seconds by any model, so the timeout — not the output contract — decided
-    // what the pipeline could return. The bound is now derived from the same
-    // budget, and asserted to be derived rather than to merely agree.
+    // The SDK's `timeout` option arms a timer around the underlying fetch and
+    // clears it in a `finally` when that call resolves — for a streaming
+    // request, when response HEADERS arrive. Event consumption afterwards has
+    // no timer, so a stalled stream would hang forever. The setup timeout and
+    // the total stream deadline are therefore separate values with separate
+    // names, and the second one is enforced here rather than by the SDK.
     const stageBudget = POLICY_MAX_TOKENS["reasoning-heavy"];
-    check("CC41. the stage timeout is derived from the stage's own output budget, not a fixed "
-      + "value, and is large enough to carry that budget at the documented throughput floor",
+    check("CC41. the stage arms a total stream deadline derived from its own output budget, "
+      + "distinct from the much smaller request-setup timeout the SDK actually bounds",
       sdkOptions !== undefined
-        && sdkOptions!.timeout === stageRequestTimeoutMs(stageBudget)
-        && sdkOptions!.timeout === POLICY_REQUEST_TIMEOUT_MS["reasoning-heavy"]
-        && sdkOptions!.timeout > 90_000
-        && sdkOptions!.timeout
-             >= (stageBudget / MIN_OUTPUT_TOKENS_PER_SECOND) * 1_000);
-    check("CC42. every policy's timeout carries its own budget, and a larger budget is never "
-      + "given a smaller timeout",
+        && sdkOptions!.streamDeadlineMs === stageStreamDeadlineMs(stageBudget)
+        && sdkOptions!.streamDeadlineMs === POLICY_STREAM_DEADLINE_MS["reasoning-heavy"]
+        && sdkOptions!.streamDeadlineMs
+             >= (stageBudget / MIN_OUTPUT_TOKENS_PER_SECOND) * 1_000
+        && sdkOptions!.requestSetupTimeoutMs === STAGE_REQUEST_SETUP_TIMEOUT_MS
+        && sdkOptions!.requestSetupTimeoutMs < sdkOptions!.streamDeadlineMs);
+    check("CC42. every policy's deadline carries its own budget, and a larger budget is never "
+      + "given a smaller deadline",
       (Object.keys(POLICY_MAX_TOKENS) as Array<keyof typeof POLICY_MAX_TOKENS>).every((policy) => {
         const budget = POLICY_MAX_TOKENS[policy];
-        const timeout = POLICY_REQUEST_TIMEOUT_MS[policy];
-        return timeout === stageRequestTimeoutMs(budget)
-          && timeout >= (budget / MIN_OUTPUT_TOKENS_PER_SECOND) * 1_000;
+        const deadline = POLICY_STREAM_DEADLINE_MS[policy];
+        return deadline === stageStreamDeadlineMs(budget)
+          && deadline >= (budget / MIN_OUTPUT_TOKENS_PER_SECOND) * 1_000;
       })
-        && POLICY_REQUEST_TIMEOUT_MS["reasoning-standard"]!
-             >= POLICY_REQUEST_TIMEOUT_MS["reasoning-heavy"]!);
-    check("CC43. the throughput floor is documented as a conservative bound rather than a "
-      + "measurement, and the source says no stage has run against a real model",
-      /deliberately pessimistic floor, not a measurement/
-        .test(payloadSource.replace(/\n\s*\*\s?/g, " "))
-        && /derived bounds, not measured latencies/
-             .test(payloadSource.replace(/\n\s*\*\s?/g, " "))
+        && POLICY_STREAM_DEADLINE_MS["reasoning-standard"]!
+             >= POLICY_STREAM_DEADLINE_MS["reasoning-heavy"]!);
+    check("CC43. the throughput floor is documented as an explicit operational assumption "
+      + "rather than a measurement, and claims no observed model rate",
+      /explicit operational assumption, not a measurement and not a guarantee/
+        .test(unwrappedPayload)
+        && /derived bounds, not measured latencies/.test(unwrappedPayload)
+        && !/Observed rates/i.test(payloadSource)
         && MIN_OUTPUT_TOKENS_PER_SECOND > 0);
+    check("CC43a. the derivation comment records the budgets the policies actually carry",
+      unwrappedPayload.includes(
+        `${POLICY_MAX_TOKENS["reasoning-heavy"].toLocaleString("en-US")} tokens for`)
+        && unwrappedPayload.includes(
+             `${POLICY_MAX_TOKENS["reasoning-standard"].toLocaleString("en-US")} for`)
+        && unwrappedPayload.includes(
+             `${POLICY_MAX_TOKENS.critic.toLocaleString("en-US")} for`)
+        && !/8,000 tokens for|15,000 for/.test(unwrappedPayload));
 
-    // --- CC-K. the stage path streams, because the budget requires it -------
+    // --- CC-K. the deadline is enforced, not merely computed ---------------
+    check("CC44. a completing stream returns normally, opens exactly one stream, is never "
+      + "aborted, and its deadline timer is cleared",
+      opened === 1
+        && aborted === 0
+        && completing.armed.length === 1
+        && completing.armed[0]!.ms === sdkOptions!.streamDeadlineMs
+        && completing.armed[0]!.cleared === true);
+
+    // A stream that never finishes. Without an enforced deadline this hangs
+    // forever; with one it is aborted and reported as a named failure. The
+    // fake clock fires the timer immediately, so no test waits 35 minutes.
+    const stalling = fakeClock();
+    let stallOpened = 0;
+    let stallAborted = 0;
+    let stallFailure = "";
+    let stallTyped = false;
+    try {
+      await runStageAgentWithStreamOpener(mappedAgentRequest!, (request, options) => {
+        stallOpened += 1;
+        let rejectStream: (reason: unknown) => void = () => {};
+        const pending = new Promise<never>((_, reject) => { rejectStream = reject; });
+        // Arm the deadline, then let it fire — exactly the ordering a real
+        // stalled stream produces.
+        queueMicrotask(() => {
+          stalling.fireAll();
+        });
+        // A real stalled stream settles for one reason only: something aborts
+        // it. This fake must not settle for any other reason either, or the
+        // check would pass with the abort removed — so its only other exit is
+        // this macrotask backstop, which stands in for "still open, and
+        // nothing is going to stop it". A macrotask runs strictly after every
+        // microtask, so a deadline that does abort always wins the race; one
+        // that does not is observed here as a stream still open past its
+        // deadline, rather than hanging this suite forever.
+        setTimeout(() => {
+          rejectStream(new Error("stream still open past its deadline; nothing aborted it"));
+        }, 0);
+        return {
+          finalMessage: () => pending,
+          abort: () => {
+            stallAborted += 1;
+            // A real SDK abort rejects the in-flight final message.
+            rejectStream(new Error("Request was aborted."));
+          },
+        };
+      }, stalling.timers);
+    } catch (error) {
+      stallFailure = error instanceof Error ? error.message : String(error);
+      stallTyped = error instanceof StageStreamDeadlineError;
+    }
+    check("CC45. a stream that never finishes is aborted at the total deadline and reported as "
+      + "a named deadline failure, having opened exactly one stream and taken no retry",
+      stallOpened === 1
+        && stallAborted === 1
+        && stallTyped
+        && /exceeded its \d+ms total deadline/.test(stallFailure)
+        && stalling.armed.length === 1
+        && stalling.armed[0]!.ms === POLICY_STREAM_DEADLINE_MS["reasoning-heavy"]);
+    check("CC45a. the deadline timer is cleared on the failure path too, so a refused stage "
+      + "leaves no timer behind",
+      stalling.armed[0]!.cleared === true);
+
+    // A stream that fails for a reason other than the deadline must surface
+    // that reason, not be relabelled as a timeout.
+    let otherFailure = "";
+    let otherTyped = false;
+    const failing = fakeClock();
+    try {
+      await runStageAgentWithStreamOpener(mappedAgentRequest!, () => ({
+        finalMessage: async () => { throw new Error("provider refused the request"); },
+        abort: () => {},
+      }), failing.timers);
+    } catch (error) {
+      otherFailure = error instanceof Error ? error.message : String(error);
+      otherTyped = error instanceof StageStreamDeadlineError;
+    }
+    check("CC45b. a non-deadline stream failure keeps its own reason and is not relabelled a "
+      + "deadline, and its timer is cleared as well",
+      /provider refused the request/.test(otherFailure)
+        && !otherTyped
+        && failing.armed[0]!.cleared === true);
+
+    // --- CC-L. the production path is the one carrying that policy ---------
     const sdkSource = await readFile(resolve(REPO_ROOT, "src/harness/sdk.ts"), "utf8");
     const stageRunnerBody = /export async function runStageAgent\(([\s\S]*?)\n}/.exec(sdkSource)?.[1] ?? "";
+    const stageDeadlineBody =
+      /export async function runStageAgentWithStreamOpener\(([\s\S]*?)\n}/.exec(sdkSource)?.[1] ?? "";
     const legacyRunnerBody = /export async function runAgent\(([\s\S]*?)\n}/.exec(sdkSource)?.[1] ?? "";
-    check("CC44. the production stage runner streams and reassembles with finalMessage, while "
-      + "the legacy runner keeps its non-streaming create call",
-      /messages\s*\n?\s*\.stream\(/.test(stageRunnerBody)
+    check("CC46. the production stage runner streams and reassembles with finalMessage, arms and "
+      + "clears its own deadline, and the legacy runner keeps its non-streaming create call",
+      /messages\s*\n?\s*\.?stream\(/.test(stageRunnerBody)
         && /finalMessage\(\)/.test(stageRunnerBody)
+        && /timeout: options\.requestSetupTimeoutMs/.test(stageRunnerBody)
         && /maxRetries: options\.maxRetries/.test(stageRunnerBody)
+        && /timers\.setTimeout\(/.test(stageDeadlineBody)
+        && /stream\.abort\(\)/.test(stageDeadlineBody)
+        && /finally \{[\s\S]*timers\.clearTimeout\(handle\)/.test(stageDeadlineBody)
         && /messages\.create\(/.test(legacyRunnerBody)
         && !/\.stream\(/.test(legacyRunnerBody));
-    check("CC45. the stage runner is what the registry's production runner resolves to, so the "
+    check("CC46a. the stage runner is what the registry's production runner resolves to, so the "
       + "policy is not merely available but actually the one on the path",
-      /import \{ runStageAgent \} from "\.\.\/sdk\.js";/.test(
-        await readFile(resolve(REPO_ROOT, "src/harness/agents/stageExecution.ts"), "utf8"))
-        && /createAnthropicStageRunner\(run: AgentRunner = runStageAgent\)/.test(
-             await readFile(resolve(REPO_ROOT, "src/harness/agents/stageExecution.ts"), "utf8")));
-    // The whole stage path, not one function body: the timeout is chosen in
-    // `runStageAgentWithMessageCreator` and applied in `runStageAgent`, so a
-    // scan of either alone would miss a literal reintroduced in the other.
-    const stagePathSource = [
-      /export async function runStageAgentWithMessageCreator\(([\s\S]*?)\n}/.exec(sdkSource)?.[1] ?? "",
-      stageRunnerBody,
-    ].join("\n");
-    check("CC46. no 90-second literal survives anywhere on the Content Intelligence stage path",
-      stagePathSource.length > 0
-        && !/90_000|90000/.test(stagePathSource)
-        && !/90_000|90000/.test(
-             await readFile(resolve(REPO_ROOT, "src/harness/agents/stageExecution.ts"), "utf8"))
+      /import \{[\s\S]*runStageAgent[\s\S]*\} from "\.\.\/sdk\.js";|import \{ runStageAgent \} from "\.\.\/sdk\.js";/
+        .test(stageExecutionSource)
+        && /createAnthropicStageRunner\(run: AgentRunner = runStageAgent\)/.test(stageExecutionSource));
+    check("CC46b. no 90-second literal survives anywhere on the Content Intelligence stage path",
+      stageDeadlineBody.length > 0
+        && !/90_000|90000/.test(stageRunnerBody)
+        && !/90_000|90000/.test(stageDeadlineBody)
+        && !/90_000|90000/.test(stageExecutionSource)
         && !/90_000|90000/.test(payloadSource));
+    check("CC46c. the two bounds are named apart in the source, so neither can be mistaken for "
+      + "the other",
+      /requestSetupTimeoutMs/.test(sdkSource)
+        && /streamDeadlineMs/.test(sdkSource)
+        && /Bounds request \*\*setup\*\* only/.test(sdkSource)
+        && /Bounds the \*\*entire\*\* streaming lifecycle/.test(sdkSource));
 
     // --- CC-H. review corrections: adversarial cardinality and representation
     const detailCounterexample = Object.fromEntries(Array.from({ length: 410 }, (_, index) => [
@@ -6231,11 +6366,12 @@ async function run(): Promise<void> {
       conflicts: [conflictOf({})],
       counts: { ...basePack.counts, conflicts: 1 },
     });
-    check("CC61. a record named in a live conflict cannot also remain usable in allowedFacts — "
-      + "conflict membership and usable membership are checked against each other",
+    check("CC61. a record named in a live conflict cannot also sit in allowedFacts — a conflict "
+      + "endpoint belongs in conflictedEvidence, where it is neither citable nor missing",
       conflictedYetUsable.calls === 0
         && conflictedYetUsable.typed
-        && /which is also usable in allowedFacts/.test(conflictedYetUsable.refusal));
+        && /which this pack holds in allowedFacts; a record in a live conflict belongs in conflictedEvidence/
+             .test(conflictedYetUsable.refusal));
 
     // Counts: the exact key set, integer values, and the truth.
     const wrongCount = await runWithPack({
@@ -6301,6 +6437,201 @@ async function run(): Promise<void> {
                evidence: { ...validStrategyOutput.evidence, supportingFactIds: [packHypo.id] } },
              promotedPack,
            ).length === 0);
+
+    // --- CC-O. positive controls: real conflict packs must be ACCEPTED ------
+    //
+    // The whole of CC-M proved invalid conflicts are refused, and every one of
+    // those checks passed while the validator was ALSO rejecting every
+    // legitimate conflict pack the builder produces. Refusal coverage cannot
+    // see that; only a positive control can. Two shapes, because the builder
+    // reached them by different routes and each was broken differently:
+    //
+    //  - an INFERRED fact conflict removed both facts from `allowedFacts` and
+    //    placed them nowhere, so both endpoints looked nonexistent;
+    //  - a DECLARED conflict over non-fact evidence left both records in their
+    //    ordinary sections, so both endpoints looked "also usable".
+    const conflictFactA = {
+      ...wellFormed.verified_automotive_fact,
+      id: "conflict-fact-a", subject: "brake-fluid", attribute: "interval",
+      claim: "Brake fluid is replaced every two years.",
+    } as EvidenceRecord;
+    const conflictFactB = {
+      ...conflictFactA, id: "conflict-fact-b",
+      claim: "Brake fluid is replaced every three years.",
+    } as EvidenceRecord;
+    const inferredPack = buildEvidencePack({
+      goal: "inferred conflict", now: NOW,
+      records: [conflictFactA, conflictFactB, wellFormed.verified_business_fact],
+    });
+    const inferredRun = await runWithPack(inferredPack);
+    let inferredRendered = "";
+    let inferredRenderError = "";
+    try {
+      inferredRendered = renderEvidencePackForStage(inferredPack);
+    } catch (error) {
+      inferredRenderError = error instanceof Error ? error.message : String(error);
+    }
+    let inferredPreviewInert: boolean | undefined;
+    let inferredPreviewError = "";
+    try {
+      inferredPreviewInert = (await buildContentIntelligencePreview({
+        goal: "inferred conflict", now: NOW, traceId: "fixed-trace", businessContext,
+        records: [conflictFactA, conflictFactB, wellFormed.verified_business_fact],
+      })).executionDisabled;
+    } catch (error) {
+      inferredPreviewError = error instanceof Error ? error.message : String(error);
+    }
+    check("CC70. an ordinary inferred fact conflict — the builder's own output — is accepted by "
+      + "the validator, the renderer, the preview, and an eligible stage invocation",
+      inferredPack.conflicts.length === 1
+        && inferredPack.conflicts[0]!.basis === "same_attribute_fact"
+        && evidencePackSemanticViolations(inferredPack).length === 0
+        && inferredRenderError === ""
+        && inferredRendered.length > 0
+        && inferredPreviewError === ""
+        && inferredPreviewInert === true
+        && inferredRun.refusal === ""
+        && inferredRun.calls === 1);
+    check("CC71. both endpoints of that conflict are held as real records in conflictedEvidence, "
+      + "are absent from every usable section, and are unusable for citations",
+      inferredPack.conflictedEvidence.map((r) => r.id).sort().join()
+          === ["conflict-fact-a", "conflict-fact-b"].join()
+        && !inferredPack.allowedFacts.some((r) => r.id.startsWith("conflict-fact"))
+        && unusableEvidenceIds(inferredPack).has("conflict-fact-a")
+        && unusableEvidenceIds(inferredPack).has("conflict-fact-b")
+        && inferredPack.counts.conflictedEvidence === 2);
+    // The distinction matters and is asserted rather than blurred: a pack the
+    // validator refuses costs ZERO model calls, because it is refused before
+    // the request. A model that cites a conflicted id against a VALID pack is
+    // refused by output validation, which necessarily happens after the one
+    // request the stage was entitled to make. Making the pack valid did not
+    // make its conflicted records citable.
+    const citedConflicted = await runWithPack(inferredPack, ["conflict-fact-a"]);
+    check("CC72. citing a conflicted endpoint is still refused — by output validation after the "
+      + "stage's one legitimate request, not by the pre-model pack refusal",
+      citedConflicted.refusal !== ""
+        && citedConflicted.calls === 1
+        && /supportingFactIds cites "conflict-fact-a", which is not a citable fact in this pack/
+             .test(citedConflicted.refusal));
+
+    // The declared route, built through the real relation path rather than by
+    // hand, over evidence that is not fact-class at all.
+    const declaredObsA = {
+      ...wellFormed.gcd_direct_observation, id: "declared-obs-a",
+      claim: "One Mini presented with a thermostat-housing fault.",
+    } as EvidenceRecord;
+    const declaredObsB = {
+      ...declaredObsA, id: "declared-obs-b",
+      claim: "A different Mini presented with a coolant-hose fault.",
+    } as EvidenceRecord;
+    const declaredPack = buildEvidencePack({
+      goal: "declared conflict", now: NOW,
+      records: [declaredObsA, declaredObsB, wellFormed.verified_business_fact],
+      relations: [{
+        fromId: "declared-obs-a", toId: "declared-obs-b", kind: "conflicts_with",
+        createdAt: "2026-08-01T00:00:00Z", note: "an operator declared these incompatible",
+      }],
+    });
+    const declaredRun = await runWithPack(declaredPack);
+    check("CC73. a declared conflict over non-fact evidence, built through the real relation "
+      + "path, is accepted — and both endpoints leave gcdObservations for conflictedEvidence",
+      declaredPack.conflicts.length === 1
+        && declaredPack.conflicts[0]!.basis === "declared"
+        && declaredPack.conflicts[0]!.note === "an operator declared these incompatible"
+        && evidencePackSemanticViolations(declaredPack).length === 0
+        && declaredPack.gcdObservations.length === 0
+        && declaredPack.conflictedEvidence.map((r) => r.id).sort().join()
+             === ["declared-obs-a", "declared-obs-b"].join()
+        && unusableEvidenceIds(declaredPack).has("declared-obs-a")
+        && unusableEvidenceIds(declaredPack).has("declared-obs-b")
+        && declaredRun.refusal === ""
+        && declaredRun.calls === 1);
+
+    // The snapshot equivalence, on real builder output rather than by assertion.
+    const snapshotsMatch = (pack: EvidencePack) => pack.conflicts.every((conflict) => {
+      const byId = new Map(pack.conflictedEvidence.map((r) => [r.id, r] as const));
+      const a = byId.get(conflict.aId);
+      const b = byId.get(conflict.bId);
+      return a !== undefined && b !== undefined
+        && conflict.aClaim === a.claim && conflict.bClaim === b.claim
+        && conflict.subject === a.subject;
+    });
+    check("CC74. every conflict's aClaim, bClaim and subject are exact snapshots of the records "
+      + "it names, in both builder routes",
+      snapshotsMatch(inferredPack) && snapshotsMatch(declaredPack));
+    check("CC75. the set of ids conflictedEvidence holds is exactly the set the conflict pairs "
+      + "name — the invariant that lets the projection carry the pairs alone",
+      [inferredPack, declaredPack].every((pack) => {
+        const held = new Set(pack.conflictedEvidence.map((r) => r.id));
+        const named = new Set(pack.conflicts.flatMap((c) => [c.aId, c.bId]));
+        return held.size === named.size && [...held].every((id) => named.has(id));
+      }));
+
+    // --- CC-P. snapshot fabrication and the multibyte byte bound -----------
+    //
+    // A conflict's text reaching a model without matching any record in the
+    // pack is the same fabrication the typed citation channel exists to
+    // prevent, arriving through the exclusion list instead.
+    const fabricatedClaim = await runWithPack({
+      ...inferredPack,
+      conflicts: [{ ...inferredPack.conflicts[0]!, aClaim: "Brake fluid never needs replacing." }],
+    });
+    check("CC76. a conflict whose aClaim does not match the record it names is refused with "
+      + "zero runner calls",
+      fabricatedClaim.calls === 0
+        && fabricatedClaim.typed
+        && /aClaim does not match the claim of conflict-fact-a/.test(fabricatedClaim.refusal));
+    const fabricatedOther = await runWithPack({
+      ...inferredPack,
+      conflicts: [{ ...inferredPack.conflicts[0]!, bClaim: "Something no record says." }],
+    });
+    check("CC77. the same holds for bClaim",
+      fabricatedOther.calls === 0
+        && /bClaim does not match the claim of conflict-fact-b/.test(fabricatedOther.refusal));
+    const fabricatedSubject = await runWithPack({
+      ...inferredPack,
+      conflicts: [{ ...inferredPack.conflicts[0]!, subject: "a-subject-no-record-has" }],
+    });
+    check("CC78. and for subject",
+      fabricatedSubject.calls === 0
+        && /subject does not match the subject of conflict-fact-a/.test(fabricatedSubject.refusal));
+    const orphanConflicted = await runWithPack({
+      ...inferredPack,
+      conflicts: [],
+      counts: { ...inferredPack.counts, conflicts: 0 },
+    });
+    check("CC79. a conflicted record no conflict names is refused, so the section cannot become "
+      + "a place to park records and hide them from the projection",
+      orphanConflicted.calls === 0
+        && /conflictedEvidence holds conflict-fact-a, which no conflict names/
+             .test(orphanConflicted.refusal));
+
+    // Multibyte: fits the code-unit allowance, exceeds the UTF-8 byte allowance.
+    // Every record field already works this way; conflict fields did not.
+    const multibyteSubject = "é".repeat(EVIDENCE_LIMITS.subjectChars);
+    const multibyteConflict = await runWithPack({
+      ...inferredPack,
+      conflicts: [{ ...inferredPack.conflicts[0]!, subject: multibyteSubject }],
+    });
+    check("CC80. a conflict subject that fits the code-unit allowance but exceeds the same "
+      + "allowance in UTF-8 bytes is refused — the bound the payload derivations rest on",
+      multibyteSubject.length === EVIDENCE_LIMITS.subjectChars
+        && multibyteSubject.length * 2 > EVIDENCE_LIMITS.subjectChars
+        && multibyteConflict.calls === 0
+        && multibyteConflict.typed
+        && new RegExp(`subject exceeds ${EVIDENCE_LIMITS.subjectChars} UTF-8 bytes`)
+             .test(multibyteConflict.refusal));
+    const multibyteNote = await runWithPack({
+      ...inferredPack,
+      conflicts: [{
+        ...inferredPack.conflicts[0]!,
+        note: "é".repeat(EVIDENCE_LIMITS.relationNoteChars),
+      }],
+    });
+    check("CC81. the same byte rule covers the optional conflict note",
+      multibyteNote.calls === 0
+        && new RegExp(`note exceeds ${EVIDENCE_LIMITS.relationNoteChars} UTF-8 bytes`)
+             .test(multibyteNote.refusal));
 
   console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURE(S)`);
   process.exit(failures === 0 ? 0 : 1);
