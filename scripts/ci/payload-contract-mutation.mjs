@@ -4,7 +4,7 @@
  *
  * A derivation regression that cannot fail is decoration. This script proves
  * each load-bearing derivation in `src/harness/agents/payloadContract.ts` (and
- * the two files that must agree with it) is actually load-bearing: it applies
+ * the eight files that must agree with it) is actually load-bearing: it applies
  * one focused, single-token mutation, rebuilds, runs the Content Intelligence
  * offline suite, and requires the NAMED check that owns that derivation to
  * fail. Then it restores the file byte-for-byte — verified by SHA-256 against
