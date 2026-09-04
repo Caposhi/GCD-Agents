@@ -75,21 +75,23 @@ import {
   invokeStage,
   parseStrictJsonObject,
 } from "./stageExecution.js";
+import { TRUTH_FIELD_LIMITS, EVIDENCE_LIMITS, HANDOFF_GUARDS, isBoundedSerializableText } from "./payloadContract.js";
 
 export const AUTOMOTIVE_TRUTH_STAGE = "automotive-truth" as const;
 
-/** Bounds on the model's output. Generous enough to be useful, small enough to be safe. */
+/**
+ * Bounds on this stage, owned by `payloadContract.ts`.
+ *
+ * Re-exported under the established name so existing callers are unchanged.
+ * Field limits live in one place because every downstream handoff guard and the
+ * shared assembled-payload boundary are derived from them; the guards this
+ * stage applies to its own inputs are likewise derived from the *producer's*
+ * contract, so a structurally valid upstream result can never be refused here.
+ */
 export const TRUTH_LIMITS = {
-  assessmentChars: 2_000,
-  restatementChars: 400,
-  forbiddenClaimChars: 400,
-  caveatChars: 300,
-  openQuestionChars: 300,
-  strategyOutputChars: 12_000,
-  maxAllowedClaims: 12,
-  maxForbiddenClaims: 12,
-  maxCaveats: 6,
-  maxOpenQuestions: 6,
+  ...TRUTH_FIELD_LIMITS,
+  strategyOutputChars: HANDOFF_GUARDS.strategyOutputChars,
+  evidencePackChars: HANDOFF_GUARDS.evidencePackChars,
 } as const;
 
 /** Exactly the fields the contract allows. Anything else is an extra field. */
@@ -213,6 +215,12 @@ function requireBoundedString(value: unknown, field: string, max: number): strin
   const text = (value as string).trim();
   if (!text) fail(`"${field}" must not be empty`);
   if (text.length > max) fail(`"${field}" exceeds ${max} characters`);
+  // Serializable text only. Control characters and unpaired surrogates are the
+  // only things JSON.stringify expands sixfold; the shared helper also enforces
+  // the UTF-8 byte allowance used by the worst-case token proof.
+  if (!isBoundedSerializableText(text, max)) {
+    fail(`"${field}" exceeds ${max} UTF-8 bytes or contains non-serializable text`);
+  }
   return text;
 }
 
@@ -449,7 +457,11 @@ export function validateAutomotiveTruthOutput(
   );
 
   // --- binding: every permission must name a citable fact in this pack ------
-  const factsById = new Map(pack.allowedFacts.map((r) => [r.id, r]));
+  // Defense in depth: a record only counts as a citable fact here if its own
+  // kind says so, not merely because it was found in `allowedFacts`.
+  const factsById = new Map(
+    pack.allowedFacts.filter((r) => CLASS_OF_KIND[r.kind]).map((r) => [r.id, r]),
+  );
   const blocked = unusableEvidenceIds(pack);
   const seen = new Set<string>();
 
@@ -460,7 +472,7 @@ export function validateAutomotiveTruthOutput(
     const obj = entry as Record<string, unknown>;
     requireExactKeys(obj, ["factId", "claimClass", "restatement"], "allowedClaims entry");
 
-    const factId = requireBoundedString(obj.factId, "allowedClaims[].factId", 200);
+    const factId = requireBoundedString(obj.factId, "allowedClaims[].factId", EVIDENCE_LIMITS.idChars);
     const record = factsById.get(factId);
     if (!record) {
       // Covers both a fabricated id and — critically — a real id from the wrong
@@ -537,7 +549,9 @@ export function allowedClaimRecords(
   output: AutomotiveTruthOutput,
   pack: EvidencePack,
 ): EvidenceRecord[] {
-  const byId = new Map(pack.allowedFacts.map((r) => [r.id, r]));
+  const byId = new Map(
+    pack.allowedFacts.filter((r) => CLASS_OF_KIND[r.kind]).map((r) => [r.id, r]),
+  );
   return output.constraints.allowed
     .map((binding) => byId.get(binding.factId))
     .filter((r): r is EvidenceRecord => r !== undefined);
@@ -600,6 +614,15 @@ export async function executeAutomotiveTruth(
   }
   assertRequiredTruthEvidence(invocation.evidencePack, registry);
 
+  // The evidence pack is the one input this stage does not itself bound: its
+  // cardinality is decided by whatever the classifier produced. Guarded here
+  // against the derived ceiling so an oversized pack is refused before any
+  // model call rather than assembling a payload nothing sized for.
+  const renderedEvidence = renderEvidenceForTruthStage(invocation.evidencePack);
+  if (renderedEvidence.length > HANDOFF_GUARDS.evidencePackChars) {
+    fail(`"evidencePack" exceeds ${HANDOFF_GUARDS.evidencePackChars} characters`);
+  }
+
   const { rawText, metadata } = await invokeStage({
     stage: AUTOMOTIVE_TRUTH_STAGE,
     registry,
@@ -613,7 +636,7 @@ export async function executeAutomotiveTruth(
     referenceChannel: "omit",
     dataBlocks: [
       { label: "STRATEGY_OUTPUT", body: renderedStrategyOutput },
-      { label: "EVIDENCE", body: renderEvidenceForTruthStage(invocation.evidencePack) },
+      { label: "EVIDENCE", body: renderedEvidence },
     ],
   });
 

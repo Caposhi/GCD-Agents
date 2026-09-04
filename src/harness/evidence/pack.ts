@@ -17,11 +17,24 @@
  */
 
 import {
+  EVIDENCE_KINDS,
+  EvidenceKind,
   EvidenceRecord,
   EvidenceRelation,
+  assertValidEvidenceRecord,
+  assertValidEvidenceRelation,
   isCitableAsFact,
   isStale,
 } from "./contract.js";
+// `STRATEGY_LIMITS.goalChars` is the bound the `GOAL` block derivation already
+// assumes for the pack's goal; taking it from the same authority is what keeps
+// the derivation and this validator from drifting apart.
+import {
+  EVIDENCE_LIMITS,
+  STRATEGY_LIMITS,
+  isSerializableText,
+  utf8ByteLength,
+} from "../agents/payloadContract.js";
 
 export interface EvidenceConflict {
   /** Sorted pair, so the same disagreement always reports identically. */
@@ -49,6 +62,24 @@ export interface EvidencePack {
   causalHypotheses: EvidenceRecord[];
   /** Surfaced, never auto-resolved. */
   conflicts: EvidenceConflict[];
+  /**
+   * The authoritative records behind every live conflict endpoint.
+   *
+   * A conflict names two ids; this is where those two records actually live.
+   * Before it existed, an inferred fact conflict removed both facts from
+   * `allowedFacts` and stored them **only** inside `EvidenceConflict`, so the
+   * pack carried claim text for records it no longer held — nothing could
+   * check a conflict's `aClaim`/`bClaim`/`subject` against the records they
+   * describe, and a validator asking "does this id exist?" had to answer no
+   * for legitimate builder output.
+   *
+   * It is a record section, so every entry is field-validated, counted, and
+   * identity-authoritative. It is **not** a usable section: nothing here may
+   * be cited, which is the same exclusion `unusableEvidenceIds` already
+   * applied to conflict endpoints — now expressed in the pack's shape instead
+   * of only in a derived set.
+   */
+  conflictedEvidence: EvidenceRecord[];
   /** Fact-class evidence excluded for lapsed review or expiry. */
   staleEvidence: EvidenceRecord[];
   /** Recorded so they are visible and excluded — never usable. */
@@ -67,6 +98,15 @@ export interface BuildEvidencePackInput {
   /** Optional subject/tag narrowing. Absent means "everything". */
   subjects?: string[];
   tags?: string[];
+}
+
+export class EvidencePackBoundsError extends Error {
+  readonly violations: string[];
+  constructor(violations: string[]) {
+    super(`evidence pack exceeds projection contract: ${violations.join("; ")}`);
+    this.name = "EvidencePackBoundsError";
+    this.violations = violations;
+  }
 }
 
 /** Stable ordering: subject, then kind, then id. Never insertion or clock order. */
@@ -155,11 +195,22 @@ export function buildEvidencePack(input: BuildEvidencePackInput): EvidencePack {
   const { goal, now } = input;
   if (typeof goal !== "string" || !goal.trim()) throw new Error("evidence pack requires a goal");
 
+  // Validate every supplied record before scoping. An invalid record does not
+  // become safe merely because the caller's subject/tag filter would omit it,
+  // and aggregate rendered-block bounds cannot substitute for per-field
+  // validation.
+  for (const record of input.records) assertValidEvidenceRecord(record);
   const relations = input.relations ?? [];
+  for (const relation of relations) assertValidEvidenceRelation(relation);
   const scoped = input.records
     .filter((r) => matchesScope(r, input.subjects, input.tags))
     .slice()
     .sort(compareRecords);
+  if (scoped.length > EVIDENCE_LIMITS.maxProjectedRecords) {
+    throw new EvidencePackBoundsError([
+      `records ${scoped.length} exceeds ${EVIDENCE_LIMITS.maxProjectedRecords}`,
+    ]);
+  }
 
   const active = scoped.filter((r) => r.lifecycle === "active");
   const inactiveEvidence = scoped.filter((r) => r.lifecycle !== "active");
@@ -174,6 +225,7 @@ export function buildEvidencePack(input: BuildEvidencePackInput): EvidencePack {
   }
 
   const allowedFacts: EvidenceRecord[] = [];
+  const conflictedEvidence: EvidenceRecord[] = [];
   const staleEvidence: EvidenceRecord[] = [];
   const sourcedResearch: EvidenceRecord[] = [];
   const gcdObservations: EvidenceRecord[] = [];
@@ -183,12 +235,28 @@ export function buildEvidencePack(input: BuildEvidencePackInput): EvidencePack {
   const unsupportedAssumptions: EvidenceRecord[] = [];
 
   for (const record of active) {
+    // A record in a live conflict goes to `conflictedEvidence` whatever its
+    // kind, and that takes precedence over every other routing rule. It is the
+    // strongest exclusion the pack expresses, and it is what lets a conflict's
+    // two ids resolve to real records without either becoming citable.
+    //
+    // This is what changed when `conflictedEvidence` was introduced. Before
+    // it, a conflicted FACT was removed from `allowedFacts` and placed nowhere
+    // — the pack held a conflict naming records it did not contain — while a
+    // conflicted OBSERVATION, hypothesis, or research record stayed in its
+    // ordinary section and was shown to a model as though it were usable, kept
+    // out of citations only by the separate `unusableEvidenceIds` blocklist.
+    // Both are now the same, visible thing.
+    if (conflicted.has(record.id)) {
+      conflictedEvidence.push(record);
+      continue;
+    }
     const stale = isStale(record, now);
     switch (record.kind) {
       case "verified_automotive_fact":
       case "verified_business_fact":
         if (stale) staleEvidence.push(record);
-        else if (!conflicted.has(record.id)) allowedFacts.push(record);
+        else allowedFacts.push(record);
         break;
       case "sourced_research":
         if (stale) staleEvidence.push(record);
@@ -223,6 +291,7 @@ export function buildEvidencePack(input: BuildEvidencePackInput): EvidencePack {
     creativeHypotheses,
     causalHypotheses,
     conflicts,
+    conflictedEvidence,
     staleEvidence,
     unsupportedAssumptions,
     inactiveEvidence,
@@ -236,6 +305,7 @@ export function buildEvidencePack(input: BuildEvidencePackInput): EvidencePack {
     creativeHypotheses: creativeHypotheses.length,
     causalHypotheses: causalHypotheses.length,
     conflicts: conflicts.length,
+    conflictedEvidence: conflictedEvidence.length,
     staleEvidence: staleEvidence.length,
     unsupportedAssumptions: unsupportedAssumptions.length,
     inactiveEvidence: inactiveEvidence.length,
@@ -249,7 +319,7 @@ export function buildEvidencePack(input: BuildEvidencePackInput): EvidencePack {
  * separation has been broken and no downstream output can be trusted.
  */
 export function evidencePackInvariants(pack: EvidencePack, now: number): string[] {
-  const violations: string[] = [];
+  const violations: string[] = evidencePackProjectionViolations(pack);
   for (const record of pack.allowedFacts) {
     if (!isCitableAsFact(record, now)) violations.push(`allowedFacts contains non-citable ${record.id} (${record.kind})`);
     if (record.kind === "unsupported_assumption") violations.push(`allowedFacts contains an unsupported assumption: ${record.id}`);
@@ -262,6 +332,47 @@ export function evidencePackInvariants(pack: EvidencePack, now: number): string[
     if (record.generalizable === true) violations.push(`observation ${record.id} claims generalizability`);
   }
   return violations;
+}
+
+export type PackRecordSection = keyof Pick<EvidencePack,
+  "allowedFacts" | "sourcedResearch" | "gcdObservations" | "performanceEvidence"
+  | "creativeHypotheses" | "causalHypotheses" | "conflictedEvidence"
+  | "staleEvidence" | "unsupportedAssumptions" | "inactiveEvidence">;
+
+const RECORD_SECTIONS: ReadonlyArray<PackRecordSection> = [
+  "allowedFacts", "sourcedResearch", "gcdObservations", "performanceEvidence",
+  "creativeHypotheses", "causalHypotheses", "conflictedEvidence",
+  "staleEvidence", "unsupportedAssumptions", "inactiveEvidence",
+];
+
+/** Validate the two independent projection cardinalities without dropping data. */
+export function evidencePackProjectionViolations(pack: EvidencePack): string[] {
+  // Count projected entries, not unique ids. A hand-built pack that repeats one
+  // id across sections still serializes each copy and must not evade the bound.
+  const recordCount = RECORD_SECTIONS.reduce((total, section) => total + pack[section].length, 0);
+  const violations: string[] = [];
+  for (const section of RECORD_SECTIONS) {
+    for (const record of pack[section]) {
+      try {
+        assertValidEvidenceRecord(record);
+      } catch (error) {
+        violations.push(`${section} contains invalid record ${record.id}: ${(error as Error).message}`);
+      }
+    }
+  }
+  if (recordCount > EVIDENCE_LIMITS.maxProjectedRecords) {
+    violations.push(`records ${recordCount} exceeds ${EVIDENCE_LIMITS.maxProjectedRecords}`);
+  }
+  if (pack.conflicts.length > EVIDENCE_LIMITS.maxProjectedConflicts) {
+    violations.push(`conflicts ${pack.conflicts.length} exceeds ${EVIDENCE_LIMITS.maxProjectedConflicts}`);
+  }
+  return violations;
+}
+
+export function assertEvidencePackProjectionBounds(pack: EvidencePack): EvidencePack {
+  const violations = evidencePackProjectionViolations(pack);
+  if (violations.length) throw new EvidencePackBoundsError(violations);
+  return pack;
 }
 
 /**
@@ -277,11 +388,13 @@ export function evidencePackInvariants(pack: EvidencePack, now: number): string[
  * than of any one stage. Two stages sharing one definition cannot drift apart.
  */
 export function unusableEvidenceIds(pack: EvidencePack): Set<string> {
+  assertUsableEvidencePack(pack);
   const unusable = new Set<string>();
   for (const conflict of pack.conflicts) {
     unusable.add(conflict.aId);
     unusable.add(conflict.bId);
   }
+  for (const record of pack.conflictedEvidence) unusable.add(record.id);
   for (const record of pack.staleEvidence) unusable.add(record.id);
   for (const record of pack.inactiveEvidence) unusable.add(record.id);
   return unusable;
@@ -305,6 +418,7 @@ export function unusableEvidenceIds(pack: EvidencePack): Set<string> {
  * claiming to have read it.
  */
 export function renderEvidencePackForStage(pack: EvidencePack): string {
+  assertUsableEvidencePack(pack);
   const brief = (records: EvidenceRecord[]) =>
     records.map((r) => ({
       id: r.id,
@@ -331,4 +445,361 @@ export function renderEvidencePackForStage(pack: EvidencePack): string {
     null,
     2,
   );
+}
+
+// ---------------------------------------------------------------------------
+// The authoritative runtime pack validator
+// ---------------------------------------------------------------------------
+
+/**
+ * Exactly which evidence kinds each record section may hold.
+ *
+ * This table is the machine-readable form of what `buildEvidencePack` does. A
+ * pack that disagrees with it was not produced by the builder — it was hand
+ * built, deserialized from somewhere, or mutated — and the difference is
+ * exactly the promotion this pipeline exists to refuse: a hypothesis sitting in
+ * `allowedFacts` is citable as established fact by every stage downstream.
+ */
+const SECTION_PERMITTED_KINDS: Record<PackRecordSection, ReadonlySet<EvidenceKind>> = {
+  allowedFacts: new Set(["verified_automotive_fact", "verified_business_fact"]),
+  sourcedResearch: new Set(["sourced_research"]),
+  gcdObservations: new Set(["gcd_direct_observation"]),
+  performanceEvidence: new Set(["gcd_performance_evidence"]),
+  creativeHypotheses: new Set(["creative_hypothesis"]),
+  causalHypotheses: new Set(["causal_hypothesis"]),
+  // The builder routes any fact-class or freshness-bearing kind here once it
+  // has lapsed. Observations and hypotheses never become stale, so they can
+  // never legitimately appear.
+  staleEvidence: new Set([
+    "verified_automotive_fact", "verified_business_fact",
+    "sourced_research", "gcd_performance_evidence",
+  ]),
+  unsupportedAssumptions: new Set(["unsupported_assumption"]),
+  // Conflict membership, not kind, is what puts a record here: any kind can be
+  // named by a declared `conflicts_with` relation, and fact classes can also
+  // reach it through inferred same-attribute detection.
+  conflictedEvidence: new Set(EVIDENCE_KINDS),
+  // Lifecycle, not kind, is what puts a record here.
+  inactiveEvidence: new Set(EVIDENCE_KINDS),
+};
+
+// The citable/non-citable split used to live here, as a `USABLE_SECTIONS`
+// list the conflict rule consulted. It is gone because section identity now
+// carries it: a conflict endpoint must be held in `conflictedEvidence`
+// specifically, which is strictly stronger than "not in a usable section",
+// and one-section-per-record keeps stale and inactive material out of the
+// citable sections on its own. A list only some checks remembered to consult
+// is how a record stayed citable while an exclusion set already named it.
+
+/** Every key `counts` must carry, and no others. */
+const COUNT_KEYS: ReadonlyArray<string> = [
+  ...RECORD_SECTIONS, "conflicts",
+];
+
+const CONFLICT_BASES: ReadonlySet<string> = new Set(["declared", "same_attribute_fact"]);
+
+/**
+ * A pack's freshness is evaluated **at its own `builtAt`**, never at the
+ * moment a validator happens to run.
+ *
+ * The decision, and its cost, stated rather than left implicit. A pack is a
+ * self-describing artifact: it records when it was assembled, and every section
+ * must be exactly what `buildEvidencePack` would have produced at that instant.
+ * Anchoring there makes this validator deterministic — the same pack is always
+ * valid or always invalid, and a regression cannot pass or fail according to
+ * the wall clock. Anchoring at invocation time instead would make validity a
+ * property of *when you looked*, which is not something a deterministic
+ * boundary can assert, and would make every fixture in the offline suite decay.
+ *
+ * **What that does not cover, said plainly:** a pack built before a fact's
+ * `reviewBy` and consumed after it would still present that fact as citable.
+ * Three things bound that gap. `builtAt` is itself validated as a real instant
+ * (a malformed or non-round-tripping value is refused, so the anchor cannot be
+ * forged into the future by accident). Every caller in this repository builds
+ * the pack inside the same operation that consumes it — nothing persists,
+ * caches, or replays a pack. And a caller that *does* hold a pack across time
+ * can close the gap explicitly by passing `now`, which adds an
+ * invocation-time freshness check on top of the internal-consistency one.
+ */
+export interface EvidencePackSemanticOptions {
+  /**
+   * Optional invocation-time clock. When supplied, `allowedFacts` must be fresh
+   * at this instant as well as at `builtAt`. Callers that build and consume a
+   * pack in one operation do not need it; a caller holding a pack across time
+   * should pass it.
+   */
+  now?: number;
+}
+
+function isIsoInstant(value: unknown): value is string {
+  if (typeof value !== "string" || !value) return false;
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) return false;
+  // Round-trip, so "2026-13-45" and "2026-08-27" (a date, not an instant) are
+  // both refused rather than silently normalized into something else.
+  return new Date(parsed).toISOString() === value;
+}
+
+/**
+ * Every semantic rule a pack must satisfy before any consumer reads it.
+ *
+ * `evidencePackProjectionViolations` answers "is every value inside the
+ * bounds the payload derivations assume?". This answers the question that one
+ * cannot: "does this pack mean what its shape claims?" — that each record sits
+ * in a section its kind and lifecycle permit, that nothing unusable is also
+ * usable, that the conflict list refers to records that exist, and that the
+ * counts are honest. Both run at every boundary; neither is sufficient alone.
+ */
+export function evidencePackSemanticViolations(
+  pack: EvidencePack,
+  options: EvidencePackSemanticOptions = {},
+): string[] {
+  const violations: string[] = [...evidencePackProjectionViolations(pack)];
+  const push = (message: string) => violations.push(message);
+
+  // --- the anchor itself ---------------------------------------------------
+  if (!isIsoInstant(pack.builtAt)) {
+    push(`builtAt is not an ISO-8601 instant: ${JSON.stringify(pack.builtAt)}`);
+    // Without a usable anchor no freshness rule below can be evaluated
+    // honestly, so stop rather than report a cascade of derived failures.
+    return violations;
+  }
+  const builtAt = Date.parse(pack.builtAt);
+  if (typeof pack.goal !== "string" || !pack.goal.trim()) {
+    push("goal must be a non-empty string");
+  } else if (!isSerializableText(pack.goal)) {
+    push("goal contains a control character or unpaired surrogate");
+  } else if (pack.goal.length > STRATEGY_LIMITS.goalChars) {
+    push(`goal exceeds ${STRATEGY_LIMITS.goalChars} characters`);
+  }
+
+  // --- section membership, and one home per record -------------------------
+  const sectionById = new Map<string, PackRecordSection>();
+  const conflictedById = new Map<string, EvidenceRecord>(
+    pack.conflictedEvidence.map((record) => [record.id, record] as const),
+  );
+  for (const section of RECORD_SECTIONS) {
+    for (const record of pack[section]) {
+      const permitted = SECTION_PERMITTED_KINDS[section];
+      if (!permitted.has(record.kind)) {
+        push(`${section} contains ${record.id}, whose kind ${record.kind} does not belong there`);
+      }
+      const existing = sectionById.get(record.id);
+      if (existing !== undefined) {
+        push(`${record.id} appears in both ${existing} and ${section}; a record has exactly one section`);
+      } else {
+        sectionById.set(record.id, section);
+      }
+
+      // Lifecycle is what separates inactiveEvidence from everything else.
+      if (section === "inactiveEvidence") {
+        if (record.lifecycle === "active") {
+          push(`inactiveEvidence contains active record ${record.id}`);
+        }
+      } else if (record.lifecycle !== "active") {
+        push(`${section} contains ${record.lifecycle} record ${record.id}`);
+      }
+    }
+  }
+
+  // --- freshness, anchored at builtAt --------------------------------------
+  for (const record of pack.allowedFacts) {
+    if (!isCitableAsFact(record, builtAt)) {
+      push(`allowedFacts contains ${record.id} (${record.kind}), which is not citable as fact at builtAt`);
+    }
+    if (options.now !== undefined && !isCitableAsFact(record, options.now)) {
+      push(`allowedFacts contains ${record.id}, which is no longer citable at the supplied invocation time`);
+    }
+  }
+  for (const section of ["sourcedResearch", "performanceEvidence"] as const) {
+    for (const record of pack[section]) {
+      if (isStale(record, builtAt)) {
+        push(`${section} contains stale record ${record.id}; stale material belongs in staleEvidence`);
+      }
+    }
+  }
+  for (const record of pack.staleEvidence) {
+    if (!isStale(record, builtAt)) {
+      push(`staleEvidence contains ${record.id}, which is not stale at builtAt`);
+    }
+  }
+  for (const record of pack.gcdObservations) {
+    if (record.generalizable === true) {
+      push(`observation ${record.id} claims generalizability`);
+    }
+  }
+
+  // --- conflicts: every field, not merely the cardinality ------------------
+  const seenConflicts = new Set<string>();
+  pack.conflicts.forEach((conflict, index) => {
+    const at = `conflicts[${index}]`;
+    if (!conflict || typeof conflict !== "object") {
+      push(`${at} is not an object`);
+      return;
+    }
+    // One allowance, applied to code units AND UTF-8 bytes, exactly as every
+    // record field does. Multibyte text that fits the code-unit limit can
+    // still exceed the byte limit, and the byte limit is the one the payload
+    // and token derivations are built on.
+    const boundedField = (value: unknown, field: string, max: number, required: boolean) => {
+      if (value === undefined || value === null) {
+        if (required) push(`${at}.${field} is required`);
+        return;
+      }
+      if (typeof value !== "string") {
+        push(`${at}.${field} must be a string`);
+        return;
+      }
+      if (required && !value.trim()) push(`${at}.${field} must not be empty`);
+      if (value.length > max) push(`${at}.${field} exceeds ${max} characters`);
+      if (utf8ByteLength(value) > max) push(`${at}.${field} exceeds ${max} UTF-8 bytes`);
+      if (!isSerializableText(value)) {
+        push(`${at}.${field} contains a control character or unpaired surrogate`);
+      }
+    };
+    boundedField(conflict.aId, "aId", EVIDENCE_LIMITS.idChars, true);
+    boundedField(conflict.bId, "bId", EVIDENCE_LIMITS.idChars, true);
+    boundedField(conflict.subject, "subject", EVIDENCE_LIMITS.subjectChars, true);
+    boundedField(conflict.aClaim, "aClaim", EVIDENCE_LIMITS.claimChars, true);
+    boundedField(conflict.bClaim, "bClaim", EVIDENCE_LIMITS.claimChars, true);
+    boundedField(conflict.note, "note", EVIDENCE_LIMITS.relationNoteChars, false);
+
+    if (!CONFLICT_BASES.has(conflict.basis as string)) {
+      push(`${at}.basis is not one of ${[...CONFLICT_BASES].join(", ")}: ${String(conflict.basis)}`);
+    }
+    if (conflict.aId === conflict.bId) {
+      push(`${at} names ${conflict.aId} on both sides`);
+    } else if (typeof conflict.aId === "string" && typeof conflict.bId === "string"
+      && conflict.aId > conflict.bId) {
+      // Canonical order, so one disagreement always reports identically and a
+      // duplicate cannot hide behind a swapped pair.
+      push(`${at} is not in canonical id order (${conflict.aId} > ${conflict.bId})`);
+    }
+    // NUL-separated so two ids cannot combine into the same key by accident.
+    const key = `${conflict.aId}\u0000${conflict.bId}`;
+    if (seenConflicts.has(key)) push(`${at} repeats the pair ${conflict.aId}/${conflict.bId}`);
+    seenConflicts.add(key);
+
+    // Both endpoints must resolve to a record the pack actually holds, and
+    // hold it in `conflictedEvidence` specifically. Any other section is
+    // wrong in one of two ways: a usable section would leave a conflicted
+    // record citable, and an unusable-but-different one (stale, inactive,
+    // unsupported) would mean the pack disagrees with itself about why the
+    // record is excluded.
+    const endpointRecords: Partial<Record<"aId" | "bId", EvidenceRecord>> = {};
+    for (const side of ["aId", "bId"] as const) {
+      const id = conflict[side];
+      if (typeof id !== "string") continue;
+      const home = sectionById.get(id);
+      if (home === undefined) {
+        push(`${at}.${side} names ${id}, which is not a record in this pack`);
+        continue;
+      }
+      if (home !== "conflictedEvidence") {
+        push(
+          `${at}.${side} names ${id}, which this pack holds in ${home}; a record in a live `
+          + "conflict belongs in conflictedEvidence, where it is neither citable nor missing",
+        );
+        continue;
+      }
+      endpointRecords[side] = conflictedById.get(id);
+    }
+
+    // The conflict's own text must be a faithful snapshot of the records it
+    // names, not independently authored prose. Without this a hand-built pack
+    // could show a model a claim no record in the pack ever made — the exact
+    // fabrication the typed evidence channel exists to prevent, arriving
+    // through the exclusion list instead of through a citation.
+    const recordA = endpointRecords.aId;
+    const recordB = endpointRecords.bId;
+    if (recordA && conflict.aClaim !== recordA.claim) {
+      push(`${at}.aClaim does not match the claim of ${recordA.id}`);
+    }
+    if (recordB && conflict.bClaim !== recordB.claim) {
+      push(`${at}.bClaim does not match the claim of ${recordB.id}`);
+    }
+    if (recordA && conflict.subject !== recordA.subject) {
+      push(`${at}.subject does not match the subject of ${recordA.id}`);
+    }
+  });
+
+  // Every conflicted record is a live conflict endpoint, and every endpoint is
+  // a conflicted record. This equivalence is why `conflictedEvidence` needs no
+  // separate entry in the model projection: the conflict pairs already name
+  // every id it holds, so the exclusion is still shown rather than dropped.
+  const endpointIds = new Set<string>();
+  for (const conflict of pack.conflicts) {
+    if (typeof conflict?.aId === "string") endpointIds.add(conflict.aId);
+    if (typeof conflict?.bId === "string") endpointIds.add(conflict.bId);
+  }
+  for (const record of pack.conflictedEvidence) {
+    if (!endpointIds.has(record.id)) {
+      push(`conflictedEvidence holds ${record.id}, which no conflict names`);
+    }
+  }
+
+  // --- counts: the exact keys, integers, and the truth ---------------------
+  const counts = pack.counts;
+  if (!counts || typeof counts !== "object" || Array.isArray(counts)) {
+    push("counts must be an object");
+  } else {
+    const actual = new Map<string, number>(
+      RECORD_SECTIONS.map((section) => [section, pack[section].length] as const),
+    );
+    actual.set("conflicts", pack.conflicts.length);
+    const present = Object.keys(counts);
+    const unexpected = present.filter((key) => !COUNT_KEYS.includes(key));
+    const missing = COUNT_KEYS.filter((key) => !present.includes(key));
+    if (unexpected.length) push(`counts has unknown key(s): ${unexpected.join(", ")}`);
+    if (missing.length) push(`counts is missing key(s): ${missing.join(", ")}`);
+    for (const key of COUNT_KEYS) {
+      if (!present.includes(key)) continue;
+      const value = counts[key];
+      if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+        push(`counts.${key} must be a non-negative integer, received ${JSON.stringify(value)}`);
+        continue;
+      }
+      const expected = actual.get(key)!;
+      if (value !== expected) {
+        push(`counts.${key} says ${value} but the section holds ${expected}`);
+      }
+    }
+  }
+
+  return violations;
+}
+
+/**
+ * A pack refused by the authoritative validator.
+ *
+ * It extends `EvidencePackBoundsError` deliberately: the semantic contract is a
+ * strict superset of the projection bounds — `evidencePackSemanticViolations`
+ * begins with every bounds violation — so a caller that already catches a pack
+ * refusal keeps catching one, and no boundary can be made weaker by narrowing
+ * its catch. The `violations` array is the authoritative detail; the class is
+ * only the family.
+ */
+export class EvidencePackSemanticError extends EvidencePackBoundsError {
+  constructor(violations: string[]) {
+    super(violations);
+    this.name = "EvidencePackSemanticError";
+    this.message = `evidence pack fails its semantic contract: ${violations.join("; ")}`;
+  }
+}
+
+/**
+ * The one call every pack consumer makes before reading a pack.
+ *
+ * Bounds and meaning are checked together, because either alone is a hole: a
+ * pack can be perfectly bounded and still promote a hypothesis to fact, and it
+ * can be semantically coherent and still carry a 50,000-character conflict
+ * subject that no payload derivation allowed for.
+ */
+export function assertUsableEvidencePack(
+  pack: EvidencePack,
+  options: EvidencePackSemanticOptions = {},
+): EvidencePack {
+  const violations = evidencePackSemanticViolations(pack, options);
+  if (violations.length) throw new EvidencePackSemanticError(violations);
+  return pack;
 }

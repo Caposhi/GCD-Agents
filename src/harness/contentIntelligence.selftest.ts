@@ -14,9 +14,43 @@ import {
   EvidenceRecord,
   isCitableAsFact,
   isStale,
+  postgresJsonbTextUpperBoundBytes,
+  validateEvidenceRelation,
   validateEvidenceRecord,
 } from "./evidence/contract.js";
-import { buildEvidencePack, evidencePackInvariants } from "./evidence/pack.js";
+import {
+  EvidencePackBoundsError,
+  buildEvidencePack,
+  evidencePackInvariants,
+  evidencePackSemanticViolations,
+  renderEvidencePackForStage,
+  unusableEvidenceIds,
+} from "./evidence/pack.js";
+import type { EvidenceConflict, EvidencePack } from "./evidence/pack.js";
+import {
+  CRITIC_OUTPUT,
+  DIRECTION_OUTPUT,
+  EVIDENCE_LIMITS,
+  HANDOFF_GUARDS,
+  MAX_JSON_ESCAPE_EXPANSION,
+  MAX_TOKENS_PER_UTF8_BYTE,
+  PACKAGING_OUTPUT,
+  PLATFORM_CLAIMS_BLOCK_CHARS,
+  POLICY_OUTPUT_TOKEN_FLOORS,
+  SCRIPT_OUTPUT,
+  STAGE_ASSEMBLED_CEILINGS,
+  STRATEGY_ID_CHANNELS,
+  MIN_OUTPUT_TOKENS_PER_SECOND,
+  POLICY_STREAM_DEADLINE_MS,
+  STAGE_REQUEST_MAX_RETRIES,
+  STAGE_REQUEST_SETUP_TIMEOUT_MS,
+  STRATEGY_OUTPUT,
+  TRUTH_OUTPUT,
+  stageStreamDeadlineMs,
+  isSerializableText,
+  minimumOutputTokens,
+  utf8ByteLength,
+} from "./agents/payloadContract.js";
 import { config } from "./config.js";
 import {
   adaptApprovedFactsFile,
@@ -42,10 +76,25 @@ import {
   StageRunner,
   StageRunnerRequest,
   anthropicStageRunner,
+  createAnthropicStageRunner,
   invokeStage,
   parseStrictJsonObject,
 } from "./agents/stageExecution.js";
-import { ModelPolicyError, modelBearingPolicies, resolveModelPolicy } from "./agents/modelPolicy.js";
+import {
+  ModelPolicyError,
+  POLICY_MAX_TOKENS,
+  POLICY_MODEL_OUTPUT_CAPS,
+  POLICY_THINKING,
+  modelBearingPolicies,
+  resolveModelPolicy,
+} from "./agents/modelPolicy.js";
+import {
+  StageStreamDeadlineError,
+  runAgentWithMessageCreator,
+  runStageAgentWithStreamOpener,
+} from "./sdk.js";
+import type { LegacyRequestOptions, StageRequestOptions, StageTimers } from "./sdk.js";
+import type { AgentRunOptions } from "./sdk.js";
 import {
   LIMITS,
   citedFactRecords,
@@ -801,6 +850,7 @@ async function run(): Promise<void> {
         try {
           await anthropicStageRunner({
             systemPrompt: "s", prompt: "p", model: "claude-opus-5", maxTokens: 16,
+            thinking: { type: "disabled" },
           });
           return false;
         } catch (e) { credentialErrorMessage = (e as Error).message; return true; }
@@ -873,7 +923,9 @@ async function run(): Promise<void> {
     check("AE3. the stage path registers no model tools",
       !/tools\s*:/.test(combined));
     check("AE4. the boundary's only model entry point is the injected runner",
-      /runAgent\(/.test(boundarySource) && !/runVision|messages\.create/.test(combined));
+      /createAnthropicStageRunner/.test(boundarySource)
+        && /return async \(request\) => run\(\{/.test(boundarySource)
+        && !/runVision|messages\.create/.test(combined));
   }
 
   // --- AF. the preview stays inert and the other five stages stay unwired ----
@@ -900,7 +952,7 @@ async function run(): Promise<void> {
     check("AF5. exactly six stage executors exist — strategy-concept, automotive-truth, hook-story-script, production-direction, packaging-adaptation, final-critic",
       agentModules.join()
         === "automotiveTruth.ts,finalCritic.ts,hookStoryScript.ts,modelPolicy.ts,packagingAdaptation.ts,"
-          + "productionDirection.ts,registry.ts,stageExecution.ts,strategyConcept.ts");
+          + "payloadContract.ts,productionDirection.ts,registry.ts,stageExecution.ts,strategyConcept.ts");
     const apiSource = await readFile(resolve(REPO_ROOT, "src/api/server.ts"), "utf8");
     check("AF6. no HTTP route reaches the executor",
       !/executeStrategyConcept|strategyConcept/.test(apiSource));
@@ -1931,40 +1983,96 @@ async function run(): Promise<void> {
                evidencePack: conflictPackS, runner: countingRunner,
              })));
 
-      // The handoff bound is defence in depth: every individual field is already
-      // bounded by the prior stages' validators, so an oversized *aggregate*
-      // needs a pack whose ids are long. Ids are pack-controlled and are not
-      // themselves length-bounded, which is exactly the gap this bound covers.
-      const longIds = Array.from({ length: LIMITS.maxIds }, (_, i) => `biz-long-${String(i).padStart(3, "0")}-${"z".repeat(1200)}`);
+      // The handoff bound used to be defence in depth against the one field no
+      // stage bounded: evidence ids. Every individual output field was bounded
+      // by its own stage, but ids were pack-controlled and length-free, so a
+      // pack of long-id facts could push a structurally valid Stage 1 output
+      // past any aggregate guard. Ids are now bounded by the evidence contract
+      // at `EVIDENCE_LIMITS.idChars`, so the gap is closed at the source and the
+      // guard's job is the opposite one: a Stage 1 output at every valid
+      // maximum — three full id channels of maximum-length ids, plus maximum
+      // prose — must FIT, not be refused.
+      const maxIdStem = (prefix: string, i: number) => {
+        const stem = `${prefix}-${String(i).padStart(3, "0")}-`;
+        return stem + "z".repeat(EVIDENCE_LIMITS.idChars - stem.length);
+      };
+      const maxFactIds = Array.from({ length: LIMITS.maxIds }, (_, i) => maxIdStem("biz", i));
+      const maxObservationIds = Array.from({ length: LIMITS.maxIds }, (_, i) => maxIdStem("obs", i));
+      const maxPerformanceIds = Array.from({ length: LIMITS.maxIds }, (_, i) => maxIdStem("perf", i));
       const bigPack = buildEvidencePack({
         goal: "g",
         records: [
           verifiedAutomotive(),
-          // A short-id fact for stage 2 to whitelist: stage 2 bounds `factId` at
-          // 200 characters, while stage 1's citation arrays do not bound id
-          // length at all. That asymmetry is why the aggregate bound is needed.
-          wellFormed.verified_business_fact,
-          ...longIds.map((id, i) => ({
+          ...maxFactIds.map((id, i) => ({
             ...wellFormed.verified_business_fact, id, attribute: `attr-${i}`,
+          }) as EvidenceRecord),
+          ...maxObservationIds.map((id, i) => ({
+            ...wellFormed.gcd_direct_observation, id, attribute: `obs-attr-${i}`,
+          }) as EvidenceRecord),
+          ...maxPerformanceIds.map((id, i) => ({
+            ...wellFormed.gcd_performance_evidence, id, attribute: `perf-attr-${i}`,
           }) as EvidenceRecord),
         ],
         now: NOW,
       });
       const bigStrategy = validateStrategyConceptOutput({
-        ...validOutput, supportingFactIds: longIds, observationIds: [], performanceSignalIds: [],
+        angle: "a".repeat(LIMITS.angleChars),
+        concept: "c".repeat(LIMITS.conceptChars),
+        rationale: "r".repeat(LIMITS.rationaleChars),
+        hypotheses: Array.from({ length: LIMITS.maxHypotheses }, () => ({
+          statement: "h".repeat(LIMITS.hypothesisChars), basis: "creative",
+        })),
+        assumptions: Array.from({ length: LIMITS.maxAssumptions },
+          () => "s".repeat(LIMITS.assumptionChars)),
+        supportingFactIds: maxFactIds,
+        observationIds: maxObservationIds,
+        performanceSignalIds: maxPerformanceIds,
       }, bigPack);
       const bigTruth = validateAutomotiveTruthOutput({
         assessment: "One fact is in scope.",
-        allowedClaims: [{ factId: "biz-1", claimClass: "business", restatement: "r" }],
+        allowedClaims: [{ factId: maxFactIds[0]!, claimClass: "business", restatement: "r" }],
         forbiddenClaims: [], requiredCaveats: [], openQuestions: [],
       }, bigPack);
-      check("AV22. an oversized stage 1 handoff is refused",
-        JSON.stringify(bigStrategy, null, 2).length > SCRIPT_LIMITS.strategyOutputChars
-          && await rejectsWithStageError(() => executeHookStoryScript({
-               strategyOutput: bigStrategy, truthOutput: bigTruth,
-               evidencePack: bigPack, runner: countingRunner,
-             })));
-
+      // Load-bearing: this executes the stage. Lower `strategyOutputChars`
+      // below Stage 1's own ceiling and this call is refused instead.
+      const bigCalls: StageRunnerRequest[] = [];
+      let bigRefusal = "";
+      try {
+        await executeHookStoryScript({
+          strategyOutput: bigStrategy, truthOutput: bigTruth, evidencePack: bigPack,
+          runner: async (request) => {
+            bigCalls.push(request);
+            return { text: JSON.stringify({
+              ...validScriptOutput,
+              claimUse: [{
+                factId: maxFactIds[0]!, usedIn: "script",
+                paraphrase: "The warranty applies to qualifying parts and labour.",
+              }],
+            }) };
+          },
+        });
+      } catch (error) {
+        bigRefusal = error instanceof Error ? error.message : String(error);
+      }
+      check("AV22. a stage 1 output at every valid maximum — three full id channels of "
+        + "maximum-length ids and maximum prose — fits stage 3's derived bound",
+        maxFactIds.every((id) => id.length === EVIDENCE_LIMITS.idChars)
+          && bigStrategy.evidence.supportingFactIds.length === LIMITS.maxIds
+          && bigStrategy.evidence.observationIds.length === LIMITS.maxIds
+          && bigStrategy.evidence.performanceSignalIds.length === LIMITS.maxIds
+          && JSON.stringify(bigStrategy, null, 2).length <= SCRIPT_LIMITS.strategyOutputChars);
+      check("AV22a. that maximal stage 1 handoff is accepted and reaches the runner exactly "
+        + "once, and the guard it passed is stage 1's own derived ceiling",
+        bigRefusal === ""
+          && bigCalls.length === 1
+          && SCRIPT_LIMITS.strategyOutputChars === HANDOFF_GUARDS.strategyOutputChars
+          && HANDOFF_GUARDS.strategyOutputChars === STRATEGY_OUTPUT.transportChars);
+      check("AV22b. an id one character over the evidence bound is refused by the evidence "
+        + "contract itself, so no pack can present one to a stage",
+        !validateEvidenceRecord({
+          ...wellFormed.verified_business_fact,
+          id: "z".repeat(EVIDENCE_LIMITS.idChars + 1),
+        } as EvidenceRecord).ok);
       // The whole of AV up to this point must not have cost a single model call.
       check("AV23. every prior-stage refusal happened before any model request",
         runnerCalls.length === 0);
@@ -2008,8 +2116,6 @@ async function run(): Promise<void> {
         requiredCaveats: [],
         openQuestions: ["Which of these could be verified and added as evidence?"],
       }, scriptPack);
-      check("AW1. an empty whitelist is a valid stage 2 output",
-        noClaims.constraints.allowed.length === 0);
       const { runner: unusedRunner, calls: unusedCalls } = recordingRunner(JSON.stringify(validScriptOutput));
       const refused = await rejectsWithStageError(() => executeHookStoryScript({
         strategyOutput: validStrategyOutput, truthOutput: noClaims,
@@ -2628,15 +2734,19 @@ async function run(): Promise<void> {
             { ...truthForDirection.constraints.allowed[1]!, claimClass: "automotive" }] },
         })));
 
-      // Oversized aggregate handoff, proven by execution rather than by
+      // The producer/consumer compatibility proof, by execution rather than by
       // inspecting a constant.
       //
-      // Every individual stage 3 field is bounded, ids included: stage 3 bounds
-      // `claimUse[].factId` to 200 characters. The aggregate bound is therefore
-      // not about unbounded ids — it exists because the *sum* of legitimately
-      // maximal fields still exceeds what this stage should hand a model. This
-      // fixture uses one matching pack throughout and only valid per-field
-      // maximums, so it is a value stage 3 could genuinely have produced.
+      // This fixture is a stage 3 output at *every* valid per-field maximum,
+      // built from one matching pack — a value stage 3 could genuinely produce.
+      // Before the payload-contract reconciliation it was refused here: stage 4
+      // applied a hand-chosen 20,000-character ceiling that was smaller than
+      // stage 3's own structural maximum, so a structurally valid handoff
+      // failed for a reason that had nothing to do with the handoff.
+      //
+      // The guard is now derived from stage 3's contract, so the maximal case
+      // is accepted. These checks are the regression: if a consumer bound ever
+      // drops below its producer's ceiling again, BE13 and BE14 fail.
       const maxIdLength = 200;
       const maxFactIds = Array.from(
         { length: SCRIPT_LIMITS.maxClaimUses },
@@ -2668,28 +2778,47 @@ async function run(): Promise<void> {
         ),
       }, maximalTruth, maximalPack);
       const oversizedLength = JSON.stringify(oversizedScriptOutput, null, 2).length;
-      check("BE13. a stage 3 output at every valid per-field maximum exceeds the aggregate bound",
+      check("BE13. a stage 3 output at every valid per-field maximum fits the consumer's derived bound",
         maxFactIds.every((id) => id.length <= maxIdLength)
           && maximalPack.allowedFacts.length === SCRIPT_LIMITS.maxClaimUses
           && maximalTruth.constraints.allowed.length === SCRIPT_LIMITS.maxClaimUses
           && oversizedScriptOutput.claimUse.used.length === SCRIPT_LIMITS.maxClaimUses
-          && oversizedLength > DIRECTION_LIMITS.scriptOutputChars);
+          && oversizedLength <= DIRECTION_LIMITS.scriptOutputChars);
 
-      // Load-bearing: this executes the stage. Remove the aggregate
-      // `scriptOutputChars` check from the executor and the runner is reached,
-      // so the zero-call assertion below fails.
+      // Load-bearing: this executes the stage. The maximal valid handoff must
+      // reach the runner. Lower `scriptOutputChars` below stage 3's ceiling and
+      // this call is refused instead, failing BE14 and BE15.
       const oversizedCalls: StageRunnerRequest[] = [];
+      // The canned direction output must cite an id from *this* pack: the
+      // maximal fixture uses its own long ids, so the shared `okDirection`
+      // would fail validation for an unrelated reason and hide the result.
+      const maximalDirection = JSON.stringify({
+        ...validDirectionOutput,
+        claimVisuals: [{
+          factId: maxFactIds[0], shotIndex: 1,
+          directionSummary: "The reservoir detail carries the cited fact.",
+        }],
+      });
       const oversizedRunner: StageRunner = async (request) => {
         oversizedCalls.push(request);
-        return { text: okDirection };
+        return { text: maximalDirection };
       };
-      check("BE14. the oversized handoff is refused with a StageExecutionError",
-        await rejectsWithStageError(() => executeProductionDirection({
+      let maximalHandoffRefusal = "";
+      try {
+        await executeProductionDirection({
           scriptOutput: oversizedScriptOutput, truthOutput: maximalTruth,
           evidencePack: maximalPack, runner: oversizedRunner,
-        })));
-      check("BE15. the oversized handoff reached the runner exactly zero times",
-        oversizedCalls.length === 0);
+        });
+      } catch (error) {
+        maximalHandoffRefusal = error instanceof Error ? error.message : String(error);
+      }
+      check("BE14. the maximal valid handoff is accepted, not refused",
+        maximalHandoffRefusal === "");
+      check("BE15. it reached the runner exactly once, and the guard it passed is "
+        + "stage 3's own derived ceiling rather than a larger round number",
+        oversizedCalls.length === 1
+          && DIRECTION_LIMITS.scriptOutputChars === HANDOFF_GUARDS.scriptOutputChars
+          && HANDOFF_GUARDS.scriptOutputChars === SCRIPT_OUTPUT.transportChars);
 
       check("BE16. every prior-stage refusal happened before any model request",
         beCalls.length === 0);
@@ -3562,8 +3691,8 @@ async function run(): Promise<void> {
           && /revalidateProductionDirectionOutput/.test(packSource)
           && !/function revalidate(Truth|Script|Direction)Output/.test(packSource));
 
-      // Oversized aggregate handoff, proven load-bearing by execution.
-      const oversizedDirection = validateProductionDirectionOutput({
+      // Maximal valid stage 4 handoff, proven compatible by execution.
+      const maximalDirection = validateProductionDirectionOutput({
         ...packagingDirectionRaw,
         visualApproach: "v".repeat(DIRECTION_LIMITS.visualApproachChars),
         shots: Array.from({ length: DIRECTION_LIMITS.maxShots }, () => ({
@@ -3586,17 +3715,30 @@ async function run(): Promise<void> {
         openQuestions: Array.from({ length: DIRECTION_LIMITS.maxOpenQuestions },
           () => "q".repeat(DIRECTION_LIMITS.openQuestionChars)),
       }, scriptForPackaging, truthForPackaging, packPack);
-      const oversizedLength = JSON.stringify(oversizedDirection, null, 2).length;
-      const { runner: overRunner, calls: overCalls } = recordingRunner(okPackaging);
-      const overRefused = await rejectsWithStageError(() => executePackagingAdaptation({
-        scriptOutput: scriptForPackaging, directionOutput: oversizedDirection,
-        truthOutput: truthForPackaging, evidencePack: packPack,
-        requestedPlatforms: ALL_PLATFORMS, runner: overRunner,
-      }));
-      check("BN25. a stage 4 output at valid per-field maximums exceeds the aggregate bound",
-        oversizedLength > PACKAGING_LIMITS.directionOutputChars);
-      check("BN26. the oversized stage 4 handoff is refused with a StageExecutionError", overRefused);
-      check("BN27. the oversized handoff reached the runner exactly zero times", overCalls.length === 0);
+      const maximalLength = JSON.stringify(maximalDirection, null, 2).length;
+      const { runner: maxRunner, calls: maxCalls } = recordingRunner(okPackaging);
+      // Load-bearing: this executes the stage. The maximal valid handoff must
+      // reach the runner. Lower `directionOutputChars` below stage 4's ceiling
+      // and this call is refused instead, failing BN26 and BN27.
+      let maximalRefusal = "";
+      try {
+        await executePackagingAdaptation({
+          scriptOutput: scriptForPackaging, directionOutput: maximalDirection,
+          truthOutput: truthForPackaging, evidencePack: packPack,
+          requestedPlatforms: ALL_PLATFORMS, runner: maxRunner,
+        });
+      } catch (error) {
+        maximalRefusal = error instanceof Error ? error.message : String(error);
+      }
+      check("BN25. a stage 4 output at every valid per-field maximum fits stage 5's derived bound",
+        maximalLength > 0 && maximalLength <= PACKAGING_LIMITS.directionOutputChars);
+      check("BN26. the maximal valid stage 4 handoff is accepted, not refused",
+        maximalRefusal === "");
+      check("BN27. it reached the runner exactly once, and the guard it passed is stage 4's own "
+        + "derived ceiling rather than a larger round number",
+        maxCalls.length === 1
+          && PACKAGING_LIMITS.directionOutputChars === HANDOFF_GUARDS.directionOutputChars
+          && HANDOFF_GUARDS.directionOutputChars === DIRECTION_OUTPUT.transportChars);
     }
 
     // --- BO. the zero-used-claims decision, made independently --------------
@@ -4181,19 +4323,28 @@ async function run(): Promise<void> {
       check("BU7. SCRIPT_CLAIMS holds only the records stage 3 actually used",
         Array.isArray(scriptClaimsBlock) && scriptClaimsBlock.length === 1
           && scriptClaimsBlock[0].id === "auto-1" && scriptClaimsBlock[0].kind === "verified_automotive_fact");
-      check("BU8. PLATFORM_CLAIMS is narrower: one entry per requested platform, from stage 5's own bindings",
+      // Narrowed: ids only. The authoritative records live in SCRIPT_CLAIMS,
+      // exactly once each; this block says which of them stage 5 bound per
+      // platform, in stage 5's order. Authority is unchanged — ids remain the
+      // factual channel — and the duplication is gone.
+      check("BU8. PLATFORM_CLAIMS is narrower: one entry per requested platform, ids only, from stage 5's own bindings",
         Array.isArray(platformClaimsBlock) && platformClaimsBlock.length === 3
-          && platformClaimsBlock.every((p: { platform: string; claims: Array<{ id: string }> }) =>
+          && platformClaimsBlock.every((p: { platform: string; factIds: string[] }) =>
                ALL_PLATFORMS.includes(p.platform as PackagingPlatform)
-               && p.claims.length === 1 && p.claims[0]!.id === "auto-1"));
+               && Object.keys(p).join() === "platform,factIds"
+               && p.factIds.length === 1 && p.factIds[0] === "auto-1"));
+      check("BU8b. the narrowed block carries no evidence prose of its own — the "
+        + "authoritative records are in SCRIPT_CLAIMS and are not repeated here",
+        !JSON.stringify(platformClaimsBlock).includes(
+          packPack.allowedFacts.find((r) => r.id === "auto-1")!.claim));
       check("BU9. PLATFORM_CLAIMS agrees exactly with the exported projection helper",
         JSON.parse(renderPlatformClaims(packResult.output, ALL_PLATFORMS, scriptForPackaging, truthForPackaging, packPack))
-          .every((p: { claims: Array<{ id: string }> }) => p.claims.length === 1));
+          .every((p: { factIds: string[] }) => p.factIds.length === 1));
       check("BU10. a stage 2-permitted but stage 3-unused fact never reaches the model",
         truthForPackaging.constraints.allowed.some((b) => b.factId === "biz-1")
           && !scriptClaimsBlock.some((c: { id: string }) => c.id === "biz-1")
-          && !platformClaimsBlock.some((p: { claims: Array<{ id: string }> }) =>
-               p.claims.some((c) => c.id === "biz-1"))
+          && !platformClaimsBlock.some((p: { factIds: string[] }) =>
+               p.factIds.includes("biz-1"))
           && !sent.prompt.includes(packPack.allowedFacts.find((r) => r.id === "biz-1")!.claim));
       check("BU11. stage 2's provisional prose never reaches the model payload",
         !sent.prompt.includes(truthForPackaging.provisional.assessment)
@@ -4387,14 +4538,22 @@ async function run(): Promise<void> {
           && /revalidatePackagingAdaptationOutput/.test(criticSource)
           && !/function revalidate(Truth|Script|Direction|Packaging)Output/.test(criticSource));
 
-      // --- the aggregate-bound correction: a valid Stage 5 output must not be
-      // rejected merely because a caption legitimately uses its full platform
-      // allowance. Facebook's own limit (FACEBOOK_TEXT_MAX) is far larger than
-      // the old, incorrect 20,000-character bound this stage used to apply.
-      const facebookOnlyRaw = {
+      // --- the reconciled aggregate bound ---------------------------------
+      //
+      // Two defects used to live here, and both are closed. Stage 6's guard on
+      // a Stage 5 handoff was a hand-chosen number smaller than Stage 5's own
+      // structural maximum, so a valid handoff could be refused; and Stage 5's
+      // caption bound came straight from the provider policies, the largest of
+      // which (Facebook's 63,206) made the set of "valid" Stage 5 outputs far
+      // wider than any payload or token budget could carry.
+      //
+      // The guard is now exactly Stage 5's derived ceiling, and the caption is
+      // narrowed by the pipeline's own cap. The checks below prove both, and
+      // prove them by executing the stage rather than by reading constants.
+      const overCapFacebookRaw = {
         packages: [{
           platform: "facebook",
-          caption: "f".repeat(FACEBOOK_TEXT_MAX),
+          caption: "f".repeat(PACKAGING_LIMITS.pipelineCaptionChars + 1),
           hashtags: [],
           localKeywords: [],
           recommendedTime: "09:30 ET",
@@ -4404,45 +4563,35 @@ async function run(): Promise<void> {
           { platform: "facebook", factId: "auto-1", summary: "The caption uses the moisture fact." },
         ],
       };
-      const facebookOnlyPackaging = validatePackagingAdaptationOutput(
-        facebookOnlyRaw, ["facebook"], scriptForPackaging, truthForPackaging, packPack,
-      );
-      const facebookOnlyLength = JSON.stringify(facebookOnlyPackaging, null, 2).length;
-      const facebookOnlyCritic = {
-        ...validCriticOutput,
-        findings: [{ ...validCriticOutput.findings[0]!, platform: "facebook" as const }],
-        claimFindingUse: [{ findingIndex: 0, platform: "facebook", factId: "auto-1", summary: "s" }],
-      };
-      const { runner: fbRunner, calls: fbCalls } = recordingRunner(JSON.stringify(facebookOnlyCritic));
-      const fbResult = await executeFinalCritic({
-        scriptOutput: scriptForPackaging, directionOutput: directionForPackaging,
-        packagingOutput: facebookOnlyPackaging, truthOutput: truthForPackaging,
-        evidencePack: packPack, requestedPlatforms: ["facebook"], runner: fbRunner,
-      });
-      check("BX18. a structurally valid, ordinary-character maximal-caption Facebook-only Stage 5 "
-        + "output (over the old 20,000-character bound) is not rejected",
-        facebookOnlyLength > 20_000
-          && facebookOnlyLength <= FINAL_CRITIC_LIMITS.packagingOutputChars
-          && fbCalls.length === 1
-          && fbResult.metadata.modelRequests === 1);
+      let narrowingMessage = "";
+      let narrowingStage = "";
+      try {
+        validatePackagingAdaptationOutput(
+          overCapFacebookRaw, ["facebook"], scriptForPackaging, truthForPackaging, packPack,
+        );
+      } catch (error) {
+        if (error instanceof StageExecutionError) {
+          narrowingMessage = error.message;
+          narrowingStage = error.stage;
+        }
+      }
+      check("BX18. the pipeline caption cap really narrows Facebook's provider limit — the "
+        + "narrowing is enforced by Stage 5's validator, not described in a comment",
+        FACEBOOK_TEXT_MAX > PACKAGING_LIMITS.pipelineCaptionChars
+          && narrowingStage === "packaging-adaptation"
+          && narrowingMessage.includes(
+               `"packages[0].caption" exceeds ${PACKAGING_LIMITS.pipelineCaptionChars} characters`));
 
-      // --- the escaping correction. Stage 5 bounds caption *code units*; this
-      // stage bounds the *serialized* string. A caption made entirely of
-      // quotation marks is valid under every Stage 5 caption, hashtag, URL and
-      // combined provider-visible rule, yet each character costs two once
-      // serialized. A bound measured with characters JSON does not escape
-      // cannot see that, which is exactly how the previous 100,000-character
-      // value came to reject valid Stage 5 output.
-      //
-      // The caption length here is the largest all-quote caption whose
-      // assembled payload still fits the SHARED MAX_PAYLOAD_CHARS boundary in
-      // stageExecution.ts, which this stage does not change. BX21 records what
-      // happens above that shared boundary.
-      const ESCAPING_CAPTION_CHARS = 52_000;
+      // A caption at the full pipeline cap, made entirely of quotation marks:
+      // valid under every Stage 5 caption, hashtag, URL and combined
+      // provider-visible rule, and every character costs two once serialized.
+      // This is the input that used to be refused by a bound measured in code
+      // units, and it is the reason `MAX_JSON_ESCAPE_EXPANSION` is 2 rather
+      // than 1 — the escaping is provided for, not hoped away.
       const escapingRaw = {
         packages: [{
           platform: "facebook",
-          caption: '"'.repeat(ESCAPING_CAPTION_CHARS),
+          caption: '"'.repeat(PACKAGING_LIMITS.pipelineCaptionChars),
           hashtags: [],
           localKeywords: [],
           recommendedTime: "09:30 ET",
@@ -4456,6 +4605,11 @@ async function run(): Promise<void> {
         escapingRaw, ["facebook"], scriptForPackaging, truthForPackaging, packPack,
       );
       const escapingSerializedLength = JSON.stringify(escapingPackaging, null, 2).length;
+      const facebookOnlyCritic = {
+        ...validCriticOutput,
+        findings: [{ ...validCriticOutput.findings[0]!, platform: "facebook" as const }],
+        claimFindingUse: [{ findingIndex: 0, platform: "facebook", factId: "auto-1", summary: "s" }],
+      };
       const { runner: escRunner, calls: escCalls } = recordingRunner(JSON.stringify(facebookOnlyCritic));
       // Captured rather than awaited bare, so a stage that wrongly refuses this
       // valid input reports a named failing assertion instead of aborting the
@@ -4471,13 +4625,14 @@ async function run(): Promise<void> {
       } catch (error) {
         escRefusal = error instanceof Error ? error.message : String(error);
       }
-      check("BX19. Stage 5 accepts an all-quote caption, and JSON escaping doubles its serialized size",
-        escapingPackaging.provisional.packages[0]!.caption.length === ESCAPING_CAPTION_CHARS
-          && escapingSerializedLength > ESCAPING_CAPTION_CHARS * 2);
-      check("BX20. that valid Stage 5 output serializes past the old 100,000-character bound "
-        + "and still reaches the injected runner exactly once",
+      check("BX19. Stage 5 accepts an all-quote caption at the full pipeline cap, and JSON "
+        + "escaping doubles its serialized size",
+        escapingPackaging.provisional.packages[0]!.caption.length
+            === PACKAGING_LIMITS.pipelineCaptionChars
+          && escapingSerializedLength > PACKAGING_LIMITS.pipelineCaptionChars * 2);
+      check("BX20. that escaped Stage 5 output fits Stage 6's derived guard and reaches the "
+        + "injected runner exactly once",
         escRefusal === ""
-          && escapingSerializedLength > 100_000
           && escapingSerializedLength <= FINAL_CRITIC_LIMITS.packagingOutputChars
           && escCalls.length === 1
           && escResult?.metadata.modelRequests === 1);
@@ -4485,125 +4640,59 @@ async function run(): Promise<void> {
         if (escRefusal !== "" || !escCalls.length) return false;
         const forwarded = JSON.parse(untrustedBlock(escCalls[0]!.prompt, "PACKAGING_OUTPUT"));
         return JSON.stringify(forwarded) === JSON.stringify(escapingPackaging)
-          && forwarded.provisional.packages[0].caption.length === ESCAPING_CAPTION_CHARS;
+          && forwarded.provisional.packages[0].caption.length
+               === PACKAGING_LIMITS.pipelineCaptionChars;
       })());
 
-      // The honest limit above that size, stated rather than hidden: a
-      // full-length all-quote caption is accepted by Stage 5 and is NOT
-      // rejected by this stage's aggregate bound any more, but it still cannot
-      // reach a model, because the SHARED payload boundary every stage uses is
-      // smaller. That boundary is merged, shared with the five stages before
-      // this one, and deliberately not changed here.
-      const fullEscapingRaw = {
-        ...escapingRaw,
-        packages: [{ ...escapingRaw.packages[0]!, caption: '"'.repeat(FACEBOOK_TEXT_MAX) }],
-      };
-      const fullEscapingPackaging = validatePackagingAdaptationOutput(
-        fullEscapingRaw, ["facebook"], scriptForPackaging, truthForPackaging, packPack,
-      );
-      const fullEscapingLength = JSON.stringify(fullEscapingPackaging, null, 2).length;
-      const sharedBoundCalls: StageRunnerRequest[] = [];
-      let sharedBoundMessage = "";
-      try {
-        await executeFinalCritic({
-          scriptOutput: scriptForPackaging, directionOutput: directionForPackaging,
-          packagingOutput: fullEscapingPackaging, truthOutput: truthForPackaging,
-          evidencePack: packPack, requestedPlatforms: ["facebook"],
-          runner: async (request) => {
-            sharedBoundCalls.push(request);
-            return { text: JSON.stringify(facebookOnlyCritic) };
-          },
-        });
-      } catch (error) {
-        sharedBoundMessage = error instanceof StageExecutionError ? error.message : String(error);
-      }
-      check("BX22. at full FACEBOOK_TEXT_MAX the refusal comes from the shared payload boundary, "
-        + "not from this stage's aggregate bound, and costs zero model calls",
-        fullEscapingLength > MAX_PAYLOAD_CHARS
-          && fullEscapingLength <= FINAL_CRITIC_LIMITS.packagingOutputChars
-          && /assembled input exceeds the bound/.test(sharedBoundMessage)
-          && !/packagingOutput" exceeds/.test(sharedBoundMessage)
-          && sharedBoundCalls.length === 0);
+      // The whole assembled payload, not just this one block: the maximum a
+      // valid Stage 6 invocation can assemble is derived in one place, and it
+      // is at or below the shared boundary every stage applies. That is the
+      // producer-fits-consumer proof for the last hop in the pipeline.
+      check("BX22. no structurally valid Stage 6 invocation can reach the shared payload "
+        + "boundary: the derived assembled ceiling is at or below it, and the guard on Stage "
+        + "5's handoff is exactly Stage 5's own ceiling",
+        STAGE_ASSEMBLED_CEILINGS["final-critic"]! <= MAX_PAYLOAD_CHARS
+          && FINAL_CRITIC_LIMITS.packagingOutputChars === PACKAGING_OUTPUT.transportChars
+          && FINAL_CRITIC_LIMITS.scriptOutputChars === SCRIPT_OUTPUT.transportChars
+          && FINAL_CRITIC_LIMITS.directionOutputChars === DIRECTION_OUTPUT.transportChars);
 
-      check("BX23. the ceiling is escaping-aware and mechanically derived, not a measured sample",
-        FINAL_CRITIC_LIMITS.packagingOutputChars >= FACEBOOK_TEXT_MAX * 6
-          && FINAL_CRITIC_LIMITS.packagingOutputChars > 100_000
-          && /conservative safe upper bound/.test(unwrappedCritic)
-          && /derived mechanically from Stage 5's own exported field and array maxima/.test(unwrappedCritic)
-          && /six-character `\\uXXXX` escape/.test(unwrappedCritic)
-          && !/true worst case/.test(unwrappedCritic));
+      check("BX23. the ceiling is escaping-aware and mechanically derived from the one "
+        + "authority, not a number written into this stage",
+        FINAL_CRITIC_LIMITS.packagingOutputChars === PACKAGING_OUTPUT.transportChars
+          && PACKAGING_OUTPUT.transportChars > PACKAGING_OUTPUT.contractChars
+          && /re-exported from the one\s+\* authority that derives it/.test(criticSource)
+          && !/54,460|54460/.test(criticSource)
+          && !/\bconservativePackagingOutputCeiling\b/.test(criticSource));
 
-      // --- the other half of the same shared-boundary mismatch, recorded
-      // rather than implied.
+      // --- the other half of the same mismatch, now closed -----------------
       //
-      // `EvidenceRecord.claim` has NO maximum: the TypeScript contract requires
-      // only that it be non-empty (`src/harness/evidence/contract.ts`), and
-      // migration 006 enforces only `length(btrim(claim)) > 0`. `SCRIPT_CLAIMS`
-      // and `PLATFORM_CLAIMS` therefore have no finite structural maximum, and
-      // a record bound for several platforms is projected once PER PLATFORM.
-      //
-      // So the payload available to `PACKAGING_OUTPUT` is not a constant. It is
-      // `MAX_PAYLOAD_CHARS` minus whatever the other five framed blocks
-      // actually occupy, and with large enough VALID claim text that remainder
-      // is zero or negative even for a minimal Stage 5 package.
+      // `EvidenceRecord.claim` used to have NO maximum: the TypeScript contract
+      // required only that it be non-empty, and migration 006 enforced only
+      // `length(btrim(claim)) > 0`. `SCRIPT_CLAIMS` and `PLATFORM_CLAIMS`
+      // therefore had no finite structural maximum, and a record bound for
+      // several platforms is projected once PER PLATFORM — so a single valid
+      // record could consume the entire shared payload. Both halves are now
+      // bounded: the evidence contract refuses the oversized claim, and the
+      // Stage 6 projection carries ids rather than repeated claim text.
       const HUGE_CLAIM_CHARS = 40_000;
       const hugeClaimText = `Brake fluid absorbs moisture over time. ${"e".repeat(HUGE_CLAIM_CHARS)}`;
-      const hugeClaimRecords = [...mixed, packUnpermitted].map((record) =>
-        (record.id === "auto-1" ? { ...record, claim: hugeClaimText } : record));
-      const hugeClaimPack = buildEvidencePack({
-        goal: "brake service content", records: hugeClaimRecords, now: NOW,
-      });
-      const hugeTruth = validateAutomotiveTruthOutput({
-        assessment: "One fact is citable for this concept.",
-        allowedClaims: [
-          { factId: "auto-1", claimClass: "automotive", restatement: "Brake fluid takes on moisture." },
-        ],
-        forbiddenClaims: [],
-        requiredCaveats: [],
-        openQuestions: [],
-      }, hugeClaimPack);
-      const hugeScript = validateHookStoryScriptOutput({
-        hook: "Brake fluid quietly picks up water.",
-        storyBeats: [{ beat: "It absorbs moisture over time.", role: "insight" }],
-        script: "Brake fluid quietly picks up water, which is why it is replaced periodically.",
-        claimUse: [
-          { factId: "auto-1", usedIn: "script", paraphrase: "Brake fluid absorbs moisture." },
-        ],
-        openQuestions: [],
-      }, hugeTruth, hugeClaimPack);
-      const hugeDirection = validateProductionDirectionOutput({
-        visualApproach: "Stay at the reservoir and let it carry the idea.",
-        shots: [{
-          purpose: "detail", subject: "The brake fluid reservoir.", framing: "macro",
-          movement: "static", action: "Hold on the cap.", composition: "Reservoir centred.",
-          continuityNote: "Hood stays open.",
-        }],
-        overlayText: [],
-        productionRequirements: [],
-        claimVisuals: [
-          { factId: "auto-1", shotIndex: 0, directionSummary: "The reservoir carries the moisture fact." },
-        ],
-        openQuestions: [],
-      }, hugeScript, hugeTruth, hugeClaimPack);
-      const hugePackaging = validatePackagingAdaptationOutput({
-        packages: [
-          { platform: "instagram", caption: "Brake fluid takes on water.", hashtags: IG_TAGS,
-            localKeywords: [], recommendedTime: "09:30 ET", openQuestions: [] },
-          { platform: "facebook", caption: "Brake fluid takes on water.", hashtags: [],
-            localKeywords: [], recommendedTime: "12:15 ET", openQuestions: [] },
-          { platform: "google_business_profile", caption: "Brake fluid takes on water.", hashtags: [],
-            localKeywords: [], recommendedTime: "08:00 ET", openQuestions: [] },
-        ],
-        claimUse: [
-          { platform: "instagram", factId: "auto-1", summary: "Uses the moisture fact." },
-          { platform: "facebook", factId: "auto-1", summary: "Uses the moisture fact." },
-          { platform: "google_business_profile", factId: "auto-1", summary: "Uses the moisture fact." },
-        ],
-      }, ALL_PLATFORMS, hugeScript, hugeTruth, hugeClaimPack);
+      const hugeClaimRecord = {
+        ...[...mixed, packUnpermitted].find((r) => r.id === "auto-1")!,
+        claim: hugeClaimText,
+      } as EvidenceRecord;
+      const hugeClaimVerdict = validateEvidenceRecord(hugeClaimRecord);
+      check("BX24. an oversized evidence claim is no longer valid under the contract: the "
+        + "bound is the shared one, and the refusal names the field and the number",
+        !hugeClaimVerdict.ok
+          && hugeClaimVerdict.issues.some((issue) =>
+               issue.includes("claim") && issue.includes(String(EVIDENCE_LIMITS.claimChars)))
+          && HUGE_CLAIM_CHARS > EVIDENCE_LIMITS.claimChars);
 
-      // The framing overhead is taken from a REAL assembled prompt rather than
-      // from a second copy of the delimiter text, so this measurement cannot
-      // drift away from `renderDataBlock`.
+      // The maximal pack a stage may project, built to every bound at once: the
+      // cardinality cap, the per-field caps, and the two projections Stage 6
+      // assembles. The framing overhead is taken from a REAL assembled prompt
+      // rather than from a second copy of the delimiter text, so this
+      // measurement cannot drift away from `renderDataBlock`.
       const SIX_BLOCKS = [
         "SCRIPT_OUTPUT", "PRODUCTION_OUTPUT", "PACKAGING_OUTPUT",
         "REQUESTED_PLATFORMS", "SCRIPT_CLAIMS", "PLATFORM_CLAIMS",
@@ -4617,80 +4706,125 @@ async function run(): Promise<void> {
       const framedBodiesPresent = SIX_BLOCKS.every((label) => framedBody(label).length > 0);
       const framingOverhead = framedPrompt.length - SIX_BLOCKS.reduce(
         (total, label) => total + framedBody(label).length, 0);
-      const hugeBodies: Record<(typeof SIX_BLOCKS)[number], string> = {
-        SCRIPT_OUTPUT: JSON.stringify(hugeScript, null, 2),
-        PRODUCTION_OUTPUT: JSON.stringify(hugeDirection, null, 2),
-        PACKAGING_OUTPUT: JSON.stringify(hugePackaging, null, 2),
-        REQUESTED_PLATFORMS: JSON.stringify(ALL_PLATFORMS, null, 2),
-        SCRIPT_CLAIMS: renderPackagingScriptClaims(hugeScript, hugeTruth, hugeClaimPack),
-        PLATFORM_CLAIMS: renderPlatformClaims(
-          hugePackaging, ALL_PLATFORMS, hugeScript, hugeTruth, hugeClaimPack),
-      };
-      const hugePackagingAllowance = MAX_PAYLOAD_CHARS - (framingOverhead + SIX_BLOCKS
-        .filter((label) => label !== "PACKAGING_OUTPUT")
-        .reduce((total, label) => total + hugeBodies[label].length, 0));
 
-      const hugeCalls: StageRunnerRequest[] = [];
-      let hugeMessage = "";
-      let hugeStage = "";
+      const maximalClaimRecords = [...mixed, packUnpermitted].map((record) =>
+        (record.id === "auto-1"
+          ? { ...record, claim: "e".repeat(EVIDENCE_LIMITS.claimChars) }
+          : record));
+      const maximalClaimPack = buildEvidencePack({
+        goal: "brake service content", records: maximalClaimRecords, now: NOW,
+      });
+      const maximalClaimTruth = validateAutomotiveTruthOutput({
+        assessment: "One fact is citable for this concept.",
+        allowedClaims: [
+          { factId: "auto-1", claimClass: "automotive", restatement: "Brake fluid takes on moisture." },
+        ],
+        forbiddenClaims: [], requiredCaveats: [], openQuestions: [],
+      }, maximalClaimPack);
+      const maximalClaimScript = validateHookStoryScriptOutput({
+        hook: "Brake fluid quietly picks up water.",
+        storyBeats: [{ beat: "It absorbs moisture over time.", role: "insight" }],
+        script: "Brake fluid quietly picks up water, which is why it is replaced periodically.",
+        claimUse: [
+          { factId: "auto-1", usedIn: "script", paraphrase: "Brake fluid absorbs moisture." },
+        ],
+        openQuestions: [],
+      }, maximalClaimTruth, maximalClaimPack);
+      const maximalClaimDirection = validateProductionDirectionOutput({
+        visualApproach: "Stay at the reservoir and let it carry the idea.",
+        shots: [{
+          purpose: "detail", subject: "The brake fluid reservoir.", framing: "macro",
+          movement: "static", action: "Hold on the cap.", composition: "Reservoir centred.",
+          continuityNote: "Hood stays open.",
+        }],
+        overlayText: [], productionRequirements: [],
+        claimVisuals: [
+          { factId: "auto-1", shotIndex: 0, directionSummary: "The reservoir carries the moisture fact." },
+        ],
+        openQuestions: [],
+      }, maximalClaimScript, maximalClaimTruth, maximalClaimPack);
+      const maximalClaimPackaging = validatePackagingAdaptationOutput({
+        packages: [
+          { platform: "instagram", caption: "Brake fluid takes on water.", hashtags: IG_TAGS,
+            localKeywords: [], recommendedTime: "09:30 ET", openQuestions: [] },
+          { platform: "facebook", caption: "Brake fluid takes on water.", hashtags: [],
+            localKeywords: [], recommendedTime: "12:15 ET", openQuestions: [] },
+          { platform: "google_business_profile", caption: "Brake fluid takes on water.", hashtags: [],
+            localKeywords: [], recommendedTime: "08:00 ET", openQuestions: [] },
+        ],
+        claimUse: [
+          { platform: "instagram", factId: "auto-1", summary: "Uses the moisture fact." },
+          { platform: "facebook", factId: "auto-1", summary: "Uses the moisture fact." },
+          { platform: "google_business_profile", factId: "auto-1", summary: "Uses the moisture fact." },
+        ],
+      }, ALL_PLATFORMS, maximalClaimScript, maximalClaimTruth, maximalClaimPack);
+
+      const maximalBodies: Record<(typeof SIX_BLOCKS)[number], string> = {
+        SCRIPT_OUTPUT: JSON.stringify(maximalClaimScript, null, 2),
+        PRODUCTION_OUTPUT: JSON.stringify(maximalClaimDirection, null, 2),
+        PACKAGING_OUTPUT: JSON.stringify(maximalClaimPackaging, null, 2),
+        REQUESTED_PLATFORMS: JSON.stringify(ALL_PLATFORMS, null, 2),
+        SCRIPT_CLAIMS: renderPackagingScriptClaims(
+          maximalClaimScript, maximalClaimTruth, maximalClaimPack),
+        PLATFORM_CLAIMS: renderPlatformClaims(
+          maximalClaimPackaging, ALL_PLATFORMS, maximalClaimScript,
+          maximalClaimTruth, maximalClaimPack),
+      };
+      const maximalPackagingAllowance = MAX_PAYLOAD_CHARS - (framingOverhead + SIX_BLOCKS
+        .filter((label) => label !== "PACKAGING_OUTPUT")
+        .reduce((total, label) => total + maximalBodies[label].length, 0));
+
+      const maximalCalls: StageRunnerRequest[] = [];
+      let maximalClaimRefusal = "";
       try {
         await executeFinalCritic({
-          scriptOutput: hugeScript, directionOutput: hugeDirection,
-          packagingOutput: hugePackaging, truthOutput: hugeTruth,
-          evidencePack: hugeClaimPack, requestedPlatforms: ALL_PLATFORMS,
+          scriptOutput: maximalClaimScript, directionOutput: maximalClaimDirection,
+          packagingOutput: maximalClaimPackaging, truthOutput: maximalClaimTruth,
+          evidencePack: maximalClaimPack, requestedPlatforms: ALL_PLATFORMS,
           runner: async (request) => {
-            hugeCalls.push(request);
+            maximalCalls.push(request);
             return { text: JSON.stringify(validCriticOutput) };
           },
         });
       } catch (error) {
-        // Typed refusal from THIS stage required; an incidental TypeError must
-        // not be able to satisfy these assertions.
-        if (error instanceof StageExecutionError) {
-          hugeMessage = error.message;
-          hugeStage = error.stage;
-        }
+        maximalClaimRefusal = error instanceof Error ? error.message : String(error);
       }
 
-      check("BX24. an oversized evidence claim is valid under the current contract, so the "
-        + "claim projections have no finite structural maximum either",
-        validateEvidenceRecord(hugeClaimRecords.find((r) => r.id === "auto-1")!).ok
-          && hugeClaimPack.allowedFacts.some((r) => r.id === "auto-1" && r.claim === hugeClaimText));
-      check("BX25. with minimal Stage 2–5 handoffs the duplicated claim projections alone "
-        + "leave no packaging allowance inside the shared boundary",
-        hugeBodies.SCRIPT_CLAIMS.length > HUGE_CLAIM_CHARS
-          && hugeBodies.PLATFORM_CLAIMS.length > HUGE_CLAIM_CHARS * ALL_PLATFORMS.length
-          && hugeBodies.PACKAGING_OUTPUT.length < 5_000
-          && hugePackagingAllowance <= 0);
-      check("BX26. the refusal is the shared payload boundary's, typed from this stage, "
-        + "and costs zero model calls",
-        hugeStage === "final-critic"
-          && /assembled input exceeds the bound/.test(hugeMessage)
-          && !/packagingOutput" exceeds/.test(hugeMessage)
-          && hugeCalls.length === 0);
+      check("BX25. a maximum-length claim bound on all three platforms is projected ONCE as "
+        + "claim text and only as ids per platform, so the duplication that used to consume "
+        + "the whole payload is gone",
+        maximalBodies.SCRIPT_CLAIMS.includes("e".repeat(EVIDENCE_LIMITS.claimChars))
+          && !maximalBodies.PLATFORM_CLAIMS.includes("e".repeat(EVIDENCE_LIMITS.claimChars))
+          && maximalBodies.PLATFORM_CLAIMS.includes("auto-1")
+          && maximalBodies.PLATFORM_CLAIMS.length
+               < maximalBodies.SCRIPT_CLAIMS.length * ALL_PLATFORMS.length);
+      check("BX26. that invocation is accepted, not refused, and reaches the runner exactly once",
+        maximalClaimRefusal === "" && maximalCalls.length === 1);
 
-      // The available packaging payload is a DIFFERENCE from the exported
+      // The available packaging payload is still a DIFFERENCE from the exported
       // MAX_PAYLOAD_CHARS, measured against the real framed-block construction
-      // — never a fixed envelope constant. The nominal allowance below is
-      // computed from the actual assembled prompt of the BT invocation; it is
-      // an example for those particular evidence-claim lengths, and the huge-
-      // claim case above proves it is not a floor.
+      // — never a fixed envelope constant. What changed is that the difference
+      // is now provably positive at the maxima, because every input to it is
+      // bounded.
       const nominalPackagingAllowance = MAX_PAYLOAD_CHARS - (framingOverhead + SIX_BLOCKS
         .filter((label) => label !== "PACKAGING_OUTPUT")
         .reduce((total, label) => total + framedBody(label).length, 0));
       check("BX27. the packaging allowance is a dynamic difference from MAX_PAYLOAD_CHARS, "
-        + "not a constant: nominal claims leave a positive allowance, large valid claims leave none",
+        + "not a constant — and at maximum-length evidence it is still positive and large "
+        + "enough for a maximal Stage 5 output",
         framedBodiesPresent
           && nominalPackagingAllowance > 0
           && nominalPackagingAllowance < MAX_PAYLOAD_CHARS
-          && hugePackagingAllowance <= 0
-          && nominalPackagingAllowance !== hugePackagingAllowance);
-      check("BX28. the source states the dynamic relationship and claims no fixed envelope",
-        /available packaging payload/.test(unwrappedCritic)
-          && /MAX_PAYLOAD_CHARS minus the serialized sizes of the other five framed blocks/
+          && maximalPackagingAllowance > 0
+          && maximalPackagingAllowance >= PACKAGING_OUTPUT.transportChars
+          && nominalPackagingAllowance !== maximalPackagingAllowance);
+      check("BX28. the source states the dynamic relationship, claims no fixed envelope, and "
+        + "records that these bounds are derived rather than production-validated",
+        /available packaging payload is still a dynamic difference/.test(unwrappedCritic)
+          && /`MAX_PAYLOAD_CHARS` minus the serialized sizes of the other five framed blocks/
                .test(unwrappedCritic)
-          && /no fixed positive packaging allowance exists until evidence text is bounded/
-               .test(unwrappedCritic)
+          && /provably positive at the worst case/.test(unwrappedCritic)
+          && /not production-validated/.test(unwrappedCritic)
           && !/54,460|54460/.test(criticSource));
     }
 
@@ -5010,6 +5144,1494 @@ async function run(): Promise<void> {
             === "hook-story-script,production-direction,packaging-adaptation,human_review");
     }
   }
+
+
+  // ==========================================================================
+  // CC. The payload-contract reconciliation, proven rather than described.
+  //
+  // Every bound in the Content Intelligence pipeline now flows from one module,
+  // `src/harness/agents/payloadContract.ts`. These checks are the reason that
+  // claim is worth anything: each fails if the single authority is bypassed, if
+  // a derived number is replaced with a hand-maintained one, if TypeScript and
+  // PostgreSQL disagree, if a producer's structural maximum outgrows its
+  // consumer's guard, if a stage's own output contract outgrows its token
+  // budget, or if any of it becomes reachable.
+  //
+  // The producer/consumer proofs are executed, not asserted from constants:
+  // each builds an output at EVERY valid maximum through the owning stage's
+  // real validator and measures what it actually serializes to.
+  // ==========================================================================
+  {
+    const payloadSource = await readFile(
+      resolve(REPO_ROOT, "src/harness/agents/payloadContract.ts"), "utf8");
+    const migrationSql = await readFile(
+      resolve(REPO_ROOT, "state/migrations/007_evidence_bounds.sql"), "utf8");
+    const rollbackSql = await readFile(
+      resolve(REPO_ROOT, "state/rollback/007_evidence_bounds_rollback.sql"), "utf8");
+
+    // --- CC-A. TypeScript and PostgreSQL state the same numbers -------------
+    //
+    // Application validation gives a good error; the database makes the
+    // invariant true. The pair is only worth having if they agree, and two
+    // numbers maintained by hand in two languages do not stay agreed on their
+    // own. This reads the numbers back out of the migration.
+    const sqlBound = (constraint: string): number | undefined => {
+      const match = new RegExp(
+        `ADD CONSTRAINT ${constraint}\\s+CHECK \\(([^;]*?)\\)[,;]`,
+      ).exec(migrationSql);
+      if (!match) return undefined;
+      const bound = /<=\s*(\d+)/.exec(match[1]!);
+      return bound ? Number(bound[1]) : undefined;
+    };
+    const EXPECTED_SQL_BOUNDS: Array<[string, number]> = [
+      ["content_evidence_id_bounded", EVIDENCE_LIMITS.idChars],
+      ["content_evidence_claim_bounded", EVIDENCE_LIMITS.claimChars],
+      ["content_evidence_subject_bounded", EVIDENCE_LIMITS.subjectChars],
+      ["content_evidence_attribute_bounded", EVIDENCE_LIMITS.attributeChars],
+      ["content_evidence_source_ref_bounded", EVIDENCE_LIMITS.sourceRefChars],
+      ["content_evidence_provenance_bounded", EVIDENCE_LIMITS.provenanceChars],
+      ["content_evidence_reviewed_by_bounded", EVIDENCE_LIMITS.reviewedByChars],
+      ["content_evidence_superseded_by_id_bounded", EVIDENCE_LIMITS.idChars],
+      ["content_evidence_detail_bounded", EVIDENCE_LIMITS.detailSerializedChars],
+      ["content_evidence_relations_note_bounded", EVIDENCE_LIMITS.relationNoteChars],
+    ];
+    const sqlMismatches = EXPECTED_SQL_BOUNDS
+      .filter(([name, expected]) => sqlBound(name) !== expected)
+      .map(([name, expected]) => `${name}: sql=${String(sqlBound(name))} ts=${expected}`);
+    check("CC1. every bound migration 007 enforces is exactly the TypeScript bound"
+      + (sqlMismatches.length ? ` (mismatched: ${sqlMismatches.join("; ")})` : ""),
+      sqlMismatches.length === 0);
+    // PostgreSQL forbids a subquery inside a CHECK, and arrays have no
+    // per-element length operator, so the per-tag bound goes through one
+    // IMMUTABLE helper. The number it is called with is the TypeScript number.
+    check("CC2. the tags constraint bounds per-tag length as well as cardinality, at the "
+      + "TypeScript numbers, through a helper rather than a subquery a CHECK cannot contain",
+      new RegExp(`cardinality\\(tags\\) <= ${EVIDENCE_LIMITS.maxTags}\\b`).test(migrationSql)
+        && new RegExp(
+             `gcd_content_evidence_tags_within_v007\\(tags, ${EVIDENCE_LIMITS.tagChars}\\)`,
+           ).test(migrationSql)
+        && /IMMUTABLE/.test(migrationSql)
+        && !/CHECK \([^)]*SELECT/i.test(migrationSql));
+    check("CC3. the migration is additive — it adds constraints and drops, alters and "
+      + "writes nothing",
+      /ADD CONSTRAINT/.test(migrationSql)
+        && !/\b(DROP|UPDATE|DELETE|INSERT|TRUNCATE)\b/i.test(migrationSql));
+    check("CC4. an explicit rollback exists, reverses everything 007 adds — every constraint, "
+      + "the per-tag helper, and 007's `_migrations` row",
+      EXPECTED_SQL_BOUNDS.every(([name]) =>
+        new RegExp(`DROP CONSTRAINT IF EXISTS ${name}`).test(rollbackSql))
+        && /DROP CONSTRAINT IF EXISTS content_evidence_tags_bounded/.test(rollbackSql)
+        && /DROP FUNCTION IF EXISTS gcd_content_evidence_tags_within_v007\(text\[\], integer\)/
+             .test(rollbackSql)
+        && /CREATE FUNCTION gcd_content_evidence_tags_within_v007/.test(migrationSql)
+        && !/CREATE OR REPLACE FUNCTION gcd_content_evidence_tags_within_v007/.test(migrationSql)
+        && /DELETE FROM _migrations WHERE name = '007_evidence_bounds\.sql'/.test(rollbackSql));
+    check("CC5. the rollback lives outside the forward-only runner's directory, and neither "
+      + "file claims to have been applied to production",
+      !(await readdir(resolve(REPO_ROOT, "state/migrations")))
+         .some((f) => /rollback/i.test(f))
+        && (await readdir(resolve(REPO_ROOT, "state/rollback")))
+             .includes("007_evidence_bounds_rollback.sql")
+        && /Not applied to production\./.test(rollbackSql)
+        && /It has not been applied to production\./.test(migrationSql)
+        && /SEPARATE, SEPARATELY AUTHORIZED/.test(migrationSql));
+
+    // --- CC-B. the evidence bounds are real, and invalidate nothing valid ---
+    check("CC6. an over-long claim, subject, attribute, tag, tag list, source ref, "
+      + "provenance, reviewer, superseding id, or serialized detail is refused",
+      ([
+        { claim: "c".repeat(EVIDENCE_LIMITS.claimChars + 1) },
+        { subject: "s".repeat(EVIDENCE_LIMITS.subjectChars + 1) },
+        { attribute: "a".repeat(EVIDENCE_LIMITS.attributeChars + 1) },
+        { tags: ["t".repeat(EVIDENCE_LIMITS.tagChars + 1)] },
+        { tags: Array.from({ length: EVIDENCE_LIMITS.maxTags + 1 }, (_, i) => `t${i}`) },
+        { sourceRef: "r".repeat(EVIDENCE_LIMITS.sourceRefChars + 1) },
+        { provenance: "p".repeat(EVIDENCE_LIMITS.provenanceChars + 1) },
+        { reviewedBy: "b".repeat(EVIDENCE_LIMITS.reviewedByChars + 1) },
+        { supersededById: "z".repeat(EVIDENCE_LIMITS.idChars + 1) },
+        { detail: { blob: "d".repeat(EVIDENCE_LIMITS.detailSerializedChars) } },
+      ] as Array<Partial<EvidenceRecord>>).every((patch) => !validateEvidenceRecord(
+        { ...wellFormed.verified_automotive_fact, ...patch } as EvidenceRecord).ok));
+    check("CC7. a record at every bound exactly is still accepted — the bounds do not "
+      + "invalidate the widest legitimate record",
+      validateEvidenceRecord({
+        ...wellFormed.verified_automotive_fact,
+        claim: "c".repeat(EVIDENCE_LIMITS.claimChars),
+        subject: "s".repeat(EVIDENCE_LIMITS.subjectChars),
+        attribute: "a".repeat(EVIDENCE_LIMITS.attributeChars),
+        tags: Array.from({ length: EVIDENCE_LIMITS.maxTags },
+          (_, i) => `${String(i).padStart(2, "0")}${"t".repeat(EVIDENCE_LIMITS.tagChars - 2)}`),
+        sourceRef: "r".repeat(EVIDENCE_LIMITS.sourceRefChars),
+        provenance: "p".repeat(EVIDENCE_LIMITS.provenanceChars),
+        reviewedBy: "b".repeat(EVIDENCE_LIMITS.reviewedByChars),
+      } as EvidenceRecord).ok);
+    check("CC8. text JSON would expand sixfold is refused outright, which is what makes "
+      + "the two-times escape factor provable rather than hopeful",
+      !validateEvidenceRecord({
+        ...wellFormed.verified_automotive_fact, claim: "Brake fluid.\u0001",
+      } as EvidenceRecord).ok
+        && !validateEvidenceRecord({
+             ...wellFormed.verified_automotive_fact, claim: "Brake fluid.\uD800",
+           } as EvidenceRecord).ok
+        && !isSerializableText("\u0001")
+        && !isSerializableText("\uD800")
+        && isSerializableText("tab\tnewline\nquote\"backslash\\ é 字 \u{1F600}"));
+    check("CC9. the worst serializable character costs exactly the declared factor, "
+      + "measured rather than assumed",
+      MAX_JSON_ESCAPE_EXPANSION === 2
+        && Math.max(...["\"", "\\", "\t", "\n", "\r", "a", "é", "字"]
+             .map((c) => (JSON.stringify(c).length - 2) / c.length)) === MAX_JSON_ESCAPE_EXPANSION
+        && JSON.stringify("\u0001").length - 2 > MAX_JSON_ESCAPE_EXPANSION);
+    check("CC10. the one write path into production evidence is gated by the same contract, "
+      + "so a record the bounds refuse cannot be persisted by `evidence:sync`",
+      /assertValidEvidenceRecord/.test(
+        await readFile(resolve(REPO_ROOT, "src/harness/state.ts"), "utf8"))
+        && /assertValidEvidenceRecord/.test(
+             await readFile(resolve(REPO_ROOT, "src/harness/evidence/approvedFacts.ts"), "utf8")));
+    const ALL_PLATFORMS: PackagingPlatform[] = [...PACKAGING_PLATFORMS];
+
+    // --- CC-C. every producer's maximum fits every consumer's guard --------
+    //
+    // Not asserted from constants: built through each owning stage's real
+    // validator, at every field maximum and every array maximum at once, with
+    // maximum-length evidence ids, and then measured. If a witness in
+    // `payloadContract.ts` ever stops matching the shape a validator actually
+    // returns — a renamed field, a new channel, a wrapper object — the derived
+    // ceiling stops covering the real output and one of these fails.
+    const maxIdOf = (prefix: string, i: number): string => {
+      const stem = `${prefix}-${String(i).padStart(3, "0")}-`;
+      return stem + "z".repeat(EVIDENCE_LIMITS.idChars - stem.length);
+    };
+    const maximalRecord = (id: string, kind: EvidenceKind): EvidenceRecord => ({
+      id,
+      kind,
+      claim: "c".repeat(EVIDENCE_LIMITS.claimChars),
+      subject: "s".repeat(EVIDENCE_LIMITS.subjectChars),
+      attribute: "a".repeat(EVIDENCE_LIMITS.attributeChars),
+      tags: [],
+      sourceType: kind === "gcd_performance_evidence" ? "platform_analytics"
+        : kind === "gcd_direct_observation" ? "gcd_staff_observation"
+        : "manufacturer_documentation",
+      createdAt: "2026-08-01T00:00:00Z",
+      lifecycle: "active",
+      reviewBy: "2027-08-01T00:00:00Z",
+      ...(kind === "verified_automotive_fact" || kind === "verified_business_fact"
+        ? {
+            sourceRef: "r".repeat(EVIDENCE_LIMITS.sourceRefChars),
+            provenance: "p".repeat(EVIDENCE_LIMITS.provenanceChars),
+            reviewedAt: "2026-08-01T00:00:00Z",
+          }
+        : {}),
+      ...(kind === "gcd_direct_observation"
+        ? {
+            generalizable: false as const,
+            observedAt: "2026-08-01T00:00:00Z",
+            provenance: "p".repeat(EVIDENCE_LIMITS.provenanceChars),
+          }
+        : {}),
+      ...(kind === "gcd_performance_evidence"
+        ? { observedAt: "2026-08-01T00:00:00Z" }
+        : {}),
+    } as EvidenceRecord);
+
+    const ccFacts = Array.from({ length: LIMITS.maxIds },
+      (_, i) => maximalRecord(maxIdOf("fact", i), "verified_automotive_fact"));
+    const ccObservations = Array.from({ length: LIMITS.maxIds },
+      (_, i) => maximalRecord(maxIdOf("obs", i), "gcd_direct_observation"));
+    const ccPerformance = Array.from({ length: LIMITS.maxIds },
+      (_, i) => maximalRecord(maxIdOf("perf", i), "gcd_performance_evidence"));
+    const ccPack = buildEvidencePack({
+      goal: "g".repeat(LIMITS.goalChars),
+      // One business fact so stage 1's required-evidence-class precondition is
+      // satisfied; it is maximal like the rest and counts toward no other bound
+      // this section measures.
+      records: [
+        ...ccFacts, ...ccObservations, ...ccPerformance,
+        maximalRecord(maxIdOf("biz", 0), "verified_business_fact"),
+      ],
+      now: NOW,
+    });
+
+    const ccStrategy = validateStrategyConceptOutput({
+      angle: "A".repeat(LIMITS.angleChars),
+      concept: "C".repeat(LIMITS.conceptChars),
+      rationale: "R".repeat(LIMITS.rationaleChars),
+      hypotheses: Array.from({ length: LIMITS.maxHypotheses }, () => ({
+        statement: "H".repeat(LIMITS.hypothesisChars), basis: "creative",
+      })),
+      assumptions: Array.from({ length: LIMITS.maxAssumptions },
+        () => "S".repeat(LIMITS.assumptionChars)),
+      supportingFactIds: ccFacts.map((r) => r.id),
+      observationIds: ccObservations.map((r) => r.id),
+      performanceSignalIds: ccPerformance.map((r) => r.id),
+    }, ccPack);
+
+    const ccTruth = validateAutomotiveTruthOutput({
+      assessment: "A".repeat(TRUTH_LIMITS.assessmentChars),
+      allowedClaims: ccFacts.slice(0, TRUTH_LIMITS.maxAllowedClaims).map((r) => ({
+        factId: r.id, claimClass: "automotive",
+        restatement: "R".repeat(TRUTH_LIMITS.restatementChars),
+      })),
+      forbiddenClaims: Array.from({ length: TRUTH_LIMITS.maxForbiddenClaims }, () => ({
+        claim: "F".repeat(TRUTH_LIMITS.forbiddenClaimChars), reason: "outside_evidence_scope",
+      })),
+      requiredCaveats: Array.from({ length: TRUTH_LIMITS.maxCaveats },
+        () => "V".repeat(TRUTH_LIMITS.caveatChars)),
+      openQuestions: Array.from({ length: TRUTH_LIMITS.maxOpenQuestions },
+        () => "Q".repeat(TRUTH_LIMITS.openQuestionChars)),
+    }, ccPack);
+
+    const ccScript = validateHookStoryScriptOutput({
+      hook: "K".repeat(SCRIPT_LIMITS.hookChars),
+      storyBeats: Array.from({ length: SCRIPT_LIMITS.maxBeats }, (_, i) => ({
+        beat: "B".repeat(SCRIPT_LIMITS.beatChars),
+        role: i === 0 ? "setup" : i === SCRIPT_LIMITS.maxBeats - 1 ? "closing" : "insight",
+      })),
+      script: "T".repeat(SCRIPT_LIMITS.scriptChars),
+      claimUse: ccFacts.slice(0, SCRIPT_LIMITS.maxClaimUses).map((r) => ({
+        factId: r.id, usedIn: "script",
+        paraphrase: "P".repeat(SCRIPT_LIMITS.paraphraseChars),
+      })),
+      openQuestions: Array.from({ length: SCRIPT_LIMITS.maxOpenQuestions },
+        () => "Q".repeat(SCRIPT_LIMITS.openQuestionChars)),
+    }, ccTruth, ccPack);
+
+    const ccDirection = validateProductionDirectionOutput({
+      visualApproach: "V".repeat(DIRECTION_LIMITS.visualApproachChars),
+      shots: Array.from({ length: DIRECTION_LIMITS.maxShots }, () => ({
+        purpose: "demonstration", framing: "over-the-shoulder", movement: "handheld",
+        subject: "S".repeat(DIRECTION_LIMITS.subjectChars),
+        action: "A".repeat(DIRECTION_LIMITS.actionChars),
+        composition: "C".repeat(DIRECTION_LIMITS.compositionChars),
+        continuityNote: "N".repeat(DIRECTION_LIMITS.continuityChars),
+      })),
+      overlayText: Array.from({ length: DIRECTION_LIMITS.maxOverlayText }, () => ({
+        text: "O".repeat(DIRECTION_LIMITS.overlayTextChars), shotIndex: 0, role: "clarification",
+      })),
+      productionRequirements: Array.from({ length: DIRECTION_LIMITS.maxRequirements }, () => ({
+        requirement: "R".repeat(DIRECTION_LIMITS.requirementChars), category: "permission",
+      })),
+      claimVisuals: ccFacts.slice(0, DIRECTION_LIMITS.maxClaimVisuals).map((r) => ({
+        factId: r.id, shotIndex: 0,
+        directionSummary: "D".repeat(DIRECTION_LIMITS.directionSummaryChars),
+      })),
+      openQuestions: Array.from({ length: DIRECTION_LIMITS.maxOpenQuestions },
+        () => "Q".repeat(DIRECTION_LIMITS.openQuestionChars)),
+    }, ccScript, ccTruth, ccPack);
+
+    // Captions are built to the exact effective cap: the smaller of the
+    // provider's limit and the pipeline's, minus the canonical hashtag text the
+    // combined provider-visible rule counts alongside them.
+    const ccPlatformCaptionMax: Record<PackagingPlatform, number> = {
+      instagram: Math.min(INSTAGRAM_CAPTION_MAX, PACKAGING_LIMITS.pipelineCaptionChars),
+      facebook: Math.min(FACEBOOK_TEXT_MAX, PACKAGING_LIMITS.pipelineCaptionChars),
+      google_business_profile: Math.min(GBP_SUMMARY_MAX, PACKAGING_LIMITS.pipelineCaptionChars),
+    };
+    const ccPlatformHashtagMax: Record<PackagingPlatform, number> = {
+      instagram: Math.min(INSTAGRAM_HASHTAG_MAX, PACKAGING_LIMITS.maxHashtags),
+      facebook: Math.min(FACEBOOK_HASHTAG_MAX, PACKAGING_LIMITS.maxHashtags),
+      google_business_profile: Math.min(GBP_HASHTAG_MAX, PACKAGING_LIMITS.maxHashtags),
+    };
+    const ccUsesPerPlatform = Math.floor(PACKAGING_LIMITS.maxClaimUses / ALL_PLATFORMS.length);
+    const ccPackaging = validatePackagingAdaptationOutput({
+      packages: ALL_PLATFORMS.map((platform) => {
+        const tags = Array.from({ length: ccPlatformHashtagMax[platform] },
+          (_, i) => `#${"t".repeat(28)}${String(i).padStart(2, "0")}`);
+        const joined = tags.length ? tags.join(" ").length + 2 : 0;
+        return {
+          platform,
+          caption: "W".repeat(ccPlatformCaptionMax[platform] - joined),
+          hashtags: tags,
+          localKeywords: Array.from({ length: PACKAGING_LIMITS.maxLocalKeywords }, (_, i) =>
+            `${"k".repeat(PACKAGING_LIMITS.localKeywordChars - 3)}${String(i).padStart(3, "0")}`),
+          recommendedTime: "23:59 ET",
+          openQuestions: Array.from({ length: PACKAGING_LIMITS.maxOpenQuestions },
+            () => "Q".repeat(PACKAGING_LIMITS.openQuestionChars)),
+        };
+      }),
+      claimUse: ALL_PLATFORMS.flatMap((platform) =>
+        ccFacts.slice(0, ccUsesPerPlatform).map((r) => ({
+          platform, factId: r.id, summary: "M".repeat(PACKAGING_LIMITS.summaryChars),
+        }))),
+    }, ALL_PLATFORMS, ccScript, ccTruth, ccPack);
+
+    const ccCritic = validateFinalCriticOutput({
+      verdict: "needs_human_review",
+      summary: "S".repeat(FINAL_CRITIC_LIMITS.summaryChars),
+      findings: Array.from({ length: FINAL_CRITIC_LIMITS.maxFindings }, (_, i) => ({
+        severity: i === 0 ? "blocking" : "advisory",
+        category: "hashtag_keyword_relevance",
+        platform: "cross_platform",
+        owner: i === 0 ? "human_review" : "packaging-adaptation",
+        issue: "I".repeat(FINAL_CRITIC_LIMITS.issueChars),
+        suggestedAction: "A".repeat(FINAL_CRITIC_LIMITS.suggestedActionChars),
+      })),
+      claimFindingUse: Array.from({ length: FINAL_CRITIC_LIMITS.maxClaimFindingUses }, (_, i) => ({
+        findingIndex: i % FINAL_CRITIC_LIMITS.maxFindings,
+        platform: ALL_PLATFORMS[Math.floor(i / ccUsesPerPlatform) % ALL_PLATFORMS.length]!,
+        factId: ccFacts[i % ccUsesPerPlatform]!.id,
+        summary: "U".repeat(FINAL_CRITIC_LIMITS.claimFindingSummaryChars),
+      })),
+    }, ALL_PLATFORMS, ccPackaging, ccScript, ccTruth, ccPack);
+
+    const serialized = (value: unknown) => JSON.stringify(value, null, 2).length;
+    const MAXIMAL: Array<[string, unknown, { transportChars: number; contractChars: number }]> = [
+      ["strategy-concept", ccStrategy, STRATEGY_OUTPUT],
+      ["automotive-truth", ccTruth, TRUTH_OUTPUT],
+      ["hook-story-script", ccScript, SCRIPT_OUTPUT],
+      ["production-direction", ccDirection, DIRECTION_OUTPUT],
+      ["packaging-adaptation", ccPackaging, PACKAGING_OUTPUT],
+      ["final-critic", ccCritic, CRITIC_OUTPUT],
+    ];
+    const overCeiling = MAXIMAL
+      .filter(([, value, ceiling]) => serialized(value) > ceiling.transportChars)
+      .map(([name, value, ceiling]) => `${name}: ${serialized(value)} > ${ceiling.transportChars}`);
+    check("CC11. every stage's maximal valid output fits its own derived transport ceiling"
+      + (overCeiling.length ? ` (over: ${overCeiling.join("; ")})` : ""),
+      overCeiling.length === 0 && MAXIMAL.every(([, value]) => serialized(value) > 0));
+    check("CC12. every maximal output fits its serialized UTF-8 byte ceiling and Stage 1 "
+      + "still derives all three id channels",
+      MAXIMAL.every(([, value, ceiling]) =>
+        utf8ByteLength(JSON.stringify(value, null, 2)) <= ceiling.transportChars)
+        && Number(STRATEGY_ID_CHANNELS) === 3);
+
+    // The adjacency proof: for each producer/consumer pair, the guard the
+    // consumer applies is EXACTLY the producer's ceiling, and the producer's
+    // real maximal output is at or under it.
+    const PAIRS: Array<[string, number, number, number]> = [
+      // producer → consumer, consumer's guard, producer's ceiling, producer's real maximum
+      ["stage 1 → stage 2", TRUTH_LIMITS.strategyOutputChars,
+        STRATEGY_OUTPUT.transportChars, serialized(ccStrategy)],
+      ["stage 1 → stage 3", SCRIPT_LIMITS.strategyOutputChars,
+        STRATEGY_OUTPUT.transportChars, serialized(ccStrategy)],
+      ["stage 2 → stage 3", SCRIPT_LIMITS.truthOutputChars,
+        TRUTH_OUTPUT.transportChars, serialized(ccTruth)],
+      ["stage 3 → stage 4", DIRECTION_LIMITS.scriptOutputChars,
+        SCRIPT_OUTPUT.transportChars, serialized(ccScript)],
+      ["stage 3 → stage 5", PACKAGING_LIMITS.scriptOutputChars,
+        SCRIPT_OUTPUT.transportChars, serialized(ccScript)],
+      ["stage 3 → stage 6", FINAL_CRITIC_LIMITS.scriptOutputChars,
+        SCRIPT_OUTPUT.transportChars, serialized(ccScript)],
+      ["stage 4 → stage 5", PACKAGING_LIMITS.directionOutputChars,
+        DIRECTION_OUTPUT.transportChars, serialized(ccDirection)],
+      ["stage 4 → stage 6", FINAL_CRITIC_LIMITS.directionOutputChars,
+        DIRECTION_OUTPUT.transportChars, serialized(ccDirection)],
+      ["stage 5 → stage 6", FINAL_CRITIC_LIMITS.packagingOutputChars,
+        PACKAGING_OUTPUT.transportChars, serialized(ccPackaging)],
+    ];
+    const brokenPairs = PAIRS
+      .filter(([, guard, ceiling, actual]) => guard !== ceiling || actual > guard)
+      .map(([name, guard, ceiling, actual]) => `${name}: guard=${guard} ceiling=${ceiling} max=${actual}`);
+    check("CC13. for every adjacent producer/consumer pair the consumer's guard is exactly "
+      + "the producer's derived ceiling, and the producer's maximal real output fits it"
+      + (brokenPairs.length ? ` (broken: ${brokenPairs.join("; ")})` : ""),
+      brokenPairs.length === 0 && PAIRS.length === 9);
+
+    // --- CC-D. one authority, derived — not a hand-maintained aggregate ----
+    //
+    // The failure this guards against is subtle and cheap to commit: someone
+    // reads a derived number out of a test run, writes it into a constant,
+    // and the derivation quietly stops mattering. These checks fail if any
+    // load-bearing ceiling stops being computed.
+    const stageSources = await Promise.all(([
+      "strategyConcept", "automotiveTruth", "hookStoryScript",
+      "productionDirection", "packagingAdaptation", "finalCritic",
+    ]).map(async (name) => [name, await readFile(
+      resolve(REPO_ROOT, `src/harness/agents/${name}.ts`), "utf8")] as const));
+    const derivedNumbers = [
+      STRATEGY_OUTPUT.transportChars, TRUTH_OUTPUT.transportChars,
+      SCRIPT_OUTPUT.transportChars, DIRECTION_OUTPUT.transportChars,
+      PACKAGING_OUTPUT.transportChars, CRITIC_OUTPUT.transportChars,
+      MAX_PAYLOAD_CHARS, PLATFORM_CLAIMS_BLOCK_CHARS,
+      ...Object.values(STAGE_ASSEMBLED_CEILINGS),
+    ];
+    const literalOf = (n: number) => new RegExp(
+      `\\b${n}\\b|\\b${n.toLocaleString("en-US").replace(/,/g, "_")}\\b`);
+    const literalLeaks = stageSources.flatMap(([name, src]) =>
+      derivedNumbers.filter((n) => literalOf(n).test(src)).map((n) => `${name}:${n}`));
+    check("CC14. no stage module writes a derived ceiling as a literal — every one imports it"
+      + (literalLeaks.length ? ` (leaked: ${literalLeaks.join(", ")})` : ""),
+      literalLeaks.length === 0);
+    check("CC15. every stage module takes its handoff guards from the shared authority",
+      stageSources.every(([, src]) => /from "\.\/payloadContract\.js"/.test(src))
+        && stageSources.filter(([, src]) => /HANDOFF_GUARDS/.test(src)).length === 6);
+    check("CC16. the shared payload boundary is computed from the assembled stage ceilings, "
+      + "not written down",
+      /const largest = Math\.max\(\.\.\.Object\.values\(STAGE_ASSEMBLED_CEILINGS\)\)/.test(payloadSource)
+        && MAX_PAYLOAD_CHARS >= Math.max(...Object.values(STAGE_ASSEMBLED_CEILINGS))
+        && MAX_PAYLOAD_CHARS < Math.max(...Object.values(STAGE_ASSEMBLED_CEILINGS)) + 10_000);
+    check("CC17. every handoff guard is the producer's ceiling by construction, and every "
+      + "assembled ceiling is at or below the shared boundary",
+      HANDOFF_GUARDS.strategyOutputChars === STRATEGY_OUTPUT.transportChars
+        && HANDOFF_GUARDS.truthOutputChars === TRUTH_OUTPUT.transportChars
+        && HANDOFF_GUARDS.scriptOutputChars === SCRIPT_OUTPUT.transportChars
+        && HANDOFF_GUARDS.directionOutputChars === DIRECTION_OUTPUT.transportChars
+        && Object.values(STAGE_ASSEMBLED_CEILINGS).every((c) => c <= MAX_PAYLOAD_CHARS)
+        && Object.keys(STAGE_ASSEMBLED_CEILINGS).length === TARGET_STAGE_IDS.length);
+    check("CC18. the escape factor and worst-case tokens-per-byte ceiling each have exactly one "
+      + "definition, in the authority module",
+      /export const MAX_JSON_ESCAPE_EXPANSION = 2;/.test(payloadSource)
+        && /export const MAX_TOKENS_PER_UTF8_BYTE = 1;/.test(payloadSource)
+        && stageSources.every(([, src]) =>
+             !/MAX_JSON_ESCAPE_EXPANSION\s*=/.test(src)
+             && !/MAX_TOKENS_PER_UTF8_BYTE\s*=/.test(src)));
+
+    // --- CC-E. output contracts fit the token budgets ----------------------
+    //
+    // The other direction of the same reconciliation: a stage whose contract
+    // can produce more text than its budget allows cannot complete a valid
+    // response, and would fail at run time rather than at review time.
+    const BUDGETS: Array<[string, string, { transportChars: number }]> = [
+      ["strategy-concept", "reasoning-heavy", STRATEGY_OUTPUT],
+      ["automotive-truth", "reasoning-heavy", TRUTH_OUTPUT],
+      ["hook-story-script", "reasoning-standard", SCRIPT_OUTPUT],
+      ["production-direction", "reasoning-standard", DIRECTION_OUTPUT],
+      ["packaging-adaptation", "reasoning-standard", PACKAGING_OUTPUT],
+      ["final-critic", "critic", CRITIC_OUTPUT],
+    ];
+    const shortBudgets = BUDGETS
+      .filter(([, policy, ceiling]) =>
+        resolveModelPolicy(policy as keyof typeof POLICY_MAX_TOKENS).visibleOutputTokens
+          < minimumOutputTokens(ceiling.transportChars))
+      .map(([stage, policy, ceiling]) =>
+        `${stage}/${policy}: budget=${POLICY_MAX_TOKENS[policy as keyof typeof POLICY_MAX_TOKENS]} `
+        + `needs=${minimumOutputTokens(ceiling.transportChars)}`);
+    check("CC19. every stage's maximal output contract fits its policy's token budget"
+      + (shortBudgets.length ? ` (short: ${shortBudgets.join("; ")})` : ""),
+      shortBudgets.length === 0 && BUDGETS.length === TARGET_STAGE_IDS.length);
+    check("CC20. every registered stage's declared policy is one of the three budgeted "
+      + "policies, so no stage can be added without a budget",
+      targetStageDefinitions().every((d) =>
+        BUDGETS.some(([stage, policy]) => stage === d.id && policy === d.modelPolicy)));
+    check("CC21. the budgets are derived from the contracts, not chosen — each policy's "
+      + "budget is the rounded-up maximum of the stages that use it",
+      POLICY_MAX_TOKENS["reasoning-heavy"] === POLICY_OUTPUT_TOKEN_FLOORS["reasoning-heavy"]
+        && POLICY_MAX_TOKENS["reasoning-standard"] === POLICY_OUTPUT_TOKEN_FLOORS["reasoning-standard"]
+        && POLICY_MAX_TOKENS.critic === POLICY_OUTPUT_TOKEN_FLOORS.critic
+        && /POLICY_OUTPUT_TOKEN_FLOORS/.test(
+             await readFile(resolve(REPO_ROOT, "src/harness/agents/modelPolicy.ts"), "utf8")));
+    check("CC22. every derived budget uses the serialized byte worst case and remains within "
+      + "the documented centralized model output cap, with hidden thinking disabled",
+      Number(MAX_TOKENS_PER_UTF8_BYTE) === 1
+        && minimumOutputTokens(3) === 3
+        && minimumOutputTokens(4) === 4
+        && Object.values(POLICY_THINKING).every((thinking) => thinking.type === "disabled")
+        && modelBearingPolicies().every((policy) => {
+             const resolved = resolveModelPolicy(policy);
+             return resolved.visibleOutputTokens === resolved.maxTokens
+               && resolved.thinking.type === "disabled";
+           })
+        && Object.entries(POLICY_MAX_TOKENS).every(([policy, budget]) =>
+             budget <= POLICY_MODEL_OUTPUT_CAPS[policy as keyof typeof POLICY_MODEL_OUTPUT_CAPS]));
+
+    // --- CC-F. the narrowing that is a narrowing, recorded as one ----------
+    check("CC23. the pipeline caption cap is smaller than the largest provider limit, is "
+      + "documented as a deliberate narrowing, and dominates every provider policy",
+      PACKAGING_LIMITS.pipelineCaptionChars < FACEBOOK_TEXT_MAX
+        && /deliberate narrowing/.test(payloadSource)
+        && Object.values(PLATFORM_PACKAGING_POLICY).every((p) =>
+             Math.min(p.captionMax, PACKAGING_LIMITS.pipelineCaptionChars)
+               <= PACKAGING_LIMITS.pipelineCaptionChars)
+        && Object.values(PLATFORM_PACKAGING_POLICY).every((p) =>
+             p.hashtagMax <= PACKAGING_LIMITS.maxHashtags));
+    check("CC24. Google Business Profile keeps its tighter provider limit — the pipeline cap "
+      + "narrows, it never widens",
+      Math.min(GBP_SUMMARY_MAX, PACKAGING_LIMITS.pipelineCaptionChars) === GBP_SUMMARY_MAX
+        && GBP_SUMMARY_MAX < PACKAGING_LIMITS.pipelineCaptionChars);
+
+    // --- CC-G. nothing here became reachable, and nothing contacts a provider
+    check("CC25. all six stages remain dormant with executionEnabled false, and the count "
+      + "of stages is unchanged",
+      targetStageDefinitions().length === 6
+        && targetStageDefinitions().every((d) => d.executionEnabled === false)
+        && TARGET_STAGE_IDS.length === 6);
+    // Probe the CODE, not the prose: the module documents why it stays free of
+    // platform and provider vocabulary, so those words appear in its comments.
+    // Branded literals like `publishable` are contract shape, not reach.
+    const payloadCode = payloadSource
+      .replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
+    const reachProbe =
+      /\bfetch\s*\(|\brequire\s*\(|process\.env|Anthropic|https?:\/\/|node:|\bawait\b/i;
+    check("CC26. the payload authority reaches nothing: it imports nothing at all, and its "
+      + "code contains no network call, module load, environment read or provider name",
+      !/^import\s/m.test(payloadSource)
+        && !/^export .* from /m.test(payloadSource)
+        && !reachProbe.test(payloadCode));
+    // A nonempty parent credential must change nothing. The injected runner is
+    // the only path to a model in this pipeline: no stage constructs
+    // `anthropicStageRunner`, no stage reads the variable, and the preview stays
+    // inert with the variable set. Set, executed, and restored here rather than
+    // assumed.
+    const credentialCalls: StageRunnerRequest[] = [];
+    const priorKey = process.env.ANTHROPIC_API_KEY;
+    // Deliberately not shaped like a real key: the credential-and-PII scanner
+    // reads this file, and the property under test is only that the variable
+    // is nonempty, not that it is well formed.
+    process.env.ANTHROPIC_API_KEY = "offline-selftest-placeholder-not-a-credential";
+    let credentialPreviewInert = false;
+    let credentialRefusal = "";
+    try {
+      await executeStrategyConcept({
+        goal: "brake service content",
+        evidencePack: ccPack,
+        registry,
+        runner: async (request) => {
+          credentialCalls.push(request);
+          return { text: JSON.stringify({
+            angle: "A short angle.",
+            concept: "A short concept.",
+            rationale: "A short rationale.",
+            hypotheses: [],
+            assumptions: [],
+            supportingFactIds: [ccFacts[0]!.id],
+            observationIds: [],
+            performanceSignalIds: [],
+          }) };
+        },
+      });
+      credentialPreviewInert = (await buildContentIntelligencePreview({
+        goal: "brake service", records: mixed, now: NOW, traceId: "fixed-trace", businessContext,
+      })).executionDisabled === true;
+    } catch (error) {
+      credentialRefusal = error instanceof Error ? error.message : String(error);
+    } finally {
+      if (priorKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = priorKey;
+    }
+    check("CC27. a nonempty ANTHROPIC_API_KEY causes no provider call: the injected runner "
+      + "receives the request, the preview stays inert, and the variable is restored",
+      credentialRefusal === ""
+        && credentialCalls.length === 1
+        && credentialCalls[0]!.maxTokens === POLICY_MAX_TOKENS["reasoning-heavy"]
+        && credentialPreviewInert
+        && process.env.ANTHROPIC_API_KEY === priorKey);
+    check("CC28. no stage module constructs the provider runner or reads the credential — "
+      + "the only construction site is the shared boundary, which nothing dormant calls",
+      stageSources.every(([, src]) =>
+        !/anthropicStageRunner/.test(src) && !/ANTHROPIC_API_KEY/.test(src))
+        && !/ANTHROPIC_API_KEY/.test(payloadSource)
+        && typeof anthropicStageRunner === "function");
+
+    let mappedAgentRequest: AgentRunOptions | undefined;
+    const injectedProductionRunner = createAnthropicStageRunner(async (request) => {
+      mappedAgentRequest = request;
+      return { text: "{}", totalCostUsd: undefined, usage: undefined };
+    });
+    await injectedProductionRunner(credentialCalls[0]!);
+
+    const unwrappedPayload = payloadSource.replace(/\n\s*\*\s?/g, " ").replace(/\s+/g, " ");
+    const stageExecutionSource = await readFile(
+      resolve(REPO_ROOT, "src/harness/agents/stageExecution.ts"), "utf8");
+    // The STAGE boundary, inspected byte for byte — including both bounds and
+    // the retry policy, which is what the "exactly one model request"
+    // guarantee actually rests on.
+    let sdkRequest: Record<string, unknown> | undefined;
+    let sdkOptions: StageRequestOptions | undefined;
+    const cannedMessage = (request: { model: unknown }) => ({
+      id: "msg_offline",
+      type: "message",
+      role: "assistant",
+      model: String(request.model),
+      content: [{ type: "text", text: "{}", citations: null }],
+      stop_reason: "end_turn",
+      stop_sequence: null,
+      usage: { input_tokens: 1, output_tokens: 1 },
+    } as any);
+
+    /** A controllable offline stream and timer pair. Nothing waits in real time. */
+    interface FakeClock {
+      armed: Array<{ ms: number; fire: () => void; cleared: boolean }>;
+      timers: StageTimers;
+      fireAll: () => void;
+    }
+    const fakeClock = (): FakeClock => {
+      const armed: FakeClock["armed"] = [];
+      return {
+        armed,
+        timers: {
+          setTimeout: (callback, ms) => {
+            const entry = { ms, fire: callback, cleared: false };
+            armed.push(entry);
+            return entry;
+          },
+          clearTimeout: (handle) => {
+            const entry = handle as FakeClock["armed"][number];
+            if (entry) entry.cleared = true;
+          },
+        },
+        fireAll: () => armed.filter((e) => !e.cleared).forEach((e) => e.fire()),
+      };
+    };
+
+    const completing = fakeClock();
+    let opened = 0;
+    let aborted = 0;
+    await runStageAgentWithStreamOpener(mappedAgentRequest!, (request, options) => {
+      opened += 1;
+      sdkRequest = request as unknown as Record<string, unknown>;
+      sdkOptions = options;
+      return {
+        finalMessage: async () => cannedMessage(request),
+        abort: () => { aborted += 1; },
+      };
+    }, completing.timers);
+
+    // The LEGACY boundary, asserted unchanged in the same breath.
+    let legacySdkRequest: Record<string, unknown> | undefined;
+    let legacySdkOptions: LegacyRequestOptions | undefined;
+    await runAgentWithMessageCreator({
+      systemPrompt: "legacy-system", prompt: "legacy-prompt",
+    }, async (request, options) => {
+      legacySdkRequest = request as unknown as Record<string, unknown>;
+      legacySdkOptions = options;
+      return cannedMessage(request);
+    });
+
+    check("CC36. the exact production stage request explicitly disables thinking so the full "
+      + "derived max_tokens ceiling is available to visible JSON, while legacy runAgent stays unchanged",
+      credentialCalls[0]!.model === "claude-opus-5"
+        && credentialCalls[0]!.thinking.type === "disabled"
+        && mappedAgentRequest?.thinking?.type === "disabled"
+        && sdkRequest?.thinking !== undefined
+        && (sdkRequest!.thinking as { type?: string }).type === "disabled"
+        && sdkRequest?.max_tokens === POLICY_MAX_TOKENS["reasoning-heavy"]
+        && sdkRequest?.model === "claude-opus-5"
+        && !("tools" in sdkRequest!)
+        && legacySdkRequest !== undefined
+        && !("thinking" in legacySdkRequest));
+
+    // --- CC-I. one request means one WIRE request ---------------------------
+    //
+    // The Anthropic SDK defaults `maxRetries` to 2, retrying 408/409/429/5xx and
+    // connection errors — and timeouts too, so a 90-second budget was really up
+    // to 270 seconds across three attempts. Until this was set explicitly,
+    // "exactly one model request" and `modelRequests: 1` described one wrapper
+    // invocation, not one provider request.
+    check("CC39. the stage request boundary disables SDK retries explicitly, so one wrapper "
+      + "invocation is one wire request and the modelRequests metadata is true of the network",
+      sdkOptions !== undefined
+        && sdkOptions!.maxRetries === 0
+        && sdkOptions!.maxRetries === STAGE_REQUEST_MAX_RETRIES);
+    check("CC40. the legacy agent boundary is deliberately untouched: SDK-default retries and "
+      + "its original 90-second non-streaming budget",
+      legacySdkOptions !== undefined
+        && legacySdkOptions!.maxRetries === undefined
+        && legacySdkOptions!.timeout === 90_000);
+
+    // --- CC-J. TWO bounds, because the SDK only implements one --------------
+    //
+    // The SDK's `timeout` option arms a timer around the underlying fetch and
+    // clears it in a `finally` when that call resolves — for a streaming
+    // request, when response HEADERS arrive. Event consumption afterwards has
+    // no timer, so a stalled stream would hang forever. The setup timeout and
+    // the total stream deadline are therefore separate values with separate
+    // names, and the second one is enforced here rather than by the SDK.
+    const stageBudget = POLICY_MAX_TOKENS["reasoning-heavy"];
+    check("CC41. the stage arms a total stream deadline derived from its own output budget, "
+      + "distinct from the much smaller request-setup timeout the SDK actually bounds",
+      sdkOptions !== undefined
+        && sdkOptions!.streamDeadlineMs === stageStreamDeadlineMs(stageBudget)
+        && sdkOptions!.streamDeadlineMs === POLICY_STREAM_DEADLINE_MS["reasoning-heavy"]
+        && sdkOptions!.streamDeadlineMs
+             >= (stageBudget / MIN_OUTPUT_TOKENS_PER_SECOND) * 1_000
+        && sdkOptions!.requestSetupTimeoutMs === STAGE_REQUEST_SETUP_TIMEOUT_MS
+        && sdkOptions!.requestSetupTimeoutMs < sdkOptions!.streamDeadlineMs);
+    check("CC42. every policy's deadline carries its own budget, and a larger budget is never "
+      + "given a smaller deadline",
+      (Object.keys(POLICY_MAX_TOKENS) as Array<keyof typeof POLICY_MAX_TOKENS>).every((policy) => {
+        const budget = POLICY_MAX_TOKENS[policy];
+        const deadline = POLICY_STREAM_DEADLINE_MS[policy];
+        return deadline === stageStreamDeadlineMs(budget)
+          && deadline >= (budget / MIN_OUTPUT_TOKENS_PER_SECOND) * 1_000;
+      })
+        && POLICY_STREAM_DEADLINE_MS["reasoning-standard"]!
+             >= POLICY_STREAM_DEADLINE_MS["reasoning-heavy"]!);
+    check("CC43. the throughput floor is documented as an explicit operational assumption "
+      + "rather than a measurement, and claims no observed model rate",
+      /explicit operational assumption, not a measurement and not a guarantee/
+        .test(unwrappedPayload)
+        && /derived bounds, not measured latencies/.test(unwrappedPayload)
+        && !/Observed rates/i.test(payloadSource)
+        && MIN_OUTPUT_TOKENS_PER_SECOND > 0);
+    check("CC43a. the derivation comment records the budgets the policies actually carry",
+      unwrappedPayload.includes(
+        `${POLICY_MAX_TOKENS["reasoning-heavy"].toLocaleString("en-US")} tokens for`)
+        && unwrappedPayload.includes(
+             `${POLICY_MAX_TOKENS["reasoning-standard"].toLocaleString("en-US")} for`)
+        && unwrappedPayload.includes(
+             `${POLICY_MAX_TOKENS.critic.toLocaleString("en-US")} for`)
+        && !/8,000 tokens for|15,000 for/.test(unwrappedPayload));
+
+    // --- CC-K. the deadline is enforced, not merely computed ---------------
+    check("CC44. a completing stream returns normally, opens exactly one stream, is never "
+      + "aborted, and its deadline timer is cleared",
+      opened === 1
+        && aborted === 0
+        && completing.armed.length === 1
+        && completing.armed[0]!.ms === sdkOptions!.streamDeadlineMs
+        && completing.armed[0]!.cleared === true);
+
+    // A stream that never finishes. Without an enforced deadline this hangs
+    // forever; with one it is aborted and reported as a named failure. The
+    // fake clock fires the timer immediately, so no test waits 35 minutes.
+    const stalling = fakeClock();
+    let stallOpened = 0;
+    let stallAborted = 0;
+    let stallFailure = "";
+    let stallTyped = false;
+    try {
+      await runStageAgentWithStreamOpener(mappedAgentRequest!, (request, options) => {
+        stallOpened += 1;
+        let rejectStream: (reason: unknown) => void = () => {};
+        const pending = new Promise<never>((_, reject) => { rejectStream = reject; });
+        // Arm the deadline, then let it fire — exactly the ordering a real
+        // stalled stream produces.
+        queueMicrotask(() => {
+          stalling.fireAll();
+        });
+        // A real stalled stream settles for one reason only: something aborts
+        // it. This fake must not settle for any other reason either, or the
+        // check would pass with the abort removed — so its only other exit is
+        // this macrotask backstop, which stands in for "still open, and
+        // nothing is going to stop it". A macrotask runs strictly after every
+        // microtask, so a deadline that does abort always wins the race; one
+        // that does not is observed here as a stream still open past its
+        // deadline, rather than hanging this suite forever.
+        setTimeout(() => {
+          rejectStream(new Error("stream still open past its deadline; nothing aborted it"));
+        }, 0);
+        return {
+          finalMessage: () => pending,
+          abort: () => {
+            stallAborted += 1;
+            // A real SDK abort rejects the in-flight final message.
+            rejectStream(new Error("Request was aborted."));
+          },
+        };
+      }, stalling.timers);
+    } catch (error) {
+      stallFailure = error instanceof Error ? error.message : String(error);
+      stallTyped = error instanceof StageStreamDeadlineError;
+    }
+    check("CC45. a stream that never finishes is aborted at the total deadline and reported as "
+      + "a named deadline failure, having opened exactly one stream and taken no retry",
+      stallOpened === 1
+        && stallAborted === 1
+        && stallTyped
+        && /exceeded its \d+ms total deadline/.test(stallFailure)
+        && stalling.armed.length === 1
+        && stalling.armed[0]!.ms === POLICY_STREAM_DEADLINE_MS["reasoning-heavy"]);
+    check("CC45a. the deadline timer is cleared on the failure path too, so a refused stage "
+      + "leaves no timer behind",
+      stalling.armed[0]!.cleared === true);
+
+    // A stream that fails for a reason other than the deadline must surface
+    // that reason, not be relabelled as a timeout.
+    let otherFailure = "";
+    let otherTyped = false;
+    const failing = fakeClock();
+    try {
+      await runStageAgentWithStreamOpener(mappedAgentRequest!, () => ({
+        finalMessage: async () => { throw new Error("provider refused the request"); },
+        abort: () => {},
+      }), failing.timers);
+    } catch (error) {
+      otherFailure = error instanceof Error ? error.message : String(error);
+      otherTyped = error instanceof StageStreamDeadlineError;
+    }
+    check("CC45b. a non-deadline stream failure keeps its own reason and is not relabelled a "
+      + "deadline, and its timer is cleared as well",
+      /provider refused the request/.test(otherFailure)
+        && !otherTyped
+        && failing.armed[0]!.cleared === true);
+
+    // --- CC-L. the production path is the one carrying that policy ---------
+    const sdkSource = await readFile(resolve(REPO_ROOT, "src/harness/sdk.ts"), "utf8");
+    const stageRunnerBody = /export async function runStageAgent\(([\s\S]*?)\n}/.exec(sdkSource)?.[1] ?? "";
+    const stageDeadlineBody =
+      /export async function runStageAgentWithStreamOpener\(([\s\S]*?)\n}/.exec(sdkSource)?.[1] ?? "";
+    const legacyRunnerBody = /export async function runAgent\(([\s\S]*?)\n}/.exec(sdkSource)?.[1] ?? "";
+    check("CC46. the production stage runner streams and reassembles with finalMessage, arms and "
+      + "clears its own deadline, and the legacy runner keeps its non-streaming create call",
+      /messages\s*\n?\s*\.?stream\(/.test(stageRunnerBody)
+        && /finalMessage\(\)/.test(stageRunnerBody)
+        && /timeout: options\.requestSetupTimeoutMs/.test(stageRunnerBody)
+        && /maxRetries: options\.maxRetries/.test(stageRunnerBody)
+        && /timers\.setTimeout\(/.test(stageDeadlineBody)
+        && /stream\.abort\(\)/.test(stageDeadlineBody)
+        && /finally \{[\s\S]*timers\.clearTimeout\(handle\)/.test(stageDeadlineBody)
+        && /messages\.create\(/.test(legacyRunnerBody)
+        && !/\.stream\(/.test(legacyRunnerBody));
+    check("CC46a. the stage runner is what the registry's production runner resolves to, so the "
+      + "policy is not merely available but actually the one on the path",
+      /import \{[\s\S]*runStageAgent[\s\S]*\} from "\.\.\/sdk\.js";|import \{ runStageAgent \} from "\.\.\/sdk\.js";/
+        .test(stageExecutionSource)
+        && /createAnthropicStageRunner\(run: AgentRunner = runStageAgent\)/.test(stageExecutionSource));
+    check("CC46b. no 90-second literal survives anywhere on the Content Intelligence stage path",
+      stageDeadlineBody.length > 0
+        && !/90_000|90000/.test(stageRunnerBody)
+        && !/90_000|90000/.test(stageDeadlineBody)
+        && !/90_000|90000/.test(stageExecutionSource)
+        && !/90_000|90000/.test(payloadSource));
+    check("CC46c. the two bounds are named apart in the source, so neither can be mistaken for "
+      + "the other",
+      /requestSetupTimeoutMs/.test(sdkSource)
+        && /streamDeadlineMs/.test(sdkSource)
+        && /Bounds request \*\*setup\*\* only/.test(sdkSource)
+        && /Bounds the \*\*entire\*\* streaming lifecycle/.test(sdkSource));
+
+    // --- CC-H. review corrections: adversarial cardinality and representation
+    const detailCounterexample = Object.fromEntries(Array.from({ length: 410 }, (_, index) => [
+      index.toString(36).padStart(2, "0"),
+      index === 0 ? "x".repeat(710) : "",
+    ]));
+    const detailCompactLength = JSON.stringify(detailCounterexample).length;
+    const detailCanonicalUpperBound = postgresJsonbTextUpperBoundBytes(detailCounterexample);
+    check("CC29. the 3,991/4,810 detail counterexample is refused against PostgreSQL's "
+      + "canonical jsonb representation, not accepted from compact JavaScript JSON",
+      detailCompactLength === 3_991
+        && detailCanonicalUpperBound === 4_810
+        && !validateEvidenceRecord({
+             ...wellFormed.verified_automotive_fact, detail: detailCounterexample,
+           } as EvidenceRecord).ok
+        && !validateEvidenceRecord({
+             ...wellFormed.verified_automotive_fact, detail: { incompatible: "\uD800" },
+           } as EvidenceRecord).ok);
+
+    const relationBase = {
+      fromId: "fact-a", toId: "fact-b", kind: "supports" as const,
+      createdAt: "2026-09-02T00:00:00Z",
+    };
+    check("CC30. relation notes use the owning bound in TypeScript, including the UTF-8 byte edge",
+      validateEvidenceRelation({ ...relationBase, note: "n".repeat(EVIDENCE_LIMITS.relationNoteChars) }).ok
+        && !validateEvidenceRelation({
+             ...relationBase, note: "n".repeat(EVIDENCE_LIMITS.relationNoteChars + 1),
+           }).ok
+        && !validateEvidenceRelation({ ...relationBase, note: "é".repeat(251) }).ok);
+
+    const conflictRecords = Array.from({ length: EVIDENCE_LIMITS.maxProjectedRecords }, (_, index) => {
+      const stem = `conflict-${String(index).padStart(2, "0")}-`;
+      return {
+        ...wellFormed.verified_automotive_fact,
+        id: stem + "i".repeat(EVIDENCE_LIMITS.idChars - stem.length),
+        claim: `${String(index).padStart(2, "0")}-`
+          + "c".repeat(EVIDENCE_LIMITS.claimChars - 3),
+        subject: "s".repeat(EVIDENCE_LIMITS.subjectChars),
+        attribute: "a".repeat(EVIDENCE_LIMITS.attributeChars),
+      } as EvidenceRecord;
+    });
+    const fanoutPack = buildEvidencePack({ goal: "fan-out", records: conflictRecords, now: NOW });
+    let fanoutRendererError: unknown;
+    try {
+      renderEvidencePackForStage(fanoutPack);
+    } catch (error) {
+      fanoutRendererError = error;
+    }
+    let fanoutRunnerCalls = 0;
+    await executeStrategyConcept({
+      goal: "fan-out",
+      evidencePack: fanoutPack,
+      registry,
+      runner: async () => {
+        fanoutRunnerCalls += 1;
+        return { text: "{}" };
+      },
+    }).catch(() => undefined);
+    check("CC31. 64 valid same-subject/same-attribute facts produce all 2,016 conflicts and "
+      + "the renderer and shared executor boundary refuse the intact pack before a model call",
+      fanoutPack.conflicts.length === 2_016
+        && fanoutRendererError instanceof EvidencePackBoundsError
+        && /conflicts 2016 exceeds 64/.test((fanoutRendererError as Error).message)
+        && fanoutRunnerCalls === 0);
+    check("CC32. maxProjectedRecords is an enforced builder contract, not only a derivation input",
+      throws(() => buildEvidencePack({
+        goal: "too many", records: [...conflictRecords, {
+          ...conflictRecords[0]!, id: "one-record-too-many",
+        }], now: NOW,
+      })));
+
+    const multibyteStrategy = {
+      angle: "é".repeat(Math.floor(LIMITS.angleChars / 2)),
+      concept: "C", rationale: "R", hypotheses: [], assumptions: [],
+      supportingFactIds: [ccFacts[0]!.id], observationIds: [], performanceSignalIds: [],
+    };
+    check("CC33. non-ordinary contract text is accepted only while its UTF-8 bytes fit, and a "
+      + "string that defeats the former three-characters-per-token assumption is refused",
+      validateStrategyConceptOutput(multibyteStrategy, ccPack).provisional.angle.length
+        === Math.floor(LIMITS.angleChars / 2)
+        && throws(() => validateStrategyConceptOutput({
+             ...multibyteStrategy, angle: "é".repeat(LIMITS.angleChars),
+           }, ccPack)));
+    check("CC34. migration 007's helper is collision-safe additive SQL",
+      /CREATE FUNCTION gcd_content_evidence_tags_within_v007/.test(migrationSql)
+        && !/CREATE OR REPLACE FUNCTION gcd_content_evidence_tags_within_v007/.test(migrationSql)
+        && /gcd_content_evidence_tags_within_v007/.test(rollbackSql));
+    check("CC35. the PostgreSQL tag helper rejects NULL elements and enforces both character "
+      + "and UTF-8 byte bounds",
+      /t IS NOT NULL/.test(migrationSql)
+        && /length\(t\) <= max_len/.test(migrationSql)
+        && /octet_length\(t\) <= max_len/.test(migrationSql));
+
+    const signedMinimumNumberDetail = {
+      a: [...Array(12).fill(-5e-324), "x".repeat(53)],
+    };
+    const exactDetail = { a: "x".repeat(3_991) };
+    const excessDetail = { a: "x".repeat(3_992) };
+    check("CC37. PostgreSQL JSONB numeric expansion includes the sign byte, and exact 4,000-byte "
+      + "detail is accepted while 4,001 and the -5e-324 counterexample are refused",
+      postgresJsonbTextUpperBoundBytes(exactDetail) === 4_000
+        && validateEvidenceRecord({
+             ...wellFormed.verified_automotive_fact, detail: exactDetail,
+           } as EvidenceRecord).ok
+        && postgresJsonbTextUpperBoundBytes(excessDetail) === 4_001
+        && !validateEvidenceRecord({
+             ...wellFormed.verified_automotive_fact, detail: excessDetail,
+           } as EvidenceRecord).ok
+        && postgresJsonbTextUpperBoundBytes(signedMinimumNumberDetail)!
+             - signedMinimumNumberDetail.a.filter((value) => typeof value === "number").length
+           === 4_000
+        && postgresJsonbTextUpperBoundBytes(signedMinimumNumberDetail) === 4_012
+        && !validateEvidenceRecord({
+             ...wellFormed.verified_automotive_fact, detail: signedMinimumNumberDetail,
+           } as EvidenceRecord).ok);
+
+    const invalidPackInputs: EvidenceRecord[] = [
+      { ...wellFormed.verified_automotive_fact,
+        claim: "x".repeat(EVIDENCE_LIMITS.claimChars + 1) },
+      { ...wellFormed.verified_automotive_fact, id: "invalid-control", claim: "bad\u0001claim" },
+    ];
+    let invalidRecordRunnerCalls = 0;
+    for (const record of invalidPackInputs) {
+      try {
+        const invalidPack = buildEvidencePack({ goal: "invalid", records: [record], now: NOW });
+        await executeStrategyConcept({
+          goal: "invalid", evidencePack: invalidPack, registry,
+          runner: async () => {
+            invalidRecordRunnerCalls += 1;
+            return { text: "{}" };
+          },
+        });
+      } catch {
+        // Refusal is the asserted outcome.
+      }
+    }
+    const handBuiltInvalidPack = {
+      ...ccPack,
+      allowedFacts: [{ ...ccPack.allowedFacts[0]!, claim: "bad\u0001claim" }],
+    };
+    await executeStrategyConcept({
+      goal: "invalid hand-built pack", evidencePack: handBuiltInvalidPack, registry,
+      runner: async () => {
+        invalidRecordRunnerCalls += 1;
+        return { text: "{}" };
+      },
+    }).catch(() => undefined);
+    check("CC38. builder inputs and hand-built pre-model packs reuse the evidence-record validator: "
+      + "overlong/control text is refused, 64 maximum valid records still build, and no model runs",
+      invalidPackInputs.every((record) => throws(() => buildEvidencePack({
+        goal: "invalid", records: [record], now: NOW,
+      })))
+        && conflictRecords.length === EVIDENCE_LIMITS.maxProjectedRecords
+        && conflictRecords.every((record) => validateEvidenceRecord(record).ok)
+        && buildEvidencePack({ goal: "maximum valid", records: conflictRecords, now: NOW })
+             .conflicts.length === 2_016
+        && invalidRecordRunnerCalls === 0);
+  }
+
+    const evidencePackSource = await readFile(
+      resolve(REPO_ROOT, "src/harness/evidence/pack.ts"), "utf8");
+
+    // --- CC-L. the pack means what its shape claims -------------------------
+    //
+    // `evidencePackProjectionViolations` answers "is every value inside the
+    // bounds the payload derivations assume?". It cannot answer "does this pack
+    // mean what its shape claims?" — and that second question is where the
+    // promotions live. Every case below was a pack that reached a stage runner
+    // and was accepted before this group existed.
+    //
+    // Each one executes the stage. A check that only called the validator would
+    // pass even if no boundary invoked it, which is exactly the gap that let
+    // `evidencePackInvariants` detect a hypothesis promotion for five phases
+    // while no stage boundary ever called it.
+    const packBiz = wellFormed.verified_business_fact;
+    const packAuto = wellFormed.verified_automotive_fact;
+    const packHypo = wellFormed.creative_hypothesis;
+    const basePack = buildEvidencePack({
+      goal: "semantic-pack", records: [packBiz, packAuto, packHypo], now: NOW,
+    });
+
+    /** Execute stage 1 against a pack and report refusal plus runner calls. */
+    const runWithPack = async (
+      pack: EvidencePack,
+      citedIds: string[] = [packBiz.id],
+    ): Promise<{ refusal: string; calls: number; typed: boolean }> => {
+      const calls: StageRunnerRequest[] = [];
+      let refusal = "";
+      let typed = false;
+      try {
+        await executeStrategyConcept({
+          goal: "semantic-pack", evidencePack: pack, registry,
+          runner: async (request) => {
+            calls.push(request);
+            return { text: JSON.stringify({
+              angle: "A short angle.", concept: "A short concept.",
+              rationale: "A short rationale.", hypotheses: [], assumptions: [],
+              supportingFactIds: citedIds, observationIds: [], performanceSignalIds: [],
+            }) };
+          },
+        });
+      } catch (error) {
+        refusal = error instanceof Error ? error.message : String(error);
+        typed = error instanceof EvidencePackBoundsError;
+      }
+      return { refusal, calls: calls.length, typed };
+    };
+
+    // A control: the unmodified pack must still execute, so every refusal below
+    // is attributable to the mutation and not to the fixture.
+    const packControl = await runWithPack(basePack);
+    check("CC47. the unmodified pack still executes and reaches the runner exactly once",
+      packControl.refusal === "" && packControl.calls === 1);
+
+    // (1) hypothesis promotion — a valid creative_hypothesis hand-placed in
+    // allowedFacts beside a valid business fact.
+    const promotedPack: EvidencePack = {
+      ...basePack,
+      allowedFacts: [...basePack.allowedFacts, packHypo],
+      creativeHypotheses: [],
+      counts: { ...basePack.counts, allowedFacts: basePack.counts.allowedFacts! + 1, creativeHypotheses: 0 },
+    };
+    const promoted = await runWithPack(promotedPack, [packHypo.id]);
+    check("CC48. a hypothesis hand-placed in allowedFacts is refused before any model call, by "
+      + "kind and by citability, and costs zero runner calls",
+      promoted.calls === 0
+        && promoted.typed
+        && /whose kind creative_hypothesis does not belong there/.test(promoted.refusal)
+        && /not citable as fact at builtAt/.test(promoted.refusal));
+
+    // (2) stale-fact promotion — an active verified fact whose reviewBy
+    // predates the pack's own builtAt, left in allowedFacts.
+    const stalePromoted: EvidencePack = {
+      ...basePack,
+      allowedFacts: [...basePack.allowedFacts, { ...packAuto, id: "auto-stale", reviewBy: PAST }],
+      counts: { ...basePack.counts, allowedFacts: basePack.counts.allowedFacts! + 1 },
+    };
+    const stale = await runWithPack(stalePromoted, ["auto-stale"]);
+    check("CC49. an active verified fact whose reviewBy precedes builtAt cannot remain in "
+      + "allowedFacts, and the refusal costs zero runner calls",
+      stale.calls === 0
+        && stale.typed
+        && /auto-stale .*which is not citable as fact at builtAt/.test(stale.refusal));
+
+    // (3) wrong-section kinds, in both directions.
+    const wrongSection = await runWithPack({
+      ...basePack,
+      gcdObservations: [packAuto],
+      counts: { ...basePack.counts, gcdObservations: 1 },
+    });
+    check("CC50. a record in a section its kind does not permit is refused with zero runner calls",
+      wrongSection.calls === 0
+        && wrongSection.typed
+        && /gcdObservations contains .*whose kind verified_automotive_fact does not belong there/
+             .test(wrongSection.refusal));
+
+    // (4) the same record in two sections at once.
+    const duplicated = await runWithPack({
+      ...basePack,
+      sourcedResearch: [...basePack.sourcedResearch, packBiz as EvidenceRecord],
+      counts: { ...basePack.counts, sourcedResearch: basePack.counts.sourcedResearch! + 1 },
+    });
+    check("CC51. one record cannot appear in two sections at once, whatever the sections",
+      duplicated.calls === 0
+        && duplicated.typed
+        && /appears in both .*; a record has exactly one section/.test(duplicated.refusal));
+
+    // (5) lifecycle: an inactive record parked in a usable section, and an
+    // active record parked in inactiveEvidence.
+    const lifecycleWrong = await runWithPack({
+      ...basePack,
+      allowedFacts: [...basePack.allowedFacts, { ...packAuto, id: "auto-retired", lifecycle: "retired" }],
+      counts: { ...basePack.counts, allowedFacts: basePack.counts.allowedFacts! + 1 },
+    });
+    check("CC52. a non-active record cannot sit in a usable section",
+      lifecycleWrong.calls === 0
+        && lifecycleWrong.typed
+        && /allowedFacts contains retired record auto-retired/.test(lifecycleWrong.refusal));
+    const activeInInactive = await runWithPack({
+      ...basePack,
+      inactiveEvidence: [...basePack.inactiveEvidence, { ...packAuto, id: "auto-copy" }],
+      counts: { ...basePack.counts, inactiveEvidence: basePack.counts.inactiveEvidence! + 1 },
+    });
+    check("CC53. an active record cannot be parked in inactiveEvidence either — the rule runs "
+      + "in both directions",
+      activeInInactive.calls === 0
+        && activeInInactive.typed
+        && /inactiveEvidence contains active record auto-copy/.test(activeInInactive.refusal));
+
+    // (6) malformed builtAt, in the three shapes that matter: not a date, a
+    // date rather than an instant, and a value that does not round-trip.
+    for (const [label, builtAt] of ([
+      ["not a date at all", "not-a-date"],
+      ["a calendar date, not an instant", "2026-08-27"],
+      ["a value that does not round-trip", "2026-08-27T12:00:00+00:00"],
+    ] as const)) {
+      const malformed = await runWithPack({ ...basePack, builtAt });
+      check(`CC54${label === "not a date at all" ? "" : label.startsWith("a calendar") ? "a" : "b"}. `
+        + `builtAt (${label}) is refused before any model call`,
+        malformed.calls === 0
+          && malformed.typed
+          && /builtAt is not an ISO-8601 instant/.test(malformed.refusal));
+    }
+
+    // --- CC-M. the complete conflict and count projection -------------------
+    //
+    // The projection boundary used to check conflict CARDINALITY and nothing
+    // else, so a hand-built conflict with an invalid basis, fabricated ids and
+    // a 50,000-character subject rendered below EVIDENCE_PACK_BLOCK_CHARS and
+    // reached the runner. The block ceiling assumes each conflict subject is
+    // bounded at EVIDENCE_LIMITS.subjectChars; nothing made that true.
+    const oversizedConflict = await runWithPack({
+      ...basePack,
+      conflicts: [{
+        aId: "does-not-exist-a", bId: "does-not-exist-b",
+        aClaim: "x", bClaim: "y",
+        subject: "s".repeat(50_000),
+        basis: "totally_made_up" as unknown as EvidenceConflict["basis"],
+        note: "n".repeat(EVIDENCE_LIMITS.relationNoteChars + 1),
+      }],
+      counts: { ...basePack.counts, conflicts: 1 },
+    });
+    check("CC55. the reviewer's counterexample — an invalid basis, fabricated ids, a "
+      + "50,000-character subject and an over-long note — is refused on every one of those "
+      + "grounds, with zero runner calls",
+      oversizedConflict.calls === 0
+        && oversizedConflict.typed
+        && oversizedConflict.refusal.includes(
+             `conflicts[0].subject exceeds ${EVIDENCE_LIMITS.subjectChars} characters`)
+        && oversizedConflict.refusal.includes(
+             `conflicts[0].note exceeds ${EVIDENCE_LIMITS.relationNoteChars} characters`)
+        && /basis is not one of declared, same_attribute_fact/.test(oversizedConflict.refusal)
+        && /aId names does-not-exist-a, which is not a record in this pack/
+             .test(oversizedConflict.refusal)
+        && /bId names does-not-exist-b, which is not a record in this pack/
+             .test(oversizedConflict.refusal));
+
+    const conflictOf = (patch: Partial<EvidenceConflict>): EvidenceConflict => ({
+      aId: packAuto.id, bId: packBiz.id,
+      aClaim: packAuto.claim, bClaim: packBiz.claim,
+      subject: packAuto.subject, basis: "declared",
+      ...patch,
+    } as EvidenceConflict);
+    const withConflicts = (conflicts: EvidenceConflict[]): EvidencePack => ({
+      ...basePack,
+      allowedFacts: [],
+      conflicts,
+      counts: { ...basePack.counts, allowedFacts: 0, conflicts: conflicts.length },
+    });
+
+    const controlChar = await runWithPack(withConflicts([
+      conflictOf({ subject: "brake\u0001fluid" }),
+    ]), []);
+    check("CC56. a control character in a conflict field is refused — the same serializable-text "
+      + "rule every record field obeys, applied to pack-authored values too",
+      controlChar.calls === 0
+        && controlChar.typed
+        && /conflicts\[0\]\.subject contains a control character or unpaired surrogate/
+             .test(controlChar.refusal));
+    const longId = await runWithPack(withConflicts([
+      conflictOf({ aId: "z".repeat(EVIDENCE_LIMITS.idChars + 1) }),
+    ]), []);
+    check("CC57. a conflict id over the evidence id bound is refused",
+      longId.calls === 0
+        && longId.refusal.includes(
+             `conflicts[0].aId exceeds ${EVIDENCE_LIMITS.idChars} characters`));
+    const sameSide = await runWithPack(withConflicts([
+      conflictOf({ aId: packAuto.id, bId: packAuto.id }),
+    ]), []);
+    check("CC58. a conflict naming the same id on both sides is refused",
+      sameSide.calls === 0 && /names .* on both sides/.test(sameSide.refusal));
+    const unordered = await runWithPack(withConflicts([
+      conflictOf({ aId: packBiz.id, bId: packAuto.id }),
+    ]), []);
+    check("CC59. a conflict outside canonical id order is refused, so one disagreement cannot "
+      + "be reported twice under a swapped pair",
+      unordered.calls === 0 && /is not in canonical id order/.test(unordered.refusal));
+    const duplicatePair = await runWithPack(withConflicts([conflictOf({}), conflictOf({})]), []);
+    check("CC60. a repeated conflict pair is refused",
+      duplicatePair.calls === 0 && /repeats the pair/.test(duplicatePair.refusal));
+
+    // A conflicted record must not simultaneously remain citable.
+    const conflictedYetUsable = await runWithPack({
+      ...basePack,
+      conflicts: [conflictOf({})],
+      counts: { ...basePack.counts, conflicts: 1 },
+    });
+    check("CC61. a record named in a live conflict cannot also sit in allowedFacts — a conflict "
+      + "endpoint belongs in conflictedEvidence, where it is neither citable nor missing",
+      conflictedYetUsable.calls === 0
+        && conflictedYetUsable.typed
+        && /which this pack holds in allowedFacts; a record in a live conflict belongs in conflictedEvidence/
+             .test(conflictedYetUsable.refusal));
+
+    // Counts: the exact key set, integer values, and the truth.
+    const wrongCount = await runWithPack({
+      ...basePack, counts: { ...basePack.counts, allowedFacts: 999 },
+    });
+    check("CC62. a count that disagrees with its section is refused",
+      wrongCount.calls === 0
+        && /counts\.allowedFacts says 999 but the section holds/.test(wrongCount.refusal));
+    const extraCount = await runWithPack({
+      ...basePack, counts: { ...basePack.counts, smuggled: 1 },
+    });
+    check("CC63. an unknown counts key is refused, so the projection carries no pack-authored "
+      + "value the contract does not name",
+      extraCount.calls === 0 && /counts has unknown key\(s\): smuggled/.test(extraCount.refusal));
+    const missingCount = await runWithPack({
+      ...basePack,
+      counts: Object.fromEntries(
+        Object.entries(basePack.counts).filter(([key]) => key !== "conflicts"),
+      ),
+    });
+    check("CC64. a missing counts key is refused",
+      missingCount.calls === 0 && /counts is missing key\(s\): conflicts/.test(missingCount.refusal));
+    const fractionalCount = await runWithPack({
+      ...basePack, counts: { ...basePack.counts, allowedFacts: 1.5 },
+    });
+    check("CC65. a non-integer or negative count is refused",
+      fractionalCount.calls === 0
+        && /counts\.allowedFacts must be a non-negative integer/.test(fractionalCount.refusal));
+
+    // The pack's own goal is a pack-authored value that reaches the model.
+    const longGoal = await runWithPack({
+      ...basePack, goal: "g".repeat(LIMITS.goalChars + 1),
+    });
+    check("CC66. the pack's goal is bounded and serializable-text checked, like every other "
+      + "pack-authored value in the projection",
+      longGoal.calls === 0 && /goal exceeds/.test(longGoal.refusal));
+
+    // --- CC-N. the validator is on every boundary, not merely available -----
+    check("CC67. every pack consumer calls the authoritative validator: the shared executor "
+      + "boundary, the renderer, the unusable-id set, and the preview",
+      /assertUsableEvidencePack\(pack\)/.test(
+        await readFile(resolve(REPO_ROOT, "src/harness/agents/stageExecution.ts"), "utf8"))
+        && (evidencePackSource.match(/assertUsableEvidencePack\(/g) ?? []).length >= 3
+        && /assertUsableEvidencePack\(evidencePack, \{ now: input\.now \}\)/.test(
+             await readFile(resolve(REPO_ROOT, "src/harness/contentIntelligence.ts"), "utf8")));
+    check("CC68. the freshness anchor is a documented decision, and the invocation-time option "
+      + "exists for a caller that holds a pack across time",
+      /evaluated \*\*at its own `builtAt`\*\*/.test(evidencePackSource)
+        && /What that does not cover, said plainly/.test(evidencePackSource)
+        && evidencePackSemanticViolations(basePack).length === 0
+        && evidencePackSemanticViolations(basePack, { now: NOW }).length === 0
+        && evidencePackSemanticViolations(
+             basePack, { now: Date.parse("2030-01-01T00:00:00Z") },
+           ).some((violation: string) => /no longer citable at the supplied invocation time/.test(violation)));
+    check("CC69. defense in depth: the stage's citation accessors bind on the record's own kind, "
+      + "not merely on the section it was found in",
+      /CITABLE_FACT_KINDS/.test(
+        await readFile(resolve(REPO_ROOT, "src/harness/agents/strategyConcept.ts"), "utf8"))
+        && /pack\.allowedFacts\.filter\(\(r\) => CLASS_OF_KIND\[r\.kind\]\)/.test(
+             await readFile(resolve(REPO_ROOT, "src/harness/agents/automotiveTruth.ts"), "utf8"))
+        && citedFactRecords(
+             { ...validStrategyOutput,
+               evidence: { ...validStrategyOutput.evidence, supportingFactIds: [packHypo.id] } },
+             promotedPack,
+           ).length === 0);
+
+    // --- CC-O. positive controls: real conflict packs must be ACCEPTED ------
+    //
+    // The whole of CC-M proved invalid conflicts are refused, and every one of
+    // those checks passed while the validator was ALSO rejecting every
+    // legitimate conflict pack the builder produces. Refusal coverage cannot
+    // see that; only a positive control can. Two shapes, because the builder
+    // reached them by different routes and each was broken differently:
+    //
+    //  - an INFERRED fact conflict removed both facts from `allowedFacts` and
+    //    placed them nowhere, so both endpoints looked nonexistent;
+    //  - a DECLARED conflict over non-fact evidence left both records in their
+    //    ordinary sections, so both endpoints looked "also usable".
+    const conflictFactA = {
+      ...wellFormed.verified_automotive_fact,
+      id: "conflict-fact-a", subject: "brake-fluid", attribute: "interval",
+      claim: "Brake fluid is replaced every two years.",
+    } as EvidenceRecord;
+    const conflictFactB = {
+      ...conflictFactA, id: "conflict-fact-b",
+      claim: "Brake fluid is replaced every three years.",
+    } as EvidenceRecord;
+    const inferredPack = buildEvidencePack({
+      goal: "inferred conflict", now: NOW,
+      records: [conflictFactA, conflictFactB, wellFormed.verified_business_fact],
+    });
+    const inferredRun = await runWithPack(inferredPack);
+    let inferredRendered = "";
+    let inferredRenderError = "";
+    try {
+      inferredRendered = renderEvidencePackForStage(inferredPack);
+    } catch (error) {
+      inferredRenderError = error instanceof Error ? error.message : String(error);
+    }
+    let inferredPreviewInert: boolean | undefined;
+    let inferredPreviewError = "";
+    try {
+      inferredPreviewInert = (await buildContentIntelligencePreview({
+        goal: "inferred conflict", now: NOW, traceId: "fixed-trace", businessContext,
+        records: [conflictFactA, conflictFactB, wellFormed.verified_business_fact],
+      })).executionDisabled;
+    } catch (error) {
+      inferredPreviewError = error instanceof Error ? error.message : String(error);
+    }
+    check("CC70. an ordinary inferred fact conflict — the builder's own output — is accepted by "
+      + "the validator, the renderer, the preview, and an eligible stage invocation",
+      inferredPack.conflicts.length === 1
+        && inferredPack.conflicts[0]!.basis === "same_attribute_fact"
+        && evidencePackSemanticViolations(inferredPack).length === 0
+        && inferredRenderError === ""
+        && inferredRendered.length > 0
+        && inferredPreviewError === ""
+        && inferredPreviewInert === true
+        && inferredRun.refusal === ""
+        && inferredRun.calls === 1);
+    check("CC71. both endpoints of that conflict are held as real records in conflictedEvidence, "
+      + "are absent from every usable section, and are unusable for citations",
+      inferredPack.conflictedEvidence.map((r) => r.id).sort().join()
+          === ["conflict-fact-a", "conflict-fact-b"].join()
+        && !inferredPack.allowedFacts.some((r) => r.id.startsWith("conflict-fact"))
+        && unusableEvidenceIds(inferredPack).has("conflict-fact-a")
+        && unusableEvidenceIds(inferredPack).has("conflict-fact-b")
+        && inferredPack.counts.conflictedEvidence === 2);
+    // The distinction matters and is asserted rather than blurred: a pack the
+    // validator refuses costs ZERO model calls, because it is refused before
+    // the request. A model that cites a conflicted id against a VALID pack is
+    // refused by output validation, which necessarily happens after the one
+    // request the stage was entitled to make. Making the pack valid did not
+    // make its conflicted records citable.
+    const citedConflicted = await runWithPack(inferredPack, ["conflict-fact-a"]);
+    check("CC72. citing a conflicted endpoint is still refused — by output validation after the "
+      + "stage's one legitimate request, not by the pre-model pack refusal",
+      citedConflicted.refusal !== ""
+        && citedConflicted.calls === 1
+        && /supportingFactIds cites "conflict-fact-a", which is not a citable fact in this pack/
+             .test(citedConflicted.refusal));
+
+    // The declared route, built through the real relation path rather than by
+    // hand, over evidence that is not fact-class at all.
+    const declaredObsA = {
+      ...wellFormed.gcd_direct_observation, id: "declared-obs-a",
+      claim: "One Mini presented with a thermostat-housing fault.",
+    } as EvidenceRecord;
+    const declaredObsB = {
+      ...declaredObsA, id: "declared-obs-b",
+      claim: "A different Mini presented with a coolant-hose fault.",
+    } as EvidenceRecord;
+    const declaredPack = buildEvidencePack({
+      goal: "declared conflict", now: NOW,
+      records: [declaredObsA, declaredObsB, wellFormed.verified_business_fact],
+      relations: [{
+        fromId: "declared-obs-a", toId: "declared-obs-b", kind: "conflicts_with",
+        createdAt: "2026-08-01T00:00:00Z", note: "an operator declared these incompatible",
+      }],
+    });
+    const declaredRun = await runWithPack(declaredPack);
+    check("CC73. a declared conflict over non-fact evidence, built through the real relation "
+      + "path, is accepted — and both endpoints leave gcdObservations for conflictedEvidence",
+      declaredPack.conflicts.length === 1
+        && declaredPack.conflicts[0]!.basis === "declared"
+        && declaredPack.conflicts[0]!.note === "an operator declared these incompatible"
+        && evidencePackSemanticViolations(declaredPack).length === 0
+        && declaredPack.gcdObservations.length === 0
+        && declaredPack.conflictedEvidence.map((r) => r.id).sort().join()
+             === ["declared-obs-a", "declared-obs-b"].join()
+        && unusableEvidenceIds(declaredPack).has("declared-obs-a")
+        && unusableEvidenceIds(declaredPack).has("declared-obs-b")
+        && declaredRun.refusal === ""
+        && declaredRun.calls === 1);
+
+    // The snapshot equivalence, on real builder output rather than by assertion.
+    const snapshotsMatch = (pack: EvidencePack) => pack.conflicts.every((conflict) => {
+      const byId = new Map(pack.conflictedEvidence.map((r) => [r.id, r] as const));
+      const a = byId.get(conflict.aId);
+      const b = byId.get(conflict.bId);
+      return a !== undefined && b !== undefined
+        && conflict.aClaim === a.claim && conflict.bClaim === b.claim
+        && conflict.subject === a.subject;
+    });
+    check("CC74. every conflict's aClaim, bClaim and subject are exact snapshots of the records "
+      + "it names, in both builder routes",
+      snapshotsMatch(inferredPack) && snapshotsMatch(declaredPack));
+    check("CC75. the set of ids conflictedEvidence holds is exactly the set the conflict pairs "
+      + "name — the invariant that lets the projection carry the pairs alone",
+      [inferredPack, declaredPack].every((pack) => {
+        const held = new Set(pack.conflictedEvidence.map((r) => r.id));
+        const named = new Set(pack.conflicts.flatMap((c) => [c.aId, c.bId]));
+        return held.size === named.size && [...held].every((id) => named.has(id));
+      }));
+
+    // --- CC-P. snapshot fabrication and the multibyte byte bound -----------
+    //
+    // A conflict's text reaching a model without matching any record in the
+    // pack is the same fabrication the typed citation channel exists to
+    // prevent, arriving through the exclusion list instead.
+    const fabricatedClaim = await runWithPack({
+      ...inferredPack,
+      conflicts: [{ ...inferredPack.conflicts[0]!, aClaim: "Brake fluid never needs replacing." }],
+    });
+    check("CC76. a conflict whose aClaim does not match the record it names is refused with "
+      + "zero runner calls",
+      fabricatedClaim.calls === 0
+        && fabricatedClaim.typed
+        && /aClaim does not match the claim of conflict-fact-a/.test(fabricatedClaim.refusal));
+    const fabricatedOther = await runWithPack({
+      ...inferredPack,
+      conflicts: [{ ...inferredPack.conflicts[0]!, bClaim: "Something no record says." }],
+    });
+    check("CC77. the same holds for bClaim",
+      fabricatedOther.calls === 0
+        && /bClaim does not match the claim of conflict-fact-b/.test(fabricatedOther.refusal));
+    const fabricatedSubject = await runWithPack({
+      ...inferredPack,
+      conflicts: [{ ...inferredPack.conflicts[0]!, subject: "a-subject-no-record-has" }],
+    });
+    check("CC78. and for subject",
+      fabricatedSubject.calls === 0
+        && /subject does not match the subject of conflict-fact-a/.test(fabricatedSubject.refusal));
+    const orphanConflicted = await runWithPack({
+      ...inferredPack,
+      conflicts: [],
+      counts: { ...inferredPack.counts, conflicts: 0 },
+    });
+    check("CC79. a conflicted record no conflict names is refused, so the section cannot become "
+      + "a place to park records and hide them from the projection",
+      orphanConflicted.calls === 0
+        && /conflictedEvidence holds conflict-fact-a, which no conflict names/
+             .test(orphanConflicted.refusal));
+
+    // Multibyte: fits the code-unit allowance, exceeds the UTF-8 byte allowance.
+    // Every record field already works this way; conflict fields did not.
+    const multibyteSubject = "é".repeat(EVIDENCE_LIMITS.subjectChars);
+    const multibyteConflict = await runWithPack({
+      ...inferredPack,
+      conflicts: [{ ...inferredPack.conflicts[0]!, subject: multibyteSubject }],
+    });
+    check("CC80. a conflict subject that fits the code-unit allowance but exceeds the same "
+      + "allowance in UTF-8 bytes is refused — the bound the payload derivations rest on",
+      multibyteSubject.length === EVIDENCE_LIMITS.subjectChars
+        && multibyteSubject.length * 2 > EVIDENCE_LIMITS.subjectChars
+        && multibyteConflict.calls === 0
+        && multibyteConflict.typed
+        && new RegExp(`subject exceeds ${EVIDENCE_LIMITS.subjectChars} UTF-8 bytes`)
+             .test(multibyteConflict.refusal));
+    const multibyteNote = await runWithPack({
+      ...inferredPack,
+      conflicts: [{
+        ...inferredPack.conflicts[0]!,
+        note: "é".repeat(EVIDENCE_LIMITS.relationNoteChars),
+      }],
+    });
+    check("CC81. the same byte rule covers the optional conflict note",
+      multibyteNote.calls === 0
+        && new RegExp(`note exceeds ${EVIDENCE_LIMITS.relationNoteChars} UTF-8 bytes`)
+             .test(multibyteNote.refusal));
 
   console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURE(S)`);
   process.exit(failures === 0 ? 0 : 1);

@@ -187,164 +187,59 @@ import {
   invokeStage,
   parseStrictJsonObject,
 } from "./stageExecution.js";
+import { CRITIC_FIELD_LIMITS, EVIDENCE_LIMITS, HANDOFF_GUARDS, PACKAGING_OUTPUT, isBoundedSerializableText } from "./payloadContract.js";
 
 export const FINAL_CRITIC_STAGE = "final-critic" as const;
 
 /**
- * Maximum characters `JSON.stringify` can emit for a single UTF-16 code unit
- * of string content.
+ * The serialized ceiling on a Stage 5 handoff, re-exported from the one
+ * authority that derives it.
  *
- * `"` and `\` expand to two characters. A control character expands to either
- * a two-character short escape (`\n`, `\t`, …) or a six-character `\uXXXX`
- * escape, and an unpaired surrogate expands to a six-character `\uXXXX`
- * escape. Every other code unit is emitted as itself. **Six is therefore a
- * safe ceiling for any code unit Stage 5 permits** — and Stage 5 permits all
- * of them, because its validators bound *code-unit length*, not serialized
- * size: a caption of 63,206 quotation marks satisfies every Stage 5 caption,
- * hashtag, URL and combined provider-visible rule while serializing to
- * 126,412 characters.
+ * This stage used to derive its own, with its own escape multiplier and its own
+ * hand-chosen skeleton and short-field allowances. That derivation was correct
+ * but private, so nothing prevented it drifting from the contract it described,
+ * and nothing related it to the shared payload boundary. It now comes from
+ * `payloadContract.ts` along with every other bound in the pipeline, measured
+ * from a shape witness of the Stage 5 contract rather than from fixed
+ * allowances.
  */
-const MAX_JSON_ESCAPE_EXPANSION = 6;
-
-/**
- * Generous allowance for the short fields Stage 5 bounds but does not export
- * a constant for: the platform identifier, the `HH:MM ET` recommended time,
- * `factId`, `factKind`, and the `kind` brand literals. Stage 5 bounds each of
- * them at 200 characters or fewer, so this is an order of magnitude above
- * their combined maximum and cannot become the reason a valid output is
- * rejected.
- */
-const PACKAGING_SHORT_FIELD_ALLOWANCE = 2_048;
-
-/**
- * Generous allowance for the JSON skeleton itself — every key name, brace,
- * bracket, colon, comma, quotation mark and two-space indent in a maximal
- * `PackagingAdaptationOutput`. That shape carries fewer than 250 fields, no
- * key longer than 32 characters and no indent deeper than ten levels, so this
- * sits far above any reachable skeleton.
- */
-const PACKAGING_OUTPUT_SKELETON_ALLOWANCE = 32_768;
-
-/**
- * A **conservative safe upper bound** — deliberately not the exact
- * mathematical maximum — on `JSON.stringify(packagingOutput, null, 2).length`
- * for any Stage 5 output `revalidatePackagingAdaptationOutput` accepts.
- *
- * It is derived mechanically from Stage 5's own exported field and array
- * maxima rather than measured from a sample. A measured sample is only as
- * good as the characters it happened to use: an earlier version of this bound
- * was measured with ordinary filler characters, which JSON does not escape,
- * and consequently rejected valid Stage 5 output whose captions used
- * characters that JSON does escape.
- *
- * The derivation, and where it deliberately over-approximates:
- *
- *  - Every string field is counted at its Stage 5 maximum **code-unit** length
- *    and multiplied by `MAX_JSON_ESCAPE_EXPANSION`, so no permitted character
- *    can exceed it.
- *  - Caption and hashtag content are each allowed a full `captionMax` per
- *    package, although Stage 5's combined provider-visible rule requires them
- *    to *share* one `captionMax`. Over-approximating a cross-field rule is
- *    safe; under-approximating one is the defect this replaces.
- *  - The largest per-platform `captionMax` is applied to all three packages.
- *  - Short enumerated and pattern-bounded fields, and the JSON skeleton, get
- *    generous fixed allowances rather than exact counts.
- *
- * Nothing Stage 5 accepts can serialize larger than this, so **this bound
- * cannot be the reason a valid Stage 5 output is refused**. This per-block
- * bound exists so that *this stage* never becomes the thing that rejects a
- * valid handoff, not to compete with either the shared boundary or Stage 5's
- * own limits.
- *
- * **What this bound does not do, stated here so the two facts stay adjacent.**
- * It does not make this stage accept every structurally valid Stage 5 handoff.
- * The operative ceiling on what actually reaches a model is the *shared*
- * `MAX_PAYLOAD_CHARS` boundary (120,000) in `stageExecution.ts`, which every
- * stage uses and which this stage does not change. That boundary applies to
- * the whole assembled payload, so there is no fixed per-block envelope to
- * quote. The relationship is a difference, not a constant:
- *
- *     available packaging payload
- *       = MAX_PAYLOAD_CHARS minus the serialized sizes of the other five framed blocks
- *
- * and the two claim blocks on the right-hand side have **no finite structural
- * maximum**. `EvidenceRecord.claim` is bounded only by a non-empty check in
- * `src/harness/evidence/contract.ts` and by `length(btrim(claim)) > 0` in
- * `state/migrations/006_content_evidence.sql`, so `SCRIPT_CLAIMS` and
- * `PLATFORM_CLAIMS` can be arbitrarily large — a record bound for several
- * platforms is projected once per platform. Consequently
- * **no fixed positive packaging allowance exists until evidence text is bounded**:
- * with large enough valid claim text the remainder is zero or negative even
- * for a minimal Stage 5 package. `BX24`-`BX28` assert exactly that, including
- * that the refusal is the shared boundary's and costs zero model calls. Any
- * figure quoted for this allowance is an example computed from particular
- * evidence-claim lengths, never a contract or a guaranteed envelope.
- */
-function conservativePackagingOutputCeiling(): number {
-  const maxCaptionChars = Math.max(
-    ...PACKAGING_PLATFORMS.map((platform) => PLATFORM_PACKAGING_POLICY[platform].captionMax),
-  );
-  const perPackageChars =
-    maxCaptionChars                                                                   // caption
-    + maxCaptionChars                                                                 // every hashtag token, jointly
-    + PACKAGING_LIMITS.maxLocalKeywords * PACKAGING_LIMITS.localKeywordChars
-    + PACKAGING_LIMITS.maxOpenQuestions * PACKAGING_LIMITS.openQuestionChars
-    + PACKAGING_SHORT_FIELD_ALLOWANCE;
-  const perClaimUseChars = PACKAGING_LIMITS.summaryChars + PACKAGING_SHORT_FIELD_ALLOWANCE;
-  const stringContentChars =
-    PACKAGING_LIMITS.maxRequestedPlatforms * perPackageChars
-    + PACKAGING_LIMITS.maxClaimUses * perClaimUseChars
-    + PACKAGING_SHORT_FIELD_ALLOWANCE;
-  return stringContentChars * MAX_JSON_ESCAPE_EXPANSION + PACKAGING_OUTPUT_SKELETON_ALLOWANCE;
-}
-
-/** The conservative serialized-size ceiling described above. */
-export const PACKAGING_OUTPUT_SERIALIZED_CEILING = conservativePackagingOutputCeiling();
+export const PACKAGING_OUTPUT_SERIALIZED_CEILING = PACKAGING_OUTPUT.transportChars;
 
 /**
  * Bounds on the model's output and on the prior-stage values it is shown.
  *
- * `packagingOutputChars` is the conservative, escaping-aware ceiling derived
- * above. `scriptOutputChars` and `directionOutputChars` intentionally mirror
- * the values Stage 5 already applies to those same two handoffs
- * (`PACKAGING_LIMITS.scriptOutputChars` / `.directionOutputChars`), so this
- * stage neither tightens nor loosens what the merged stage before it accepts.
+ * Every one of the three prior-stage bounds is **exactly** the producing
+ * stage's own derived ceiling, re-exported from `payloadContract.ts`:
+ * `scriptOutputChars` is `SCRIPT_OUTPUT.transportChars`,
+ * `directionOutputChars` is `DIRECTION_OUTPUT.transportChars`, and
+ * `packagingOutputChars` is `PACKAGING_OUTPUT.transportChars`. Equality, not
+ * mere sufficiency, is what the derivation regressions assert: a guard set
+ * above its producer's ceiling would hide a future contract change instead of
+ * failing on it, and a guard set below it would refuse a structurally valid
+ * handoff. Stage 5 applies the same two mirrored values to the same two
+ * handoffs, so this stage neither tightens nor loosens what the stage before
+ * it accepts.
  *
- * **Those two mirrored values are smaller than the structural maxima of the
- * handoffs they gate**, and so are the equivalent guards in the five merged
- * stages before this one: Stage 1's output can serialize larger than the
- * ceilings Stages 2 and 3 apply to it, Stage 2's larger than Stage 3's, Stage
- * 3's larger than the 20,000 Stages 4, 5 and 6 apply, and Stage 4's larger
- * than the 24,000 Stages 5 and 6 apply. Diverging here would make this stage
- * accept handoffs merged Stage 5 refuses, so the values stay aligned and the
- * mismatch is recorded instead. These are **accepted dormant limitations, not
- * production validation** — every stage reports `executionEnabled: false`,
- * nothing reaches an executor, and oversized input fails closed before any
- * model call. Reconciling every producer/consumer bound, the shared assembled
- * boundary, and the unbounded evidence text is a separately scoped
- * payload-contract reconciliation that is a **hard prerequisite to production
- * wiring and to enabling any stage**; see `docs/ROADMAP.md`.
+ * **The available packaging payload is still a dynamic difference**, never a
+ * fixed envelope constant: it is `MAX_PAYLOAD_CHARS` minus the serialized
+ * sizes of the other five framed blocks this stage assembles, and those sizes
+ * move with the evidence. What the payload-contract reconciliation changed is
+ * that the difference is now provably positive at the worst case — evidence
+ * text is bounded in both TypeScript and PostgreSQL, the pack projection is
+ * bounded in cardinality, and `MAX_PAYLOAD_CHARS` is itself derived from the
+ * largest assembled stage ceiling — so no structurally valid pipeline can
+ * reach the shared boundary. A regression asserts that, block by block,
+ * against a real assembled prompt rather than a second copy of the arithmetic.
  *
- * The same mismatch exists on the **output** side and is not fixed here
- * either: a structurally valid output of this contract — `maxFindings`
- * findings at `issueChars` plus `suggestedActionChars`, `summaryChars`, and
- * `maxClaimFindingUses` bindings at `claimFindingSummaryChars` — is
- * substantially larger than the `critic` policy's configured 2,000-token
- * output budget in `modelPolicy.ts`, and Stage 5 has the equivalent problem
- * with its 3,000-token budget and provider-sized captions. Changing a
- * merged, shared token budget is out of scope for this slice; the
- * reconciliation above owns it.
+ * **Still dormant.** Every stage reports `executionEnabled: false`, nothing
+ * reaches an executor, and oversized input fails closed before any model call.
+ * These bounds are derived and regression-tested, **not production-validated**.
  */
 export const FINAL_CRITIC_LIMITS = {
-  scriptOutputChars: 20_000,
-  directionOutputChars: 24_000,
+  ...CRITIC_FIELD_LIMITS,
+  scriptOutputChars: HANDOFF_GUARDS.scriptOutputChars,
+  directionOutputChars: HANDOFF_GUARDS.directionOutputChars,
   packagingOutputChars: PACKAGING_OUTPUT_SERIALIZED_CEILING,
-  summaryChars: 1_500,
-  issueChars: 400,
-  suggestedActionChars: 300,
-  claimFindingSummaryChars: 400,
-  maxFindings: 20,
-  maxClaimFindingUses: 24,
 } as const;
 
 /** Closed set. What kind of concern a finding raises. */
@@ -542,6 +437,12 @@ function requireBoundedString(value: unknown, field: string, max: number): strin
   const text = (value as string).trim();
   if (!text) fail(`"${field}" must not be empty`);
   if (text.length > max) fail(`"${field}" exceeds ${max} characters`);
+  // Serializable text only. Control characters and unpaired surrogates are the
+  // only things JSON.stringify expands sixfold; the shared helper also enforces
+  // the UTF-8 byte allowance used by the worst-case token proof.
+  if (!isBoundedSerializableText(text, max)) {
+    fail(`"${field}" exceeds ${max} UTF-8 bytes or contains non-serializable text`);
+  }
   return text;
 }
 
@@ -600,12 +501,14 @@ export function renderPlatformClaims(
   return JSON.stringify(
     requestedPlatforms.map((platform) => ({
       platform,
-      claims: packagingClaimRecords(packagingOutput, platform, scriptOutput, truthOutput, pack).map((record) => ({
-        id: record.id,
-        kind: record.kind,
-        claim: record.claim,
-        ...(record.attribute ? { attribute: record.attribute } : {}),
-      })),
+      // Ids only. The authoritative records for these ids are already in
+      // SCRIPT_CLAIMS, exactly once each, and every stage 5 binding is by
+      // construction a member of stage 3's used-claim set — so repeating the
+      // whole record per platform added size without adding authority. What
+      // this block carries is the part SCRIPT_CLAIMS cannot say: which of those
+      // records stage 5 bound, on which platform, in stage 5's own order.
+      factIds: packagingClaimRecords(packagingOutput, platform, scriptOutput, truthOutput, pack)
+        .map((record) => record.id),
     })),
     null,
     2,
@@ -746,7 +649,7 @@ export function validateFinalCriticOutput(
       );
     }
 
-    const factId = requireBoundedString(obj.factId, `claimFindingUse[${index}].factId`, 200);
+    const factId = requireBoundedString(obj.factId, `claimFindingUse[${index}].factId`, EVIDENCE_LIMITS.idChars);
     const record = boundByPlatform.get(platform)?.get(factId);
     if (!record) {
       fail(

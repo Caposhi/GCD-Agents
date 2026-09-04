@@ -11,8 +11,8 @@
  *    "repair the JSON" round trip. A reasoning stage that silently retries turns
  *    one budgeted decision into an unbounded spend, and a repair pass is a
  *    second chance for the model to talk itself into an unsupported claim.
- *  - **No tools are registered.** The underlying `runAgent` boundary registers
- *    none, and nothing here adds any. A stage may only use capabilities the
+ *  - **No tools are registered.** The underlying `runStageAgent` boundary
+ *    registers none, and nothing here adds any. A stage may only use capabilities the
  *    registry declared, and the only declared capability in this slice is the
  *    read-only `read_evidence_pack`.
  *  - **Instructions come only from registry assets, and only prompts and skills
@@ -37,15 +37,24 @@
  *    log line from here.
  */
 
-import { runAgent } from "../sdk.js";
-import { EvidencePack } from "../evidence/pack.js";
+import { runStageAgent } from "../sdk.js";
+import { EvidencePack, assertUsableEvidencePack } from "../evidence/pack.js";
 import { AgentRegistry, AgentStageId, ResolvedStageAsset } from "./registry.js";
-import { resolveModelPolicy } from "./modelPolicy.js";
+import { resolveModelPolicy, type StageThinkingPolicy } from "./modelPolicy.js";
+import { MAX_INSTRUCTION_CHARS, MAX_PAYLOAD_CHARS } from "./payloadContract.js";
 
-/** Hard ceiling on the assembled instruction text, in characters. */
-export const MAX_INSTRUCTION_CHARS = 200_000;
-/** Hard ceiling on the assembled user payload, in characters. */
-export const MAX_PAYLOAD_CHARS = 120_000;
+/**
+ * Hard ceilings on the assembled instruction text and user payload.
+ *
+ * Both are **derived**, not chosen, and both live in `payloadContract.ts` —
+ * the one authority for every bound in this pipeline. `MAX_PAYLOAD_CHARS` is
+ * the largest assembled payload any of the six stages can produce from its own
+ * bounded contracts, so a structurally valid handoff can never be refused here;
+ * a derivation regression asserts that stage by stage. They are re-exported
+ * from this module because it is where the check lives and where every existing
+ * caller imports them from.
+ */
+export { MAX_INSTRUCTION_CHARS, MAX_PAYLOAD_CHARS } from "./payloadContract.js";
 
 export class StageExecutionError extends Error {
   readonly stage: AgentStageId;
@@ -60,15 +69,17 @@ export class StageExecutionError extends Error {
  * The single model call this boundary is allowed to make.
  *
  * Injectable so every test runs offline and deterministically. The production
- * value is `anthropicStageRunner`, which delegates to the existing single-shot
- * `runAgent`. Nothing in the default path reaches the network in a test run,
- * because tests always supply their own runner.
+ * value is `anthropicStageRunner`, which delegates to `runStageAgent`. Nothing
+ * in the default path reaches the network in a test run, because tests always
+ * supply their own runner.
  */
 export interface StageRunnerRequest {
   systemPrompt: string;
   prompt: string;
   model: string;
   maxTokens: number;
+  /** Explicit: hidden thinking must not consume the visible JSON allowance. */
+  thinking: StageThinkingPolicy;
 }
 
 export interface StageRunnerResult {
@@ -80,19 +91,30 @@ export interface StageRunnerResult {
 export type StageRunner = (request: StageRunnerRequest) => Promise<StageRunnerResult>;
 
 /**
- * Production runner: the existing single-shot Anthropic Messages boundary.
+ * Production runner: the Content Intelligence stage request boundary.
  *
- * `runAgent` registers no tools, makes one request, bounds it with a timeout,
- * and throws when `ANTHROPIC_API_KEY` is unset — which is the fail-closed
- * behaviour this stage needs on missing credentials.
+ * `runStageAgent` registers no tools, throws when `ANTHROPIC_API_KEY` is unset
+ * — the fail-closed behaviour a stage needs on missing credentials — and makes
+ * **one** provider request: retries are disabled explicitly, so the "exactly
+ * one model request" guarantee and the `modelRequests: 1` metadata below
+ * describe wire attempts and not merely wrapper invocations. It streams,
+ * because a stage's derived `max_tokens` budget cannot be received on a
+ * non-streaming connection, and its timeout is derived from that same budget.
  */
-export const anthropicStageRunner: StageRunner = async (request) =>
-  runAgent({
+type AgentRunner = typeof runStageAgent;
+
+/** Injectable factory so tests can inspect the exact production run request. */
+export function createAnthropicStageRunner(run: AgentRunner = runStageAgent): StageRunner {
+  return async (request) => run({
     systemPrompt: request.systemPrompt,
     prompt: request.prompt,
     model: request.model,
     maxTokens: request.maxTokens,
+    thinking: request.thinking,
   });
+}
+
+export const anthropicStageRunner: StageRunner = createAnthropicStageRunner();
 
 /**
  * Where an asset's contents actually went.
@@ -167,6 +189,9 @@ export function assertRequiredEvidenceKinds(
   registry: AgentRegistry,
   pack: EvidencePack,
 ): void {
+  // Bounds AND meaning, before any model call. A pack that is perfectly
+  // bounded can still promote a hypothesis into `allowedFacts`.
+  assertUsableEvidencePack(pack);
   const definition = registry.get(stage);
   const available = new Set(pack.allowedFacts.map((r) => r.kind));
   const missing = definition.requiredEvidenceKinds.filter((kind) => !available.has(kind));
@@ -277,6 +302,7 @@ export async function invokeStage(invocation: StageInvocation): Promise<StageInv
       prompt,
       model: resolved.model,
       maxTokens: resolved.maxTokens,
+      thinking: resolved.thinking,
     });
   } catch (err) {
     // The message may carry provider text; it is surfaced to the caller as an

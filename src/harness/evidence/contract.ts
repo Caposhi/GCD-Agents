@@ -158,6 +158,85 @@ export interface EvidenceValidationResult {
   issues: string[];
 }
 
+import {
+  EVIDENCE_LIMITS,
+  isSerializableText,
+  utf8ByteLength,
+} from "../agents/payloadContract.js";
+
+/**
+ * Bounded, serializable text.
+ *
+ * Two rules, both new and both load-bearing downstream:
+ *
+ *  - **A maximum length.** Before this, `claim` and every other text field were
+ *    bounded only by "non-empty", so every projection built from a record was
+ *    structurally unbounded and no payload derived from one had a finite
+ *    maximum. The limits live in `payloadContract.ts` beside the derivations
+ *    that consume them, and `state/migrations/007_evidence_bounds.sql` states
+ *    the same numbers as database constraints.
+ *  - **A bounded character set.** `isSerializableText` refuses control
+ *    characters and unpaired surrogates — the only things `JSON.stringify`
+ *    expands sixfold. Excluding them is what lets every payload derivation use
+ *    a factor of two instead of six.
+ */
+function boundedText(value: string, field: string, max: number, push: (issue: string) => void): void {
+  if (value.length > max) push(`${field} exceeds ${max} characters`);
+  if (utf8ByteLength(value) > max) push(`${field} exceeds ${max} UTF-8 bytes`);
+  if (!isSerializableText(value)) {
+    push(`${field} contains a control character or unpaired surrogate`);
+  }
+}
+
+/**
+ * Conservative UTF-8 byte ceiling for PostgreSQL's canonical `jsonb::text`.
+ *
+ * PostgreSQL inserts one ASCII space after every object colon and comma. It may
+ * also expand any finite JavaScript number into ordinary decimal notation; 327
+ * bytes covers the signed longest IEEE-754 value (`-5e-324`) in that
+ * representation. The sign is load-bearing: PostgreSQL renders that value as
+ * 327 bytes, one more than the unsigned form.
+ * Object key order is irrelevant to length. The result can overestimate, but
+ * never underestimates the canonical database representation.
+ */
+function normalizedJsonbTextUpperBoundBytes(value: unknown): number {
+  if (value === null) return 4;
+  if (typeof value === "boolean") return value ? 4 : 5;
+  if (typeof value === "number") return 327;
+  if (typeof value === "string") return utf8ByteLength(JSON.stringify(value));
+  if (Array.isArray(value)) {
+    return 2 + value.reduce((total, entry) => total + normalizedJsonbTextUpperBoundBytes(entry), 0)
+      + Math.max(0, value.length - 1) * 2;
+  }
+  const entries = Object.entries(value as Record<string, unknown>);
+  return 2 + entries.reduce((total, [key, entry]) =>
+    total + utf8ByteLength(JSON.stringify(key)) + 2 + normalizedJsonbTextUpperBoundBytes(entry), 0)
+    + Math.max(0, entries.length - 1) * 2;
+}
+
+function jsonbStringsAreCompatible(value: unknown): boolean {
+  if (typeof value === "string") return isSerializableText(value);
+  if (Array.isArray(value)) return value.every(jsonbStringsAreCompatible);
+  if (value !== null && typeof value === "object") {
+    return Object.entries(value as Record<string, unknown>)
+      .every(([key, entry]) => isSerializableText(key) && jsonbStringsAreCompatible(entry));
+  }
+  return true;
+}
+
+/** Undefined means the value cannot be represented as JSON. */
+export function postgresJsonbTextUpperBoundBytes(value: unknown): number | undefined {
+  try {
+    const serialized = JSON.stringify(value);
+    if (serialized === undefined) return undefined;
+    const normalized = JSON.parse(serialized) as unknown;
+    if (!jsonbStringsAreCompatible(normalized)) return undefined;
+    return normalizedJsonbTextUpperBoundBytes(normalized);
+  } catch {
+    return undefined;
+  }
+}
+
 const ISO_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$/;
 
 function isInstant(value: unknown): value is string {
@@ -181,10 +260,41 @@ export function validateEvidenceRecord(record: EvidenceRecord): EvidenceValidati
   const push = (issue: string) => issues.push(issue);
 
   if (!nonEmpty(record.id)) push("id is required");
+  else boundedText(record.id, "id", EVIDENCE_LIMITS.idChars, push);
   if (!EVIDENCE_KINDS.includes(record.kind)) push(`unknown evidence kind: ${String(record.kind)}`);
   if (!nonEmpty(record.claim)) push("claim is required");
+  else boundedText(record.claim, "claim", EVIDENCE_LIMITS.claimChars, push);
   if (!nonEmpty(record.subject)) push("subject is required");
+  else boundedText(record.subject, "subject", EVIDENCE_LIMITS.subjectChars, push);
+  if (record.attribute !== undefined) {
+    boundedText(record.attribute, "attribute", EVIDENCE_LIMITS.attributeChars, push);
+  }
   if (!Array.isArray(record.tags) || record.tags.some((t) => typeof t !== "string")) push("tags must be an array of strings");
+  else {
+    if (record.tags.length > EVIDENCE_LIMITS.maxTags) {
+      push(`tags exceeds ${EVIDENCE_LIMITS.maxTags} entries`);
+    }
+    record.tags.forEach((tag, index) => boundedText(tag, `tags[${index}]`, EVIDENCE_LIMITS.tagChars, push));
+  }
+  for (const [field, value, max] of [
+    ["sourceRef", record.sourceRef, EVIDENCE_LIMITS.sourceRefChars],
+    ["provenance", record.provenance, EVIDENCE_LIMITS.provenanceChars],
+    ["reviewedBy", record.reviewedBy, EVIDENCE_LIMITS.reviewedByChars],
+    ["supersededById", record.supersededById, EVIDENCE_LIMITS.idChars],
+  ] as const) {
+    if (value !== undefined) boundedText(value, field, max, push);
+  }
+  if (record.detail !== undefined) {
+    if (record.detail === null || typeof record.detail !== "object" || Array.isArray(record.detail)) {
+      push("detail must be an object when present");
+    } else {
+      const canonicalUpperBound = postgresJsonbTextUpperBoundBytes(record.detail);
+      if (canonicalUpperBound === undefined) push("detail must be JSON-serializable");
+      else if (canonicalUpperBound > EVIDENCE_LIMITS.detailSerializedChars) {
+        push(`detail exceeds ${EVIDENCE_LIMITS.detailSerializedChars} UTF-8 bytes in PostgreSQL jsonb text`);
+      }
+    }
+  }
   if (!EVIDENCE_SOURCE_TYPES.includes(record.sourceType)) push(`unknown source type: ${String(record.sourceType)}`);
   if (!EVIDENCE_LIFECYCLE_STATES.includes(record.lifecycle)) push(`unknown lifecycle state: ${String(record.lifecycle)}`);
   if (!isInstant(record.createdAt)) push("createdAt must be an ISO instant");
@@ -296,6 +406,31 @@ export function assertValidEvidenceRecord(record: EvidenceRecord): EvidenceRecor
   const { ok, issues } = validateEvidenceRecord(record);
   if (!ok) throw new EvidenceValidationError(record.id, issues);
   return record;
+}
+
+/** Validate the relation contract before either consumption or persistence. */
+export function validateEvidenceRelation(relation: EvidenceRelation): EvidenceValidationResult {
+  const issues: string[] = [];
+  const push = (issue: string) => issues.push(issue);
+  if (!nonEmpty(relation.fromId)) push("fromId is required");
+  else boundedText(relation.fromId, "fromId", EVIDENCE_LIMITS.idChars, push);
+  if (!nonEmpty(relation.toId)) push("toId is required");
+  else boundedText(relation.toId, "toId", EVIDENCE_LIMITS.idChars, push);
+  if (relation.fromId === relation.toId) push("evidence relation cannot refer to itself");
+  if (!EVIDENCE_RELATION_KINDS.includes(relation.kind)) {
+    push(`unknown evidence relation kind: ${String(relation.kind)}`);
+  }
+  if (relation.note !== undefined) {
+    boundedText(relation.note, "note", EVIDENCE_LIMITS.relationNoteChars, push);
+  }
+  if (!isInstant(relation.createdAt)) push("createdAt must be an ISO instant");
+  return { ok: issues.length === 0, issues };
+}
+
+export function assertValidEvidenceRelation(relation: EvidenceRelation): EvidenceRelation {
+  const { ok, issues } = validateEvidenceRelation(relation);
+  if (!ok) throw new EvidenceValidationError(`${relation.fromId}->${relation.toId}`, issues);
+  return relation;
 }
 
 /** True when review or expiry has lapsed for a kind whose freshness matters. */

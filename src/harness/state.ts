@@ -17,6 +17,7 @@ import {
   EvidenceRecord,
   EvidenceRelation,
   assertValidEvidenceRecord,
+  assertValidEvidenceRelation,
 } from "./evidence/contract.js";
 
 type Pool = import("pg").Pool;
@@ -1120,7 +1121,7 @@ export async function listContentEvidence(): Promise<EvidenceRecord[]> {
   const res = await pool.query(
     `SELECT * FROM content_evidence ORDER BY subject ASC, kind ASC, id ASC`,
   );
-  return res.rows.map(evidenceRowToRecord);
+  return res.rows.map((row: any) => assertValidEvidenceRecord(evidenceRowToRecord(row)));
 }
 
 export async function listContentEvidenceRelations(): Promise<EvidenceRelation[]> {
@@ -1129,7 +1130,7 @@ export async function listContentEvidenceRelations(): Promise<EvidenceRelation[]
     `SELECT from_id, to_id, kind, note, created_at FROM content_evidence_relations
       ORDER BY from_id ASC, to_id ASC, kind ASC`,
   );
-  return res.rows.map((row: any) => ({
+  return res.rows.map((row: any) => assertValidEvidenceRelation({
     fromId: String(row.from_id),
     toId: String(row.to_id),
     kind: row.kind,

@@ -55,21 +55,20 @@ import {
   invokeStage,
   parseStrictJsonObject,
 } from "./stageExecution.js";
+import { STRATEGY_LIMITS, HANDOFF_GUARDS, isBoundedSerializableText } from "./payloadContract.js";
 
 export const STRATEGY_CONCEPT_STAGE = "strategy-concept" as const;
 
-/** Bounds on the model's output. Generous enough to be useful, small enough to be safe. */
-export const LIMITS = {
-  angleChars: 400,
-  conceptChars: 1_200,
-  rationaleChars: 2_000,
-  hypothesisChars: 400,
-  assumptionChars: 400,
-  maxIds: 12,
-  maxHypotheses: 6,
-  maxAssumptions: 6,
-  goalChars: 2_000,
-} as const;
+/**
+ * Bounds on this stage, owned by `payloadContract.ts`.
+ *
+ * Re-exported under the established name so existing callers are unchanged.
+ * Field limits live in one place because every downstream handoff guard and the
+ * shared assembled-payload boundary are derived from them; the guards this
+ * stage applies to its own inputs are likewise derived from the *producer's*
+ * contract, so a structurally valid upstream result can never be refused here.
+ */
+export const LIMITS = STRATEGY_LIMITS;
 
 /** Exactly the fields the contract allows. Anything else is an extra field. */
 const ALLOWED_OUTPUT_FIELDS = [
@@ -152,6 +151,12 @@ function requireBoundedString(value: unknown, field: string, max: number): strin
   const text = (value as string).trim();
   if (!text) fail(`"${field}" must not be empty`);
   if (text.length > max) fail(`"${field}" exceeds ${max} characters`);
+  // Serializable text only. Control characters and unpaired surrogates are the
+  // only things JSON.stringify expands sixfold; the shared helper also enforces
+  // the UTF-8 byte allowance used by the worst-case token proof.
+  if (!isBoundedSerializableText(text, max)) {
+    fail(`"${field}" exceeds ${max} UTF-8 bytes or contains non-serializable text`);
+  }
   return text;
 }
 
@@ -180,6 +185,18 @@ function requireIdArray(value: unknown, field: string): string[] {
  * stale, and inactive material is named as an exclusion list rather than
  * dropped silently.
  */
+/**
+ * The kinds each typed citation channel may draw, independent of the section a
+ * record was found in.
+ *
+ * Section membership is the pack's classification; these are this stage's own
+ * restatement of it. Both must agree before an id becomes authority.
+ */
+const CITABLE_FACT_KINDS: ReadonlySet<string> =
+  new Set(["verified_automotive_fact", "verified_business_fact"]);
+const OBSERVATION_KINDS: ReadonlySet<string> = new Set(["gcd_direct_observation"]);
+const PERFORMANCE_KINDS: ReadonlySet<string> = new Set(["gcd_performance_evidence"]);
+
 export const renderEvidenceForStage = renderEvidencePackForStage;
 
 /**
@@ -247,9 +264,17 @@ export function validateStrategyConceptOutput(
   );
 
   // --- semantic binding: every id must exist, in its own section ---
-  const factIds = new Set(pack.allowedFacts.map((r) => r.id));
-  const observationPackIds = new Set(pack.gcdObservations.map((r) => r.id));
-  const performancePackIds = new Set(pack.performanceEvidence.map((r) => r.id));
+  // Defense in depth: bind each channel to the record's own KIND as well as to
+  // the section it was found in. Section membership alone was previously
+  // treated as sufficient authority, which meant a pack that placed a
+  // hypothesis in `allowedFacts` promoted it to citable fact here. The pack
+  // validator refuses such a pack before this runs; this second check means a
+  // future consumer that forgets to call it still cannot promote a kind.
+  const idsOfKind = (records: readonly EvidenceRecord[], kinds: ReadonlySet<string>) =>
+    new Set(records.filter((r) => kinds.has(r.kind)).map((r) => r.id));
+  const factIds = idsOfKind(pack.allowedFacts, CITABLE_FACT_KINDS);
+  const observationPackIds = idsOfKind(pack.gcdObservations, OBSERVATION_KINDS);
+  const performancePackIds = idsOfKind(pack.performanceEvidence, PERFORMANCE_KINDS);
   const blocked = unusableEvidenceIds(pack);
 
   for (const id of supportingFactIds) {
@@ -305,7 +330,9 @@ export function citedFactRecords(
   output: StrategyConceptOutput,
   pack: EvidencePack,
 ): EvidenceRecord[] {
-  const byId = new Map(pack.allowedFacts.map((r) => [r.id, r]));
+  const byId = new Map(
+    pack.allowedFacts.filter((r) => CITABLE_FACT_KINDS.has(r.kind)).map((r) => [r.id, r]),
+  );
   return output.evidence.supportingFactIds
     .map((id) => byId.get(id))
     .filter((r): r is EvidenceRecord => r !== undefined);
@@ -346,6 +373,15 @@ export async function executeStrategyConcept(
   }
   assertRequiredEvidence(invocation.evidencePack, registry);
 
+  // The evidence pack is the one input this stage does not itself bound: its
+  // cardinality is decided by whatever the classifier produced. Guarded here
+  // against the derived ceiling so an oversized pack is refused before any
+  // model call rather than assembling a payload nothing sized for.
+  const renderedEvidence = renderEvidenceForStage(invocation.evidencePack);
+  if (renderedEvidence.length > HANDOFF_GUARDS.evidencePackChars) {
+    fail(`"evidencePack" exceeds ${HANDOFF_GUARDS.evidencePackChars} characters`);
+  }
+
   const { rawText, metadata } = await invokeStage({
     stage: STRATEGY_CONCEPT_STAGE,
     registry,
@@ -358,7 +394,7 @@ export async function executeStrategyConcept(
     referenceChannel: "omit",
     dataBlocks: [
       { label: "GOAL", body: goal },
-      { label: "EVIDENCE", body: renderEvidenceForStage(invocation.evidencePack) },
+      { label: "EVIDENCE", body: renderedEvidence },
     ],
   });
 
