@@ -79,7 +79,7 @@ The routine offline sequence now also runs `npm run test:payload-mutation` betwe
 
 ## Payload-contract reconciliation — derivation and mutation coverage
 
-**Implemented on a draft pull request: not merged, not deployed, not enabled, not production-validated.** The `CC1`–`CC81` group in `test:content-intelligence` covers the reconciliation, and `npm run test:payload-mutation` proves the load-bearing branches. Both are offline: no network, no database, no provider, no credential, and every model call goes through an injected runner.
+**`MERGED` through PR #54 and present on `main`: not established as deployed, not enabled, not production-validated.** The `CC1`–`CC81` group in `test:content-intelligence` covers the reconciliation, and `npm run test:payload-mutation` proves the load-bearing branches. Both are offline: no network, no database, no provider, no credential, and every model call goes through an injected runner.
 
 **What the derivation group `CC1`–`CC38` fail on.**
 
