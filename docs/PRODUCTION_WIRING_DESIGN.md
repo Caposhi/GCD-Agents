@@ -112,8 +112,10 @@ in this document or anywhere else.
   would not stop it.
 
 **PROPOSED** — an early implementation PR must therefore make `executionEnabled` actually gate
-execution, *before* any caller exists (§6, P2 — after P1, which creates the control plane the same
-boundary must also consult).
+execution, *before* any caller exists (§6, **P2** — after **P1**, which creates the control plane the
+same boundary must also consult). Flipping the six flags to `true` is then a separate, separately
+reviewed source change of its own (§6, **P8**), performed after the boundary enforces them and while
+the runtime authority gate still withholds permission — never a clause inside an operator step.
 
 ### 1.4 Production evidence — available versus absent
 
@@ -192,8 +194,9 @@ deserialized value passes. That limit is already documented per stage and does n
 discipline rather than inventing a second one:
 
 - A `content_intelligence_runs` row is created **before** stage 1 executes, carrying the run id,
-  brief id, evidence-pack `builtAt`, the exact pack digest, the code version, and the authority mode
-  observed at dispatch (§3.2).
+  brief id, evidence-pack `builtAt`, the exact pack digest, the code version, the authority mode
+  observed at dispatch (§3.2), and the id of the manual-dispatch grant consumed to accept it, if any
+  (§3.2.1) — the grant decrement and this row commit in the same transaction.
 - A `content_intelligence_stage_results` row is committed **after each stage returns and validates**,
   before the next stage begins.
 - Recovery is **refuse-don't-resume**, matching the merged worker recovery posture: a run whose owner
@@ -248,15 +251,16 @@ No sentence a model writes becomes a claim, a citation, an approval, or a public
 
 ### 3.1 The seven authority layers
 
-**PROPOSED** — seven layers, each independently switchable, each proven separately. **No single flag
-or deployment may satisfy more than one.**
+**PROPOSED** — seven layers (layer 4 has two independent halves), each independently switchable,
+each proven separately. **No single flag or deployment may satisfy more than one.**
 
 | # | Layer | Satisfied by | Not implied by |
 |---|---|---|---|
 | 1 | **Code presence** | Merge to `main` | Anything else |
 | 2 | **Deployment** | A release carrying that commit observed live on the owning service | Merge |
 | 3 | **Database readiness** | Migration 007 applied **and post-apply-validated** (§4) | A deployment having run. §4.0: an api deploy *does* apply pending migrations, which is exactly why this design applies 007 deliberately under its own gates first — an apply that happened as a deployment side effect satisfies this layer no more than not applying it at all, because nothing validated it |
-| 4 | **Runtime reachability (dispatch)** | A caller exists *and* dispatch is permitted | Code presence |
+| 4a | **Bounded manual dispatch** | A caller exists *and* an unexpired manual-dispatch grant with runs remaining exists (§3.2.1) | Code presence; scheduled dispatch being off |
+| 4b | **Scheduled / queue dispatch** | A caller exists *and* the scheduled-dispatch ceiling permits *and* the authority gate is `LIVE` | A manual grant. **4a never implies 4b** — a bounded manual grant authorizes exactly the runs it names and nothing recurring |
 | 5 | **Execution enablement** | Registry `executionEnabled` **and** the runtime authority gate (§3.2) both permit | Reachability |
 | 6 | **Human approval** | A durable, hash-bound approval decision by a person | Everything above |
 | 7 | **Publication** | The existing Phase 0A publication guard passing immediately before each provider request | Approval alone |
@@ -306,13 +310,24 @@ environment configuration and the registry `executionEnabled` fields:
 | **`SHADOW`** | Runs may execute stages and make **model-provider** requests. Approval transitions and publication are **prohibited**, and publication-provider requests are impossible |
 | **`LIVE`** | Runs may execute stages, and results may proceed to the mandatory human approval gate and, only after it, to the publication guard. `LIVE` does **not** approve or publish anything by itself |
 
-**PROPOSED — the gate is read at five points, every time, never cached across them:**
+**PROPOSED — the gate is read at five points, every time, never cached across them. Every checkpoint
+has a named owning implementation PR; a checkpoint with no owner is a checkpoint nobody builds:**
 
-1. Before accepting a new run.
-2. Before **every** stage starts.
-3. Before **every** provider request of any kind.
-4. Before any approval transition.
-5. Before any publication.
+| # | Checkpoint | Enforced in | Owning PR (§6) |
+|---|---|---|---|
+| **C1** | Before accepting a new run | `runContentIntelligenceRun` run-acceptance path | **P3** |
+| **C2** | Before **every** stage starts | `invokeStage` (`src/harness/agents/stageExecution.ts`) | **P2** |
+| **C3** | Before **every** provider request of any kind | the stage request boundary (`src/harness/sdk.ts`) | **P2** |
+| **C4** | Before any approval transition | the approval decision path on the api | **P5** |
+| **C5** | Before any publication | the publication handoff on the worker, in front of the existing Phase 0A guard | **P6** |
+
+**C4 and C5 are not implied by C1–C3.** A run that legitimately produced stage results under `SHADOW`
+must still be refused at the approval and publication boundaries, and those boundaries are reached by
+existing production code paths that know nothing about this gate today. They therefore need their own
+implementation PRs (**P5** and **P6**), in the services that own them — approval on the api,
+publication on the worker. Adding C4 and C5 is the only part of this design that touches an existing
+production path, which is why each is its own separately reviewed PR rather than a clause inside
+another.
 
 Turning the gate to `OFF` therefore prevents a new run from being accepted, prevents any subsequent
 stage from starting, and prevents any subsequent provider request — without a deployment, and taking
@@ -342,26 +357,72 @@ in flight** — not "the in-flight request stops."
 - **Rolled back by:** setting the mode back to `OFF`, which requires no deployment and no code change.
   Rolling *back* needs no authorization ceremony; rolling *forward* always does.
 
-### 3.3 Distinguishing the three controls
+### 3.2.1 The bounded manual-dispatch grant — PROPOSED, does not exist today
 
-These are three different things and must never be collapsed:
+**This is the second thing the earlier draft was missing.** It said shadow runs would be "operator
+triggered, not scheduled", but named no control that *permits* an operator-triggered run — while the
+dispatch ceiling denied dispatch outright. Under that draft, checkpoint C1 would have refused every
+shadow run, so shadow execution was unreachable.
 
-| Control | Where it lives | Who changes it | When it takes effect |
-|---|---|---|---|
-| Registry `executionEnabled` | Source (`registry.ts`) | A reviewed, merged PR | On deployment of that commit |
-| Proposed environment variables | Render service configuration | An operator, per service | On service restart/redeploy — a deployment-time **ceiling**, not an operational switch |
-| **Proposed runtime authority gate** | Durable control-plane row | An authorized human via console route or authorized statement | At the next gate check — **no deployment** |
+**PROPOSED** — a durable, bounded, expiring grant, stored in the same control plane as the authority
+gate and created by the same authenticated route:
+
+| Field | Meaning |
+|---|---|
+| `runs_remaining` | A positive integer, decremented **transactionally at run acceptance**, in the same transaction that creates the run row. At zero the grant is spent |
+| `granted_by`, `granted_at`, `reason` | Who authorized it, when, and why. Recorded in the append-only history |
+| `expires_at` | A wall-clock expiry. An expired grant is spent whatever `runs_remaining` says |
+| `max_authority` | The highest authority mode this grant may run under. For a shadow grant this is `SHADOW`, never `LIVE` |
+
+**PROPOSED invariants:**
+
+- **A grant is consumed, not merely checked.** Decrementing in the run-acceptance transaction makes a
+  bounded grant genuinely bounded under concurrency and under retry; a grant that were only *read*
+  would authorize an unbounded number of runs.
+- **A grant authorizes nothing recurring.** It is checked only on the manual acceptance path. The
+  scheduler and the queue consumer consult the **scheduled-dispatch** ceiling (layer 4b) and never a
+  grant, so an unspent grant can never make a schedule fire.
+- **A grant cannot raise authority.** The effective mode remains the *lower* of the deployment-time
+  ceiling, the gate, and the grant's `max_authority`. A grant issued while the gate reads `OFF`
+  permits nothing.
+- **A grant cannot bypass C4 or C5.** It authorizes run *acceptance* only. Approval and publication
+  remain governed by their own checkpoints and by layers 6 and 7.
+- **Revocation is immediate and needs no deployment:** set `runs_remaining` to zero, or set the gate
+  to `OFF`, which denies at C1 regardless of any grant.
+
+Schema and reader land in **P1**; consumption at run acceptance lands in **P3**.
+
+### 3.3 Distinguishing the four controls
+
+These are four different things and must never be collapsed:
+
+| Control | Where it lives | Who changes it | When it takes effect | Changed at |
+|---|---|---|---|---|
+| Registry `executionEnabled` | Source (`registry.ts`) | A reviewed, merged PR — **P8** | On deployment of that commit | M3 |
+| Proposed environment variables | Render service configuration | An operator, per service | On service restart/redeploy — a deployment-time **ceiling**, not an operational switch | manual ceiling at M3; scheduled ceiling at M7 |
+| **Proposed runtime authority gate** | Durable control-plane row | An authorized human via console route or authorized statement | At the next gate check — **no deployment** | `SHADOW` at M3, `LIVE` at M7 |
+| **Proposed manual-dispatch grant** (§3.2.1) | Durable control-plane row, bounded and expiring | An authorized human, per grant | At the next run acceptance, which **consumes** it — **no deployment** | issued at M3, spent during M4 |
+
+The registry field and the gate are the two halves of layer 5; the environment variables are ceilings
+over both dispatch halves and over the gate; the grant is what actually admits an individual manual
+run. **None of the four implies another**, and no single act changes more than one.
 
 ### 3.4 Rollback and emergency disable
 
 **PROPOSED**, least to most disruptive:
 
 1. **Set the authority gate to `OFF`.** No new runs; no further stages; no further provider requests;
-   in-flight work cannot progress. **No deployment.**
-2. **Withdraw dispatch.** Remove the run trigger so nothing attempts a run.
-3. **Revert the release.** Ordinary application rollback, safe only if the code being rolled back
+   no approval transition and no publication (C4, C5); in-flight work cannot progress. **No
+   deployment.**
+2. **Zero any outstanding manual-dispatch grant** (§3.2.1), which denies at C1 independently of the
+   gate. **No deployment.** Either of steps 1 and 2 alone stops new runs; doing both is the default.
+3. **Lower the dispatch ceilings** — scheduled first, then manual. Requires a service restart, so it
+   is slower than steps 1 and 2 and is a follow-up to them, never the first response.
+4. **Revert P8**, returning every registry `executionEnabled` to `false`. A one-file change, but it
+   needs a deployment, so it ranks below the gate and the grant.
+5. **Revert the release.** Ordinary application rollback, safe only if the code being rolled back
    to tolerates the applied migration set — the property that was tested for 006.
-4. **Revert the merge.** Repository-level.
+6. **Revert the merge.** Repository-level.
 
 **PROPOSED** — 007's rollback file relaxes the **database only**. The TypeScript contract still
 refuses an oversized record, so the system continues to fail closed after a rollback. Rolling back 007
@@ -393,7 +454,11 @@ selector: `npm run migrate` applies whatever is pending.
 - **Consequently the §4 gates below must be satisfied *before* that deployment, not after it.** A
   deployment performed first would apply 007 as a side effect, with no audit, no decision record, and
   no post-apply validation. That is why §6 places the 007 rollout (M1) **before** the inert-code
-  deployment (M2), and why M2 — which carries migration 008 from P1 — is itself migration-bearing.
+  deployment (M2) **and before P1 merges at all**, and why M2 — which carries migration 008 from P1 —
+  is itself migration-bearing.
+- **The runner cannot be told to apply one file.** Selecting a single migration is expressed by
+  controlling what is pending, not by an argument — see §4.4, which also covers the case where 008
+  has already merged.
 - The same reasoning applies to 008 and to every future migration; nothing here is specific to 007.
 
 ### 4.1 Prerequisite — a fresh, read-only, aggregate-only operator audit
@@ -431,14 +496,58 @@ with no committed decision record is unauthorized by definition.**
 | **G1 Audit** | §4.1 complete, results committed | Any measured maximum exceeds its bound |
 | **G2 Decision** | §4.2 record committed and authorized | Missing, unsigned, or stale |
 | **G3 Rollout path** | The separately authorized migration-bearing rollout, **not** the ordinary controller path | **VERIFIED** the controller already stops before any service action when the release range touches `state/migrations/**` |
+| **G3a Pending-set verification** | The exact pending set is computed and recorded **immediately before** the runner is invoked, and equals the authorized set **exactly** — see §4.4. Required before **every** use of the general migration runner, including the one the api `preDeployCommand` triggers | The computed set differs from the authorized set by **even one file** → stop; do not run the runner, do not trigger the deploy |
+| **G3b Controlled source commit** | The runner is invoked from a checkout at a **named exact commit** whose `state/migrations/` contains exactly the authorized set — this is what makes a selective apply possible at all (§4.4) | The commit's migrations directory contains a file outside the authorized set |
 | **G4 Single runner** | Exactly one migration authority; no schema-dependent consumer racing it | More than one runner, or a consumer started early |
-| **G5 Transactional apply** | Applied by `npm run migrate`, which wraps each file in `BEGIN…COMMIT` | Applied by hand via `psql -f` — **VERIFIED** that this silently disables the `SET LOCAL` timeout guards |
+| **G5 Transactional apply** | Applied by `npm run migrate`, which wraps each file in `BEGIN…COMMIT` | Applied by hand via `psql -f` — **VERIFIED** that this silently disables the `SET LOCAL` timeout guards. Hand-application is therefore **not** an escape hatch for selecting a single file; G3b is |
 | **G6 Collision** | 007's helper uses plain `CREATE`, so an exact-name collision aborts without overwriting | Collision detected → abort, do not force |
-| **G7 Post-apply validation** | `_migrations` holds `007` exactly once; every constraint present; a boundary record inserts and an over-bound one is rejected | Any check fails → rollback per `state/rollback/007_evidence_bounds_rollback.sql` |
+| **G7 Post-apply validation** | `_migrations` holds `007` exactly once; **`_migrations` contains no file that was not in the authorized set**; every constraint present; a boundary record inserts and an over-bound one is rejected | Any check fails → rollback per `state/rollback/007_evidence_bounds_rollback.sql`. An unauthorized file having been applied is an incident, not a variance |
 | **G8 Reapply** | Only after the cause is fixed and the audit re-run | Reapplying over unexplained failure |
 
 **PROPOSED** — 007 must **not** be applied in the same change as deployment, enablement, or
 publication (§6).
+
+### 4.4 The safe selective path — controlling the pending set, since the runner has no selector
+
+**VERIFIED** — `npm run migrate` applies *every* pending file. There is no flag, argument, or
+environment variable that selects one. So "apply only 007" cannot be expressed to the runner.
+
+**The earlier draft's M1 assumed it could be**, and that assumption fails the moment migration 008
+(added by P1) is merged: the pending set becomes `{007, 008}`, and a single `npm run migrate` would
+apply both — one of them with no audit, no decision record, and no post-apply validation.
+
+**PROPOSED — two mechanisms, applied together, and neither is optional:**
+
+**1. Control *what is pending*, by running from a controlled commit (G3b).** The runner reads
+`state/migrations/` from the working tree it runs in. Invoking it from a checkout at an exact,
+immutable commit whose migrations directory contains only files `001`–`007` makes `{007}` the largest
+possible pending set, **whatever has since merged to `main`**. Such a commit always exists and is
+immutable — this design's own base, `e6f9b0275fc25f0c508708f5e421a474daeebbae`, is one — so this path
+stays available even if P1 merges first. This is the safe selective path, and it is the reason M1 does
+not depend on repository ordering.
+
+**2. Order the rollout so the question rarely arises (§6).** **P1 must not merge until M1 is complete
+and verified.** Keeping 008 out of the repository until 007 is applied means the ordinary pending set
+is `{007}` at M1 and `{008}` at M2, and mechanism 1 is the belt to that braces rather than a routine
+recovery.
+
+**PROPOSED — the pending-set verification itself (G3a)**, performed immediately before every runner
+invocation, against the commit about to be used:
+
+```
+applied  := SELECT name FROM _migrations ORDER BY name;          -- read-only, from the target database
+present  := the *.sql files in state/migrations/ at that exact commit
+pending  := present − applied
+```
+
+The operator records `applied`, `present`, `pending`, and the exact commit SHA, then compares
+`pending` to the set named in the §4.2 decision record. **They must be equal as sets.** A pending set
+that is larger, smaller, or differently composed stops the milestone — no partial run, no "apply it
+and check after".
+
+**This applies to the deployment-triggered runner too.** Because the api's `preDeployCommand` invokes
+the runner automatically against the deployed commit, G3a must be satisfied **before the deployment is
+triggered**, using that exact commit. There is no opportunity to intervene once the deploy starts.
 
 ---
 
@@ -463,6 +572,7 @@ in this session, and none was authorized.
 | Responsibility | Owner | Rationale |
 |---|---|---|
 | Run dispatch / orchestration | **worker** | Already holds exclusive ownership, recovery, and the long-running execution model |
+| Manual-dispatch grants | **api** | Already owns the authenticated `/console/*` surface, alongside the authority gate |
 | Stage execution | **worker** | Already the only service with `ANTHROPIC_API_KEY` |
 | Scheduling | **scheduler** | Already enqueues; would enqueue a run request, never execute one |
 | Approval review/decision | **api** | Already owns the approval routes and the hash-bound decision |
@@ -476,17 +586,25 @@ in this session, and none was authorized.
 
 | Proposed variable | Owner | Purpose | Default |
 |---|---|---|---|
-| `CONTENT_INTELLIGENCE_DISPATCH_ENABLED` | worker, scheduler | Layer-4 dispatch ceiling | absent ⇒ disabled |
-| `CONTENT_INTELLIGENCE_MAX_AUTHORITY` | worker | Deployment-time **ceiling** on the authority gate (`OFF`/`SHADOW`/`LIVE`); the effective mode is the *lower* of this and the gate | absent ⇒ `OFF` |
+| `CONTENT_INTELLIGENCE_SCHEDULED_DISPATCH_ENABLED` | worker, scheduler | Deployment-time ceiling on **layer 4b only** — scheduled and queue-driven dispatch. It governs no manual run | absent ⇒ disabled |
+| `CONTENT_INTELLIGENCE_MANUAL_DISPATCH_ENABLED` | worker, api | Deployment-time ceiling on **layer 4a** — whether a bounded manual-dispatch grant may be honoured at all. A ceiling, not a grant: with this `true` and no grant, nothing runs | absent ⇒ disabled |
+| `CONTENT_INTELLIGENCE_MAX_AUTHORITY` | worker, api | Deployment-time **ceiling** on the authority gate (`OFF`/`SHADOW`/`LIVE`); the effective mode is the *lower* of this, the gate, and any grant's `max_authority` | absent ⇒ `OFF` |
 
-**These variables are a ceiling, not the operational control.** The mutable runtime authority gate
-(§3.2) is what an operator turns off in an emergency. Every value defaults to *off when absent*, so a
-service that never received the variable is safe rather than enabled.
+**The two dispatch ceilings are deliberately separate variables, not one.** Collapsing them would
+make authorizing a single shadow run also authorize the daily schedule — precisely the conflation
+this design exists to prevent. Manual dispatch is raised at M3 and scheduled dispatch not until M7.
 
-**Deployment ordering:** database first and separately (007 under M1, then 008 as part of the
-migration-bearing release described in M2 — see §4.0, because the api `preDeployCommand` applies
-whatever is pending) → api → worker → scheduler, matching the merged controller's existing serialized
-order, with dispatch permitted **last** and only under its own authorization.
+**These variables are ceilings, not the operational control.** The mutable runtime authority gate
+(§3.2) is what an operator turns off in an emergency, and the bounded grant (§3.2.1) is what actually
+permits a run. Every value defaults to *off when absent*, so a service that never received the
+variable is safe rather than enabled.
+
+**Deployment ordering:** database first and separately — 007 under M1 from a controlled source commit
+(§4.4), **before P1 merges**, then 008 as part of the migration-bearing release described in M2, with
+the pending set verified against the exact commit before the deploy is triggered (§4.0, because the
+api `preDeployCommand` applies whatever is pending) → api → worker → scheduler, matching the merged
+controller's existing serialized order. **Manual dispatch is permitted at M3 and scheduled dispatch
+only at M7**, each under its own authorization, and neither is implied by any deployment.
 
 **UNKNOWN** — whether the deployment automation gate is currently on, whether native auto-deploy is
 off, and what the services currently run. Each must be re-verified read-only immediately before any
@@ -496,152 +614,279 @@ production operation; none may be inferred from `render.yaml` or from this docum
 
 ## 6. Rollout sequence
 
-**PROPOSED.** The sequence contains **five implementation PRs (P1–P5)** and **seven operator
+**PROPOSED.** The sequence contains **eight implementation PRs (P1–P8)** and **seven operator
 milestones (M1–M7)**. They are different kinds of thing and are numbered separately: a PR is reviewed
 and merged; a milestone is performed by an authorized operator and produces an evidence record, not a
-diff.
+diff. **Every source change is a numbered PR — including the one that activates the stages.** A code
+change hidden inside a milestone is a code change nobody reviewed as code.
 
 **No step combines enablement or publication with anything else.** Migration application and
 deployment cannot be fully separated — §4.0 establishes that the api `preDeployCommand` applies
 whatever migration is pending — so where a release is unavoidably migration-bearing (M2), it is
-declared as such and takes the migration-bearing rollout with post-apply validation, rather than
-being described as a plain deploy. Enablement (M3) and any publication path remain separate steps
-that share a milestone with nothing.
+declared as such, takes the migration-bearing rollout with pending-set verification (§4.4), and gets
+post-apply validation, rather than being described as a plain deploy.
+
+### The sequence at a glance
+
+| Step | Kind | What changes | Dispatch after it | Authority after it |
+|---|---|---|---|---|
+| **M1** | operator | Migration 007 applied and validated | none | `OFF` |
+| **P1** | PR | Control plane + migration 008 + grant schema. *Must not merge before M1* | none | `OFF` |
+| **P2** | PR | Checkpoints **C2, C3** at the execution boundary | none | `OFF` |
+| **P3** | PR | Dispatch skeleton + checkpoint **C1** + grant consumption | none | `OFF` |
+| **P4** | PR | Worker integration behind both dispatch ceilings | none | `OFF` |
+| **P5** | PR | Checkpoint **C4** — approval transition (api) | none | `OFF` |
+| **P6** | PR | Checkpoint **C5** — publication (worker) | none | `OFF` |
+| **P7** | PR | Observability, audit records, metrics | none | `OFF` |
+| **M2** | operator | Deploy P1–P7 inert; apply and validate 008 | none | `OFF` |
+| **P8** | PR | **Activation:** registry `executionEnabled` → `true` | none | `OFF` |
+| **M3** | operator | Deploy P8; raise authority to `SHADOW`; issue a bounded manual grant | **manual only, bounded** | `SHADOW` |
+| **M4** | operator | Execute the granted shadow runs | manual, grant draining | `SHADOW` |
+| **M5** | operator | Collect and review evidence | none (grant spent) | `SHADOW` or `OFF` |
+| **M6** | operator | Promotion decision | none | `SHADOW` or `OFF` |
+| **M7** | operator | Raise scheduled dispatch and authority to `LIVE` | **scheduled + manual** | `LIVE` |
+
+**Scheduled and queue dispatch is off at every step until M7. Approval and publication are refused at
+C4 and C5 at every step until the authority gate reaches `LIVE`, and even then remain governed by
+layers 6 and 7 independently.**
 
 ### Implementation PRs
 
-#### P1 — Durable schema: runs, stage results, and the authority control plane
+#### P1 — Durable schema: runs, stage results, the authority control plane, and dispatch grants
 
-**This is first because P2 cannot enforce a gate that has nowhere to live.** The boundary check in P2
-reads the authority value; the table and its contract must exist before that check can be written or
-tested.
+**Entry gate — P1 must not merge until M1 is complete and verified.** P1 introduces migration 008. If
+it merges first, the pending set at M1 becomes `{007, 008}` and a single runner invocation would apply
+both, one of them unaudited (§4.0, §4.4). Ordering M1 first is the primary defense; §4.4's controlled
+source commit is the fallback if this ordering is ever broken.
 
-- **Entry:** this design accepted.
+**This PR is first among the PRs because P2 cannot enforce a gate that has nowhere to live.** The
+boundary checks in P2 read the authority value; the table, the grant, and their contract must exist
+before those checks can be written or tested.
+
 - **Change:** additive migration (008) for `content_intelligence_runs`,
   `content_intelligence_stage_results`, `content_intelligence_authority` and its append-only history,
-  plus rollback file, TypeScript contracts, and a reader that resolves the effective mode. The
-  authority row is seeded `OFF`.
-- **Exit:** disposable PostgreSQL 16/18 apply / enforce / rollback / reapply coverage; a regression
-  proves an absent, unreadable, or unrecognized mode resolves to `OFF`.
+  and `content_intelligence_dispatch_grants` (§3.2.1) — plus rollback file, TypeScript contracts, and
+  a reader that resolves the effective mode as the lower of ceiling, gate, and grant. The authority
+  row is seeded `OFF`; **no grant row is seeded.**
+- **Exit:** disposable PostgreSQL 16/18 apply / enforce / rollback / reapply coverage; regressions
+  prove an absent, unreadable, or unrecognized mode resolves to `OFF`, that an absent grant authorizes
+  nothing, and that an expired or zero-`runs_remaining` grant is spent.
 - **Rollback:** revert; 008 has not been applied to production by this PR.
 - **Prohibited:** applying **any** migration to production; wiring a caller; changing any
   `executionEnabled` value; touching `render.yaml`.
 
-#### P2 — Enforce both components of layer 5 at the execution boundary *(no caller yet)*
+#### P2 — Checkpoints C2 and C3 at the execution boundary *(no caller yet)*
 
 - **Entry:** P1 merged.
 - **Change:** `invokeStage` refuses unless **both** the stage's registry `executionEnabled` is true
-  **and** the runtime authority gate (read through P1's reader) permits. Layer 5 becomes real in both
-  halves.
+  **and** the runtime authority gate permits (**C2**); the stage request boundary re-reads the gate
+  immediately before the provider request (**C3**). Layer 5 becomes real in both halves.
 - **Exit:** regressions prove a stage refuses with **zero** runner calls when either component
-  withholds permission, and that neither alone suffices.
+  withholds permission, that neither alone suffices, and that C3 refuses even when C2 passed and the
+  gate moved in between.
 - **Tests:** offline suite plus mutations removing each half, each failing its owning check.
 - **Rollback:** revert.
 - **Prohibited:** adding any caller; changing any `executionEnabled` value; touching `render.yaml`.
 
-#### P3 — Dispatch skeleton, inert, with real reachability protection
+#### P3 — Dispatch skeleton and checkpoint C1, inert, with real reachability protection
 
-- **Change:** `runContentIntelligenceRun` exists. **This is the PR that introduces a caller**, so it
-  carries the stronger protection required by §1.3.1: transitive dependency/call-graph coverage where
-  practical, **and** executed integration tests proving disabled and unauthorized entry points reach
-  no executor with **zero** runner invocations.
-- **Exit:** with the authority gate `OFF` (the seeded default), a dispatch attempt refuses before any
-  stage, proven by execution rather than by source text.
-- **Prohibited:** changing the authority gate; any provider call; any promotion of output.
+- **Entry:** P1, P2 merged.
+- **Change:** `runContentIntelligenceRun` exists. Its run-acceptance path enforces **C1** and consumes
+  a manual-dispatch grant transactionally (§3.2.1) — decrement and run-row creation commit together or
+  not at all. **This is the PR that introduces a caller**, so it carries the stronger protection
+  required by §1.3.1: transitive dependency/call-graph coverage where practical, **and** executed
+  integration tests proving disabled and unauthorized entry points reach no executor with **zero**
+  runner invocations.
+- **Exit:** with the gate `OFF` (the seeded default) and no grant, a dispatch attempt refuses before
+  any stage, proven by execution rather than by source text; a grant with `runs_remaining: 1` admits
+  exactly one run and the second is refused, proven under concurrent acceptance.
+- **Prohibited:** changing the authority gate; issuing any grant; any provider call; any promotion of
+  output.
 
-#### P4 — Worker integration behind the dispatch ceiling
+#### P4 — Worker integration behind both dispatch ceilings
 
-- **Exit:** with dispatch not permitted (the default), worker behavior is byte-identical to today,
-  proven by the existing suites.
-- **Prohibited:** permitting dispatch anywhere; publication paths.
+- **Entry:** P3 merged.
+- **Change:** the worker can execute an accepted run. The scheduler and queue consumer consult the
+  **scheduled**-dispatch ceiling only and never a grant.
+- **Exit:** with both ceilings at their defaults, worker and scheduler behavior is byte-identical to
+  today, proven by the existing suites; a regression proves an unspent grant cannot make the scheduler
+  fire.
+- **Prohibited:** permitting either dispatch ceiling anywhere; publication paths.
 
-#### P5 — Observability, audit records, metrics
+#### P5 — Checkpoint C4: the approval-transition gate *(api)*
 
-- **Change:** structured run/stage audit records and metrics (§7). No behavior change.
+**This PR exists because C4 had no owner.** Nothing in P1–P4 touches the approval path, so without it
+a `SHADOW` run's output could reach the approval boundary and be transitioned by the existing code,
+which knows nothing about the gate.
+
+- **Entry:** P1 merged (needs the reader).
+- **Change:** the approval decision path reads the authority gate immediately before any approval
+  transition and refuses unless the mode is `LIVE`. `SHADOW` and `OFF` both refuse.
+- **Exit:** executed tests prove an approval transition is refused under `OFF` and under `SHADOW`,
+  with the existing hash-bound decision behavior unchanged under `LIVE`; a mutation removing the check
+  fails its owning test.
+- **Touches an existing production path**, so it is reviewed on its own and ships with no behavior
+  change while the gate is `OFF` — which it is until M3.
+- **Prohibited:** weakening or bypassing layer 6; changing approval semantics beyond adding refusal.
+
+#### P6 — Checkpoint C5: the publication gate *(worker)*
+
+**This PR exists because C5 had no owner**, for the same reason as P5.
+
+- **Entry:** P1 merged.
+- **Change:** the publication handoff reads the authority gate immediately before each publication and
+  refuses unless the mode is `LIVE`, **in front of** — never instead of — the existing Phase 0A
+  publication guard. Layer 7 is unchanged and still per-request.
+- **Exit:** executed tests prove publication is refused under `OFF` and under `SHADOW`; the existing
+  guard's own refusals are unchanged; a mutation removing the check fails its owning test; the
+  publication-provider request count is **zero** in both refused cases.
+- **Prohibited:** replacing, relaxing, or reordering the existing publication guard.
+
+#### P7 — Observability, audit records, metrics
+
+- **Change:** structured run/stage audit records and metrics (§7), including grant issuance and
+  consumption and every C1–C5 refusal by checkpoint. No behavior change.
 - **Prohibited:** logging prompts, model prose, credentials, or evidence text.
+
+#### P8 — Activation: registry `executionEnabled` → `true`
+
+**This is a source change and is numbered as one.** The earlier draft buried it inside milestone M3
+while claiming the sequence held five implementation PRs — so the single change that arms every stage
+was the one change with no PR number, no stated entry gate, and no review record of its own.
+
+- **Entry:** P1–P7 merged; **M2 complete and verified** (the inert implementation deployed, all gates
+  reading `OFF`).
+- **Change:** the six registry entries' `executionEnabled` values, and nothing else. No logic, no
+  schema, no configuration, no `render.yaml`.
+- **Why it is safe to merge before shadow is authorized:** with P2 merged, `executionEnabled: true`
+  satisfies only *half* of layer 5. The authority gate still reads `OFF`, so C1–C3 refuse, and the
+  registry flag alone changes nothing observable — the same fact §1.3.2 records about today's flag,
+  now true in the opposite direction.
+- **Exit:** the offline suite passes with all six `true`; a regression proves that with the gate `OFF`
+  a dispatch attempt still refuses with **zero** runner invocations; the dry run is unchanged.
+- **Deployed at M3, not at merge.** Merging arms nothing; deployment arms nothing either, because the
+  gate is what withholds permission.
+- **Rollback:** revert this PR — a one-file change — and redeploy; or set the gate to `OFF`, which is
+  faster and needs no deployment.
+- **Prohibited:** any other change in the same PR; changing the authority gate; issuing a grant.
 
 ### Operator milestones
 
 #### M1 — Migration 007 rollout *(REQUIRES OPERATOR ACTION)*
 
-**This is first because of §4.0:** the migration runner sweeps every pending file, so the first api
-deployment carrying 007 would apply it as an unaudited side effect. 007 is therefore applied
-deliberately, under its own gates, before any deployment of new code.
+**This is first because of §4.0 and §4.4:** the migration runner sweeps every pending file, so an api
+deployment carrying 007 would apply it as an unaudited side effect, and once 008 merges a plain
+`npm run migrate` would apply both. 007 is therefore applied deliberately, under its own gates, before
+any deployment of new code and before P1 merges.
 
-- **Entry:** §4 gates G1–G2 satisfied; decision record committed. **No dependency on P1–P5** — this
-  milestone concerns only the migration already in source.
-- **Action:** the separately authorized migration-bearing rollout, applied by `npm run migrate` per
-  gate G5. **No code change.**
-- **Exit:** G7 post-apply validation passes; `_migrations` holds `007` exactly once.
+- **Entry:** §4 gates G1–G2 satisfied; decision record committed, naming the authorized set as exactly
+  `{007_evidence_bounds.sql}`. **No dependency on P1–P8** — this milestone concerns only the migration
+  already in source.
+- **Action:**
+  1. **G3b** — check out the named exact commit whose `state/migrations/` contains exactly `001`–`007`
+     (this design's base, `e6f9b0275fc25f0c508708f5e421a474daeebbae`, is such a commit and is
+     immutable). Record the SHA.
+  2. **G3a** — compute and record `applied`, `present`, and `pending` per §4.4 against the target
+     database. **Stop unless `pending` is exactly `{007_evidence_bounds.sql}`.**
+  3. Apply with `npm run migrate` from that checkout (G4, G5), under the separately authorized
+     migration-bearing rollout — **no code change, no service deployment.**
+- **Exit:** G6 and G7 pass; `_migrations` holds `007` exactly once and holds no file outside the
+  authorized set.
 - **Rollback, defined before proceeding:** `state/rollback/007_evidence_bounds_rollback.sql`, applied
   by hand under its own authorization. It relaxes the database only; the TypeScript contract still
   refuses an oversized record.
-- **Prohibited:** combining with any code change, deployment of new behavior, or enablement.
+- **Prohibited:** combining with any code change, deployment of new behavior, or enablement; merging
+  P1 before this milestone is verified.
 
 #### M2 — Deploy the inert implementation, and verify it *(REQUIRES OPERATOR ACTION)*
 
-**This milestone exists because deployed behavior cannot be tested before it is deployed.** P1–P5 are
+**This milestone exists because deployed behavior cannot be tested before it is deployed.** P1–P7 are
 merged but, until this milestone, not running anywhere.
 
-- **Entry:** M1 complete and verified; P1–P5 merged; exact-head CI green.
+- **Entry:** M1 complete and verified; P1–P7 merged; exact-head CI green. **P8 is deliberately not
+  included** — this milestone deploys inert code, and P8 is what arms the registry.
 - **This release is migration-bearing.** P1 adds migration 008, and the api `preDeployCommand` will
   apply it (§4.0). So this deployment uses the **separately authorized migration-bearing rollout**,
-  not the ordinary controller path, and 008 gets the same G4–G7 discipline 007 received: one runner,
-  transactional apply, post-apply validation. 008 needs no data audit — it creates new tables and
-  validates nothing against existing rows — but it still needs its own authorization and its own
-  post-apply check.
+  not the ordinary controller path, and 008 gets the same G3a–G7 discipline 007 received:
+  1. **G3a before triggering the deploy** — compute and record the pending set **against the exact
+     commit about to be deployed**. **Stop unless it is exactly `{008_...sql}`.** There is no
+     opportunity to intervene once the deploy starts.
+  2. one runner, transactional apply, post-apply validation.
+  008 needs no data audit — it creates new tables and validates nothing against existing rows — but it
+  still needs its own authorization and its own post-apply check.
 - **Action:** deploy **only** the reviewed inert code, in the order api → worker → scheduler.
-- **Leaves unauthorized:** dispatch, live execution, approval, publication. Nothing is enabled.
+- **Leaves unauthorized:** both dispatch ceilings, live execution, approval, publication. Nothing is
+  enabled and no grant exists.
 - **Verify, and record:**
   1. the exact deployed commit on each of the three services;
   2. that the new entry point is **unreachable through normal production traffic** — no route, no
      schedule, and no queue path invokes it;
-  3. that **every effective runtime gate reads `OFF`** — the seeded authority row, the dispatch
-     ceiling, and the authority ceiling, each read from the running system rather than from
+  3. that **every effective runtime gate reads `OFF` or disabled** — the seeded authority row, both
+     dispatch ceilings, and the authority ceiling, each read from the running system rather than from
      configuration files;
   4. that all six registry `executionEnabled` values remain `false` in the deployed commit;
-  5. that `_migrations` holds `008` exactly once and no unexpected file was swept in alongside it.
+  5. that `_migrations` holds `007` and `008` exactly once each, and nothing unauthorized;
+  6. that `content_intelligence_dispatch_grants` holds **zero** rows.
 - **Rollback, defined before proceeding:** revert to the prior release, then — only if required —
   apply 008's rollback file by hand under its own authorization. Because 008 is purely additive and
   the prior release neither reads nor writes its tables, the prior release tolerates 008 remaining
   applied; that is the intended rollback, and dropping the tables is not part of it.
-- **Prohibited:** enabling anything; any provider request; permitting dispatch.
+- **Prohibited:** enabling anything; any provider request; permitting either dispatch ceiling.
 
 #### M3 — Pre-shadow authorization *(REQUIRES OPERATOR ACTION, separately reviewed)*
 
 **This is the step the earlier draft was missing, and its absence made shadow execution impossible.**
+It required stage results while every registry flag stayed `false`, and it named no control that would
+permit an operator-triggered run.
 
-- **Entry:** M1 and M2 complete and verified (007 applied; the inert implementation deployed, verified, and reading `OFF`).
-- **Exactly which controls change here, and nothing else:**
-  1. **Registry `executionEnabled` → `true`, per stage**, by a reviewed and merged PR, then deployed
-     through the same verified-deployment discipline M2 defines — a further deployment, performed the
-     same way and verified the same way. This is a code change and cannot be an operator toggle. **This is why the
-     earlier "every executor stays disabled while shadow produces stage results" sequencing was
-     impossible: with P1 enforcing the registry field, stage results require the field to be true.**
-  2. **The runtime authority gate → `SHADOW`**, by an authorized human, recorded in the history table.
-- **What deliberately does not change here:** dispatch remains **not permitted** for scheduled or
-  queue-driven paths; the authority ceiling is not raised to `LIVE`; approval and publication remain
-  untouched.
+- **Entry:** M1 and M2 complete and verified (007 and 008 applied and validated; the inert
+  implementation deployed, verified, and reading `OFF`); **P8 merged with exact-head CI green.**
+- **Exactly which controls change here, and nothing else — four acts, each separately authorized:**
+  1. **Deploy P8**, arming the registry. This is a code deployment, performed and verified with the
+     same discipline M2 defines, and it is **not** yet an enablement: with the gate `OFF`, C1–C3 still
+     refuse. **This is why the earlier "every executor stays disabled while shadow produces stage
+     results" sequencing was impossible: with P2 enforcing the registry field, stage results require
+     the field to be true.**
+  2. **Raise `CONTENT_INTELLIGENCE_MANUAL_DISPATCH_ENABLED`** on the worker and api — the layer-4a
+     ceiling only. A ceiling, not a grant: with it raised and no grant, nothing runs.
+  3. **Set the runtime authority gate to `SHADOW`**, by a named authorized human, recorded in the
+     append-only history. `CONTENT_INTELLIGENCE_MAX_AUTHORITY` is raised to `SHADOW` — **never
+     `LIVE`** — so the deployment-time ceiling cannot be exceeded even by mistake.
+  4. **Issue exactly one bounded manual-dispatch grant** (§3.2.1) with an explicit small
+     `runs_remaining`, an explicit `expires_at`, a named `granted_by`, a stated `reason`, and
+     `max_authority: SHADOW`.
+- **What deliberately does not change here:** `CONTENT_INTELLIGENCE_SCHEDULED_DISPATCH_ENABLED`
+  remains **disabled**, so no schedule and no queue path can start a run; the authority ceiling is not
+  raised to `LIVE`; approval and publication code is untouched, and C4 and C5 refuse under `SHADOW`.
 - **Why this cannot permit scheduled live execution or publication:**
-  - `SHADOW` mode itself prohibits approval transitions and publication at gate checks 4 and 5, so no
-    result can reach either regardless of what else is true.
-  - Publication-provider requests are impossible in `SHADOW`, because the gate is checked before
-    every provider request and the publication guard sits behind the approval that `SHADOW` forbids.
-  - Dispatch is not permitted, so nothing is scheduled: the only way a run starts is M4.
+  - The **scheduled** dispatch ceiling is untouched and still disabled, and layer 4a never implies 4b
+    (§3.1). The grant is consulted only on the manual acceptance path, so nothing recurring can start.
+  - The grant is **bounded and expiring**, and consumed transactionally, so it authorizes exactly the
+    runs it names — not a standing permission.
+  - `SHADOW` refuses at **C4** and **C5**, which now have owning implementations (P5, P6), so no
+    result can reach an approval transition or a publication regardless of what else is true.
+  - Publication-provider requests are impossible: C5 refuses before the publication handoff, and the
+    existing Phase 0A guard still sits behind the approval that `SHADOW` forbids.
   - Layer 6 remains mandatory and unbypassable regardless of mode.
-- **Rollback:** set the gate to `OFF` (no deployment); revert the enablement PR if needed.
+- **Rollback:** set the gate to `OFF`, or zero the grant — either denies at C1, neither needs a
+  deployment. Lower the manual ceiling and revert P8 if a fuller stand-down is wanted.
 
 #### M4 — Operator-triggered shadow execution *(REQUIRES OPERATOR ACTION)*
 
-- **Action:** an authorized operator explicitly triggers a bounded number of runs. **Not scheduled,
-  not queue-driven** — each run is an explicit act.
+- **Entry:** M3 complete; a grant exists with `runs_remaining > 0` and unexpired.
+- **Action:** an authorized operator explicitly triggers runs through the manual acceptance path,
+  **bounded by the grant** — each acceptance decrements it, and the run after the last is refused
+  without further action. **Not scheduled, not queue-driven.**
 - **Expected:** stage results and audit records are produced; model-provider requests occur and are
-  counted (§7.4); zero approvals; zero publication-provider requests.
-- **Rollback:** set the gate to `OFF`.
+  counted (§7.4); **zero** approval transitions and **zero** publication-provider requests, both
+  refused at C4 and C5 rather than merely not attempted.
+- **Rollback:** set the gate to `OFF`, or zero the grant.
 
 #### M5 — Shadow evidence collection and review *(REQUIRES OPERATOR ACTION)*
 
-- **Action:** collect the evidence defined in §7.4 and review it. No system change.
+- **Entry:** the grant is spent or expired.
+- **Action:** collect the evidence defined in §7.4 and review it. No system change. Returning the gate
+  to `OFF` while reviewing is encouraged and costs nothing.
 
 #### M6 — Post-shadow promotion decision *(REQUIRES OPERATOR ACTION, separately reviewed)*
 
@@ -652,10 +897,12 @@ merged but, until this milestone, not running anywhere.
 
 #### M7 — Live dispatch authorization *(REQUIRES OPERATOR ACTION)*
 
-- **Action:** raise the authority ceiling and gate to `LIVE`, and permit dispatch — **separate
-  authorizations, not granted together.**
-- **Still independent:** `LIVE` authorizes neither approval nor publication. Layer 6 remains
-  mandatory; layer 7's per-request guard is unchanged.
+- **Action:** raise `CONTENT_INTELLIGENCE_MAX_AUTHORITY` and the gate to `LIVE`, and raise
+  `CONTENT_INTELLIGENCE_SCHEDULED_DISPATCH_ENABLED` — **three separate authorizations, not granted
+  together.** This is the first step at which layer 4b is satisfied.
+- **Still independent:** `LIVE` authorizes neither approval nor publication. It removes the C4 and C5
+  refusals; layer 6 remains mandatory and layer 7's per-request guard is unchanged, so an approval
+  still requires a person and a publication still requires the Phase 0A guard to pass.
 
 ---
 
@@ -671,6 +918,9 @@ merged but, until this milestone, not running anywhere.
 - Every load-bearing branch gets a mutation whose owning check must fail. **A mutation that fails to
   compile proves nothing** and is not accepted as coverage.
 - The reachability protection required by §1.3.1 lands with P3 and is not deferred.
+- **Each of the five checkpoints gets its own mutation**, removing that checkpoint alone and
+  requiring its owning check to fail by name — C1 and the grant decrement in P3, C2 and C3 in P2,
+  C4 in P5, C5 in P6. A checkpoint with no failing mutation is not proven load-bearing.
 
 ### 7.2 Disposable PostgreSQL 16/18
 
@@ -716,10 +966,13 @@ provider payloads.
 
 ### 7.5 Metrics and alerts
 
-**PROPOSED** — counts and rates only. **Alerts on**: any publication-provider request during shadow
-(must be zero), any approval created during shadow (must be zero), deadline aborts, refusals by gate,
-and any run terminalizing `operator_disabled`. No metric label may carry evidence text, a goal string,
-or a credential.
+**PROPOSED** — counts and rates only, owned by **P7**. **Recorded**: refusals broken out **by
+checkpoint** (C1–C5), grant issuance and each consumption with `runs_remaining` after it, and the
+effective authority mode at each decision. **Alerts on**: any publication-provider request during
+shadow (must be zero), any approval transition permitted during shadow (must be zero), any run
+accepted with no grant, any scheduled or queue-driven acceptance before M7, deadline aborts, and any
+run terminalizing `operator_disabled`. No metric label may carry evidence text, a goal string, or a
+credential.
 
 ### 7.6 Acceptance criteria for production validation
 
@@ -728,10 +981,15 @@ or a credential.
 1. It executed in production against a real model, observed in durable state.
 2. Its output validated deterministically; refusals were correct refusals.
 3. Its model-provider request count matched one per executed stage, or the deviation is documented.
-4. No approval was created except through the mandatory human gate.
-5. No publication occurred except behind a passing publication guard.
+4. No approval was created except through the mandatory human gate, and **C4 was observed refusing**
+   an approval transition under a non-`LIVE` mode.
+5. No publication occurred except behind a passing publication guard, and **C5 was observed refusing**
+   a publication under a non-`LIVE` mode, with a publication-provider request count of zero.
 6. Recovery was exercised: an interrupted run terminalized correctly and resumed nothing.
 7. An authority-gate `OFF` transition was exercised and behaved as §3.2 specifies.
+8. A bounded manual-dispatch grant was observed **exhausting**: the run after the last granted one was
+   refused at C1 with no operator action.
+9. Scheduled and queue-driven dispatch was observed **not** starting a run at any point before M7.
 
 Anything less is `DEPLOYED` or `ENABLED`, never `PRODUCTION-VALIDATED`.
 
