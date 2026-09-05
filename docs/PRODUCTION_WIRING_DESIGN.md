@@ -258,7 +258,7 @@ each proven separately. **No single flag or deployment may satisfy more than one
 |---|---|---|---|
 | 1 | **Code presence** | Merge to `main` | Anything else |
 | 2 | **Deployment** | A release carrying that commit observed live on the owning service | Merge |
-| 3 | **Database readiness** | Migration 007 applied **and post-apply-validated** (§4) | A deployment having run. §4.0: an api deploy *does* apply pending migrations, which is exactly why this design applies 007 deliberately under its own gates first — an apply that happened as a deployment side effect satisfies this layer no more than not applying it at all, because nothing validated it |
+| 3 | **Database readiness** | Migration 007 applied **and post-apply-validated** (§4) | A deployment having run. An api deploy *does* apply pending migrations (§4.0) — indeed applying 007 **is** an api deployment (§4.4) — so what distinguishes readiness is not that a deploy happened but that the deploy was the authorized artifact, its pending set was verified beforehand, and G7 validated the result afterwards. An apply that happened as an unexamined side effect satisfies this layer no more than not applying it at all |
 | 4a | **Bounded manual dispatch** | A caller exists *and* an unexpired manual-dispatch grant with runs remaining exists (§3.2.1) | Code presence; scheduled dispatch being off |
 | 4b | **Scheduled / queue dispatch** | A caller exists *and* the scheduled-dispatch ceiling permits *and* the authority gate is `LIVE` | A manual grant. **4a never implies 4b** — a bounded manual grant authorizes exactly the runs it names and nothing recurring |
 | 5 | **Execution enablement** | Registry `executionEnabled` **and** the runtime authority gate (§3.2) both permit | Reachability |
@@ -456,9 +456,10 @@ selector: `npm run migrate` applies whatever is pending.
   no post-apply validation. That is why §6 places the 007 rollout (M1) **before** the inert-code
   deployment (M2) **and before P1 merges at all**, and why M2 — which carries migration 008 from P1 —
   is itself migration-bearing.
-- **The runner cannot be told to apply one file.** Selecting a single migration is expressed by
-  controlling what is pending, not by an argument — see §4.4, which also covers the case where 008
-  has already merged.
+- **The runner cannot be told to apply one file, and cannot be run on its own.** It is reached only
+  through the api `preDeployCommand`, so **applying a migration is an API deployment**; selecting a
+  migration is expressed by controlling what the deployed artifact contains, never by an argument.
+  See §4.4, including the requirements that follow from it being a deployment.
 - The same reasoning applies to 008 and to every future migration; nothing here is specific to 007.
 
 ### 4.1 Prerequisite — a fresh, read-only, aggregate-only operator audit
@@ -497,9 +498,9 @@ with no committed decision record is unauthorized by definition.**
 | **G2 Decision** | §4.2 record committed and authorized | Missing, unsigned, or stale |
 | **G3 Rollout path** | The separately authorized migration-bearing rollout, **not** the ordinary controller path | **VERIFIED** the controller already stops before any service action when the release range touches `state/migrations/**` |
 | **G3a Pending-set verification** | The exact pending set is computed and recorded **immediately before** the runner is invoked, and equals the authorized set **exactly** — see §4.4. Required before **every** use of the general migration runner, including the one the api `preDeployCommand` triggers | The computed set differs from the authorized set by **even one file** → stop; do not run the runner, do not trigger the deploy |
-| **G3b Controlled source commit** | The runner is invoked from a checkout at a **named exact commit** whose `state/migrations/` contains exactly the authorized set — this is what makes a selective apply possible at all (§4.4) | The commit's migrations directory contains a file outside the authorized set |
+| **G3b Controlled artifact** | The **deployed artifact** is a named exact reviewed commit meeting every requirement A1–A5 of §4.4 — its `state/migrations/` contains exactly the authorized set, its application code is approved to deploy and serve, and it is not an ancestor of what is live. Applying a migration **is an API deployment** (§4.4); selection comes only from what the artifact contains, never from the runner | Any of A1–A5 fails; or the artifact's migrations directory contains a file outside the authorized set |
 | **G4 Single runner** | Exactly one migration authority; no schema-dependent consumer racing it | More than one runner, or a consumer started early |
-| **G5 Transactional apply** | Applied by `npm run migrate`, which wraps each file in `BEGIN…COMMIT` | Applied by hand via `psql -f` — **VERIFIED** that this silently disables the `SET LOCAL` timeout guards. Hand-application is therefore **not** an escape hatch for selecting a single file; G3b is |
+| **G5 Transactional apply, by the only sanctioned authority** | Applied by `npm run migrate` **through the api `preDeployCommand`**, which wraps each file in `BEGIN…COMMIT`. **VERIFIED** ([`ROLLOUT_PHASE_0B0.md`](ROLLOUT_PHASE_0B0.md) §5) that this is the repository's standing rule and the one under which 006 was applied | Applied by hand via `npm run migrate` or `psql -f` — both are prohibited by that rule, and `psql -f` additionally disables the `SET LOCAL` timeout guards silently. Neither is an escape hatch for applying one file: **G3b is**, by controlling what the artifact contains |
 | **G6 Collision** | 007's helper uses plain `CREATE`, so an exact-name collision aborts without overwriting | Collision detected → abort, do not force |
 | **G7 Post-apply validation** | `_migrations` holds `007` exactly once; **`_migrations` contains no file that was not in the authorized set**; every constraint present; a boundary record inserts and an over-bound one is rejected | Any check fails → rollback per `state/rollback/007_evidence_bounds_rollback.sql`. An unauthorized file having been applied is an incident, not a variance |
 | **G8 Reapply** | Only after the cause is fixed and the audit re-run | Reapplying over unexplained failure |
@@ -507,47 +508,104 @@ with no committed decision record is unauthorized by definition.**
 **PROPOSED** — 007 must **not** be applied in the same change as deployment, enablement, or
 publication (§6).
 
-### 4.4 The safe selective path — controlling the pending set, since the runner has no selector
+### 4.4 Applying 007 is an API deployment — there is no selective runner and no standalone run
 
 **VERIFIED** — `npm run migrate` applies *every* pending file. There is no flag, argument, or
-environment variable that selects one. So "apply only 007" cannot be expressed to the runner.
+environment variable that selects one. "Apply only 007" cannot be expressed to the runner.
 
-**The earlier draft's M1 assumed it could be**, and that assumption fails the moment migration 008
-(added by P1) is merged: the pending set becomes `{007, 008}`, and a single `npm run migrate` would
-apply both — one of them with no audit, no decision record, and no post-apply validation.
+**VERIFIED** — `render.yaml` gives `preDeployCommand: npm run migrate` to `gcd-social-api` and to no
+other service.
 
-**PROPOSED — two mechanisms, applied together, and neither is optional:**
+**VERIFIED** — [`docs/ROLLOUT_PHASE_0B0.md`](ROLLOUT_PHASE_0B0.md) §5 states the operating rule this
+repository already follows: *"Let the API pre-deploy command be the only migration authority… **Do not
+run `npm run migrate` by hand, and do not apply the SQL through `psql`**."* That rule is what makes
+gate G4's "exactly one migration runner" true, and it is the rule migration 006 was actually applied
+under.
 
-**1. Control *what is pending*, by running from a controlled commit (G3b).** The runner reads
-`state/migrations/` from the working tree it runs in. Invoking it from a checkout at an exact,
-immutable commit whose migrations directory contains only files `001`–`007` makes `{007}` the largest
-possible pending set, **whatever has since merged to `main`**. Such a commit always exists and is
-immutable — this design's own base, `e6f9b0275fc25f0c508708f5e421a474daeebbae`, is one — so this path
-stays available even if P1 merges first. This is the safe selective path, and it is the reason M1 does
-not depend on repository ordering.
+**Therefore, stated plainly and without euphemism:**
 
-**2. Order the rollout so the question rarely arises (§6).** **P1 must not merge until M1 is complete
-and verified.** Keeping 008 out of the repository until 007 is applied means the ordinary pending set
-is `{007}` at M1 and `{008}` at M2, and mechanism 1 is the belt to that braces rather than a routine
-recovery.
+> **Applying a migration to production is an API deployment.** The runner is reached only through the
+> api's `preDeployCommand`, so the commit whose migrations are applied is also the commit whose
+> **application image is deployed to `gcd-social-api`**. There is no sanctioned way to run the
+> migration alone.
 
-**PROPOSED — the pending-set verification itself (G3a)**, performed immediately before every runner
-invocation, against the commit about to be used:
+**Selection is therefore achieved only by controlling the deployed artifact's migration set.** It is
+**not** a selective runner, and this design must not be read as describing one: nothing selects a
+migration; the artifact simply does not contain any migration beyond the authorized set.
+
+#### The invariant that keeps this simple
+
+**PROPOSED, and the only path this design sanctions:**
+
+> **P1 — and therefore migration 008 — must not merge until M1 is complete and verified** (§6, P1
+> entry gate; M1 prohibitions).
+
+With that invariant held, the M1 artifact is the **reviewed head of `main` at M1 time**: it contains
+`001`–`007` and no later migration, its application code is the current reviewed code, and deploying
+it is an **ordinary forward deployment, not a version rollback**. The pending set is `{007}` at M1 and
+`{008}` at M2 by construction. No older artifact is needed, and this design does not propose one.
+
+**If 008 has already merged, the invariant was violated and M1 does not proceed under this
+procedure.** Deploying an older artifact to force the pending set would be an application-version
+rollback dressed up as a migration, and this design does not sanction it. The correct response is to
+stop, re-plan, and obtain a fresh authorization and decision record covering **every** file in the
+actual pending set — because at that point both files really are pending and pretending otherwise is
+the failure this section exists to prevent.
+
+#### Requirements on the M1 artifact — all five, each a stop point
+
+| # | Requirement | Stop condition |
+|---|---|---|
+| **A1** | An **exact reviewed commit**, named by full SHA in the §4.2 decision record, with exact-head CI green | Any ambiguity about which commit; a branch name or tag instead of a SHA |
+| **A2** | Its `state/migrations/` contains **`001`–`007` and no later migration** — enumerated and recorded, not assumed | Any file beyond `007` present |
+| **A3** | Its **application code is approved as safe to deploy and safe to serve**, both before the migration and after it — reviewed as a deployment on its own terms, not waved through because the point of the exercise is the schema | Application code not separately approved for deployment |
+| **A4** | A **production pending-set check returning exactly `{007_evidence_bounds.sql}`** (G3a), computed against the target database immediately before the deploy is triggered | The set differs by even one file |
+| **A5** | The artifact is **not an ancestor of the currently deployed commit** — established by read-only verification of the running service, never assumed | The artifact is older than what is live ⇒ this is a version rollback ⇒ stop; it needs its own authorization and its own review |
+
+#### Because it is a deployment, these must also be satisfied
+
+**REQUIRES OPERATOR ACTION**, recorded:
+
+- **Exact deployed identity before.** Read the currently deployed commit from each running service,
+  read-only, and record it. **UNKNOWN until read** — see below.
+- **Exact deployed identity after.** Read it again and confirm `gcd-social-api` reports the artifact
+  commit, and that the worker and scheduler are **unchanged** — M1 deploys the api alone, which is
+  what makes it a single migration runner (G4).
+- **Health verification.** The api's `healthCheckPath: /healthz` must pass after the deploy, and the
+  durable health/readiness checks the repository already exercises must be observed green before the
+  milestone is called complete.
+- **Safe to serve after the migration.** 007 tightens database constraints that the TypeScript
+  contract in the same artifact already enforces more strictly, so the artifact is expected to serve
+  correctly under the tightened schema — but that expectation is **verified after the apply**, by the
+  health check and by G7's boundary-record probe, not assumed from the derivation.
+- **Rollback.** Redeploy the exact commit recorded as previously deployed. Note the two rollbacks are
+  independent: redeploying the prior application image does **not** unapply 007, and
+  `state/rollback/007_evidence_bounds_rollback.sql` relaxes the database only. If both are needed they
+  are two separately authorized operations, in that order.
+
+#### The pending-set verification itself (G3a)
+
+Performed immediately before the deployment is triggered, against the exact artifact commit:
 
 ```
-applied  := SELECT name FROM _migrations ORDER BY name;          -- read-only, from the target database
+applied  := SELECT name FROM _migrations ORDER BY name;      -- read-only, from the target database
 present  := the *.sql files in state/migrations/ at that exact commit
 pending  := present − applied
 ```
 
-The operator records `applied`, `present`, `pending`, and the exact commit SHA, then compares
-`pending` to the set named in the §4.2 decision record. **They must be equal as sets.** A pending set
-that is larger, smaller, or differently composed stops the milestone — no partial run, no "apply it
-and check after".
+The operator records `applied`, `present`, `pending`, and the artifact SHA, then compares `pending` to
+the set named in the §4.2 decision record. **They must be equal as sets.** Larger, smaller, or
+differently composed all stop the milestone — no partial run, no "apply it and check after". **There
+is no opportunity to intervene once the deploy starts**, which is why this check precedes the trigger
+rather than the apply.
 
-**This applies to the deployment-triggered runner too.** Because the api's `preDeployCommand` invokes
-the runner automatically against the deployed commit, G3a must be satisfied **before the deployment is
-triggered**, using that exact commit. There is no opportunity to intervene once the deploy starts.
+#### What is not known
+
+**UNKNOWN** — the commit each service currently runs, and the current contents of `_migrations`.
+Neither was inspected by this design, and neither may be inferred from `render.yaml`, from any dated
+record in this repository, or from the fact that a commit is merged to `main`. **Repository state is
+not evidence of live deployment identity or live migration state.** Both must be established by
+read-only verification at the time of the milestone, and A5 and A4 both depend on that reading.
 
 ---
 
@@ -599,12 +657,13 @@ this design exists to prevent. Manual dispatch is raised at M3 and scheduled dis
 permits a run. Every value defaults to *off when absent*, so a service that never received the
 variable is safe rather than enabled.
 
-**Deployment ordering:** database first and separately — 007 under M1 from a controlled source commit
-(§4.4), **before P1 merges**, then 008 as part of the migration-bearing release described in M2, with
-the pending set verified against the exact commit before the deploy is triggered (§4.0, because the
-api `preDeployCommand` applies whatever is pending) → api → worker → scheduler, matching the merged
-controller's existing serialized order. **Manual dispatch is permitted at M3 and scheduled dispatch
-only at M7**, each under its own authorization, and neither is implied by any deployment.
+**Deployment ordering:** every migration reaches production through an api deployment (§4.4), so
+"database first" means **an api-only deployment first**. 007 under M1, at an artifact meeting A1–A5
+and **before P1 merges**, deploying the api alone so it is the single migration runner; then 008 as
+part of the migration-bearing release in M2, again with the pending set verified against the exact
+commit **before the deploy is triggered** → api → worker → scheduler, matching the merged controller's
+existing serialized order. **Manual dispatch is permitted at M3 and scheduled dispatch only at M7**,
+each under its own authorization, and neither is implied by any deployment.
 
 **UNKNOWN** — whether the deployment automation gate is currently on, whether native auto-deploy is
 off, and what the services currently run. Each must be re-verified read-only immediately before any
@@ -630,7 +689,7 @@ post-apply validation, rather than being described as a plain deploy.
 
 | Step | Kind | What changes | Dispatch after it | Authority after it |
 |---|---|---|---|---|
-| **M1** | operator | Migration 007 applied and validated | none | `OFF` |
+| **M1** | operator | **API deployed at the artifact commit**; migration 007 applied and validated by its `preDeployCommand` | none | `OFF` |
 | **P1** | PR | Control plane + migration 008 + grant schema. *Must not merge before M1* | none | `OFF` |
 | **P2** | PR | Checkpoints **C2, C3** at the execution boundary | none | `OFF` |
 | **P3** | PR | Dispatch skeleton + checkpoint **C1** + grant consumption | none | `OFF` |
@@ -638,7 +697,7 @@ post-apply validation, rather than being described as a plain deploy.
 | **P5** | PR | Checkpoint **C4** — approval transition (api) | none | `OFF` |
 | **P6** | PR | Checkpoint **C5** — publication (worker) | none | `OFF` |
 | **P7** | PR | Observability, audit records, metrics | none | `OFF` |
-| **M2** | operator | Deploy P1–P7 inert; apply and validate 008 | none | `OFF` |
+| **M2** | operator | API, worker and scheduler deployed at P1–P7, inert; migration 008 applied and validated by the api `preDeployCommand` | none | `OFF` |
 | **P8** | PR | **Activation:** registry `executionEnabled` → `true` | none | `OFF` |
 | **M3** | operator | Deploy P8; raise authority to `SHADOW`; issue a bounded manual grant | **manual only, bounded** | `SHADOW` |
 | **M4** | operator | Execute the granted shadow runs | manual, grant draining | `SHADOW` |
@@ -655,9 +714,12 @@ layers 6 and 7 independently.**
 #### P1 — Durable schema: runs, stage results, the authority control plane, and dispatch grants
 
 **Entry gate — P1 must not merge until M1 is complete and verified.** P1 introduces migration 008. If
-it merges first, the pending set at M1 becomes `{007, 008}` and a single runner invocation would apply
-both, one of them unaudited (§4.0, §4.4). Ordering M1 first is the primary defense; §4.4's controlled
-source commit is the fallback if this ordering is ever broken.
+it merges first, the pending set at M1 becomes `{007, 008}` and the deployment that applies 007 would
+apply 008 with it, unaudited (§4.0, §4.4). **This ordering is the whole mechanism, not a preference:**
+because the runner is reachable only through the api `preDeployCommand`, keeping 008 out of the
+repository is what lets M1 be an ordinary forward deployment of current reviewed code. §4.4 states
+what happens if the invariant is broken — M1 stops and is re-planned; it is not worked around by
+deploying an older artifact.
 
 **This PR is first among the PRs because P2 cannot enforce a gate that has nowhere to live.** The
 boundary checks in P2 read the authority value; the table, the grant, and their contract must exist
@@ -772,31 +834,50 @@ was the one change with no PR number, no stated entry gate, and no review record
 
 ### Operator milestones
 
-#### M1 — Migration 007 rollout *(REQUIRES OPERATOR ACTION)*
+#### M1 — Migration 007 rollout, which is an API deployment *(REQUIRES OPERATOR ACTION)*
 
-**This is first because of §4.0 and §4.4:** the migration runner sweeps every pending file, so an api
-deployment carrying 007 would apply it as an unaudited side effect, and once 008 merges a plain
-`npm run migrate` would apply both. 007 is therefore applied deliberately, under its own gates, before
-any deployment of new code and before P1 merges.
+**This is first because of §4.0 and §4.4.** The runner sweeps every pending file and is reachable only
+through the api `preDeployCommand`, so applying 007 **is a deployment of `gcd-social-api` at the
+artifact commit** — not a standalone database operation. Doing it first, while `main` still carries no
+migration beyond `007`, is what keeps that deployment an ordinary forward deployment of current
+reviewed code rather than anything more complicated.
 
 - **Entry:** §4 gates G1–G2 satisfied; decision record committed, naming the authorized set as exactly
-  `{007_evidence_bounds.sql}`. **No dependency on P1–P8** — this milestone concerns only the migration
-  already in source.
+  `{007_evidence_bounds.sql}` **and naming the artifact commit by full SHA**. **P1 has not merged** —
+  that is this milestone's protecting invariant, not a convenience.
+- **The artifact** is the reviewed head of `main` at this time and must satisfy **A1–A5** of §4.4:
+  an exact reviewed commit with exact-head CI green; `001`–`007` and no later migration, enumerated;
+  application code separately approved as safe to deploy **and safe to serve**; a production
+  pending-set check of exactly `{007_evidence_bounds.sql}`; and **not an ancestor of the currently
+  deployed commit**. **Any mismatch stops the milestone.**
 - **Action:**
-  1. **G3b** — check out the named exact commit whose `state/migrations/` contains exactly `001`–`007`
-     (this design's base, `e6f9b0275fc25f0c508708f5e421a474daeebbae`, is such a commit and is
-     immutable). Record the SHA.
-  2. **G3a** — compute and record `applied`, `present`, and `pending` per §4.4 against the target
-     database. **Stop unless `pending` is exactly `{007_evidence_bounds.sql}`.**
-  3. Apply with `npm run migrate` from that checkout (G4, G5), under the separately authorized
-     migration-bearing rollout — **no code change, no service deployment.**
-- **Exit:** G6 and G7 pass; `_migrations` holds `007` exactly once and holds no file outside the
-  authorized set.
-- **Rollback, defined before proceeding:** `state/rollback/007_evidence_bounds_rollback.sql`, applied
-  by hand under its own authorization. It relaxes the database only; the TypeScript contract still
-  refuses an oversized record.
-- **Prohibited:** combining with any code change, deployment of new behavior, or enablement; merging
-  P1 before this milestone is verified.
+  1. **Record exact deployed identity before** — read the commit each of the three services is running
+     from the running system, read-only. It is **UNKNOWN until read** and may not be inferred from
+     `main`, from `render.yaml`, or from any dated record here.
+  2. **A5** — confirm the artifact is not an ancestor of what `gcd-social-api` currently runs. If it
+     is, this would be an application-version rollback: **stop**, and obtain its own authorization and
+     review before going further.
+  3. **G3a** — compute and record `applied`, `present`, `pending` and the artifact SHA per §4.4,
+     against the target database, **before triggering the deploy**. **Stop unless `pending` is exactly
+     `{007_evidence_bounds.sql}`.** There is no intervention point once the deploy starts.
+  4. **Deploy `gcd-social-api` at the artifact commit, and nothing else** — not the worker, not the
+     scheduler. Its `preDeployCommand` is the single migration authority (G4, G5), which is exactly
+     why only the api is deployed.
+- **Exit, all required:**
+  1. G6 and G7 pass; `_migrations` holds `007` exactly once and **no file outside the authorized set**;
+  2. **exact deployed identity after** — `gcd-social-api` reports the artifact commit; the worker and
+     scheduler report **unchanged** commits;
+  3. **health verification** — `/healthz` passes and the durable health/readiness checks are observed
+     green;
+  4. **safe to serve under the tightened schema** — confirmed by the health check and by G7's
+     boundary-record probe, not assumed from the derivation.
+- **Rollback, defined before proceeding — two independent operations, in this order:** redeploy the
+  exact commit recorded in step 1 as previously deployed (this does **not** unapply 007); then, only if
+  separately authorized, apply `state/rollback/007_evidence_bounds_rollback.sql`, which relaxes the
+  database only — the TypeScript contract still refuses an oversized record.
+- **Prohibited:** combining with any code change beyond the artifact itself, any new behavior, or any
+  enablement; deploying the worker or scheduler; running `npm run migrate` or `psql -f` by hand;
+  **merging P1 before this milestone is verified.**
 
 #### M2 — Deploy the inert implementation, and verify it *(REQUIRES OPERATOR ACTION)*
 
@@ -814,11 +895,14 @@ merged but, until this milestone, not running anywhere.
   2. one runner, transactional apply, post-apply validation.
   008 needs no data audit — it creates new tables and validates nothing against existing rows — but it
   still needs its own authorization and its own post-apply check.
-- **Action:** deploy **only** the reviewed inert code, in the order api → worker → scheduler.
+- **Action:** **record the exact deployed commit of each service first, read-only** — it is UNKNOWN
+  until read and may not be inferred from `main` or from M1's record — then deploy **only** the
+  reviewed inert code, in the order api → worker → scheduler.
 - **Leaves unauthorized:** both dispatch ceilings, live execution, approval, publication. Nothing is
   enabled and no grant exists.
 - **Verify, and record:**
-  1. the exact deployed commit on each of the three services;
+  1. the exact deployed commit on each of the three services, compared against the reading taken
+     before the deploy, and `/healthz` plus the durable health/readiness checks observed green;
   2. that the new entry point is **unreachable through normal production traffic** — no route, no
      schedule, and no queue path invokes it;
   3. that **every effective runtime gate reads `OFF` or disabled** — the seeded authority row, both
