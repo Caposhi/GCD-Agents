@@ -258,7 +258,7 @@ each proven separately. **No single flag or deployment may satisfy more than one
 |---|---|---|---|
 | 1 | **Code presence** | Merge to `main` | Anything else |
 | 2 | **Deployment** | A release carrying that commit observed live on the owning service | Merge |
-| 3 | **Database readiness** | Migration 007 applied **and post-apply-validated** (§4) | A deployment having run. An api deploy *does* apply pending migrations (§4.0) — indeed applying 007 **is** an api deployment (§4.4) — so what distinguishes readiness is not that a deploy happened but that the deploy was the authorized artifact, its pending set was verified beforehand, and G7 validated the result afterwards. An apply that happened as an unexamined side effect satisfies this layer no more than not applying it at all |
+| 3 | **Database readiness** | Migration 007 applied **and post-apply-validated** (§4) | A deployment having run. An api deploy *does* apply pending migrations (§4.0) — indeed applying 007 **is** an api deployment (§4.4) — so what distinguishes readiness is not that a deploy happened but that the deploy was the authorized artifact, **its complete migration state — `F(A)`, `D` and `P`, all seven comparisons of §4.4.2 — was verified beforehand**, and G7 plus the recorded post-deployment comparison and decision validated the result afterwards. An apply that happened as an unexamined side effect satisfies this layer no more than not applying it at all |
 | 4a | **Bounded manual dispatch** | A caller exists *and* an unexpired manual-dispatch grant with runs remaining exists (§3.2.1) | Code presence; scheduled dispatch being off |
 | 4b | **Scheduled / queue dispatch** | A caller exists *and* the scheduled-dispatch ceiling permits *and* the authority gate is `LIVE` | A manual grant. **4a never implies 4b** — a bounded manual grant authorizes exactly the runs it names and nothing recurring |
 | 5 | **Execution enablement** | Registry `executionEnabled` **and** the runtime authority gate (§3.2) both permit | Reachability |
@@ -687,9 +687,10 @@ rather than inherited.
 **This predicate proves only that the version movement is acceptable. It proves nothing about the
 artifact's safety.** A1–A4 below still apply in full and independently: `A` must be fully reviewed
 with exact-head CI green, contain migrations `001`–`007` and no later migration, carry application
-code separately approved as safe to deploy **and** safe to serve, and pass the production pending-set
-check — and the health, identity, boundary and rollback checks in M1 remain required regardless of how
-the predicate resolves.
+code separately approved as safe to deploy **and** safe to serve, and pass the **complete production
+migration-state check of §4.4.2** — not a pending-set check alone, since an unexpected already-applied
+migration is invisible to `P` — and the health, identity, boundary and rollback checks in M1 remain
+required regardless of how the predicate resolves.
 
 #### Requirements on the M1 artifact — all five, each a stop point
 
@@ -826,10 +827,17 @@ and retained with the milestone's evidence:
 | `E_files`, `E_applied_pre`, `E_pending`, `E_applied_post` | the four expected sets for this deployment, from the table above |
 | `comparisons` | the outcome of each of the seven checks, individually |
 | `decision` | **pass** or **stop**, with the reason |
-| *(post-deployment)* `D_post` | the `_migrations` rows read afterwards, which must equal `E_applied_post` |
+| *(post-deployment)* `D_post` | the `_migrations` rows read afterwards, enumerated |
+| *(post-deployment)* `post_comparison` | the **recorded outcome** of `D_post == E_applied_post` — **match** or **mismatch**, with the differing identifiers named. Recording `D_post` without recording this comparison leaves the deployment unvalidated |
+| *(post-deployment)* `post_decision` | the **validation-versus-rollback decision**: **validated — milestone complete**, or **rollback initiated**, naming which rollback path (application, database, or both, per that milestone's ladder) and the reason. A mismatch **requires** the rollback branch; it is never recorded as a variance and left standing |
 
-A deployment performed without this record is unauthorized by definition, on the same terms as an
-apply without a decision record (§4.2).
+**All three post-deployment fields are mandatory.** `D_post` on its own is an observation, not a decision:
+without `post_comparison` nothing records whether the applied state actually matched what was
+expected, and without `post_decision` nothing records what the operator did about it. A milestone
+whose record ends at `D_post` is **not** complete.
+
+A deployment performed without this record — **including all three post-deployment fields** — is
+unauthorized by definition, on the same terms as an apply without a decision record (§4.2).
 
 #### What is not known
 
@@ -931,8 +939,10 @@ require a deployment: they change different controls.
 **No step combines enablement or publication with anything else.** Migration application and
 deployment cannot be fully separated — §4.0 establishes that the api `preDeployCommand` applies
 whatever migration is pending — so where a release is unavoidably migration-bearing (M2), it is
-declared as such, takes the migration-bearing rollout with pending-set verification (§4.4), and gets
-post-apply validation, rather than being described as a plain deploy.
+declared as such, takes the migration-bearing rollout with the **complete migration-state
+verification of §4.4.2** — all seven comparisons, not the pending set alone — and gets post-apply
+validation with its comparison outcome and validation-versus-rollback decision recorded, rather than
+being described as a plain deploy.
 
 ### The sequence at a glance
 
@@ -1176,9 +1186,14 @@ and never before `L` is in hand.
   4. **Record the §4.4.2 operator record in full** — `artifact_sha`, `live_api_sha`,
      `ancestry_decision`, `F(A)`, `D`, `P`, **all four expected sets** (`E_files`, `E_applied_pre`,
      `E_pending`, `E_applied_post`), the outcome of **each of the seven comparisons individually**,
-     the pass/stop decision, and — after the deployment — **`D_post`**, which must equal
-     `E_applied_post`. A deployment performed without every one of those fields is unauthorized by
-     definition (§4.4.2).
+     and the pass/stop decision. Then, **after the deployment**, all three of: **`D_post`**
+     enumerated; **`post_comparison`** — the recorded outcome of `D_post == E_applied_post`, match or
+     mismatch with the differing identifiers named; and **`post_decision`** — **validated, milestone
+     complete**, or **rollback initiated**, naming the path taken from this milestone's rollback
+     ladder and the reason. **A mismatch requires the rollback branch**, never a noted variance.
+     Recording `D_post` alone does not satisfy this step: without the comparison outcome and the
+     decision, nothing records whether the applied state matched or what was done about it. A
+     deployment performed without every one of those fields is unauthorized by definition (§4.4.2).
   5. **Deploy `gcd-social-api` at the artifact commit, and nothing else** — not the worker, not the
      scheduler. Its `preDeployCommand` is the single migration authority (G4, G5), which is exactly
      why only the api is deployed.
