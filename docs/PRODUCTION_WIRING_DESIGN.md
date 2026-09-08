@@ -721,50 +721,92 @@ the predicate resolves.
   `state/rollback/007_evidence_bounds_rollback.sql` relaxes the database only. If both are needed they
   are two separately authorized operations, in that order.
 
-#### The pending-set verification itself (G3a)
+#### The migration-state verification itself (G3a)
 
-Performed immediately before the deployment is triggered, against the exact artifact commit:
+**VERIFIED — what the migration table actually records.** `src/state/migrate.ts` creates
+`_migrations (name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())` and inserts the
+**filename** of each applied file. So the identifier is the file name, `name` is a **PRIMARY KEY** —
+which makes a duplicate identifier structurally impossible rather than merely checked — and **there is
+no checksum, hash, or content column.**
+
+> **Stated limitation:** only migration **identifiers** can be verified against production. This design
+> **cannot** establish that the *content* of an applied migration matches the file of the same name in
+> the artifact, because the table stores nothing that would support that comparison. Every claim below
+> is an identity claim, and none of it is a content-integrity guarantee.
+
+Performed immediately before the deployment or restart is triggered, against the exact artifact:
 
 ```
-applied  := SELECT name FROM _migrations ORDER BY name;      -- read-only, from the target database
-present  := the *.sql files in state/migrations/ at that exact commit
-pending  := present − applied
+F(A)  := the *.sql file names in state/migrations/ at artifact commit A
+D     := SELECT name FROM _migrations ORDER BY name   -- read-only, from the target database
+P     := F(A) − D                                     -- the computed pending set
 ```
-
-The operator records `applied`, `present`, `pending`, and the artifact SHA, then compares `pending` to
-the **expected set for that specific deployment**, given in §4.4.2. **They must be equal as sets.**
-Larger, smaller, or differently composed all stop the deployment — no partial run, no "apply it and
-check after". **There is no opportunity to intervene once the deploy starts**, which is why this check
-precedes the trigger rather than the apply.
 
 #### 4.4.2 The deployment preflight — required before *every* api deployment in this rollout
 
-**PROPOSED.** G3a says the pending-set check is required before **every** use of the general migration
-runner, including the `preDeployCommand`-triggered one. Because §4.4 establishes that *every* api
-deployment reaches that runner, the rule binds every api deployment in this rollout — not only the two
-that intend to apply something.
+**PROPOSED.** G3a says the migration-state check is required before **every** use of the general
+migration runner, including the `preDeployCommand`-triggered one. Because §4.4 establishes that *every*
+api deployment reaches that runner, the rule binds every api deployment in this rollout — not only the
+two that intend to apply something.
 
 **Do not assume a configuration-only change avoids the runner.** §3.2 records that on Render,
-**changing a service environment variable triggers a restart or redeploy of that service**; for the
-api that runs `preDeployCommand` and therefore the sweeping runner. An environment-only act is still
-an api deployment for the purposes of this section.
+**changing a service environment variable triggers a restart or redeploy of that service**; where the
+**api** is among the services carrying that variable, that runs `preDeployCommand` and therefore the
+sweeping runner. Whether the api is a target is decided by the ownership table in §5.2/§5.3 and stated
+per act — **a worker-or-scheduler-only change is not an api deployment and does not invoke the api
+migration runner** (§6, M7).
 
-**The expected pending set, per step:**
+**Comparing the pending set alone is not sufficient.** An unexpected migration that is **already
+applied** appears in both `F(A)` and `D`, so it cancels out of `P` and leaves the pending set looking
+exactly as expected. The pending difference cannot see it. **The complete applied set must therefore be
+validated in its own right**, against an expected inventory, before every deployment.
 
-| Api deployment | Expected pending set | Rationale |
-|---|---|---|
-| **M1** | exactly **`{007_evidence_bounds.sql}`** | 007 is what M1 exists to apply, and P1 has not merged |
-| **M2** | exactly **`{008_…sql}`** | 007 was applied at M1; 008 arrives with P1 |
-| **M3** | **empty** | both authorized migrations are already applied |
-| **M4.1** (authority-ceiling config deployment / restart) | **empty** | same |
-| **M4.3** (bounded-manual-ceiling config deployment / restart) | **empty** | same |
-| **Any other api deployment or restart in this rollout** | **empty** | same |
-| **M7's ceiling and scheduled-dispatch config acts** | **empty** | same |
+**Four expected sets are named per milestone, and all three observed/computed sets are compared:**
 
-**Any unexpected non-empty pending set stops the deployment.** It is not a variance to note and
-proceed past. Before that deployment may be retried it requires, separately and in order: its own
-migration audit, its own committed decision record, its own explicit authorization, its own post-apply
-validation, and its own rollback plan — the full §4 treatment, for whatever file appeared.
+| Symbol | Meaning |
+|---|---|
+| `E_files` | the migration identifiers expected to be **present in the artifact** |
+| `E_applied_pre` | the identifiers expected to be **already applied** before this deployment |
+| `E_pending` | the identifiers expected to be **pending** for this deployment |
+| `E_applied_post` | the identifiers expected to be **applied afterwards** |
+
+**Before every api deployment or restart, all of the following must hold. Any one failing stops the
+deployment:**
+
+1. `F(A) == E_files` — **exactly** the expected files are in the artifact; **no extra migration file
+   exists in the artifact**, and none expected is missing.
+2. `D == E_applied_pre` — the production applied set is **exactly** the expected inventory.
+3. `P == E_pending` — the computed pending set matches exactly.
+4. **Every identifier in `D` corresponds to a migration present in `F(A)`** — nothing applied in
+   production is absent from the artifact.
+5. **No expected applied migration is absent** from `D`.
+6. **No unexpected or unauthorized applied migration exists** in `D` — this is the check the pending
+   difference cannot make.
+7. **No duplicate identifier exists.** `name` is a PRIMARY KEY, so the database enforces this
+   structurally; the operator records the row count alongside the distinct-identifier count so the
+   invariant is observed rather than assumed.
+
+**The exact contract, per deployment:**
+
+| Deployment | `E_files` | `E_applied_pre` | `E_pending` | `E_applied_post` |
+|---|---|---|---|---|
+| **M1** | `001`–`007`, and **no later migration** | **exactly** the authorized baseline `001`–`006` | exactly **`{007_evidence_bounds.sql}`** | **exactly** `001`–`007` |
+| **M2** | **exactly** through `008` | **exactly** through `007` | exactly **`{008_…sql}`** | **exactly** through `008` |
+| **M3** | the exact authorized inventory for that milestone | the same inventory | **empty** | unchanged, equal to `E_applied_pre` |
+| **M4.1** (authority ceiling — api is a target) | as above | as above | **empty** | unchanged |
+| **M4.3** (bounded-manual ceiling — api is a target) | as above | as above | **empty** | unchanged |
+| **M7's authority-ceiling act** (api is a target) | as above | as above | **empty** | unchanged |
+| **Any other api deployment or restart in this rollout** | as above | as above | **empty** | unchanged |
+
+*(M7's scheduled-dispatch act targets only the worker and scheduler and is therefore **not** an api
+deployment — see §6, M7. It takes no migration gate, because it reaches no migration runner.)*
+
+**Any mismatch stops the deployment before it is triggered — including an unexpected migration that is
+already applied.** It is not a variance to note and proceed past, and it is explicitly **not** something
+to discover after the deployment. Before that deployment may be retried it requires, separately and in
+order: its own investigation and authorization record, its own migration audit, its own committed
+decision record, its own post-apply validation, and its own rollback plan — the full §4 treatment, for
+whatever identifier appeared or is missing.
 
 **No deployment may silently apply a newly added migration merely because the general runner discovers
 it.** Discovery by the runner is exactly the failure mode this gate exists to prevent.
@@ -777,11 +819,13 @@ and retained with the milestone's evidence:
 | `artifact_sha` | `A` — the exact commit about to be deployed |
 | `live_api_sha` | `L` — the exact commit the live api is serving, read immediately beforehand |
 | `ancestry_decision` | the §4.4.1 outcome: `A == L`, `L ancestor of A`, or the stop reason |
-| `migrations_present` | the `*.sql` files in `state/migrations/` at `A`, enumerated |
-| `migrations_applied` | the rows in `_migrations`, enumerated, read-only |
-| `pending_computed` | `present − applied` |
-| `pending_expected` | the value from the table above |
+| `F(A)` | the `*.sql` identifiers present at `A`, enumerated |
+| `D` | the `_migrations` rows, enumerated, read-only, with row count and distinct-identifier count |
+| `P` | `F(A) − D`, enumerated |
+| `E_files`, `E_applied_pre`, `E_pending`, `E_applied_post` | the four expected sets for this deployment, from the table above |
+| `comparisons` | the outcome of each of the seven checks, individually |
 | `decision` | **pass** or **stop**, with the reason |
+| *(post-deployment)* `D_post` | the `_migrations` rows read afterwards, which must equal `E_applied_post` |
 
 A deployment performed without this record is unauthorized by definition, on the same terms as an
 apply without a decision record (§4.2).
@@ -844,6 +888,14 @@ until **M7**, as separate single-control acts.
 (§3.2) is what an operator turns off in an emergency, and the bounded grant (§3.2.1) is what actually
 permits a run. Every value defaults to *off when absent*, so a service that never received the
 variable is safe rather than enabled.
+
+**The Owner column decides which services restart — and therefore whether the api migration runner is
+reached at all.** Changing a variable restarts only the services that carry it. `CONTENT_INTELLIGENCE_
+MAX_AUTHORITY` and `CONTENT_INTELLIGENCE_MANUAL_DISPATCH_ENABLED` are carried by the **api**, so acts
+that change them **are api deployments** and take the full §4.4.2 preflight.
+`CONTENT_INTELLIGENCE_SCHEDULED_DISPATCH_ENABLED` is carried by the **worker and scheduler only**, so
+changing it restarts neither the api nor its `preDeployCommand`, reaches **no migration runner**, and
+**must not be described as an api deployment or inherit the api migration gate** (§6, M7-b).
 
 **Deployment ordering:** every migration reaches production through an api deployment (§4.4), so
 "database first" means **an api-only deployment first**. 007 under M1, at an artifact meeting A1–A5
@@ -1052,6 +1104,49 @@ and never before `L` is in hand.
 - **Entry:** §4 gates G1–G2 satisfied; decision record committed, naming the authorized set as exactly
   `{007_evidence_bounds.sql}` **and naming the artifact commit by full SHA**. **P1 has not merged** —
   that is this milestone's protecting invariant, not a convenience.
+- **Entry gate — the rollback artifact `R` must be proven compatible with the post-007 schema.**
+  M1's recovery path redeploys the previously live application image **while leaving 007 applied**,
+  which runs **old code against a newer schema**. That is only a recovery action if it is known to
+  work, and it is not known by inspection. Before M1 may be authorized, identify and prove:
+
+  | Item | Requirement |
+  |---|---|
+  | **`R`** | The exact rollback application commit / image — normally the **pre-M1 live api artifact**, i.e. `L`. Named by full SHA |
+  | **Target schema** | The exact post-M1 schema state, **including migration 007's constraints** |
+  | **Surface** | The application **read and write paths in `R`** that may execute against that schema — enumerated, not assumed |
+
+  **Required executed compatibility evidence**, produced against a **disposable** database migrated
+  through **007**, running the **exact `R` artifact** — on **PostgreSQL 16 and 18**, through CI where
+  necessary, matching the coverage the rest of this repository already applies:
+
+  1. **startup and readiness** — `R` boots and reports ready against the post-007 schema;
+  2. **every production-reachable read** of the affected tables;
+  3. **every production-reachable insert/update path** for affected rows;
+  4. **values at and around each new 007 constraint** — at the bound, one inside, one outside;
+  5. **ordinary existing valid rows** continue to read and write;
+  6. **rollback/restart behaviour** — `R` survives a restart against that schema.
+
+  **The gate fails if `R`:** writes rows that 007 rejects; assumes the earlier schema; cannot start or
+  become ready; or **lacks coverage for any affected production write path.**
+
+  **Do not equate "the migration is additive", "the constraint is `NOT VALID`", or "the old image
+  starts" with compatibility.** None of those establishes that `R`'s *writes* are still accepted; a
+  tightened bound rejects new rows the old code was free to insert, while the service appears healthy.
+
+  **If `R`'s post-007 compatibility cannot be established before M1:**
+  - **redeploying `R` is not an authorized recovery action**, and must not be described as one;
+  - **M1 must not begin** until a separately reviewed recovery plan exists;
+  - that plan must choose and validate **either** a **forward-compatible recovery artifact** (proven
+    against the post-007 schema on the same terms), **or** a **separately authorized database-first
+    rollback** using `state/rollback/007_evidence_bounds_rollback.sql`, with its own backup,
+    data-safety analysis, validation, service ordering, and failure handling;
+  - **no database rollback may be improvised after a failure.** It is planned before M1 or it is not
+    available.
+
+  **Application rollback and database rollback are separate authorities and separate operations.**
+  Restoring service identity does **not** restore the prior schema: redeploying `R` returns the code,
+  and only 007's rollback file returns the schema, under its own authorization.
+
 - **The artifact** is the reviewed head of `main` at this time and must satisfy **A1–A5** of §4.4:
   an exact reviewed commit with exact-head CI green; `001`–`007` and no later migration, enumerated;
   application code separately approved as safe to deploy **and safe to serve**; a production
@@ -1096,14 +1191,25 @@ and never before `L` is in hand.
   - the interval must be **explicitly time-bounded**, actively **monitored**, and **owned by the named
     operator** who performed M1;
   - **M2 is the controlled reconciliation step** that returns all three services to one commit;
-  - if M2 is delayed beyond the stated bound or fails, the recovery path is explicit: **redeploy the
-    api to the commit recorded in step 1**, returning the three services to agreement — noting that
-    **this does not unapply 007**, so the database stays ahead of the code until 007's rollback file is
-    separately authorized and applied.
-- **Rollback, defined before proceeding — two independent operations, in this order:** redeploy the
-  exact commit recorded in step 1 as previously deployed (this does **not** unapply 007); then, only if
-  separately authorized, apply `state/rollback/007_evidence_bounds_rollback.sql`, which relaxes the
-  database only — the TypeScript contract still refuses an oversized record.
+  - if M2 is delayed beyond the stated bound or fails, the recovery path is explicit **and is whichever
+    path the entry gate proved**: where `R`'s post-007 compatibility was established, **redeploy the api
+    to the commit recorded in step 1**, returning the three services to agreement — noting that **this
+    does not unapply 007**, so the database stays ahead of the code until 007's rollback file is
+    separately authorized and applied. Where it was **not** established, that redeploy is **not
+    available**, and the separately reviewed recovery plan required by the entry gate is the only
+    path.
+- **Rollback, defined before proceeding — two independent operations under two separate authorities,
+  in this order, and only along the path the entry gate proved:**
+  1. **Application rollback** — redeploy the exact commit recorded in step 1 (`R`). **Permitted only
+     because, and only if, the entry gate established `R`'s compatibility with the post-007 schema.**
+     This does **not** unapply 007; the schema stays ahead of the code.
+  2. **Database rollback** — only if **separately authorized**, apply
+     `state/rollback/007_evidence_bounds_rollback.sql`, which relaxes the database only; the TypeScript
+     contract still refuses an oversized record.
+
+  Neither implies the other, and **restoring service identity does not restore the prior schema.** If
+  the entry gate did not establish `R`'s compatibility, step 1 is unavailable and the recovery plan
+  named in the entry gate replaces this ladder.
 - **Prohibited:** combining with any code change beyond the artifact itself, any new behavior, or any
   enablement; deploying the worker or scheduler; running `npm run migrate` or `psql -f` by hand;
   **merging P1 before this milestone is verified.**
@@ -1350,14 +1456,28 @@ Reversing that order would leave the fastest control unused while waiting on a r
 
 #### M7 — Live scheduled-dispatch authorization *(REQUIRES OPERATOR ACTION)*
 
-- **Action:** raise `CONTENT_INTELLIGENCE_MAX_AUTHORITY` to `LIVE`, transition the durable gate to
-  `LIVE`, and raise `CONTENT_INTELLIGENCE_SCHEDULED_DISPATCH_ENABLED` — **three separate
-  authorizations, each its own single-control act on the M4 pattern, never granted together.** This is
-  the first step at which layer 4b is satisfied.
-- **The two configuration acts each restart the api, so each takes the full §4.4.2 preflight** —
-  three service identities read, `A == L` established rather than assumed, pending set verified
-  **EMPTY**, and the §4.4.2 operator record captured before triggering. The durable-gate transition
-  needs no deployment and therefore no preflight.
+- **Action — three separate single-control acts on the M4 pattern, never granted together:**
+  **M7-a** raise `CONTENT_INTELLIGENCE_MAX_AUTHORITY` to `LIVE`; **M7-b** raise
+  `CONTENT_INTELLIGENCE_SCHEDULED_DISPATCH_ENABLED`; **M7-c** transition the durable gate to `LIVE`.
+  This is the first step at which layer 4b is satisfied.
+- **The two configuration acts do not target the same services, and the earlier claim that "each
+  restarts the api" was wrong.** Ownership decides which services restart, and therefore whether the
+  api migration runner is reached at all. From the §5.3 ownership table:
+
+| Act | Control | Old → new | Services changed | Those services restart? | Api a target? | Api `preDeployCommand` runs? | Required checks |
+|---|---|---|---|---|---|---|---|
+| **M7-a** | `CONTENT_INTELLIGENCE_MAX_AUTHORITY` | `SHADOW` → `LIVE` | **worker, api** | yes, both | **yes** | **yes** | Full **§4.4.2 preflight** — all service identities read, `A == L` **established rather than assumed**, `F(A)`/`D`/`P` validated with `E_pending` **empty** and `E_applied_pre` the exact authorized inventory, operator record captured; then api and worker identity + `/healthz` + durable readiness; rollback = restore the previous value and restart |
+| **M7-b** | `CONTENT_INTELLIGENCE_SCHEDULED_DISPATCH_ENABLED` | absent/off → on | **worker, scheduler** | yes, both | **no** | **no** | **No migration gate**, because no api deployment occurs and no migration runner is reached. Instead: **worker and scheduler** identity recorded before and after, their health/readiness observed green, and the api confirmed **unchanged**; rollback = restore the previous value and restart those two services |
+| **M7-c** | The **durable authority gate** row | `SHADOW` → `LIVE` | none — a control-plane row | no restart | no | no | No deployment and therefore no preflight; append-only history row; rollback = set the value back |
+
+  **M7-b restarts only the worker and scheduler.** It must not be described as an api restart, must not
+  claim an api `preDeployCommand` invocation, and does not inherit the api migration gate — a
+  worker-or-scheduler-only restart reaches no migration runner. **No companion api deployment is added
+  to it**: manufacturing one merely to preserve a uniform description would be a real production action
+  taken for a documentation convenience.
+- **The three acts remain separately authorized single-control acts** — M7-a, M7-b and M7-c each change
+  exactly one control, each carries its own authorization and audit record, and **none may be granted
+  together with another.**
 - **Scheduled dispatch is authorized only to the exact bounded extent M7 defines** — the cadence,
   window and per-period run count named in its authorization, and no more.
 - **Manual dispatch is *unavailable* after M7 unless a new, separately authorized bounded grant is
