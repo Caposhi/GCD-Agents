@@ -506,7 +506,7 @@ Documents reconciled after merge: `README.md`, `docs/AI_HANDOFF.md`, `docs/ARCHI
 
 **PR / merge / ancestry.** PR #54, *"feat: reconcile the Content Intelligence payload contract"*. Base `a000557e4910d84e001d3be9078630542d21bb42`; reviewed head `0362e354bc942416c640e93d403c537421a184e3`; merge commit `0c13ab1af9c7ca796a1d48ed37207715a47166e4`, merged 2026-09-04. The merge commit's **ordered parents are exactly the recorded base then the exact reviewed head** — first parent `a000557e…`, second parent `0362e354…` — verified by direct Git inspection. These are historical, immutable identifiers.
 
-**The prerequisite is satisfied in repository state.** Every stage listed in the seven numbered requirements above is now delivered on `main`. That satisfies the gate this reconciliation was defined to be; it establishes nothing about production. The next product cursor is a **separately reviewed production-wiring design** — named here and, *as of PR #54*, neither designed nor begun. (This is the durable record of PR #54; the draft design in PR #56 was written afterwards and did not exist at this merge.) Performance ingestion, governed learning, and the proposed future Google Business Profile expansion remain later work and are not begun by this reconciliation.
+**The prerequisite is satisfied in repository state.** Every stage listed in the seven numbered requirements above is now delivered on `main`. That satisfies the gate this reconciliation was defined to be; it establishes nothing about production. The next product cursor is a **separately reviewed production-wiring design** — named here and, *as of PR #54*, neither designed nor begun. (This is the durable record of PR #54; the design was written afterwards, in PR #56, and did not exist at this merge. It has since been accepted and merged — see its own record below.) Performance ingestion, governed learning, and the proposed future Google Business Profile expansion remain later work and are not begun by this reconciliation.
 
 **The production evidence-data audit, and who ran it.** Before any database bound was chosen, an **operator ran** an aggregate-only, read-only audit against the production database through Render's read-only query capability (`gcd-social-db` / `gcd_social`, PostgreSQL 18, 2026-09-02, read-only transactions). It was **run independently by the operator and not from an agent session**; no database credentials were requested or received, and no raw claim text, subject text, PII, or credential value was retrieved. Results: `_migrations`, `content_evidence` and `content_evidence_relations` all exist; `content_evidence` **0 rows**; `content_evidence_relations` **0 rows**; blank-claim rows 0; blank-subject rows 0; rows carrying `detail` JSON 0; relations carrying notes 0; the aggregate length query returned no populated values because both tables are empty.
 
@@ -566,7 +566,7 @@ The two bounds are now separate values with separate names, and the second is en
 
 **Security and privacy implications.** Every control this reconciliation adds fails **closed** and before any model boundary. Record and conflict cardinalities are independently enforced; evidence records are revalidated at pack construction, durable-row reconstruction, pack projection, and the shared pre-model boundary, so neither a hand-built pack nor a malformed direct-database row can bypass the owning contract. A conflict's `aClaim`, `bClaim` and `subject` must be exact snapshots of records the pack holds, which closes a path by which text no record ever made could have reached a model through the exclusion list rather than through a citation. Output text is byte-bounded, so the worst-case token proof covers adversarial non-ordinary text, and the centralized policy disables adaptive thinking because it shares `max_tokens`. Nothing became reachable: no `executionEnabled` changed, and no route, worker wiring, scheduler, retry, repair call, model tool, approval authority, publishing authority, or provider contact was added. A nonempty `ANTHROPIC_API_KEY` still causes no provider call — an injected runner or injected stream remains the only path to a model, asserted by regression. No credential, prompt, evidence text, model prose, or unpublished content is logged by any boundary this change touches, and no database credential was requested or received at any point in the work.
 
-**Unresolved follow-ups.** Migration 007's application to production, under the separate authorization, audit, rollout, and verification recorded below. The separately reviewed production-wiring design, which is the next cursor and which, *as of PR #54*, was not begun. (A first draft of it was written afterwards, in PR #56, and is unaccepted, unmerged, and unimplemented; it did not exist at this merge and it authorizes nothing.) Everything already open elsewhere in this roadmap is unchanged by this merge: the provider operation ledger and reconciliation, PostgreSQL network restriction, token lifecycle, control/reviewer identity, retention and backup/restore, the external readiness register, and the deployment-authority cutover proof.
+**Unresolved follow-ups.** Migration 007's application to production, under the separate authorization, audit, rollout, and verification recorded below. The separately reviewed production-wiring design, which is the next cursor and which, *as of PR #54*, was not begun. (It was written afterwards, in PR #56, and has since been accepted and merged as design while remaining unimplemented — see its own record below. It did not exist at this merge, and neither its writing nor its acceptance authorizes anything.) Everything already open elsewhere in this roadmap is unchanged by this merge: the provider operation ledger and reconciliation, PostgreSQL network restriction, token lifecycle, control/reviewer identity, retention and backup/restore, the external readiness register, and the deployment-authority cutover proof.
 
 **Exact-head CI and independent reinspection.** The final reviewed head `0362e354bc942416c640e93d403c537421a184e3` passed all five GitHub CI jobs — Node 22 offline quality gates, PostgreSQL 16 integration, PostgreSQL 18 integration, AgentShield 1.4.0, and Workflow and YAML static validation — in run `33776745879`, whose recorded `head_sha` is that exact head. The two preceding reviewed heads were each independently reinspected and each returned blocking findings that were corrected rather than argued: `54e409e…` was found to carry a semantic validator that rejected the conflict packs the builder actually produces and a derived deadline that did not bound the stream it was named for; `3cfff64…` was found to overstate the harness file count. Both rounds are recorded above. That is repository validation for a dormant change — **not** deployment or production evidence.
 
@@ -578,13 +578,241 @@ The two bounds are now separate values with separate names, and the second is en
 
 **Documents updated at completion.** In the implementing pull request — `README.md`, `docs/ARCHITECTURE.md`, `docs/ROADMAP.md`, `docs/STATUS.md`, `docs/TESTING.md`, and `docs/AI_HANDOFF.md`. In the post-merge reconciliation that added this durable record — all of the above plus `docs/DATA_MODEL.md` and `docs/SECURITY_AND_CONTINUITY.md`.
 
-**Next: a separately reviewed production-wiring design.** It follows this reconciliation and does not precede it; neither is a new phase number, and no stage may be enabled before that design is separately reviewed and accepted. **A first draft of that design now exists in PR #56**, as [`docs/PRODUCTION_WIRING_DESIGN.md`](PRODUCTION_WIRING_DESIGN.md) — **open, draft, unaccepted, unmerged, and unimplemented**, and **a design only**: it implements no wiring, enables nothing, applies no migration, and **authorizes neither implementation nor operations**. No production wiring, deployment, enablement, migration application, or production validation has occurred. Its load-bearing finding is that `executionEnabled` is currently a declarative registry field that no execution path consults, so today's dormancy rests on there being no caller and no default runner rather than on the flag. Performance ingestion, governed learning, and the proposed future Google Business Profile expansion all remain later work, in that order, and none of them is begun here. Deployment-authority work remains an independent track and must not be combined with any of them.
+**Next, as of this merge: a separately reviewed production-wiring design.** It follows this reconciliation and does not precede it; neither is a new phase number, and no stage could be enabled before that design was separately reviewed and accepted. **That design has since been accepted and `MERGED` through PR #56**, as [`docs/PRODUCTION_WIRING_DESIGN.md`](PRODUCTION_WIRING_DESIGN.md) — recorded in its own section below. It remains **`UNIMPLEMENTED`** and is **a design only**: it implements no wiring, enables nothing, applies no migration, and **authorizes neither implementation nor operations**. No production wiring, deployment, enablement, migration application, or production validation has occurred. Its load-bearing finding is that `executionEnabled` is currently a declarative registry field that no execution path consults, so today's dormancy rests on there being no caller and no default runner rather than on the flag. Performance ingestion, governed learning, and the proposed future Google Business Profile expansion all remain later work, in that order, and none of them is begun here. Deployment-authority work remains an independent track and must not be combined with any of them.
+
+## Production-wiring design — `MERGED` as accepted design (PR #56), `UNIMPLEMENTED`
+
+**State:** **`MERGED`** as **accepted repository design** — and **`UNIMPLEMENTED`**. Not a new phase
+number. **Accepted means exactly one thing: [`docs/PRODUCTION_WIRING_DESIGN.md`](PRODUCTION_WIRING_DESIGN.md)
+is present on `main` as this repository's accepted production-wiring design.** It does **not** mean
+production wiring is implemented, and it authorizes **no** implementation PR and **no** operator
+milestone. **None of the eight implementation PRs (P1–P8) exists; none of the seven operator
+milestones (M1–M7) has been performed**, M4's five acts included. The merge establishes **no**
+deployment, production validation, database readiness, migration application, executor enablement,
+model execution, approval, or publication. No stage's `executionEnabled` changed; all six remain
+`false`, and no production path reaches any of them. **Production evidence: none.**
+
+**PR / merge / ancestry.** PR #56, *"docs: add the production-wiring design as a reviewable
+document"*. Base `e6f9b0275fc25f0c508708f5e421a474daeebbae`; reviewed head
+`42f83a122910981f6af3bc9b9024d27ac8b839ff`; merge commit
+`53e2c2bb6115e457670c1f99956d11a1a54530cd`, merged 2026-09-08. The merge commit's **ordered parents
+are exactly the recorded base then the exact reviewed head** — first parent `e6f9b027…`, second
+parent `42f83a12…` — verified by direct Git inspection. These are historical, immutable identifiers.
+
+**Documentation-only scope, with empirical statistics.** `6 files changed, 1724 insertions(+), 19
+deletions(-)` across 10 commits: `docs/PRODUCTION_WIRING_DESIGN.md` new at **1,702 lines**, plus
+one-line and few-line status reconciliations in `README.md`, `docs/AI_HANDOFF.md`,
+`docs/ARCHITECTURE.md`, `docs/ROADMAP.md`, and `docs/STATUS.md`. **Every changed path ends `.md`.** No
+source, test, migration, workflow, dependency, lockfile, configuration, `render.yaml`, agent, skill,
+or prompt file changed.
+
+**Accepted design boundaries.** The design's own boundary statements are what was accepted, and they
+are narrow: it implements nothing, enables nothing, deploys nothing, applies no migration, contacts no
+provider, and publishes nothing. It grants no authorization. **Each implementation PR and each
+operator milestone still requires its own review, its own explicit authorization, and its own
+evidence**, and no single approval covers more than the one unit it names. Every live Render and
+database fact it discusses remains **`UNKNOWN` unless separately verified** — a merged document is
+repository evidence, never production evidence.
+
+**The load-bearing finding.** `executionEnabled` is a *declarative registry field that no execution
+path consults*: `invokeStage` never reads it, nor does any of the six executor modules; its only
+consumer is `assertPreviewIsInert`, which keeps the preview inert. **Today's dormancy therefore rests
+on two structural facts — no production caller, and no default runner — not on the flag.** An
+implementer who treats the flag as the safety mechanism would build on something that is not load-bearing.
+
+**Sequence, and the counts that define it.** **Eight implementation PRs (P1–P8)** and **seven
+operator milestones (M1–M7)** — different kinds of thing, numbered separately: a PR is reviewed and
+merged, a milestone is performed by an authorized operator and produces an evidence record, not a
+diff. **Every source change is a numbered PR, including the one that activates the stages (P8).** M4
+is one milestone comprising **five separately authorized single-control acts (M4.1–M4.5)**; those
+acts are not additional milestones. **Five enforcement checkpoints** are owned by named PRs:
+**C1 → P3**, **C2 → P2**, **C3 → P2**, **C4 → P5**, **C5 → P6**.
+
+**Six controls that must never be collapsed.** The design separates, as independent controls:
+**registry activation** (`executionEnabled`, moved by P8 and deployed by M3); the **runtime authority
+gate** (durable `OFF`/`SHADOW`/`LIVE`, whose effective mode is the *lower* of the gate, the
+deployment-time ceiling `CONTENT_INTELLIGENCE_MAX_AUTHORITY`, and any grant's `max_authority`);
+**manual dispatch** (layer 4a — ceiling `CONTENT_INTELLIGENCE_MANUAL_DISPATCH_ENABLED`, plus a
+bounded, expiring, transactionally consumed grant, so a ceiling without a grant starts nothing);
+**scheduled/queue dispatch** (layer 4b — ceiling `CONTENT_INTELLIGENCE_SCHEDULED_DISPATCH_ENABLED`,
+owned by **worker and scheduler only**); **approval** (checkpoint C4, api); and **publication**
+(checkpoint C5, worker). The two dispatch ceilings are deliberately separate variables. **No act
+changes more than one control** — which is why M3 (registry activation) and M4.1 (authority ceiling)
+are separate acts with separate deployments. **Scheduled dispatch implies neither approval nor
+publication.**
+
+**Migration 007 / 008 ordering.** **M1 applies 007 first**, while `main` still carries no migration
+beyond it, and **P1 must not merge before M1** — that is M1's protecting invariant, not a
+convenience. P1 then introduces migration **008** with the control plane and grant schema, and **M2**
+is the migration-bearing release that applies 008. The design is explicit that 007's application is
+neither authorized nor established by anything in it.
+
+**API `preDeployCommand` is the only migration authority.** `render.yaml` gives
+`preDeployCommand: npm run migrate` to `gcd-social-api` **and to no other service**, and the standing
+rule in [`ROLLOUT_PHASE_0B0.md §5`](ROLLOUT_PHASE_0B0.md) forbids running `npm run migrate` by hand or
+applying the SQL through `psql`. The consequence is load-bearing and easy to get wrong: **applying a
+migration *is* an API deployment**, not a standalone database operation. The runner
+(`src/state/migrate.ts`) is forward-only and **sweeps every pending file in lexical order** — there is
+no per-file selector — so the authorized set must be established before the deployment, never assumed
+from intent.
+
+**Complete migration-state validation, not pending-only.** The preflight compares the **whole applied
+state**, not just what is pending: the migration files at the artifact commit `F(A)`, the `_migrations` rows
+`D`, and the computed pending set `P = F(A) − D`, against four expected sets (`E_files`,
+`E_applied_pre`, `E_pending`, `E_applied_post`) under **seven conditions**. The reason is exact: a
+pending-set difference **cannot see an unexpected already-applied migration**, because such a file
+cancels out of `F(A) − D` and leaves the pending set looking correct. The operator record is in **two
+timed parts** — Part 1, the pre-deployment record, completed and passing **before** the deployment is
+triggered; Part 2, the post-deployment closure (`D_post`, the comparison outcome, and the
+validation-versus-rollback decision), completed **after** it, without which the milestone is not
+complete.
+
+**A/L deployment ancestry.** For any api deployment in this rollout, with `A` the artifact commit and
+`L` the live api commit **read immediately before**: allow `A == L`, or `L` an ancestor of `A`;
+**reject** `A` a proper ancestor of `L` (a runtime rollback) and mutual non-ancestry (divergence);
+**stop** if `L` cannot be obtained. Equality is tested **first**, because `git merge-base
+--is-ancestor` is reflexive and would otherwise mask the same-commit case. `L` is read, never inferred
+from repository ordering.
+
+**Rollback-artifact compatibility is an entry gate, not an assumption.** M1's recovery path redeploys
+the previously live image **while leaving 007 applied** — old code against a newer schema. Before M1
+may be authorized, the rollback artifact `R` (normally the pre-M1 live api artifact, i.e. `L`, named
+by full SHA) must be **proven** compatible by executed evidence against a disposable database migrated
+through 007, on **PostgreSQL 16 and 18**: startup and readiness, every production-reachable read,
+every production-reachable write path, values at and around each new constraint, ordinary existing
+rows, and restart behaviour. **"Additive", "`NOT VALID`", and "the old image starts" are explicitly
+not compatibility evidence.** If compatibility cannot be established, redeploying `R` is not an
+authorized recovery action and M1 must not begin.
+
+**Partial-release handling.** When `A ≠ L`, M1 deliberately advances the api ahead of the worker and
+scheduler, creating exactly the service-identity mismatch the automated controller treats as
+`PARTIAL_RELEASE_STATE` and refuses to release from. M2 therefore proceeds from a deliberately partial
+state and is executed as an **explicitly authorized manual departure from the controller**, carrying
+every obligation the controller would otherwise enforce, and it closes the interval by bringing all
+three services to one commit with `/healthz` plus durable readiness evidence.
+
+**Same-commit `preDeployCommand` behaviour remains `UNKNOWN`.** Whether an api deployment requested at
+a commit equal to the live one re-invokes `preDeployCommand` is **not established in either
+direction**, and the design says so rather than guessing. On the `A == L` path the controller confirms
+all three services at target and then **deploys nothing**, so obtaining the migration run requires
+requesting an api deployment anyway — a deliberate, explicitly authorized departure. If the equality
+path may be used, that behaviour must be confirmed first.
+
+**M7 service ownership.** M7 is three separate single-control acts with **different service targets**:
+**M7-a** (`CONTENT_INTELLIGENCE_MAX_AUTHORITY` `SHADOW` → `LIVE`, **worker and api**) is a real api
+deployment and takes the full §4.4.2 preflight and both record parts; **M7-b**
+(`CONTENT_INTELLIGENCE_SCHEDULED_DISPATCH_ENABLED`, **worker and scheduler only**) restarts no api and
+takes no migration gate; **M7-c** is a control-plane row, not a deployment. After M7, manual dispatch
+requires a **new** separately authorized bounded grant — M7 issues none.
+
+**Material alternatives rejected.** *Treating `executionEnabled` as the dormancy guarantee* was
+rejected on read evidence that no execution path consults it. *Validating only the pending set before
+a migration-bearing deployment* was rejected because an unexpected already-applied migration cancels
+out of the pending difference and is invisible to it. *Running `npm run migrate` standalone, or
+applying the SQL through `psql`*, was rejected as prohibited by the standing rule and by there being
+one migration authority. *Inferring the live commit `L` from repository ordering, or assuming `A == L`*
+was rejected — `L` is read immediately before, or the milestone stops. *Testing ancestry before
+equality* was rejected because `--is-ancestor` is reflexive and would mask the same-commit case.
+*Accepting "additive", "`NOT VALID`", or "the old image starts" as rollback-compatibility evidence*
+was rejected: none establishes that `R`'s **writes** are still accepted. *One combined dispatch
+control* was rejected because it would make a scheduled run reachable by way of enabling a manual one.
+*Combining registry activation with the authority ceiling in one act* was rejected under the
+one-control-per-act rule. *A single approval covering the whole rollout* was rejected: authorization is
+per named PR and per named milestone. *Recording the operator's post-deployment readings in the
+pre-deployment step* was rejected as a sequence no operator can perform. *A new Render service* was
+rejected in favour of existing infrastructure. *Beginning the GBP expansion alongside this work* was
+rejected outright.
+
+**Security and privacy implications.** The design adds nothing executable, so it changes no live
+attack surface; its security content is in what it refuses to allow later. Every proposed gate fails
+**closed**: an absent, unreadable, or unrecognized authority value is `OFF`; the effective mode is the
+*lower* of ceiling, gate and grant; a manual grant is bounded, expiring, and consumed transactionally
+in the same transaction that creates the run row, so two simultaneous submissions against
+`runs_remaining: 1` yield exactly one accepted run; approval (C4) and publication (C5) are refused
+until the gate reaches `LIVE` and remain independent controls even then. The proposed authority gate
+sits **in front of — never instead of —** the existing Phase 0A approval gate, which is unchanged.
+**Content integrity of applied migrations is not verifiable at all**: `_migrations` stores
+`name text PRIMARY KEY` and `applied_at`, with **no checksum column**, so identifiers are verifiable
+and contents are not — the design states this limitation rather than implying integrity it cannot
+prove. No credential was requested or received at any point, no production database or Render state
+was inspected, and the document contains no secret, token, credential, customer datum, or raw
+analytics value.
+
+**Automated validation and exact-head CI.** At the reviewed head `42f83a12…`: `npm ci` with 0
+vulnerabilities, typecheck, build, the **eight offline suites ALL PASS (1,367 assertions)**, **33
+payload-contract mutations ALL PASS** with byte-for-byte restoration across exactly 9 target files,
+final rebuild, disposable **PostgreSQL 16 — 208 checks** (fresh 59, upgrade 80, durable 69), simulated
+dry run, deployment-controller fixtures, Markdown links, environment coverage (35 variables),
+credential/PII scan, `npm audit --omit=dev` with 0 production vulnerabilities, YAML parse, AgentShield
+**grade A (93/100)**, and `git diff --check` clean. **Exact-head CI: run `34272982709` — all five jobs
+`success`, each on attempt 1, every one reporting `head_sha` `42f83a12…`**: Node 22 offline quality
+gates, PostgreSQL 16 integration, PostgreSQL 18 integration, AgentShield 1.4.0, and Workflow and YAML
+static validation. Every model call in every suite used an injected fake runner. **That is repository
+validation for a documentation-only change — not deployment, not production validation.**
+
+**Independent review before acceptance.** The document was corrected in place across **nine rounds of
+independent inspection**, on the same branch, with no replacement PR and no rewritten history. The
+corrections were substantive, and each is now part of the accepted design rather than an artifact of
+review: the **complete migration-state contract** replaced a pending-set-only check once the
+cancelling-out defect was identified; the **A/L ancestry predicate** was generalized from M1 to every
+api deployment in the rollout and reordered to test equality first; the **rollback-artifact
+compatibility gate** was added after "additive" was found to be doing work it cannot do; the
+**migration-versus-deployment contradiction** was resolved once `preDeployCommand` was confirmed as
+the sole migration authority; **M3/M4 were split into single-control acts** and **M7 into three acts
+with distinct service targets**; the **partial-release interval** M1 creates was named and its
+controller departure labelled; **same-commit `preDeployCommand`** was recorded as `UNKNOWN` rather
+than assumed; and the **operator record was split into a pre-deployment Part 1 and a post-deployment
+Part 2** after a reviewer showed the single-step version described a sequence no operator can perform.
+Two of those rounds were opened by findings against the reviewer's own prior corrections, and both
+were corrected rather than argued. The full round-by-round diff history is preserved in PR #56.
+
+**Rollback / recovery status.** Rollback of this documentation change is to revert merge commit
+`53e2c2bb6115e457670c1f99956d11a1a54530cd`, which removes the design document and the status
+reconciliations in one step. **No database, Render, provider, approval, publication, or production
+cleanup is required, because none was introduced** — the merge applied no migration and changed no
+source, workflow, dependency, configuration, `render.yaml`, or `executionEnabled` value. Reverting it
+removes an accepted design; it unwinds no operational state, because none was created.
+
+**Production evidence: none.** No production database was inspected, queried, mutated, or
+credentialed; no Render service was inspected; no provider or model was contacted; `evidence:sync` was
+not run. The only production evidence anywhere near this work remains the operator's **dated**
+2026-09-02 aggregate read-only audit recorded under PR #54, which is a dated observation and not a
+statement about now.
+
+**Unresolved questions carried forward by the accepted design.** Live Render service versions, health,
+and control settings; **`L`, the commit each service currently runs**; whether a same-commit api
+deployment re-invokes `preDeployCommand`; whether the rollback artifact `R` tolerates the post-007
+schema; the contents of `_migrations` and of the production evidence tables; **whether migration 007
+has been applied — not established in either direction**; whether any executor has ever been invoked
+against a real model historically; whether a shadow run should build its evidence pack from
+`config/approved-facts.json` via the adapter or require `evidence:sync` to have populated
+`content_evidence` first; per-run and per-day cost ceilings and the behaviour on breach; whether one
+brief per day remains the right cadence once six stages run per brief; and retention for
+`content_intelligence_stage_results`. **Content integrity of applied migrations is not verifiable at
+all**, the migration table carrying no checksum.
+
+**Follow-up — the next cursor, stated narrowly.** The next action is **not** "implement production
+wiring" and is **not** the Google Business Profile expansion, which stays deferred. It is the accepted
+design's own **first prerequisite: a read-only verification of live production identity and database
+state** — the three service commits (which establishes `L`, and with it the candidate rollback
+artifact `R`), `/healthz`, the control settings, and the `_migrations` rows — performed by an
+authorized operator, read-only, and recorded as a dated observation. Everything else the design gates
+on depends on facts that verification produces. Only after it, and each under its own separate
+authorization, come: the **migration-007 aggregate read-only audit and its committed decision record**
+(§4.1–§4.2); **confirmation of same-commit `preDeployCommand` behaviour**, if the `A == L` path may be
+used; and **rollback-artifact compatibility planning and executed evidence** for `R`. **This
+reconciliation performs none of them, and M1 is not authorized.**
+
+**Documents updated at completion.** In the implementing pull request (PR #56) — `README.md`,
+`docs/AI_HANDOFF.md`, `docs/ARCHITECTURE.md`, `docs/ROADMAP.md`, `docs/STATUS.md`, and the new
+`docs/PRODUCTION_WIRING_DESIGN.md`. In this post-merge reconciliation — `README.md`,
+`docs/AI_HANDOFF.md`, `docs/PRODUCTION_WIRING_DESIGN.md`, `docs/ROADMAP.md`, and `docs/STATUS.md`.
 
 ## Phase 0B — Content Intelligence runtime
 
 **State:** foundation `MERGED` and `DEPLOYED`; all six executors — `strategy-concept`, `automotive-truth`, `hook-story-script`, `production-direction`, `packaging-adaptation`, and `final-critic` — **`MERGED`** and dormant, the sixth through PR #52; the payload-contract reconciliation **`MERGED`** through PR #54. **None is `ENABLED`, established as `DEPLOYED`, or `PRODUCTION-VALIDATED`**, and none has production evidence. **All six target stages now have a merged executor on `main`**, and every registry entry reports `executionEnabled: false`.
 
-**Last merged slice: the payload-contract reconciliation, `MERGED` through PR #54** (merge `0c13ab1af9c7ca796a1d48ed37207715a47166e4`), recorded in its own section above. Before it, Phase 0B.6 — the dormant `final-critic` stage executor — was `MERGED` through PR #52; see its dedicated section for the full record and durable identifiers. The reconciliation that gates production wiring is therefore **satisfied in repository state**: it is present on `main`, and it is not established as deployed, not enabled, and not production-validated. Deployment-authority work remains an independent track and must not be combined with any of this. **Next: a separately reviewed production-wiring design. A first draft of it now exists in PR #56 — open, draft, unaccepted, unmerged, and unimplemented, authorizing neither implementation nor operations. Not a new phase number, and no production wiring, deployment, enablement, migration application, or production validation has occurred.**
+**Last merged slice: the payload-contract reconciliation, `MERGED` through PR #54** (merge `0c13ab1af9c7ca796a1d48ed37207715a47166e4`), recorded in its own section above. Before it, Phase 0B.6 — the dormant `final-critic` stage executor — was `MERGED` through PR #52; see its dedicated section for the full record and durable identifiers. The reconciliation that gates production wiring is therefore **satisfied in repository state**: it is present on `main`, and it is not established as deployed, not enabled, and not production-validated. Deployment-authority work remains an independent track and must not be combined with any of this. **The separately reviewed production-wiring design is accepted and `MERGED` through PR #56** (merge `53e2c2bb6115e457670c1f99956d11a1a54530cd`), recorded in its own section above, and is **`UNIMPLEMENTED`** — authorizing neither implementation nor operations. **No implementation PR (P1–P8) exists and no operator milestone (M1–M7) has been performed.** Not a new phase number, and no production wiring, deployment, enablement, migration application, or production validation has occurred.
 
 Phase 0B.0 delivered the two runtime primitives the rest of the phase depends on:
 
@@ -594,7 +822,7 @@ Phase 0B.0 delivered the two runtime primitives the rest of the phase depends on
 
 `executionEnabled` is `false` on every registered stage and the preview asserts it. Registration is not execution: no stage runs a model call, and the live publishing pipeline is untouched.
 
-**Remaining slices, in order:** the payload-contract reconciliation recorded in its own section above is **`MERGED`**, so that prerequisite is met in repository state and no longer blocks the sequence; next is a **separately reviewed production-wiring design**, of which a first draft now exists in PR #56 — open, draft, unaccepted, unmerged, and unimplemented, authorizing neither implementation nor operations, and which no merge so far authorizes; then performance ingestion; then governed learning. The proposed future Google Business Profile expansion sits after those and is not part of this repository's scope today. The roughly 22 originally researched specialist roles remain conceptual capabilities — most belong as deterministic services, references, or policy modules, not as mandatory model calls. After the operational prerequisites are accepted, return to the core mission with approximately six primary model reasoning stages:
+**Remaining slices, in order:** the payload-contract reconciliation recorded in its own section above is **`MERGED`**, so that prerequisite is met in repository state and no longer blocks the sequence; the **separately reviewed production-wiring design** is now accepted and `MERGED` through PR #56 and remains **`UNIMPLEMENTED`**, authorizing neither implementation nor operations, so the next work is that design's own **first prerequisite** — a read-only verification of live production identity and database state, recorded in its section above and separately unauthorized; then its eight implementation PRs and seven operator milestones, each under its own authorization; then performance ingestion; then governed learning. The proposed future Google Business Profile expansion sits after those and is not part of this repository's scope today. The roughly 22 originally researched specialist roles remain conceptual capabilities — most belong as deterministic services, references, or policy modules, not as mandatory model calls. After the operational prerequisites are accepted, return to the core mission with approximately six primary model reasoning stages:
 
 1. strategy-concept;
 2. automotive-truth;
