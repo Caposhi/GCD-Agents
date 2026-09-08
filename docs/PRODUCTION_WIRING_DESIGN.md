@@ -461,6 +461,9 @@ selector: `npm run migrate` applies whatever is pending.
   through the api `preDeployCommand`, so **applying a migration is an API deployment**; selecting a
   migration is expressed by controlling what the deployed artifact contains, never by an argument.
   See §4.4, including the requirements that follow from it being a deployment.
+- **Consequently every api deployment in this rollout — including configuration-only restarts —
+  reaches the runner, and every one carries the §4.4.2 preflight.** The expected pending set is
+  `{007}` at M1, `{008}` at M2, and **empty** everywhere after that.
 - The same reasoning applies to 008 and to every future migration; nothing here is specific to 007.
 
 ### 4.1 Prerequisite — a fresh, read-only, aggregate-only operator audit
@@ -498,7 +501,7 @@ with no committed decision record is unauthorized by definition.**
 | **G1 Audit** | §4.1 complete, results committed | Any measured maximum exceeds its bound |
 | **G2 Decision** | §4.2 record committed and authorized | Missing, unsigned, or stale |
 | **G3 Rollout path** | The separately authorized migration-bearing rollout, **not** the ordinary controller path | **VERIFIED** the controller already stops before any service action when the release range touches `state/migrations/**` |
-| **G3a Pending-set verification** | The exact pending set is computed and recorded **immediately before** the runner is invoked, and equals the authorized set **exactly** — see §4.4. Required before **every** use of the general migration runner, including the one the api `preDeployCommand` triggers | The computed set differs from the authorized set by **even one file** → stop; do not run the runner, do not trigger the deploy |
+| **G3a Pending-set verification** | The exact pending set is computed and recorded **immediately before** the runner is invoked, and equals the set expected for that specific deployment **exactly** — `{007}` at M1, `{008}` at M2, **empty** at every later api deployment, per §4.4.2. Required before **every** use of the general migration runner, including the one the api `preDeployCommand` triggers, and including configuration-only restarts | The computed set differs from the expected set by **even one file** → stop; do not run the runner, do not trigger the deploy; the appearing file needs its own §4 treatment |
 | **G3b Controlled artifact** | The **deployed artifact** is a named exact reviewed commit meeting every requirement A1–A5 of §4.4 — its `state/migrations/` contains exactly the authorized set, its application code is approved to deploy and serve, and it satisfies the **A/L ancestry predicate** of §4.4.1. Applying a migration **is an API deployment** (§4.4); selection comes only from what the artifact contains, never from the runner | Any of A1–A5 fails; or the artifact's migrations directory contains a file outside the authorized set |
 | **G4 Single runner** | Exactly one migration authority; no schema-dependent consumer racing it | More than one runner, or a consumer started early |
 | **G5 Transactional apply, by the only sanctioned authority** | Applied by `npm run migrate` **through the api `preDeployCommand`**, which wraps each file in `BEGIN…COMMIT`. **VERIFIED** ([`ROLLOUT_PHASE_0B0.md`](ROLLOUT_PHASE_0B0.md) §5) that this is the repository's standing rule and the one under which 006 was applied | Applied by hand via `npm run migrate` or `psql -f` — both are prohibited by that rule, and `psql -f` additionally disables the `SET LOCAL` timeout guards silently. Neither is an escape hatch for applying one file: **G3b is**, by controlling what the artifact contains |
@@ -584,8 +587,14 @@ Two commits, named explicitly and used with these meanings everywhere in this do
 
 | Symbol | Meaning |
 |---|---|
-| **`A`** | The exact **artifact** commit proposed for the M1 api deployment |
-| **`L`** | The exact commit the **live** api is currently running, obtained through the required read-only identity check |
+| **`A`** | The exact **artifact** commit proposed for the api deployment **currently under consideration** |
+| **`L`** | The exact commit **currently served by the live api immediately before that deployment**, obtained through the required read-only identity check |
+
+**These are general, not M1-only.** The predicate is evaluated afresh for **every** api deployment in
+this rollout — M1, M2, M3, and each configuration deployment or restart in M4 — with `A` and `L` bound
+to that deployment's own artifact and its own immediately-preceding live reading. **A result obtained
+at an earlier milestone is never reused**: live state can change between milestones, and a stale
+reading is not a reading.
 
 **`L` is UNKNOWN until inspected.** It may not be inferred from `main`, from `render.yaml`, from any
 dated record in this repository, or from a previous milestone's record. **If `L` cannot be obtained,
@@ -593,8 +602,8 @@ M1 stops** — there is no default, and "presumably the latest" is not a reading
 
 **PROPOSED — M1 may proceed without a separate rollback or divergence authorization only when:**
 
-- **`A == L`** — the artifact is already what is live; the deployment re-runs the same image and the
-  pending set is what makes it worth doing; **or**
+- **`A == L`** — the artifact is already what is live, so the deployment does not move the
+  application version. **Whether it re-invokes `preDeployCommand` is UNKNOWN — see below**; **or**
 - **`L` is an ancestor of `A`** — the artifact is strictly ahead of live, so the deployment moves the
   api forward.
 
@@ -620,15 +629,59 @@ else                                        -> REJECT   (divergent histories)
 rejects the legitimate `A == L` case and accepts the illegitimate divergent case, which is backwards
 in both directions.
 
-**VERIFIED — this is not a new rule; it is the rule this repository's deployment controller already
-enforces.** `scripts/render/deployment-controller.mjs` resolves the live api commit, returns early
-without deploying when `LIVE_SHA == TARGET_SHA`, and otherwise stops with `DIVERGED_RELEASE_BASE`
-unless `git merge-base --is-ancestor <liveSha> <targetSha>` succeeds — equality allowed, live-behind-
-target allowed, everything else refused. [`docs/DEPLOYMENT.md`](DEPLOYMENT.md) records the same rule in
-prose: *"Divergence, rollback, force-push, and unknown history are not ordinary automatic releases."*
-The predicate above simply states, for a manually executed milestone, what the automated controller
-would already have refused to do — and M1's manual execution is exactly the path that bypasses the
-controller, which is why it must carry the check itself.
+**UNKNOWN — whether a same-commit api deployment re-runs `preDeployCommand`.** Live Render behaviour
+was not inspected by this design, so it is **not established** that requesting a deploy of an
+already-live commit re-executes the pre-deploy command. The `A == L` path therefore carries an extra
+precondition:
+
+- **Before relying on `A == L`**, the operator must establish — from authoritative Render
+  documentation, or from a safe read-only / control-plane check — that **the specific deploy action
+  they intend to use invokes `preDeployCommand`**.
+- The operator must **record the exact deployment action used** (its name and how it was invoked), not
+  merely that "a deploy was triggered".
+- **If that behaviour cannot be established, M1 stops and is re-planned.** There is no standalone
+  runner and no manual-SQL fallback: both remain prohibited (§4.4, G5).
+- Re-planning must not invent a throwaway commit to force a version difference. Any commit introduced
+  for this purpose would itself have to be separately reviewed, exact-head CI green, safe to deploy
+  and serve, carry no migration later than the authorized set, and be **represented explicitly in this
+  rollout** — it is not a workaround this design grants in advance.
+- **The path fails closed either way:** G7 requires `_migrations` to hold `007` exactly once, so a
+  deploy that silently skipped the runner leaves the milestone unmet rather than falsely complete.
+
+**VERIFIED — the *rejection* half of this predicate is the rule this repository's automated deployment
+controller already enforces.** Read from `scripts/render/deployment-controller.mjs`:
+
+- it resolves the live api commit and stops with `LIVE_SHA_UNKNOWN` if it cannot;
+- **on `LIVE_SHA == TARGET_SHA` it does not simply return.** It first checks that **all three
+  services — api, worker and scheduler — report the target**, stopping with `PARTIAL_RELEASE_STATE`
+  if any does not. **Only after confirming that full three-service identity** does it return
+  reporting that **no deployment was triggered**;
+- otherwise it stops with `DIVERGED_RELEASE_BASE` unless
+  `git merge-base --is-ancestor <liveSha> <targetSha>` succeeds.
+
+[`docs/DEPLOYMENT.md`](DEPLOYMENT.md) records the same rule in prose: *"Divergence, rollback,
+force-push, and unknown history are not ordinary automatic releases."*
+
+**Where this design agrees, and where it deliberately departs — stated rather than blurred:**
+
+| Case | Automated controller | This design's M1 |
+|---|---|---|
+| `A` proper ancestor of `L` | stops (`DIVERGED_RELEASE_BASE`) | stops — **same** |
+| Divergent histories | stops (`DIVERGED_RELEASE_BASE`) | stops — **same** |
+| `L` unobtainable | stops (`LIVE_SHA_UNKNOWN`) | stops — **same** |
+| `L` ancestor of `A` | proceeds | proceeds — **same** |
+| **`A == L`** | confirms all three services at target, then **deploys nothing** | **requests an api deployment anyway**, in order to invoke `preDeployCommand` — **a deliberate, explicitly authorized departure** |
+
+**The `A == L` case is therefore not a restatement of the controller's behaviour; it is an authorized
+exception to it.** The controller declines to deploy because, for an ordinary release, there is nothing
+to release. M1's purpose is not to change the image but to reach the migration runner, which is the
+one thing the controller's equality path never does. That exception is why the `A == L` path carries
+its own extra precondition (the UNKNOWN above) and its own authorization, and why it may not be taken
+as "the controller would have done this too."
+
+**M1's manual execution bypasses the automated controller entirely**, which is why the predicate,
+the pending-set gate, health verification and rollback all have to be carried by the milestone itself
+rather than inherited.
 
 **This predicate proves only that the version movement is acceptable. It proves nothing about the
 artifact's safety.** A1–A4 below still apply in full and independently: `A` must be fully reviewed
@@ -679,10 +732,59 @@ pending  := present − applied
 ```
 
 The operator records `applied`, `present`, `pending`, and the artifact SHA, then compares `pending` to
-the set named in the §4.2 decision record. **They must be equal as sets.** Larger, smaller, or
-differently composed all stop the milestone — no partial run, no "apply it and check after". **There
-is no opportunity to intervene once the deploy starts**, which is why this check precedes the trigger
-rather than the apply.
+the **expected set for that specific deployment**, given in §4.4.2. **They must be equal as sets.**
+Larger, smaller, or differently composed all stop the deployment — no partial run, no "apply it and
+check after". **There is no opportunity to intervene once the deploy starts**, which is why this check
+precedes the trigger rather than the apply.
+
+#### 4.4.2 The deployment preflight — required before *every* api deployment in this rollout
+
+**PROPOSED.** G3a says the pending-set check is required before **every** use of the general migration
+runner, including the `preDeployCommand`-triggered one. Because §4.4 establishes that *every* api
+deployment reaches that runner, the rule binds every api deployment in this rollout — not only the two
+that intend to apply something.
+
+**Do not assume a configuration-only change avoids the runner.** §3.2 records that on Render,
+**changing a service environment variable triggers a restart or redeploy of that service**; for the
+api that runs `preDeployCommand` and therefore the sweeping runner. An environment-only act is still
+an api deployment for the purposes of this section.
+
+**The expected pending set, per step:**
+
+| Api deployment | Expected pending set | Rationale |
+|---|---|---|
+| **M1** | exactly **`{007_evidence_bounds.sql}`** | 007 is what M1 exists to apply, and P1 has not merged |
+| **M2** | exactly **`{008_…sql}`** | 007 was applied at M1; 008 arrives with P1 |
+| **M3** | **empty** | both authorized migrations are already applied |
+| **M4.1** (authority-ceiling config deployment / restart) | **empty** | same |
+| **M4.3** (bounded-manual-ceiling config deployment / restart) | **empty** | same |
+| **Any other api deployment or restart in this rollout** | **empty** | same |
+| **M7's ceiling and scheduled-dispatch config acts** | **empty** | same |
+
+**Any unexpected non-empty pending set stops the deployment.** It is not a variance to note and
+proceed past. Before that deployment may be retried it requires, separately and in order: its own
+migration audit, its own committed decision record, its own explicit authorization, its own post-apply
+validation, and its own rollback plan — the full §4 treatment, for whatever file appeared.
+
+**No deployment may silently apply a newly added migration merely because the general runner discovers
+it.** Discovery by the runner is exactly the failure mode this gate exists to prevent.
+
+**Required operator record, for every api deployment in this rollout.** Recorded before the trigger,
+and retained with the milestone's evidence:
+
+| Field | Content |
+|---|---|
+| `artifact_sha` | `A` — the exact commit about to be deployed |
+| `live_api_sha` | `L` — the exact commit the live api is serving, read immediately beforehand |
+| `ancestry_decision` | the §4.4.1 outcome: `A == L`, `L ancestor of A`, or the stop reason |
+| `migrations_present` | the `*.sql` files in `state/migrations/` at `A`, enumerated |
+| `migrations_applied` | the rows in `_migrations`, enumerated, read-only |
+| `pending_computed` | `present − applied` |
+| `pending_expected` | the value from the table above |
+| `decision` | **pass** or **stop**, with the reason |
+
+A deployment performed without this record is unauthorized by definition, on the same terms as an
+apply without a decision record (§4.2).
 
 #### What is not known
 
@@ -968,7 +1070,10 @@ and never before `L` is in hand.
   3. **G3a** — compute and record `applied`, `present`, `pending` and the artifact SHA per §4.4,
      against the target database, **before triggering the deploy**. **Stop unless `pending` is exactly
      `{007_evidence_bounds.sql}`.** There is no intervention point once the deploy starts.
-  4. **Deploy `gcd-social-api` at the artifact commit, and nothing else** — not the worker, not the
+  4. **Record the §4.4.2 operator record in full** — `artifact_sha`, `live_api_sha`,
+     `ancestry_decision`, `migrations_present`, `migrations_applied`, `pending_computed`,
+     `pending_expected` = `{007_evidence_bounds.sql}`, and the pass/stop decision.
+  5. **Deploy `gcd-social-api` at the artifact commit, and nothing else** — not the worker, not the
      scheduler. Its `preDeployCommand` is the single migration authority (G4, G5), which is exactly
      why only the api is deployed.
 - **Exit, all required:**
@@ -979,6 +1084,22 @@ and never before `L` is in hand.
      green;
   4. **safe to serve under the tightened schema** — confirmed by the health check and by G7's
      boundary-record probe, not assumed from the derivation.
+- **The partial-release interval this milestone deliberately creates.** When `A ≠ L`, M1 advances
+  **only the api**; the worker and scheduler stay at their previous commits by design, because that is
+  what keeps the api the single migration runner. **This intentionally produces exactly the
+  service-identity mismatch the automated controller treats as `PARTIAL_RELEASE_STATE`**, and which
+  [`docs/DEPLOYMENT.md`](DEPLOYMENT.md) describes as failing "for controlled recovery". Therefore, for
+  the whole M1→M2 interval:
+  - **ordinary automated deployment is prohibited** — the controller would stop, and it must not be
+    forced past;
+  - **no unrelated release may occur**, of any service, for any reason;
+  - the interval must be **explicitly time-bounded**, actively **monitored**, and **owned by the named
+    operator** who performed M1;
+  - **M2 is the controlled reconciliation step** that returns all three services to one commit;
+  - if M2 is delayed beyond the stated bound or fails, the recovery path is explicit: **redeploy the
+    api to the commit recorded in step 1**, returning the three services to agreement — noting that
+    **this does not unapply 007**, so the database stays ahead of the code until 007's rollback file is
+    separately authorized and applied.
 - **Rollback, defined before proceeding — two independent operations, in this order:** redeploy the
   exact commit recorded in step 1 as previously deployed (this does **not** unapply 007); then, only if
   separately authorized, apply `state/rollback/007_evidence_bounds_rollback.sql`, which relaxes the
@@ -1003,14 +1124,33 @@ merged but, until this milestone, not running anywhere.
   2. one runner, transactional apply, post-apply validation.
   008 needs no data audit — it creates new tables and validates nothing against existing rows — but it
   still needs its own authorization and its own post-apply check.
-- **Action:** **record the exact deployed commit of each service first, read-only** — it is UNKNOWN
-  until read and may not be inferred from `main` or from M1's record — then deploy **only** the
-  reviewed inert code, in the order api → worker → scheduler.
+- **M2 proceeds from a deliberately partial state, and bypasses the automated controller.** M1 left
+  the api ahead of the worker and scheduler (when `A ≠ L`), which the controller treats as
+  `PARTIAL_RELEASE_STATE` and refuses to release from. **M2 is therefore executed as an explicitly
+  authorized manual departure from the controller**, not through it — and consequently carries every
+  gate the controller would otherwise have supplied, itself: a pinned artifact, the A/L ancestry
+  decision, the pending-set gate, its own authorization, health verification, and a defined rollback.
+- **Action, in this order:**
+  1. **Record all three service identities, read-only** — the exact commit the api, worker and
+     scheduler are each serving. Each is **UNKNOWN until read** and may **not** be inferred from
+     `main`, from `render.yaml`, or **from M1's record**: live state can change between milestones, so
+     **M1's ancestry result may not be reused.**
+  2. **Evaluate the A/L ancestry predicate** (§4.4.1) with **`A`** = the exact artifact about to be
+     deployed and **`L`** = the live api commit just read, **before triggering the deployment**.
+     Proceed only if `A == L` or `L` is an ancestor of `A`. **Stop** if `A` is a proper ancestor of `L`
+     (a runtime rollback), if neither is an ancestor of the other (divergence), or if `L` cannot be
+     obtained.
+  3. **G3a / §4.4.2** — compute the pending set against `A` and **stop unless it is exactly
+     `{008_…sql}`**; record the full §4.4.2 operator record.
+  4. **Deploy** the reviewed inert code, api → worker → scheduler, reconciling all three services to
+     one commit and ending the partial-release interval.
 - **Leaves unauthorized:** both dispatch ceilings, live execution, approval, publication. Nothing is
   enabled and no grant exists.
 - **Verify, and record:**
-  1. the exact deployed commit on each of the three services, compared against the reading taken
-     before the deploy, and `/healthz` plus the durable health/readiness checks observed green;
+  1. the exact deployed commit on **each of the three services, before and after**, compared against
+     the reading taken in action step 1 — **all three must now report the same commit**, so the
+     partial-release interval is demonstrably closed — with `/healthz` plus the durable
+     health/readiness checks observed green;
   2. that the new entry point is **unreachable through normal production traffic** — no route, no
      schedule, and no queue path invokes it;
   3. that **every effective runtime gate reads `OFF` or disabled** — the seeded authority row, both
@@ -1036,9 +1176,18 @@ two deployments; collapsing them would breach the one-control-per-act rule (§3.
   authority gate reads `OFF`, confirmed from the running system.
 - **Control changed:** registry `executionEnabled`, six values, via the deployed commit. **Nothing
   else.**
-- **Action:** deploy P8 at an exact pinned commit, api → worker → scheduler, with the same
-  identity-and-health discipline M2 defines and the A/L ancestry predicate (§4.4.1) evaluated for the
-  api before triggering.
+- **Action, in this order — this is an api deployment, so it takes the full §4.4.2 preflight:**
+  1. **Record all three service identities, read-only.** UNKNOWN until read; **M2's readings may not
+     be reused.**
+  2. **Evaluate the A/L ancestry predicate** (§4.4.1) with `A` = the pinned P8 commit and `L` = the
+     live api commit just read. Proceed only on `A == L` or `L` ancestor of `A`; stop on
+     proper-ancestor, divergence, or unobtainable `L`.
+  3. **§4.4.2 pending-set gate — the expected set is EMPTY**, because 007 and 008 are already applied.
+     **Stop on any non-empty set**, which requires its own audit, decision record, authorization,
+     validation and rollback plan before this deployment may be retried. Record the full §4.4.2
+     operator record.
+  4. **Deploy** P8 at that exact pinned commit, api → worker → scheduler, with the same
+     identity-and-health discipline M2 defines.
 - **Why this arms nothing:** with P2 merged, `executionEnabled: true` satisfies only *half* of layer
   5. The durable gate still reads `OFF`, so C1–C3 refuse. **This is why the earlier "every executor
   stays disabled while shadow produces stage results" sequencing was impossible: with P2 enforcing
@@ -1089,6 +1238,13 @@ record. **None may be granted together with another.**
   worker and api.
 - **Apply through a distinct pinned configuration deployment / restart** — this control is read at
   process start, so it takes effect only on restart, and that restart is part of the act.
+- **This restart is an api deployment for gating purposes, and takes the full §4.4.2 preflight.**
+  A configuration-only change does **not** avoid the migration runner: §3.2 records that changing a
+  Render environment variable triggers a restart or redeploy, which for the api runs
+  `preDeployCommand`. So before triggering it: read all three service identities; **establish
+  `A == L` rather than assuming it** (a configuration act ordinarily does not change the image, but
+  equality is verified, not presumed, and the ancestry outcome is recorded either way); compute the
+  pending set and **stop unless it is EMPTY**; and record the full §4.4.2 operator record.
 - **Deliberately unchanged:** the durable authority gate stays **`OFF`**; manual, scheduled and queue
   dispatch all stay **off**; approval and publication remain unauthorized.
 - **Acceptance evidence:** exact deployed identity per service; `/healthz` and durable
@@ -1112,6 +1268,9 @@ record. **None may be granted together with another.**
 - **Entry:** M4.2 accepted.
 - **Authorize:** changing **only** `CONTENT_INTELLIGENCE_MANUAL_DISPATCH_ENABLED`, applied through its
   own pinned configuration deployment / restart.
+- **That restart is an api deployment for gating purposes and takes the full §4.4.2 preflight**, on
+  the same terms as M4.1: three service identities read, `A == L` **established rather than assumed**,
+  pending set verified **EMPTY**, and the §4.4.2 operator record captured before triggering.
 - **Deliberately unchanged:** `CONTENT_INTELLIGENCE_SCHEDULED_DISPATCH_ENABLED` remains **off**, so
   scheduled, cron, automatic and queue dispatch remain off. Layer 4a never implies 4b (§3.1).
 - **Acceptance evidence:** a run submission attempted with **no grant** is refused at C1 — proving the
@@ -1195,6 +1354,10 @@ Reversing that order would leave the fastest control unused while waiting on a r
   `LIVE`, and raise `CONTENT_INTELLIGENCE_SCHEDULED_DISPATCH_ENABLED` — **three separate
   authorizations, each its own single-control act on the M4 pattern, never granted together.** This is
   the first step at which layer 4b is satisfied.
+- **The two configuration acts each restart the api, so each takes the full §4.4.2 preflight** —
+  three service identities read, `A == L` established rather than assumed, pending set verified
+  **EMPTY**, and the §4.4.2 operator record captured before triggering. The durable-gate transition
+  needs no deployment and therefore no preflight.
 - **Scheduled dispatch is authorized only to the exact bounded extent M7 defines** — the cadence,
   window and per-period run count named in its authorization, and no more.
 - **Manual dispatch is *unavailable* after M7 unless a new, separately authorized bounded grant is
