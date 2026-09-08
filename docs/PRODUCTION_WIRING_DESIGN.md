@@ -501,7 +501,7 @@ with no committed decision record is unauthorized by definition.**
 | **G1 Audit** | §4.1 complete, results committed | Any measured maximum exceeds its bound |
 | **G2 Decision** | §4.2 record committed and authorized | Missing, unsigned, or stale |
 | **G3 Rollout path** | The separately authorized migration-bearing rollout, **not** the ordinary controller path | **VERIFIED** the controller already stops before any service action when the release range touches `state/migrations/**` |
-| **G3a Pending-set verification** | The exact pending set is computed and recorded **immediately before** the runner is invoked, and equals the set expected for that specific deployment **exactly** — `{007}` at M1, `{008}` at M2, **empty** at every later api deployment, per §4.4.2. Required before **every** use of the general migration runner, including the one the api `preDeployCommand` triggers, and including configuration-only restarts | The computed set differs from the expected set by **even one file** → stop; do not run the runner, do not trigger the deploy; the appearing file needs its own §4 treatment |
+| **G3a Complete migration-state verification** | **`F(A)`, `D` and `P = F(A) − D` are all computed and recorded immediately before the runner is invoked**, and **all seven comparisons of §4.4.2 pass** against that deployment's four expected sets — `E_files`, `E_applied_pre`, `E_pending`, `E_applied_post`. **Validating `P` alone is not sufficient**: an unexpected *already-applied* migration cancels out of `P` and is invisible to it, so the complete applied set `D` is checked in its own right. Required before **every** use of the general migration runner, including the one the api `preDeployCommand` triggers, and including configuration-only restarts of a service that carries the api | **Any** of the seven comparisons fails — an unexpected pending file, a missing expected one, **an unexpected or unauthorized already-applied migration**, an applied identifier absent from the artifact, an extra artifact file, or a duplicate → stop; do not run the runner, do not trigger the deploy; the discrepancy needs its own §4 treatment |
 | **G3b Controlled artifact** | The **deployed artifact** is a named exact reviewed commit meeting every requirement A1–A5 of §4.4 — its `state/migrations/` contains exactly the authorized set, its application code is approved to deploy and serve, and it satisfies the **A/L ancestry predicate** of §4.4.1. Applying a migration **is an API deployment** (§4.4); selection comes only from what the artifact contains, never from the runner | Any of A1–A5 fails; or the artifact's migrations directory contains a file outside the authorized set |
 | **G4 Single runner** | Exactly one migration authority; no schema-dependent consumer racing it | More than one runner, or a consumer started early |
 | **G5 Transactional apply, by the only sanctioned authority** | Applied by `npm run migrate` **through the api `preDeployCommand`**, which wraps each file in `BEGIN…COMMIT`. **VERIFIED** ([`ROLLOUT_PHASE_0B0.md`](ROLLOUT_PHASE_0B0.md) §5) that this is the repository's standing rule and the one under which 006 was applied | Applied by hand via `npm run migrate` or `psql -f` — both are prohibited by that rule, and `psql -f` additionally disables the `SET LOCAL` timeout guards silently. Neither is an escape hatch for applying one file: **G3b is**, by controlling what the artifact contains |
@@ -680,7 +680,8 @@ its own extra precondition (the UNKNOWN above) and its own authorization, and wh
 as "the controller would have done this too."
 
 **M1's manual execution bypasses the automated controller entirely**, which is why the predicate,
-the pending-set gate, health verification and rollback all have to be carried by the milestone itself
+the complete migration-state gate, health verification and rollback all have to be carried by the
+milestone itself
 rather than inherited.
 
 **This predicate proves only that the version movement is acceptable. It proves nothing about the
@@ -697,7 +698,7 @@ the predicate resolves.
 | **A1** | An **exact reviewed commit**, named by full SHA in the §4.2 decision record, with exact-head CI green | Any ambiguity about which commit; a branch name or tag instead of a SHA |
 | **A2** | Its `state/migrations/` contains **`001`–`007` and no later migration** — enumerated and recorded, not assumed | Any file beyond `007` present |
 | **A3** | Its **application code is approved as safe to deploy and safe to serve**, both before the migration and after it — reviewed as a deployment on its own terms, not waved through because the point of the exercise is the schema | Application code not separately approved for deployment |
-| **A4** | A **production pending-set check returning exactly `{007_evidence_bounds.sql}`** (G3a), computed against the target database immediately before the deploy is triggered | The set differs by even one file |
+| **A4** | The **complete migration-state check of §4.4.2** (G3a) passes against the target database immediately before the deploy is triggered: `F(A) == E_files` (`001`–`007`, no later migration), `D == E_applied_pre` (exactly the baseline `001`–`006`), `P == E_pending` (exactly `{007_evidence_bounds.sql}`), and **all seven comparisons hold** | **Any** of the seven comparisons fails — including an **unexpected already-applied** migration, which `P` alone cannot detect |
 | **A5** | The artifact **satisfies the A/L ancestry predicate** of §4.4.1 — either `A == L`, or `L` is an ancestor of `A`. `L` is obtained by read-only verification of the running api, never assumed | `A` is a proper ancestor of `L` ⇒ a runtime rollback ⇒ stop. Neither is an ancestor of the other ⇒ divergent histories ⇒ stop. `L` cannot be obtained ⇒ stop. Each needs its own authorization and its own review |
 
 #### Because it is a deployment, these must also be satisfied
@@ -900,8 +901,8 @@ changing it restarts neither the api nor its `preDeployCommand`, reaches **no mi
 **Deployment ordering:** every migration reaches production through an api deployment (§4.4), so
 "database first" means **an api-only deployment first**. 007 under M1, at an artifact meeting A1–A5
 and **before P1 merges**, deploying the api alone so it is the single migration runner; then 008 as
-part of the migration-bearing release in M2, again with the pending set verified against the exact
-commit **before the deploy is triggered** → api → worker → scheduler, matching the merged controller's
+part of the migration-bearing release in M2, again with the **complete migration state** verified
+against the exact commit **before the deploy is triggered** → api → worker → scheduler, matching the merged controller's
 existing serialized order. **The manual dispatch ceiling is raised at M4.3 and the scheduled ceiling
 only at M7**,
 each under its own authorization, and neither is implied by any deployment.
@@ -1150,8 +1151,9 @@ and never before `L` is in hand.
 - **The artifact** is the reviewed head of `main` at this time and must satisfy **A1–A5** of §4.4:
   an exact reviewed commit with exact-head CI green; `001`–`007` and no later migration, enumerated;
   application code separately approved as safe to deploy **and safe to serve**; a production
-  pending-set check of exactly `{007_evidence_bounds.sql}`; and **satisfaction of the A/L ancestry
-  predicate** (§4.4.1). **Any mismatch stops the milestone.**
+  **complete migration-state check** of §4.4.2 — `F(A)` exactly `001`–`007`, `D` exactly the baseline
+  `001`–`006`, `P` exactly `{007_evidence_bounds.sql}`, **all seven comparisons passing**; and
+  **satisfaction of the A/L ancestry predicate** (§4.4.1). **Any mismatch stops the milestone.**
 - **Action:**
   1. **Record exact deployed identity before** — read the commit each of the three services is running
      from the running system, read-only. It is **UNKNOWN until read** and may not be inferred from
@@ -1162,12 +1164,21 @@ and never before `L` is in hand.
      (divergent histories), or if `L` could not be obtained — each needs its own authorization and
      review, not this milestone's. Only once the predicate passes may this deployment be described as
      a forward deployment.
-  3. **G3a** — compute and record `applied`, `present`, `pending` and the artifact SHA per §4.4,
-     against the target database, **before triggering the deploy**. **Stop unless `pending` is exactly
-     `{007_evidence_bounds.sql}`.** There is no intervention point once the deploy starts.
+  3. **G3a — the complete migration-state check of §4.4.2**, computed against the target database
+     **before triggering the deploy**. Enumerate `F(A)` (the `*.sql` identifiers at `A`) and `D` (the
+     `_migrations` rows, read-only, with row count and distinct-identifier count), derive
+     `P = F(A) − D`, and require **all seven comparisons** against M1's expected sets: `E_files` =
+     `001`–`007` **and no later migration**; `E_applied_pre` = **exactly the authorized baseline
+     `001`–`006`**; `E_pending` = exactly `{007_evidence_bounds.sql}`; `E_applied_post` = exactly
+     `001`–`007`. **Stop on any failure** — including an **unexpected already-applied migration**,
+     which `P` alone cannot see because it cancels out of the difference. There is no intervention
+     point once the deploy starts.
   4. **Record the §4.4.2 operator record in full** — `artifact_sha`, `live_api_sha`,
-     `ancestry_decision`, `migrations_present`, `migrations_applied`, `pending_computed`,
-     `pending_expected` = `{007_evidence_bounds.sql}`, and the pass/stop decision.
+     `ancestry_decision`, `F(A)`, `D`, `P`, **all four expected sets** (`E_files`, `E_applied_pre`,
+     `E_pending`, `E_applied_post`), the outcome of **each of the seven comparisons individually**,
+     the pass/stop decision, and — after the deployment — **`D_post`**, which must equal
+     `E_applied_post`. A deployment performed without every one of those fields is unauthorized by
+     definition (§4.4.2).
   5. **Deploy `gcd-social-api` at the artifact commit, and nothing else** — not the worker, not the
      scheduler. Its `preDeployCommand` is the single migration authority (G4, G5), which is exactly
      why only the api is deployed.
@@ -1224,9 +1235,12 @@ merged but, until this milestone, not running anywhere.
 - **This release is migration-bearing.** P1 adds migration 008, and the api `preDeployCommand` will
   apply it (§4.0). So this deployment uses the **separately authorized migration-bearing rollout**,
   not the ordinary controller path, and 008 gets the same G3a–G7 discipline 007 received:
-  1. **G3a before triggering the deploy** — compute and record the pending set **against the exact
-     commit about to be deployed**. **Stop unless it is exactly `{008_...sql}`.** There is no
-     opportunity to intervene once the deploy starts.
+  1. **G3a before triggering the deploy** — the **complete migration-state check of §4.4.2** against
+     the exact commit about to be deployed: `F(A)` exactly through `008`, `D` exactly through `007`,
+     `P` exactly `{008_...sql}`, `E_applied_post` exactly through `008`, and **every one of the seven
+     comparisons passing** — not merely that pending looks right. **Stop on any failure**, including
+     an **unexpected already-applied migration**. There is no opportunity to intervene once the deploy
+     starts.
   2. one runner, transactional apply, post-apply validation.
   008 needs no data audit — it creates new tables and validates nothing against existing rows — but it
   still needs its own authorization and its own post-apply check.
@@ -1235,7 +1249,8 @@ merged but, until this milestone, not running anywhere.
   `PARTIAL_RELEASE_STATE` and refuses to release from. **M2 is therefore executed as an explicitly
   authorized manual departure from the controller**, not through it — and consequently carries every
   gate the controller would otherwise have supplied, itself: a pinned artifact, the A/L ancestry
-  decision, the pending-set gate, its own authorization, health verification, and a defined rollback.
+  decision, the complete migration-state gate, its own authorization, health verification, and a
+  defined rollback.
 - **Action, in this order:**
   1. **Record all three service identities, read-only** — the exact commit the api, worker and
      scheduler are each serving. Each is **UNKNOWN until read** and may **not** be inferred from
@@ -1246,8 +1261,12 @@ merged but, until this milestone, not running anywhere.
      Proceed only if `A == L` or `L` is an ancestor of `A`. **Stop** if `A` is a proper ancestor of `L`
      (a runtime rollback), if neither is an ancestor of the other (divergence), or if `L` cannot be
      obtained.
-  3. **G3a / §4.4.2** — compute the pending set against `A` and **stop unless it is exactly
-     `{008_…sql}`**; record the full §4.4.2 operator record.
+  3. **G3a / §4.4.2 — the complete migration-state check.** Enumerate `F(A)` and `D`, derive `P`, and
+     require **all seven comparisons** to pass against M2's expected sets: `E_files` exactly through
+     `008`, `E_applied_pre` exactly through `007`, `E_pending` exactly `{008_…sql}`, `E_applied_post`
+     exactly through `008`. **Stop on any failure**, including an unexpected already-applied
+     migration. Record the full §4.4.2 operator record — every field, including `D`, all four expected
+     sets, the seven comparison outcomes, and `D_post` afterwards.
   4. **Deploy** the reviewed inert code, api → worker → scheduler, reconciling all three services to
      one commit and ending the partial-release interval.
 - **Leaves unauthorized:** both dispatch ceilings, live execution, approval, publication. Nothing is
@@ -1288,10 +1307,13 @@ two deployments; collapsing them would breach the one-control-per-act rule (§3.
   2. **Evaluate the A/L ancestry predicate** (§4.4.1) with `A` = the pinned P8 commit and `L` = the
      live api commit just read. Proceed only on `A == L` or `L` ancestor of `A`; stop on
      proper-ancestor, divergence, or unobtainable `L`.
-  3. **§4.4.2 pending-set gate — the expected set is EMPTY**, because 007 and 008 are already applied.
-     **Stop on any non-empty set**, which requires its own audit, decision record, authorization,
-     validation and rollback plan before this deployment may be retried. Record the full §4.4.2
-     operator record.
+  3. **§4.4.2 complete migration-state gate.** `E_pending` is **EMPTY**, because 007 and 008 are
+     already applied — but emptiness alone is not the test: **all seven comparisons must pass**,
+     with `E_files` and `E_applied_pre` both the exact authorized inventory and `E_applied_post`
+     unchanged. **Stop on any failure** — a non-empty `P`, **or an unexpected already-applied
+     migration that leaves `P` empty**, or an applied identifier absent from the artifact — each
+     requiring its own audit, decision record, authorization, validation and rollback plan before this
+     deployment may be retried. Record the full §4.4.2 operator record, including `D_post`.
   4. **Deploy** P8 at that exact pinned commit, api → worker → scheduler, with the same
      identity-and-health discipline M2 defines.
 - **Why this arms nothing:** with P2 merged, `executionEnabled: true` satisfies only *half* of layer
@@ -1349,8 +1371,11 @@ record. **None may be granted together with another.**
   Render environment variable triggers a restart or redeploy, which for the api runs
   `preDeployCommand`. So before triggering it: read all three service identities; **establish
   `A == L` rather than assuming it** (a configuration act ordinarily does not change the image, but
-  equality is verified, not presumed, and the ancestry outcome is recorded either way); compute the
-  pending set and **stop unless it is EMPTY**; and record the full §4.4.2 operator record.
+  equality is verified, not presumed, and the ancestry outcome is recorded either way); run the
+  **complete §4.4.2 migration-state check** — `F(A)`, `D`, `P`, the exact authorized inventory for
+  `E_files` and `E_applied_pre`, `E_pending` **EMPTY**, `E_applied_post` unchanged — and **stop unless
+  all seven comparisons pass**, an unexpected already-applied migration included; and record the full
+  §4.4.2 operator record, `D_post` included.
 - **Deliberately unchanged:** the durable authority gate stays **`OFF`**; manual, scheduled and queue
   dispatch all stay **off**; approval and publication remain unauthorized.
 - **Acceptance evidence:** exact deployed identity per service; `/healthz` and durable
@@ -1376,7 +1401,9 @@ record. **None may be granted together with another.**
   own pinned configuration deployment / restart.
 - **That restart is an api deployment for gating purposes and takes the full §4.4.2 preflight**, on
   the same terms as M4.1: three service identities read, `A == L` **established rather than assumed**,
-  pending set verified **EMPTY**, and the §4.4.2 operator record captured before triggering.
+  the **complete §4.4.2 migration-state check** run with `E_pending` **EMPTY** and **all seven
+  comparisons passing** — not merely an empty pending set — and the full §4.4.2 operator record
+  captured before triggering.
 - **Deliberately unchanged:** `CONTENT_INTELLIGENCE_SCHEDULED_DISPATCH_ENABLED` remains **off**, so
   scheduled, cron, automatic and queue dispatch remain off. Layer 4a never implies 4b (§3.1).
 - **Acceptance evidence:** a run submission attempted with **no grant** is refused at C1 — proving the
