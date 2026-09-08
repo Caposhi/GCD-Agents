@@ -572,9 +572,9 @@ The two bounds are now separate values with separate names, and the second is en
 
 **Explicit non-actions.** Nothing was enabled, deployed, approved, scheduled, or published. No production SQL was applied, no migration was run, no `evidence:sync` was run, no Render or GitHub variable or settings change was made, no brief was created, no automation was enabled, no content was approved, and no provider or model call was made — every test used an injected runner. No production route, worker wiring, scheduler, retry, repair call, model tool, approval authority, or publishing authority was added. PR #39 was left untouched.
 
-**Rollback / recovery status.** Rollback is to revert merge commit `0c13ab1af9c7ca796a1d48ed37207715a47166e4`, which removes the reconciliation in one step. No database, Render, provider, approval, publication, or production cleanup is required, because none was introduced: the merge applied no migration, and added no route, environment variable, credential, dependency, lockfile change, workflow change or `render.yaml` change, and changed no `executionEnabled` field. Migration 007 is **in source and unapplied**, so reverting the merge removes a file rather than unwinding a schema. If 007 is ever applied and must be reversed, `state/rollback/007_evidence_bounds_rollback.sql` is the documented operation, applied by hand under its own authorization — note that it relaxes the database only: the TypeScript contract still refuses an oversized record, so the system continues to fail closed.
+**Rollback / recovery status.** Rollback is to revert merge commit `0c13ab1af9c7ca796a1d48ed37207715a47166e4`, which removes the reconciliation in one step. No database, Render, provider, approval, publication, or production cleanup is required, because none was introduced: the merge applied no migration, and added no route, environment variable, credential, dependency, lockfile change, workflow change or `render.yaml` change, and changed no `executionEnabled` field. Migration 007 is **in source**, and **whether it is applied in production is `UNKNOWN` — not established in either direction**. If it is unapplied, reverting the merge removes a file rather than unwinding a schema; if it has been applied, reverting the merge removes the file while leaving the schema changed, which is a database question and not a revert. **Establish which case holds, read-only, before reverting.** If 007 is ever applied and must be reversed, `state/rollback/007_evidence_bounds_rollback.sql` is the documented operation, applied by hand under its own authorization — note that it relaxes the database only: the TypeScript contract still refuses an oversized record, so the system continues to fail closed.
 
-**Migration 007 is unapplied, and merging it granted no authority to apply it.** Before `state/migrations/007_evidence_bounds.sql` may reach production it needs, separately and in order: its own explicit authorization; a fresh read-only production audit establishing that the immediately validated constraints can pass against the data actually stored (the 2026-09-02 audit is a **dated** fact, not a standing one); the separately authorized migration-bearing rollout procedure rather than the ordinary controller path, with exactly one migration runner and no schema-dependent consumer racing it; and post-application verification. None of that is performed or authorized by this merge.
+**Migration 007's applied state in production is `UNKNOWN` — not established in either direction — and merging it granted no authority to apply it.** Before `state/migrations/007_evidence_bounds.sql` may reach production it needs, separately and in order: its own explicit authorization; a fresh read-only production audit establishing that the immediately validated constraints can pass against the data actually stored (the 2026-09-02 audit is a **dated** fact, not a standing one); the separately authorized migration-bearing rollout procedure rather than the ordinary controller path, with exactly one migration runner and no schema-dependent consumer racing it; and post-application verification. None of that is performed or authorized by this merge.
 
 **Documents updated at completion.** In the implementing pull request — `README.md`, `docs/ARCHITECTURE.md`, `docs/ROADMAP.md`, `docs/STATUS.md`, `docs/TESTING.md`, and `docs/AI_HANDOFF.md`. In the post-merge reconciliation that added this durable record — all of the above plus `docs/DATA_MODEL.md` and `docs/SECURITY_AND_CONTINUITY.md`.
 
@@ -795,8 +795,17 @@ all**, the migration table carrying no checksum.
 wiring" and is **not** the Google Business Profile expansion, which stays deferred. It is the accepted
 design's own **first prerequisite: a read-only verification of live production identity and database
 state** — the three service commits (which establishes `L`, and with it the candidate rollback
-artifact `R`), `/healthz`, the control settings, and the `_migrations` rows — performed by an
-authorized operator, read-only, and recorded as a dated observation. Everything else the design gates
+artifact `R`), `/healthz`, the control settings, and **the complete migration-state evidence §4.4.2
+requires**: the full `_migrations` identifier set `D` **enumerated**, its row count recorded alongside
+its distinct-identifier count, and the artifact's migration files `F(A)` at the commit each service
+runs, so that `P = F(A) − D` and all **seven** §4.4.2 conditions can be evaluated rather than assumed.
+**Collecting the `_migrations` rows alone is not sufficient**, and neither is the pending set: an
+unexpected already-applied migration appears in both `F(A)` and `D` and cancels out of `P`, so the
+complete applied set must be validated in its own right against an expected inventory. This
+verification is **evidence only** — it is not the §4.1 aggregate audit, not the §4.2 decision record,
+not the rollback-artifact compatibility proof, and not M1; each of those remains its own separate gate
+requiring its own authorization. Performed by an authorized operator, read-only, and recorded as a
+dated observation. Everything else the design gates
 on depends on facts that verification produces. Only after it, and each under its own separate
 authorization, come: the **migration-007 aggregate read-only audit and its committed decision record**
 (§4.1–§4.2); **confirmation of same-commit `preDeployCommand` behaviour**, if the `A == L` path may be
@@ -806,7 +815,8 @@ reconciliation performs none of them, and M1 is not authorized.**
 **Documents updated at completion.** In the implementing pull request (PR #56) — `README.md`,
 `docs/AI_HANDOFF.md`, `docs/ARCHITECTURE.md`, `docs/ROADMAP.md`, `docs/STATUS.md`, and the new
 `docs/PRODUCTION_WIRING_DESIGN.md`. In this post-merge reconciliation — `README.md`,
-`docs/AI_HANDOFF.md`, `docs/PRODUCTION_WIRING_DESIGN.md`, `docs/ROADMAP.md`, and `docs/STATUS.md`.
+`docs/AI_HANDOFF.md`, `docs/ARCHITECTURE.md`, `docs/PRODUCTION_WIRING_DESIGN.md`, `docs/ROADMAP.md`,
+`docs/SECURITY_AND_CONTINUITY.md`, and `docs/STATUS.md`.
 
 ## Phase 0B — Content Intelligence runtime
 
