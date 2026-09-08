@@ -813,8 +813,13 @@ whatever identifier appeared or is missing.
 **No deployment may silently apply a newly added migration merely because the general runner discovers
 it.** Discovery by the runner is exactly the failure mode this gate exists to prevent.
 
-**Required operator record, for every api deployment in this rollout.** Recorded before the trigger,
-and retained with the milestone's evidence:
+**Required operator record, for every api deployment in this rollout.** The record has **two parts,
+completed at two different times**. Part 1 is finished **before** the deployment is triggered; Part 2
+can only be finished **after** it, because its fields are readings taken afterwards. Both are retained
+with the milestone's evidence.
+
+**Part 1 — the pre-deployment record.** Complete and retain this **before triggering the deployment**.
+**The deployment may not be triggered until Part 1 is complete and its `decision` is `pass`:**
 
 | Field | Content |
 |---|---|
@@ -826,18 +831,29 @@ and retained with the milestone's evidence:
 | `P` | `F(A) − D`, enumerated |
 | `E_files`, `E_applied_pre`, `E_pending`, `E_applied_post` | the four expected sets for this deployment, from the table above |
 | `comparisons` | the outcome of each of the seven checks, individually |
-| `decision` | **pass** or **stop**, with the reason |
-| *(post-deployment)* `D_post` | the `_migrations` rows read afterwards, enumerated |
-| *(post-deployment)* `post_comparison` | the **recorded outcome** of `D_post == E_applied_post` — **match** or **mismatch**, with the differing identifiers named. Recording `D_post` without recording this comparison leaves the deployment unvalidated |
-| *(post-deployment)* `post_decision` | the **validation-versus-rollback decision**: **validated — milestone complete**, or **rollback initiated**, naming which rollback path (application, database, or both, per that milestone's ladder) and the reason. A mismatch **requires** the rollback branch; it is never recorded as a variance and left standing |
+| `decision` | **pass** or **stop**, with the reason. **`stop` means the deployment is not triggered** |
 
-**All three post-deployment fields are mandatory.** `D_post` on its own is an observation, not a decision:
+**Part 2 — the post-deployment closure.** Complete this **after the deployment has run**, from
+readings taken at that point. **The milestone may not be called complete until Part 2 is complete:**
+
+| Field | Content |
+|---|---|
+| `D_post` | the `_migrations` rows read **after** the deployment, enumerated |
+| `post_comparison` | the **recorded outcome** of `D_post == E_applied_post` — **match** or **mismatch**, with the differing identifiers named. Recording `D_post` without recording this comparison leaves the deployment unvalidated |
+| `post_decision` | the **validation-versus-rollback decision**: **validated — milestone complete**, or **rollback initiated**, naming which rollback path (application, database, or both, per that milestone's ladder) and the reason. A mismatch **requires** the rollback branch; it is never recorded as a variance and left standing |
+
+**All three closure fields are mandatory.** `D_post` on its own is an observation, not a decision:
 without `post_comparison` nothing records whether the applied state actually matched what was
 expected, and without `post_decision` nothing records what the operator did about it. A milestone
 whose record ends at `D_post` is **not** complete.
 
-A deployment performed without this record — **including all three post-deployment fields** — is
-unauthorized by definition, on the same terms as an apply without a decision record (§4.2).
+**The two parts are never merged into one step.** Part 1 cannot contain Part 2's fields — they do not
+exist yet — and a milestone that lists them together in a single pre-deployment step describes a
+sequence no operator can perform. Every milestone below orders them as: complete Part 1 → trigger the
+deployment → complete Part 2.
+
+A deployment performed without **both parts** of this record is unauthorized by definition, on the
+same terms as an apply without a decision record (§4.2).
 
 #### What is not known
 
@@ -1183,20 +1199,22 @@ and never before `L` is in hand.
      `001`–`007`. **Stop on any failure** — including an **unexpected already-applied migration**,
      which `P` alone cannot see because it cancels out of the difference. There is no intervention
      point once the deploy starts.
-  4. **Record the §4.4.2 operator record in full** — `artifact_sha`, `live_api_sha`,
-     `ancestry_decision`, `F(A)`, `D`, `P`, **all four expected sets** (`E_files`, `E_applied_pre`,
-     `E_pending`, `E_applied_post`), the outcome of **each of the seven comparisons individually**,
-     and the pass/stop decision. Then, **after the deployment**, all three of: **`D_post`**
-     enumerated; **`post_comparison`** — the recorded outcome of `D_post == E_applied_post`, match or
-     mismatch with the differing identifiers named; and **`post_decision`** — **validated, milestone
-     complete**, or **rollback initiated**, naming the path taken from this milestone's rollback
-     ladder and the reason. **A mismatch requires the rollback branch**, never a noted variance.
-     Recording `D_post` alone does not satisfy this step: without the comparison outcome and the
-     decision, nothing records whether the applied state matched or what was done about it. A
-     deployment performed without every one of those fields is unauthorized by definition (§4.4.2).
+  4. **Complete §4.4.2 Part 1 — the pre-deployment record**, before triggering anything:
+     `artifact_sha`, `live_api_sha`, `ancestry_decision`, `F(A)`, `D`, `P`, **all four expected sets**
+     (`E_files`, `E_applied_pre`, `E_pending`, `E_applied_post`), the outcome of **each of the seven
+     comparisons individually**, and the pass/stop decision. **Do not trigger the deployment unless
+     that decision is `pass`.**
   5. **Deploy `gcd-social-api` at the artifact commit, and nothing else** — not the worker, not the
      scheduler. Its `preDeployCommand` is the single migration authority (G4, G5), which is exactly
      why only the api is deployed.
+  6. **Complete §4.4.2 Part 2 — the post-deployment closure**, from readings taken now that the
+     deployment has run: **`D_post`** enumerated; **`post_comparison`** — the recorded outcome of
+     `D_post == E_applied_post`, match or mismatch with the differing identifiers named; and
+     **`post_decision`** — **validated, milestone complete**, or **rollback initiated**, naming the
+     path taken from this milestone's rollback ladder and the reason. **A mismatch requires the
+     rollback branch**, never a noted variance. Recording `D_post` alone does not close the milestone:
+     without the comparison outcome and the decision, nothing records whether the applied state
+     matched or what was done about it. **M1 is not complete until this step is.**
 - **Exit, all required:**
   1. G6 and G7 pass; `_migrations` holds `007` exactly once and **no file outside the authorized set**;
   2. **exact deployed identity after** — `gcd-social-api` reports the artifact commit; the worker and
@@ -1280,10 +1298,14 @@ merged but, until this milestone, not running anywhere.
      require **all seven comparisons** to pass against M2's expected sets: `E_files` exactly through
      `008`, `E_applied_pre` exactly through `007`, `E_pending` exactly `{008_…sql}`, `E_applied_post`
      exactly through `008`. **Stop on any failure**, including an unexpected already-applied
-     migration. Record the full §4.4.2 operator record — every field, including `D`, all four expected
-     sets, the seven comparison outcomes, and `D_post` afterwards.
+     migration. **Complete §4.4.2 Part 1 — the pre-deployment record** — every Part 1 field,
+     including `D`, all four expected sets and the seven comparison outcomes — and do not trigger
+     unless its decision is `pass`.
   4. **Deploy** the reviewed inert code, api → worker → scheduler, reconciling all three services to
      one commit and ending the partial-release interval.
+  5. **Complete §4.4.2 Part 2 — the post-deployment closure**: `D_post`, `post_comparison` against
+     `E_applied_post` (exactly through `008`), and `post_decision`. **M2 is not complete until this
+     step is.**
 - **Leaves unauthorized:** both dispatch ceilings, live execution, approval, publication. Nothing is
   enabled and no grant exists.
 - **Verify, and record:**
@@ -1328,9 +1350,13 @@ two deployments; collapsing them would breach the one-control-per-act rule (§3.
      unchanged. **Stop on any failure** — a non-empty `P`, **or an unexpected already-applied
      migration that leaves `P` empty**, or an applied identifier absent from the artifact — each
      requiring its own audit, decision record, authorization, validation and rollback plan before this
-     deployment may be retried. Record the full §4.4.2 operator record, including `D_post`.
+     deployment may be retried. **Complete §4.4.2 Part 1 — the pre-deployment record** — and do not
+     trigger unless its decision is `pass`.
   4. **Deploy** P8 at that exact pinned commit, api → worker → scheduler, with the same
      identity-and-health discipline M2 defines.
+  5. **Complete §4.4.2 Part 2 — the post-deployment closure**: `D_post`, `post_comparison` against an
+     `E_applied_post` unchanged from `E_applied_pre`, and `post_decision`. **M3 is not complete until
+     this step is.**
 - **Why this arms nothing:** with P2 merged, `executionEnabled: true` satisfies only *half* of layer
   5. The durable gate still reads `OFF`, so C1–C3 refuse. **This is why the earlier "every executor
   stays disabled while shadow produces stage results" sequencing was impossible: with P2 enforcing
@@ -1389,8 +1415,11 @@ record. **None may be granted together with another.**
   equality is verified, not presumed, and the ancestry outcome is recorded either way); run the
   **complete §4.4.2 migration-state check** — `F(A)`, `D`, `P`, the exact authorized inventory for
   `E_files` and `E_applied_pre`, `E_pending` **EMPTY**, `E_applied_post` unchanged — and **stop unless
-  all seven comparisons pass**, an unexpected already-applied migration included; and record the full
-  §4.4.2 operator record, `D_post` included.
+  all seven comparisons pass**, an unexpected already-applied migration included; and **complete
+  §4.4.2 Part 1, the pre-deployment record**, triggering only on a `pass` decision.
+- **After the restart, complete §4.4.2 Part 2 — the post-deployment closure**: `D_post`,
+  `post_comparison` against an unchanged `E_applied_post`, and `post_decision`. **This act is not
+  accepted until that closure is recorded.**
 - **Deliberately unchanged:** the durable authority gate stays **`OFF`**; manual, scheduled and queue
   dispatch all stay **off**; approval and publication remain unauthorized.
 - **Acceptance evidence:** exact deployed identity per service; `/healthz` and durable
@@ -1417,8 +1446,10 @@ record. **None may be granted together with another.**
 - **That restart is an api deployment for gating purposes and takes the full §4.4.2 preflight**, on
   the same terms as M4.1: three service identities read, `A == L` **established rather than assumed**,
   the **complete §4.4.2 migration-state check** run with `E_pending` **EMPTY** and **all seven
-  comparisons passing** — not merely an empty pending set — and the full §4.4.2 operator record
-  captured before triggering.
+  comparisons passing** — not merely an empty pending set — and **§4.4.2 Part 1, the pre-deployment
+  record**, captured before triggering. **After the restart, §4.4.2 Part 2 — the post-deployment
+  closure** (`D_post`, `post_comparison`, `post_decision`) is recorded, and this act is not accepted
+  until it is.
 - **Deliberately unchanged:** `CONTENT_INTELLIGENCE_SCHEDULED_DISPATCH_ENABLED` remains **off**, so
   scheduled, cron, automatic and queue dispatch remain off. Layer 4a never implies 4b (§3.1).
 - **Acceptance evidence:** a run submission attempted with **no grant** is refused at C1 — proving the
@@ -1508,7 +1539,7 @@ Reversing that order would leave the fastest control unused while waiting on a r
 
 | Act | Control | Old → new | Services changed | Those services restart? | Api a target? | Api `preDeployCommand` runs? | Required checks |
 |---|---|---|---|---|---|---|---|
-| **M7-a** | `CONTENT_INTELLIGENCE_MAX_AUTHORITY` | `SHADOW` → `LIVE` | **worker, api** | yes, both | **yes** | **yes** | Full **§4.4.2 preflight** — all service identities read, `A == L` **established rather than assumed**, `F(A)`/`D`/`P` validated with `E_pending` **empty** and `E_applied_pre` the exact authorized inventory, operator record captured; then api and worker identity + `/healthz` + durable readiness; rollback = restore the previous value and restart |
+| **M7-a** | `CONTENT_INTELLIGENCE_MAX_AUTHORITY` | `SHADOW` → `LIVE` | **worker, api** | yes, both | **yes** | **yes** | **Before triggering:** the full **§4.4.2 preflight** — all service identities read, `A == L` **established rather than assumed**, `F(A)`/`D`/`P` validated with `E_pending` **empty** and `E_applied_pre` the exact authorized inventory, and **§4.4.2 Part 1 (the pre-deployment record)** captured, triggering only on a `pass`. **After the restart:** api and worker identity + `/healthz` + durable readiness, and **§4.4.2 Part 2 (the post-deployment closure)** — `D_post`, `post_comparison`, `post_decision` — without which the act is not accepted. Rollback = restore the previous value and restart |
 | **M7-b** | `CONTENT_INTELLIGENCE_SCHEDULED_DISPATCH_ENABLED` | absent/off → on | **worker, scheduler** | yes, both | **no** | **no** | **No migration gate**, because no api deployment occurs and no migration runner is reached. Instead: **worker and scheduler** identity recorded before and after, their health/readiness observed green, and the api confirmed **unchanged**; rollback = restore the previous value and restart those two services |
 | **M7-c** | The **durable authority gate** row | `SHADOW` → `LIVE` | none — a control-plane row | no restart | no | no | No deployment and therefore no preflight; append-only history row; rollback = set the value back |
 
