@@ -2,14 +2,19 @@
 /**
  * Focused mutation tests for the payload-contract derivations.
  *
- * A derivation regression that cannot fail is decoration. This script proves
- * each load-bearing derivation in `src/harness/agents/payloadContract.ts` (and
- * the eight files that must agree with it) is actually load-bearing: it applies
- * one focused, single-token mutation, rebuilds, runs the Content Intelligence
- * offline suite, and requires the NAMED check that owns that derivation to
- * fail. Then it restores the file byte-for-byte — verified by SHA-256 against
- * the bytes captured before the mutation — rebuilds, and requires the suite to
- * pass again.
+ * A regression that cannot fail is decoration. This script proves each
+ * load-bearing derivation in `src/harness/agents/payloadContract.ts` (and the
+ * nine files that must agree with it) is actually load-bearing: it applies one
+ * focused mutation, rebuilds, runs the Content Intelligence offline suite, and
+ * requires the NAMED check that owns that derivation to fail. Then it restores
+ * the file byte-for-byte — verified by SHA-256 against the bytes captured
+ * before the mutation — rebuilds, and requires the suite to pass again.
+ *
+ * The final group is not a derivation but an epistemic invariant: migration
+ * 007's live application state is UNKNOWN in either direction, and neither the
+ * migration nor its rollback script may declare it. Those mutations insert
+ * declarative forms — positive and negative, present, perfect and past — and
+ * require CC5 to catch each one.
  *
  * It is offline and deterministic: no network, no database, no provider, no
  * credential. It mutates only files inside this repository's `src/` and
@@ -36,6 +41,7 @@ const EVIDENCE_CONTRACT = "src/harness/evidence/contract.ts";
 const EVIDENCE_PACK = "src/harness/evidence/pack.ts";
 const STAGE_EXECUTION = "src/harness/agents/stageExecution.ts";
 const SDK = "src/harness/sdk.ts";
+const ROLLBACK = "state/rollback/007_evidence_bounds_rollback.sql";
 
 /**
  * Each mutation names the derivation it breaks, the single edit that breaks it,
@@ -329,6 +335,67 @@ const MUTATIONS = [
     from: "    if (conflicted.has(record.id)) {\n      conflictedEvidence.push(record);\n      continue;\n    }",
     to: "",
     expect: ["CC70.", "CC73."],
+  },
+  // --- CC5: migration 007's applied state is UNKNOWN in either direction ------
+  //
+  // These two files are authoritative repository inputs. Neither may declare
+  // whether 007 is applied to production, because no production database has
+  // been inspected since 2026-08-28 and neither direction is established. CC5
+  // enforces the claim CLASS, not a fixed sentence, so each mutation below
+  // inserts a different declarative form and requires CC5 to catch it. The
+  // positive forms are the ones an earlier CC5 missed: it forbade the negative
+  // wording and `is applied`, so `has been applied` and `was applied` passed.
+  //
+  // Every insertion leaves the required UNKNOWN sentence in place, so these
+  // prove CC5 rejects a declaration even when the epistemic statement is still
+  // present — not merely that it requires the epistemic statement.
+  {
+    name: "the migration comment declares 007 applied, in the perfect (`has been applied`)",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.\n"
+      + "-- Migration 007 has been applied to production.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment declares 007 applied, in the past (`was applied`)",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.\n"
+      + "-- It was applied to production.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment declares 007 applied, in the present (`is applied`)",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.\n"
+      + "-- Migration 007 is already applied to production.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment reinstates the unsupported negative declaration",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.\n"
+      + "-- It has not been applied to production.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment declares 007 applied, in the perfect (`has been applied`)",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first.\n"
+      + "-- Migration 007 has been applied to production.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment reinstates the unsupported negative declaration",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first.\n"
+      + "-- Not applied to production.",
+    expect: ["CC5."],
   },
 ];
 

@@ -5226,19 +5226,53 @@ async function run(): Promise<void> {
         && /CREATE FUNCTION gcd_content_evidence_tags_within_v007/.test(migrationSql)
         && !/CREATE OR REPLACE FUNCTION gcd_content_evidence_tags_within_v007/.test(migrationSql)
         && /DELETE FROM _migrations WHERE name = '007_evidence_bounds\.sql'/.test(rollbackSql));
+    // Migration 007's live application state is UNKNOWN in either direction: no
+    // production database has been inspected since 2026-08-28, so neither "it is
+    // applied" nor "it is not applied" is established. These two files are
+    // authoritative repository inputs, so neither may declare it. The check below
+    // enforces the *claim class* rather than pinning a sentence: it scans each
+    // file's comment prose sentence by sentence and refuses any bare declaration
+    // about 007's application, in either direction, while allowing the epistemic
+    // statement the files are required to carry ("whether ... is UNKNOWN"), the
+    // dated 2026-08-28 observation, and instructions to verify read-only.
+    const applicationPredicate =
+      /\b(?:applied|unapplied|application)\b[^.]{0,40}?\bproduction\b|\bproduction\b[^.]{0,40}?\b(?:applied|unapplied)\b/i;
+    // An epistemic sentence reports what is or is not known; it declares nothing.
+    const epistemicQualifier =
+      /\b(?:whether|UNKNOWN|unknown|not established|establish|verification|verify|observed|as observed|dated|if it (?:has|is|was)|no such claim|records no)\b/i;
+    const sqlComments = (sql: string): string[] => sql
+      .split("\n")
+      .filter((line) => /^\s*--/.test(line))
+      .map((line) => line.replace(/^\s*--\s?/, ""))
+      .join(" ")
+      .split(/(?<=\.)\s+/)
+      .map((sentence) => sentence.trim())
+      .filter(Boolean);
+    // A sentence declares 007's application state iff it makes an application
+    // claim and carries no epistemic qualifier.
+    const bareApplicationClaims = (sql: string): string[] => sqlComments(sql)
+      .filter((sentence) => applicationPredicate.test(sentence)
+        && !epistemicQualifier.test(sentence));
+    const migrationClaims = bareApplicationClaims(migrationSql);
+    const rollbackClaims = bareApplicationClaims(rollbackSql);
+    if (migrationClaims.length || rollbackClaims.length) {
+      console.log(`      offending sentences: ${
+        JSON.stringify([...migrationClaims, ...rollbackClaims])}`);
+    }
     check("CC5. the rollback lives outside the forward-only runner's directory; neither file "
-      + "claims production application in either direction, both state it is UNKNOWN, and both "
-      + "require separate authorization",
+      + "declares 007's production application in either direction, both state it is UNKNOWN "
+      + "in either direction, both keep the 2026-08-28 reading dated, and both require "
+      + "separate authorization",
       !(await readdir(resolve(REPO_ROOT, "state/migrations")))
          .some((f) => /rollback/i.test(f))
         && (await readdir(resolve(REPO_ROOT, "state/rollback")))
              .includes("007_evidence_bounds_rollback.sql")
-        // Neither file may assert application, or non-application, as current fact.
-        && !/(?:has not been|is not|was not|never) applied to production/i.test(migrationSql)
-        && !/(?:has not been|is not|was not|never) applied to production/i.test(rollbackSql)
-        && !/^-- Not applied to production\./m.test(rollbackSql)
-        && !/\bis applied to production\b/i.test(migrationSql)
-        && !/\bis applied to production\b/i.test(rollbackSql)
+        // No bare declaration, either direction, in either file. This subsumes the
+        // positive forms ("is/has been/was/is currently/is already applied to
+        // production") and the negative ones ("is not / has not been / was not /
+        // has never been / is not yet applied", "remains unapplied").
+        && migrationClaims.length === 0
+        && rollbackClaims.length === 0
         // Both must state the unknown explicitly, and in both directions.
         && /UNKNOWN in either direction/.test(migrationSql)
         && /UNKNOWN in either direction/.test(rollbackSql)

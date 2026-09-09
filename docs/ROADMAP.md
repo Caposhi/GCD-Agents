@@ -554,7 +554,7 @@ The two bounds are now separate values with separate names, and the second is en
 
 **The throughput floor, described honestly.** Twenty output tokens per second is an **explicit operational assumption and safety policy**, not a measurement and not a guarantee: this repository holds no measurement of a real model rate, because no test here reaches one and no production caller exists, so there is nothing in repository evidence to measure (whether any executor was ever invoked against a real model outside this repository is **UNKNOWN / NOT ESTABLISHED**), and the earlier claim that observed model rates are several times it has been removed rather than substantiated. The derivation comment now also records the budgets the policies actually carry — 40,000 / 79,000 / 73,000 — in place of stale 8,000 / 15,000 / 15,000 figures that survived an earlier round of budget changes; a regression compares that comment against `POLICY_MAX_TOKENS` so it cannot go stale again silently.
 
-**Regressions.** `CC1`–`CC81` retain the original derivation, adjacency, dormancy, and no-provider proofs and add the exact production Anthropic request with thinking disabled, the exact 4,000/4,001 JSONB edges, the signed `-5e-324` counterexample, TypeScript relation-note parity, the real 64-record/2,016-conflict builder and renderer path, record validation at builder and pre-model boundaries, durable-row reconstruction refusal, executed record cardinality, adversarial multibyte output, collision-safe helper creation, and NULL-tag rejection. `npm run test:payload-mutation` now applies thirty-three focused mutations across nine files, requires named failures rather than crashes, restores every byte by SHA-256, and finishes green. The thinking request, signed JSONB numeric measure, pack record validation, record/conflict cardinalities, canonical-detail measure, relation bound, UTF-8 output bound, NULL-tag rule, and no-overwrite helper rule each have independent mutation evidence.
+**Regressions.** `CC1`–`CC81` retain the original derivation, adjacency, dormancy, and no-provider proofs and add the exact production Anthropic request with thinking disabled, the exact 4,000/4,001 JSONB edges, the signed `-5e-324` counterexample, TypeScript relation-note parity, the real 64-record/2,016-conflict builder and renderer path, record validation at builder and pre-model boundaries, durable-row reconstruction refusal, executed record cardinality, adversarial multibyte output, collision-safe helper creation, and NULL-tag rejection. `npm run test:payload-mutation`, **as delivered by that merge**, applied thirty-three focused mutations across nine files, requiring named failures rather than crashes, restoring every byte by SHA-256, and finishing green. It has since been extended — see [Testing](TESTING.md) for the current count. The thinking request, signed JSONB numeric measure, pack record validation, record/conflict cardinalities, canonical-detail measure, relation bound, UTF-8 output bound, NULL-tag rule, and no-overwrite helper rule each have independent mutation evidence.
 
 **Testing.** At the corrected head, `test:content-intelligence` reports **969** passing checks and the routine eight-suite offline sequence reports **1,367 assertions**. The combined output contains **1,254** `PASS`-prefixed lines from posting (52), image (18), orchestrator (108), gate (56), API (51), and content-intelligence (969). Render-identity reports one invariant-suite pass and ownership/recovery reports 112 checks in summary form, bringing the eight-suite total to **1,367**. Counting `PASS`-prefixed lines alone therefore omits those two suites and understates the total. The PostgreSQL suite reports **208 checks per server** (fresh 59, upgrade 80, durable 69) and passed locally on PostgreSQL 16.15 and 18.6. Every model call uses an injected fake runner. The complete validation contract, exact-head GitHub matrix, and final empirical statistics are recorded in PR #54; no provider, production database, or Render service is involved.
 
@@ -818,7 +818,37 @@ reconciliation performs none of them, and M1 is not authorized.**
 documents it changes: `README.md`, `docs/AI_HANDOFF.md`, `docs/ARCHITECTURE.md`,
 `docs/DATA_MODEL.md`, `docs/PRODUCTION_WIRING_DESIGN.md`, `docs/ROADMAP.md`,
 `docs/SECURITY_AND_CONTINUITY.md`, `docs/STATUS.md`, `docs/TESTING.md`, and
-`docs/credentials-setup.md`.
+`docs/credentials-setup.md`. That reconciliation also carries three non-documentation paths,
+recorded in the next paragraph.
+
+**The reconciliation is not documentation-only, and is classified as migration-touching.** Alongside
+the ten documents it corrects three authoritative repository inputs that asserted what the
+documentation no longer asserts: the **comments** in `state/migrations/007_evidence_bounds.sql` and
+`state/rollback/007_evidence_bounds_rollback.sql`, which declared 007 *"has not been applied to
+production"*, and the `CC5` regression in `src/harness/contentIntelligence.selftest.ts`, which
+required those exact strings and would therefore have rejected a corrected comment. Both comments now
+state that 007's live application state is **`UNKNOWN` in either direction**, keep the 2026-08-28
+reading of `_migrations` at `001–006` as an explicitly dated observation, and require read-only
+verification and separate authorization. `CC5` no longer pins a sentence: it parses each file's
+comment prose into sentences and refuses any **bare declaration** about 007's application — positive
+or negative, present, perfect or past, including *currently*/*already* forms — while allowing the
+epistemic statement (*"whether … is `UNKNOWN`"*), the dated observation, and verification
+instructions. Six mutations in `npm run test:payload-mutation` (M34–M39) prove it load-bearing on
+both files.
+
+**Migration-path classification, accepted and not bypassed.** Because that change touches
+`state/migrations/**`, `scripts/render/deployment-controller.mjs` evaluates
+`git diff --name-only <live>..<target> -- state/migrations/**`, finds a match, sets
+`report.result = "blocked"` and stops with **`MIGRATION_ROLLOUT_REQUIRED`**. The guard uses
+`--name-only` and **does not distinguish a comment-only edit** from a schema change. That
+classification is **correct and deliberately left intact** — the guard was not suppressed, bypassed,
+weakened, or excluded, and the controller, workflows and `render.yaml` are unmodified. **Any release
+range containing this change therefore requires the separately authorized migration-bearing rollout.**
+**No executable SQL changed:** stripping full-line `--` comments and blank lines leaves both scripts
+byte-identical to the base — migration `6e39722…`, rollback `21a8ac8…`, 40 and 19 executable lines
+respectively — and the disposable PostgreSQL 16/18 suites still apply, enforce, roll back and reapply
+007 at 208 checks each. **None of this implies migration 007 was applied, authorized, or deployed;
+its live application state remains `UNKNOWN` in either direction.**
 
 ## Phase 0B — Content Intelligence runtime
 
