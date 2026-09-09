@@ -814,9 +814,11 @@ reconciliation performs none of them, and M1 is not authorized.**
 
 **Documents updated at completion.** In the implementing pull request (PR #56) — `README.md`,
 `docs/AI_HANDOFF.md`, `docs/ARCHITECTURE.md`, `docs/ROADMAP.md`, `docs/STATUS.md`, and the new
-`docs/PRODUCTION_WIRING_DESIGN.md`. In this post-merge reconciliation — `README.md`,
-`docs/AI_HANDOFF.md`, `docs/ARCHITECTURE.md`, `docs/PRODUCTION_WIRING_DESIGN.md`, `docs/ROADMAP.md`,
-`docs/SECURITY_AND_CONTINUITY.md`, and `docs/STATUS.md`.
+`docs/PRODUCTION_WIRING_DESIGN.md`. In this post-merge reconciliation — all ten
+documents it changes: `README.md`, `docs/AI_HANDOFF.md`, `docs/ARCHITECTURE.md`,
+`docs/DATA_MODEL.md`, `docs/PRODUCTION_WIRING_DESIGN.md`, `docs/ROADMAP.md`,
+`docs/SECURITY_AND_CONTINUITY.md`, `docs/STATUS.md`, `docs/TESTING.md`, and
+`docs/credentials-setup.md`.
 
 ## Phase 0B — Content Intelligence runtime
 
