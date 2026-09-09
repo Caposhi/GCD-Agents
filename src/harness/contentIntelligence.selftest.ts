@@ -5229,48 +5229,83 @@ async function run(): Promise<void> {
     // Migration 007's live application state is UNKNOWN in either direction: no
     // production database has been inspected since 2026-08-28, so neither "it is
     // applied" nor "it is not applied" is established. These two files are
-    // authoritative repository inputs, so neither may declare it. The check below
-    // enforces the *claim class* rather than pinning a sentence: it scans each
-    // file's comment prose sentence by sentence and refuses any bare declaration
-    // about 007's application, in either direction, while allowing the epistemic
-    // statement the files are required to carry ("whether ... is UNKNOWN"), the
-    // dated 2026-08-28 observation, and instructions to verify read-only.
-    const applicationPredicate =
-      /\b(?:applied|unapplied|application)\b[^.]{0,40}?\bproduction\b|\bproduction\b[^.]{0,40}?\b(?:applied|unapplied)\b/i;
-    // An epistemic sentence reports what is or is not known; it declares nothing.
-    const epistemicQualifier =
-      /\b(?:whether|UNKNOWN|unknown|not established|establish|verification|verify|observed|as observed|dated|if it (?:has|is|was)|no such claim|records no)\b/i;
-    const sqlComments = (sql: string): string[] => sql
+    // authoritative repository inputs, so neither may declare it.
+    //
+    // The check is PROPOSITION-BOUND and fail-closed. Two earlier forms were not:
+    // requiring "production" near the predicate missed "remains unapplied", and
+    // accepting any qualifier word anywhere in a period-delimited sentence let a
+    // categorical assertion hide behind a "verify"/"UNKNOWN"/"observed" elsewhere
+    // in the same sentence. So: split the comment prose into CLAUSES (sentence
+    // enders, semicolons, colons, dashes, newlines, and comma-conjunctions, so no
+    // separator can mask an assertion), find every clause carrying an application
+    // predicate, and reject each one unless that same clause subordinates the
+    // predicate — the qualifier must govern the proposition, not merely co-occur.
+    //
+    // Positive and negative forms are treated identically: neither is established.
+    const APPLICATION_PREDICATE =
+      /(?:\b(?:is|are|was|were|has|have|had|remains?|remain|stays?)\b|\b(?:is|are|was|were|has|have|had|does|do|did)n['’]t\b)[^;:,]{0,28}?\b(?:applied|unapplied|run)\b/i;
+    // Verbless elliptical declarations ("Not applied to production.", "Never
+    // applied.") assert the same proposition with the copula elided, so a clause
+    // that OPENS with the participle counts as a predicate too.
+    const ELLIPTICAL_PREDICATE =
+      /^(?:not|never|already|still|currently|yet)?\s*(?:applied|unapplied)\b/i;
+    // "applied set"/"applied state" is adjectival — it names an inventory, not an event.
+    const ADJECTIVAL_APPLIED =
+      /\bapplied\s+(?:state|set|inventory|migrations?|list|rows?|files?)\b/i;
+    // Procedural manner ("applied by hand", "re-applied as a new migration") says
+    // HOW something is applied when it is, not that it has been.
+    const PROCEDURAL_APPLIED = /\bapplied\s+by\s+hand\b|\bre-applied\b/i;
+    // A clause about 001-006 and not about 007 is the dated baseline, not a 007 claim.
+    const NON_007_SUBJECT = /\b00[1-6]\b|001[^0-9]{0,3}006/;
+    // Only these subordinate the proposition: an embedded question ("whether/if")
+    // or a hypothetical/temporal frame ("after 007 has been applied, ...").
+    // Bare "verify", "observed", "check", "unknown", "establish" are NOT enough.
+    const SUBORDINATES_PROPOSITION =
+      /\b(?:whether|if|after|once|when|whenever|before|until|unless|should)\b/i;
+    const sqlClauses = (sql: string): string[] => sql
       .split("\n")
       .filter((line) => /^\s*--/.test(line))
       .map((line) => line.replace(/^\s*--\s?/, ""))
+      // Join with a space so a hard-wrapped sentence is reassembled before it is
+      // split — otherwise the wrap itself manufactures clause fragments. Masking
+      // by line break is still caught: the assertion's own terminator splits it.
       .join(" ")
-      .split(/(?<=\.)\s+/)
-      .map((sentence) => sentence.trim())
+      .split(/[.;:]|\s—\s|\s–\s|\s-\s|,\s+(?:but|and|so|yet|as|while|although|though|however)\b/i)
+      .map((clause) => clause.trim())
       .filter(Boolean);
-    // A sentence declares 007's application state iff it makes an application
-    // claim and carries no epistemic qualifier.
-    const bareApplicationClaims = (sql: string): string[] => sqlComments(sql)
-      .filter((sentence) => applicationPredicate.test(sentence)
-        && !epistemicQualifier.test(sentence));
+    // A clause DECLARES 007's application state iff it carries an application
+    // predicate that nothing in that same clause subordinates.
+    const bareApplicationClaims = (sql: string): string[] => sqlClauses(sql)
+      .filter((clause) => {
+        const predicate = APPLICATION_PREDICATE.exec(clause)
+          ?? ELLIPTICAL_PREDICATE.exec(clause);
+        if (!predicate) return false;
+        if (ADJECTIVAL_APPLIED.test(clause) || PROCEDURAL_APPLIED.test(clause)) return false;
+        if (NON_007_SUBJECT.test(clause) && !/\b007\b/.test(clause)) return false;
+        const subordinator = SUBORDINATES_PROPOSITION.exec(clause);
+        return !(subordinator && subordinator.index < predicate.index);
+      });
     const migrationClaims = bareApplicationClaims(migrationSql);
     const rollbackClaims = bareApplicationClaims(rollbackSql);
     if (migrationClaims.length || rollbackClaims.length) {
-      console.log(`      offending sentences: ${
+      console.log(`      offending clauses: ${
         JSON.stringify([...migrationClaims, ...rollbackClaims])}`);
     }
     check("CC5. the rollback lives outside the forward-only runner's directory; neither file "
-      + "declares 007's production application in either direction, both state it is UNKNOWN "
-      + "in either direction, both keep the 2026-08-28 reading dated, and both require "
-      + "separate authorization",
+      + "declares 007's application state in either direction — positive or negative, with or "
+      + "without the word production, and not maskable by a qualifier in another clause — both "
+      + "state it is UNKNOWN in either direction, both keep the 2026-08-28 reading dated, and "
+      + "both require separate authorization",
       !(await readdir(resolve(REPO_ROOT, "state/migrations")))
          .some((f) => /rollback/i.test(f))
         && (await readdir(resolve(REPO_ROOT, "state/rollback")))
              .includes("007_evidence_bounds_rollback.sql")
-        // No bare declaration, either direction, in either file. This subsumes the
-        // positive forms ("is/has been/was/is currently/is already applied to
-        // production") and the negative ones ("is not / has not been / was not /
-        // has never been / is not yet applied", "remains unapplied").
+        // No bare declaration, either direction, in either file. This subsumes
+        // "is/has been/was/remains/is currently/is already/has already been
+        // applied", the negatives "is not / has not been / was not / has never
+        // been / is not yet applied" and "remains unapplied", their contractions,
+        // contextual "It ..." forms, and "the rollback has (not) been run" —
+        // whether or not the clause says "production".
         && migrationClaims.length === 0
         && rollbackClaims.length === 0
         // Both must state the unknown explicitly, and in both directions.

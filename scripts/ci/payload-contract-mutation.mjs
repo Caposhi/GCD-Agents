@@ -10,11 +10,16 @@
  * the file byte-for-byte — verified by SHA-256 against the bytes captured
  * before the mutation — rebuilds, and requires the suite to pass again.
  *
- * The final group is not a derivation but an epistemic invariant: migration
- * 007's live application state is UNKNOWN in either direction, and neither the
- * migration nor its rollback script may declare it. Those mutations insert
- * declarative forms — positive and negative, present, perfect and past — and
- * require CC5 to catch each one.
+ * The final group (M34-M59) is not a derivation but an epistemic invariant:
+ * migration 007's live application state is UNKNOWN in either direction, and
+ * neither the migration nor its rollback script may declare it. Twenty-six
+ * mutations cover fourteen declaration classes — twelve against both SQL files,
+ * two (past and present positive) against the migration alone. They insert
+ * positive and negative declarations in the present, perfect and past, with and
+ * without the word `production`, and five masking forms that place a
+ * declaration beside the required UNKNOWN sentence across a semicolon, a
+ * comma-conjunction, a newline, reported speech, and an adjacent categorical
+ * sentence. Each requires CC5 to report the failure BY NAME.
  *
  * It is offline and deterministic: no network, no database, no provider, no
  * credential. It mutates only files inside this repository's `src/` and
@@ -395,6 +400,176 @@ const MUTATIONS = [
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first.\n"
       + "-- Not applied to production.",
+    expect: ["CC5."],
+  },
+
+  // --- CC5 adversarial coverage: every masking and omission class ------------
+  //
+  // These are the bypasses an independent inspection demonstrated against an
+  // earlier CC5, which required the word "production" near the predicate and
+  // accepted any qualifier word anywhere in a period-delimited sentence. Each
+  // one is now a standing regression, run against BOTH files, and each leaves
+  // the canonical UNKNOWN sentence in place — so they prove CC5 rejects a
+  // declaration even when the required epistemic statement is still present,
+  // not merely that it demands that statement.
+  {
+    name: "the migration comment declares 007's application state — negative `remains unapplied`, with no mention of production",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.\n"
+      + "-- Migration 007 remains unapplied.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment declares 007's application state — negative `remains unapplied`, with no mention of production",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first.\n"
+      + "-- Migration 007 remains unapplied.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment declares 007's application state — negative `has never been applied`",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.\n"
+      + "-- Migration 007 has never been applied.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment declares 007's application state — negative `has never been applied`",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first.\n"
+      + "-- Migration 007 has never been applied.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment declares 007's application state — negative `is not yet applied`",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.\n"
+      + "-- Migration 007 is not yet applied.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment declares 007's application state — negative `is not yet applied`",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first.\n"
+      + "-- Migration 007 is not yet applied.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment declares 007's application state — contextual `It ...` negative form, subject carried from context",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.\n"
+      + "-- It remains unapplied.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment declares 007's application state — contextual `It ...` negative form, subject carried from context",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first.\n"
+      + "-- It remains unapplied.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment declares 007's application state — positive declaration that never says `production`",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.\n"
+      + "-- Migration 007 is applied.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment declares 007's application state — positive declaration that never says `production`",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first.\n"
+      + "-- Migration 007 is applied.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment declares 007's application state — semicolon masking: assertion, then a verification instruction",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.\n"
+      + "-- Migration 007 is applied to production; verify before acting.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment declares 007's application state — semicolon masking: assertion, then a verification instruction",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first.\n"
+      + "-- Migration 007 is applied to production; verify before acting.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment declares 007's application state — comma/conjunction masking: assertion, then an UNKNOWN clause",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.\n"
+      + "-- Migration 007 is applied, but its status is UNKNOWN.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment declares 007's application state — comma/conjunction masking: assertion, then an UNKNOWN clause",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first.\n"
+      + "-- Migration 007 is applied, but its status is UNKNOWN.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment declares 007's application state — newline masking: assertion, line break, then a verification instruction",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.\n"
+      + "-- Migration 007 is applied to production.\n-- Verify read-only before acting.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment declares 007's application state — newline masking: assertion, line break, then a verification instruction",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first.\n"
+      + "-- Migration 007 is applied to production.\n-- Verify read-only before acting.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment declares 007's application state — reported speech: `We observed ... is applied`",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.\n"
+      + "-- We observed migration 007 is applied to production.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment declares 007's application state — reported speech: `We observed ... is applied`",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first.\n"
+      + "-- We observed migration 007 is applied to production.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment declares 007's application state — a categorical declaration sitting directly beside the required UNKNOWN sentence",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.\n"
+      + "-- Migration 007 is applied to production.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment declares 007's application state — a categorical declaration sitting directly beside the required UNKNOWN sentence",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first.\n"
+      + "-- Migration 007 is applied to production.",
     expect: ["CC5."],
   },
 ];

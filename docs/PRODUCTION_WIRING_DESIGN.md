@@ -170,10 +170,13 @@ about external systems, and **this design does not assert it**.
 
 **VERIFIED** — `state/migrations/007_evidence_bounds.sql` and
 `state/rollback/007_evidence_bounds_rollback.sql` both exist in source. The migration's own header
-states that applying it to production is a separate, separately authorized operation and that it has
-not been applied.
+states that applying it to production is a separate, separately authorized operation and that 007's
+live application state is `UNKNOWN` in either direction, retaining the 2026-08-28 read-only reading
+of `_migrations` at `001–006` as an explicitly dated observation.
 
-**VERIFIED** — the repository contains no claim that 007 has been applied to production.
+**VERIFIED** — the repository asserts nothing about 007's live application state in either
+direction. Repository state is not production evidence: it establishes neither that 007 has been
+applied nor that it has not, and the current state requires fresh read-only verification.
 
 **UNKNOWN / REQUIRES OPERATOR ACTION** — whether the production evidence tables are in a state that
 allows 007's immediately validated constraints to pass. A dated aggregate-only audit is recorded in
@@ -597,8 +600,11 @@ migration; the artifact simply does not contain any migration beyond the authori
 
 With that invariant held, the M1 artifact is the **reviewed head of `main` at M1 time**: it contains
 `001`–`007` and no later migration, and its application code is the current reviewed code. The
-pending set is `{007}` at M1 and `{008}` at M2 by construction. No older artifact is needed, and this
-design does not propose one.
+artifact's file set yields a pending set of `{007}` at M1 and `{008}` at M2 **only if** the target
+database's applied set is exactly the authorized baseline. Because 007's live application state is
+`UNKNOWN` in either direction, each pending set is an **expectation the milestone's own read-only
+gate must establish** (`G3a`, §4.4.2 and §7), never a present fact. No older artifact is needed, and
+this design does not propose one.
 
 **That invariant does not by itself make M1 a forward deployment.** Whether deploying the artifact
 moves the api forward, backward, or sideways is a fact about the **live** commit, which this design
@@ -1050,7 +1056,8 @@ before those checks can be written or tested.
 - **Exit:** disposable PostgreSQL 16/18 apply / enforce / rollback / reapply coverage; regressions
   prove an absent, unreadable, or unrecognized mode resolves to `OFF`, that an absent grant authorizes
   nothing, and that an expired or zero-`runs_remaining` grant is spent.
-- **Rollback:** revert; 008 has not been applied to production by this PR.
+- **Rollback:** revert. P1 applies no migration to production — see **Prohibited** below — so
+  reverting removes files rather than unwinding a schema.
 - **Prohibited:** applying **any** migration to production; wiring a caller; changing any
   `executionEnabled` value; touching `render.yaml`.
 
