@@ -29,8 +29,12 @@
 -- applied and never re-run it. The DELETE below is part of the rollback, not an
 -- optional extra.
 --
--- Not applied to production. Disposable PostgreSQL tests exercise it; any
--- production run remains a separately authorized operator action.
+-- Whether this rollback has run in production is UNKNOWN in either direction, as
+-- is migration 007's applied state; neither is established by this file. The last
+-- dated evidence is the 2026-08-28 read-only inspection observing `_migrations` at
+-- 001-006. Disposable PostgreSQL tests exercise this script; any production run
+-- remains a SEPARATE, SEPARATELY AUTHORIZED operator action, and requires the
+-- current applied set to be established by read-only verification first.
 
 BEGIN;
 

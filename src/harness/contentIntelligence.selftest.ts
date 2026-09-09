@@ -5226,15 +5226,28 @@ async function run(): Promise<void> {
         && /CREATE FUNCTION gcd_content_evidence_tags_within_v007/.test(migrationSql)
         && !/CREATE OR REPLACE FUNCTION gcd_content_evidence_tags_within_v007/.test(migrationSql)
         && /DELETE FROM _migrations WHERE name = '007_evidence_bounds\.sql'/.test(rollbackSql));
-    check("CC5. the rollback lives outside the forward-only runner's directory, and neither "
-      + "file claims to have been applied to production",
+    check("CC5. the rollback lives outside the forward-only runner's directory; neither file "
+      + "claims production application in either direction, both state it is UNKNOWN, and both "
+      + "require separate authorization",
       !(await readdir(resolve(REPO_ROOT, "state/migrations")))
          .some((f) => /rollback/i.test(f))
         && (await readdir(resolve(REPO_ROOT, "state/rollback")))
              .includes("007_evidence_bounds_rollback.sql")
-        && /Not applied to production\./.test(rollbackSql)
-        && /It has not been applied to production\./.test(migrationSql)
-        && /SEPARATE, SEPARATELY AUTHORIZED/.test(migrationSql));
+        // Neither file may assert application, or non-application, as current fact.
+        && !/(?:has not been|is not|was not|never) applied to production/i.test(migrationSql)
+        && !/(?:has not been|is not|was not|never) applied to production/i.test(rollbackSql)
+        && !/^-- Not applied to production\./m.test(rollbackSql)
+        && !/\bis applied to production\b/i.test(migrationSql)
+        && !/\bis applied to production\b/i.test(rollbackSql)
+        // Both must state the unknown explicitly, and in both directions.
+        && /UNKNOWN in either direction/.test(migrationSql)
+        && /UNKNOWN in either direction/.test(rollbackSql)
+        // The dated observation is retained as dated, not as current truth.
+        && /2026-08-28/.test(migrationSql)
+        && /2026-08-28/.test(rollbackSql)
+        // Separate authorization is required by both.
+        && /SEPARATE, SEPARATELY AUTHORIZED/.test(migrationSql)
+        && /SEPARATE, SEPARATELY AUTHORIZED/.test(rollbackSql));
 
     // --- CC-B. the evidence bounds are real, and invalidate nothing valid ---
     check("CC6. an over-long claim, subject, attribute, tag, tag list, source ref, "

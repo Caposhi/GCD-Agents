@@ -16,14 +16,19 @@
 -- TypeScript bound cannot be raised without this file being updated with it.
 --
 -- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.
--- It has not been applied to production. Disposable PostgreSQL 16 and 18 tests
--- apply, enforce, roll back, and reapply it. A read-only, aggregate-only
--- production audit run by the operator on 2026-09-02 found `content_evidence` and
--- `content_evidence_relations` both empty — zero rows, zero blank claims, zero
--- blank subjects, zero rows carrying detail JSON, zero relation notes — so no
--- stored row can violate any bound below and the constraints are written to
--- validate immediately rather than as NOT VALID. That audit is the reason the
--- immediate form is safe; it is not the reason for any particular number.
+-- Whether it has been applied to production is UNKNOWN in either direction: this
+-- file records no such claim, and nothing in this repository establishes one. The
+-- last dated evidence is the 2026-08-28 read-only inspection, which observed
+-- `_migrations` holding 001-006; a dated observation is not a statement about now.
+-- Establish the current applied set by read-only verification before acting on it.
+-- Disposable PostgreSQL 16 and 18 tests apply, enforce, roll back, and reapply it.
+-- A read-only, aggregate-only production audit run by the operator on 2026-09-02
+-- found `content_evidence` and `content_evidence_relations` both empty — zero rows,
+-- zero blank claims, zero blank subjects, zero rows carrying detail JSON, zero
+-- relation notes — so no stored row can violate any bound below and the
+-- constraints are written to validate immediately rather than as NOT VALID. That
+-- audit is the reason the immediate form is safe; it is not the reason for any
+-- particular number.
 --
 -- Rollback: state/rollback/007_evidence_bounds_rollback.sql. The runner is
 -- forward-only by design (docs/DATA_MODEL.md), so the rollback lives outside
