@@ -5231,24 +5231,35 @@ async function run(): Promise<void> {
     // applied" nor "it is not applied" is established. These two files are
     // authoritative repository inputs, so neither may declare it.
     //
-    // The check is PROPOSITION-BOUND and fail-closed. Two earlier forms were not:
-    // requiring "production" near the predicate missed "remains unapplied", and
-    // accepting any qualifier word anywhere in a period-delimited sentence let a
+    // The check is PROPOSITION-BOUND and fail-closed. Three earlier forms were
+    // not. Requiring "production" near the predicate missed "remains unapplied".
+    // Accepting any qualifier word anywhere in a period-delimited sentence let a
     // categorical assertion hide behind a "verify"/"UNKNOWN"/"observed" elsewhere
-    // in the same sentence. So: split the comment prose into CLAUSES (sentence
-    // enders, semicolons, colons, dashes, newlines, and comma-conjunctions, so no
-    // separator can mask an assertion), find every clause carrying an application
-    // predicate, and reject each one unless that same clause subordinates the
-    // predicate — the qualifier must govern the proposition, not merely co-occur.
+    // in the same sentence. And accepting any subordinator that merely PRECEDED
+    // the predicate let an unrelated introductory clause launder the assertion
+    // that followed it ("Before we verify, migration 007 is applied.").
+    //
+    // So qualification must GOVERN the proposition, which is a structural test,
+    // not a vocabulary one: the subordinator has to introduce the very clause the
+    // predicate heads, with nothing between the two but that clause's own
+    // subject. The subject is whitelisted, so anything unexpected in that gap —
+    // another finite verb, a closing comma, an adverbial — means the subordinate
+    // clause ended before the assertion began, and the assertion stands bare.
     //
     // Positive and negative forms are treated identically: neither is established.
     const APPLICATION_PREDICATE =
-      /(?:\b(?:is|are|was|were|has|have|had|remains?|remain|stays?)\b|\b(?:is|are|was|were|has|have|had|does|do|did)n['’]t\b)[^;:,]{0,28}?\b(?:applied|unapplied|run)\b/i;
+      /(?:\b(?:is|are|was|were|has|have|had|does|do|did|remains?|remain|stays?)\b|\b(?:is|are|was|were|has|have|had|does|do|did)n['’]t\b)[^;:,]{0,28}?\b(?:applied|unapplied|run|ran)\b/i;
+    // A finite past-tense main verb carries the proposition with no auxiliary at
+    // all: "Migration 007 ran in production.", "It never ran." Bare "run" is
+    // deliberately NOT here — it is a noun in "any production run" and a fragment
+    // of "re-run"; as a verb it always arrives with an auxiliary, which the rule
+    // above already covers ("did run", "did not run", "has not been run").
+    const FINITE_PAST_PREDICATE = /\b(?:never\s+|not\s+|already\s+|then\s+)?ran\b/i;
     // Verbless elliptical declarations ("Not applied to production.", "Never
     // applied.") assert the same proposition with the copula elided, so a clause
     // that OPENS with the participle counts as a predicate too.
     const ELLIPTICAL_PREDICATE =
-      /^(?:not|never|already|still|currently|yet)?\s*(?:applied|unapplied)\b/i;
+      /^(?:not|never|already|still|currently|yet)?\s*(?:applied|unapplied|ran)\b/i;
     // "applied set"/"applied state" is adjectival — it names an inventory, not an event.
     const ADJECTIVAL_APPLIED =
       /\bapplied\s+(?:state|set|inventory|migrations?|list|rows?|files?)\b/i;
@@ -5257,11 +5268,19 @@ async function run(): Promise<void> {
     const PROCEDURAL_APPLIED = /\bapplied\s+by\s+hand\b|\bre-applied\b/i;
     // A clause about 001-006 and not about 007 is the dated baseline, not a 007 claim.
     const NON_007_SUBJECT = /\b00[1-6]\b|001[^0-9]{0,3}006/;
-    // Only these subordinate the proposition: an embedded question ("whether/if")
-    // or a hypothetical/temporal frame ("after 007 has been applied, ...").
-    // Bare "verify", "observed", "check", "unknown", "establish" are NOT enough.
-    const SUBORDINATES_PROPOSITION =
-      /\b(?:whether|if|after|once|when|whenever|before|until|unless|should)\b/i;
+    // Only these can subordinate the proposition: an embedded question
+    // ("whether/if") or a hypothetical/temporal frame ("after 007 has been
+    // applied, ..."). Bare "verify", "observed", "check", "unknown", "establish"
+    // are NOT enough, and neither is position alone — see SUBJECT_ONLY.
+    const SUBORDINATOR =
+      /\b(?:whether|if|after|once|when|whenever|before|until|unless|should)\b/gi;
+    // Everything a subordinator may span before reaching the predicate: the
+    // subject of the clause it introduces, and nothing else. A whitelist, so an
+    // introductory clause that closed before the assertion ("Before we verify,",
+    // "If this note is read,", "Once more,") governs nothing and the assertion
+    // that follows it is judged bare.
+    const SUBJECT_ONLY =
+      /^[\s"'`(]*(?:(?:the|this|that|these|those|its|a|an|any|each|either|both|no)\s+)*(?:migration|rollback|script|file|it|they|one|007)?(?:[\s'"`)]+(?:migration|rollback|script|file|007))?(?:'s)?[\s"'`)]*$/i;
     const sqlClauses = (sql: string): string[] => sql
       .split("\n")
       .filter((line) => /^\s*--/.test(line))
@@ -5270,20 +5289,43 @@ async function run(): Promise<void> {
       // split — otherwise the wrap itself manufactures clause fragments. Masking
       // by line break is still caught: the assertion's own terminator splits it.
       .join(" ")
-      .split(/[.;:]|\s—\s|\s–\s|\s-\s|,\s+(?:but|and|so|yet|as|while|although|though|however)\b/i)
+      // Every comma is a clause boundary, not only comma-plus-conjunction: an
+      // introductory subordinate clause closes with a bare comma, and treating
+      // that comma as ordinary text is exactly what let it launder the main
+      // clause behind it.
+      .split(/[.;:,]|\s—\s|\s–\s|\s-\s/)
       .map((clause) => clause.trim())
       .filter(Boolean);
+    // The earliest application predicate a clause carries, whichever form it takes.
+    const applicationPredicate = (clause: string): RegExpExecArray | null => {
+      const found = [
+        APPLICATION_PREDICATE.exec(clause),
+        FINITE_PAST_PREDICATE.exec(clause),
+        ELLIPTICAL_PREDICATE.exec(clause),
+      ].filter((m): m is RegExpExecArray => m !== null);
+      return found.length
+        ? found.reduce((earliest, m) => (m.index < earliest.index ? m : earliest))
+        : null;
+    };
+    // True only when some subordinator introduces the predicate's own clause —
+    // i.e. everything between the two is that clause's subject and nothing more.
+    const isGoverned = (clause: string, predicateIndex: number): boolean => {
+      SUBORDINATOR.lastIndex = 0;
+      for (let m = SUBORDINATOR.exec(clause); m; m = SUBORDINATOR.exec(clause)) {
+        if (m.index >= predicateIndex) break;
+        if (SUBJECT_ONLY.test(clause.slice(m.index + m[0].length, predicateIndex))) return true;
+      }
+      return false;
+    };
     // A clause DECLARES 007's application state iff it carries an application
-    // predicate that nothing in that same clause subordinates.
+    // predicate that no subordinator in that same clause actually governs.
     const bareApplicationClaims = (sql: string): string[] => sqlClauses(sql)
       .filter((clause) => {
-        const predicate = APPLICATION_PREDICATE.exec(clause)
-          ?? ELLIPTICAL_PREDICATE.exec(clause);
+        const predicate = applicationPredicate(clause);
         if (!predicate) return false;
         if (ADJECTIVAL_APPLIED.test(clause) || PROCEDURAL_APPLIED.test(clause)) return false;
         if (NON_007_SUBJECT.test(clause) && !/\b007\b/.test(clause)) return false;
-        const subordinator = SUBORDINATES_PROPOSITION.exec(clause);
-        return !(subordinator && subordinator.index < predicate.index);
+        return !isGoverned(clause, predicate.index);
       });
     const migrationClaims = bareApplicationClaims(migrationSql);
     const rollbackClaims = bareApplicationClaims(rollbackSql);
@@ -5292,10 +5334,12 @@ async function run(): Promise<void> {
         JSON.stringify([...migrationClaims, ...rollbackClaims])}`);
     }
     check("CC5. the rollback lives outside the forward-only runner's directory; neither file "
-      + "declares 007's application state in either direction — positive or negative, with or "
-      + "without the word production, and not maskable by a qualifier in another clause — both "
-      + "state it is UNKNOWN in either direction, both keep the 2026-08-28 reading dated, and "
-      + "both require separate authorization",
+      + "declares 007's application state in either direction — positive or negative, auxiliary "
+      + "or bare past (ran / never ran / did run / did not run), with or without the word "
+      + "production, not maskable by a qualifier in another clause, and not laundered by an "
+      + "unrelated introductory clause, because qualification must govern the proposition "
+      + "itself — both state it is UNKNOWN in either direction, both keep the 2026-08-28 "
+      + "reading dated, and both require separate authorization",
       !(await readdir(resolve(REPO_ROOT, "state/migrations")))
          .some((f) => /rollback/i.test(f))
         && (await readdir(resolve(REPO_ROOT, "state/rollback")))
@@ -5304,8 +5348,10 @@ async function run(): Promise<void> {
         // "is/has been/was/remains/is currently/is already/has already been
         // applied", the negatives "is not / has not been / was not / has never
         // been / is not yet applied" and "remains unapplied", their contractions,
-        // contextual "It ..." forms, and "the rollback has (not) been run" —
-        // whether or not the clause says "production".
+        // contextual "It ..." forms, "the rollback has (not) been run", the bare
+        // past "ran"/"never ran" and the emphatic "did run"/"did not run" —
+        // whether or not the clause says "production", and whether or not an
+        // unrelated subordinate clause is placed in front of it.
         && migrationClaims.length === 0
         && rollbackClaims.length === 0
         // Both must state the unknown explicitly, and in both directions.

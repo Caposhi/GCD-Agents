@@ -826,30 +826,39 @@ the ten documents it corrects three authoritative repository inputs that asserte
 documentation no longer asserts: the **comments** in `state/migrations/007_evidence_bounds.sql` and
 `state/rollback/007_evidence_bounds_rollback.sql`, which declared 007 *"has not been applied to
 production"*, and the `CC5` regression in `src/harness/contentIntelligence.selftest.ts`, which
-required those exact strings and would therefore have rejected a corrected comment. Both comments now
-state that 007's live application state is **`UNKNOWN` in either direction**, keep the 2026-08-28
-reading of `_migrations` at `001–006` as an explicitly dated observation, and require read-only
-verification and separate authorization. `CC5` no longer pins a sentence, and no longer keys on qualifier keywords: it splits each file's
-comment prose into clauses — reassembling hard wraps first, so a line break neither manufactures a
-fragment nor hides a declaration — and classifies each clause by **proposition**. Any clause
+required those exact strings and would therefore have rejected a corrected comment. Both comments
+now state that 007's live application state is **`UNKNOWN` in either direction**, keep the
+2026-08-28 reading of `_migrations` at `001–006` as an explicitly dated observation, and require
+read-only verification and separate authorization. `CC5` no longer pins a sentence, and no longer
+keys on qualifier keywords: it splits each file's comment prose into clauses — reassembling hard
+wraps first, so a line break neither manufactures a fragment nor hides a declaration, and treating
+every comma as a clause boundary — and classifies each clause by **proposition**. Any clause
 declaring 007's application state is refused **in either direction**: positive or negative, present,
-perfect or past, with or without the word *production*, verbless elliptical (*"Not applied to
-production."*) or contracted (*"isn't applied"*), and it cannot be neutralised by placing the
-required `UNKNOWN` sentence in an adjacent clause, sentence or line. The epistemic statement
-(*"whether … is `UNKNOWN`"*), the dated observation, verification and authorization instructions,
-adjectival uses (*applied set*), procedural uses (*applied by hand*), and clauses in which a
+perfect or past, verbless elliptical (*"Not applied to production."*), contracted (*"isn't
+applied"*), bare past (*ran*, *never ran*) or emphatic (*did run*, *did not run*), in plain and
+contextual-*It* shapes, with or without the word *production*, and it cannot be neutralised by
+placing the required `UNKNOWN` sentence in an adjacent clause, sentence or line. **Qualification
+must govern the proposition, which is a structural test rather than a vocabulary one.** A
 subordinator — *whether*, *if*, *after*, *once*, *when*, *whenever*, *before*, *until*, *unless* or
-*should* — appears **ahead of** the predicate remain allowed. Mere co-occurrence of a qualifier no
-longer excuses an assertion, which is precisely what the previous form got wrong. **Twenty-six
-mutations** in `npm run test:payload-mutation` (`M34`–`M59`) prove it load-bearing across **fourteen
-declaration classes** — twelve applied to both files and two (past-tense and present-tense positive)
-to the migration alone, giving 14 and 12 respectively — bringing that harness to **fifty-nine
-mutations across ten target files**, enumerated from its own `MUTATIONS` array and run output rather
-than recalled. Separately, a manual adversarial matrix ran each of thirteen bypass forms against
-both files — the eight the inspection demonstrated plus a verbless elliptical (*"Not applied to
-production."*), a bare *"Never applied."*, a contraction (*"It isn't applied to production."*), and
-a rollback-run declaration — and required `CC5` to fail by name on all twenty-six, while four
-allowed forms still passed on both files and both scripts restored byte-for-byte.
+*should* — counts only when it introduces the very clause the predicate heads: everything between it
+and the predicate must be that clause's own subject, matched against a whitelist, so the rule fails
+closed. Two earlier forms did not meet that bar, and each was found by independent review rather
+than by us. The first accepted a qualifier that merely **co-occurred** in the clause. The second
+accepted any subordinator that merely **preceded** the predicate, which let an unrelated
+introductory clause launder the assertion behind it (*"Before we verify, migration 007 is
+applied."*). The epistemic statement (*"whether … is `UNKNOWN`"*), the dated observation,
+verification and authorization instructions, adjectival uses (*applied set*) and procedural uses
+(*applied by hand*) remain allowed. **Sixty mutations** in `npm run test:payload-mutation` prove it
+load-bearing in both directions: **fifty-four prohibited** forms (`M34`–`M87`) that must make `CC5`
+fail by name — twenty-six declaration and masking classes, plus fourteen classes against each file
+covering introductory-clause laundering (comma, em dash, semicolon or no punctuation at all) and the
+`ran`/`never ran`/`did run`/`did not run` predicates — and **six authorized** forms (`M88`–`M93`)
+that must leave the suite green, so an over-broad guard fails in CI rather than in review. That
+brings the harness to **ninety-three mutations across ten target files**, enumerated from its own
+`MUTATIONS` array and run output rather than recalled. Separately, a manual adversarial matrix ran
+thirty bypass forms and six authorized forms against both files through the real suite: **sixty
+rejections and twelve allowances, zero misclassifications**, with both scripts restored
+byte-for-byte and a green final baseline.
 
 **Migration-path classification, accepted and not bypassed.** Because that change touches
 `state/migrations/**`, `scripts/render/deployment-controller.mjs` evaluates
