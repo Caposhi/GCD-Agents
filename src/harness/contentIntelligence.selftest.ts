@@ -5257,6 +5257,23 @@ async function run(): Promise<void> {
     //      every coordinator as the end of a governor's reach, which rejected the
     //      authorized coordinated forms ("Whether or not 007 has been applied is
     //      UNKNOWN", "Whether 007 was applied or ran is UNKNOWN").
+    //   7. That correction's own limits. Its opener list took a SINGLE token, so
+    //      "even though"/"now that"/"provided that" still severed the frame;
+    //      commas were paired with the NEAREST one, so consecutive and nested
+    //      asides left overlapping pairs a leftward walk fell back inside; the
+    //      coordination gap admitted neither a serial comma ("was applied, ran,
+    //      or was re-applied") nor an interruption span of its own; and an
+    //      imperative "do not run" was read as a categorical do-support claim.
+    //
+    // Openers are therefore matched over one, two or three leading tokens; comma
+    // pairing prefers the OUTERMOST qualifying opener and resolves shared
+    // endpoints to that start; the coordination gap admits serial commas and
+    // skips validated spans while still refusing a new subject, an adversative or
+    // a bare imperative `do`; and `do`/`don't` with no subject heads an
+    // instruction rather than a claim. Above all, FINITE-FRAME RECOVERY FAILS
+    // CLOSED AND USES NO LIST: `been applied` is not a proposition, so a walk that
+    // meets an unrecognised comma while holding only a non-finite frame crosses
+    // that aside and keeps looking for the finite auxiliary.
     //
     // So the comment text is TOKENISED once, and every application verb in it is
     // analysed in place. Five judgements are made independently, for that one
@@ -5312,12 +5329,51 @@ async function run(): Promise<void> {
     // neither replaces the outer auxiliary frame nor governs the outer claim,
     // because both leftward walks step over the whole span. A closed list, so
     // an ordinary coordinate clause is never mistaken for an aside.
-    const ASIDE_OPENER =
-      /^(?:whether|if|after|once|when|whenever|before|until|unless|should|as|because|since|while|although|though|per|according|given|assuming|pending)$/i;
+    // The list is CLOSED and covers one, two and three leading tokens, because a
+    // natural aside often opens with a phrase ("even though", "now that",
+    // "provided that", "as long as"). Anything it misses is caught downstream by
+    // fail-closed finite-frame recovery, not left to pass.
+    const ASIDE_OPENER_1 = new Set([
+      "whether", "if", "after", "once", "when", "whenever", "before", "until", "unless",
+      "should", "as", "because", "since", "while", "whilst", "although", "though", "per",
+      "according", "given", "assuming", "pending", "whereas", "notwithstanding", "providing",
+      "provided", "except", "lest", "albeit", "despite", "barring", "failing", "regardless",
+    ]);
+    const ASIDE_OPENER_2 = new Set([
+      "even though", "even if", "even when", "even after", "now that", "provided that",
+      "providing that", "notwithstanding that", "assuming that", "given that", "except that",
+      "so that", "such that", "in case", "as though", "as if", "only after", "only once",
+      "just after", "shortly after", "regardless of", "despite the", "prior to",
+    ]);
+    const ASIDE_OPENER_3 = new Set([
+      "as long as", "as soon as", "in the event", "on the basis", "at the point",
+      "for as long", "in so far", "by reason of",
+    ]);
+    const opensAside = (interior: readonly Tok[]): boolean => {
+      const w = (k: number): string => interior[k]?.lower ?? "";
+      return ASIDE_OPENER_1.has(w(0))
+        || ASIDE_OPENER_2.has(`${w(0)} ${w(1)}`)
+        || ASIDE_OPENER_3.has(`${w(0)} ${w(1)} ${w(2)}`);
+    };
+    // A non-finite auxiliary with no finite one is not a proposition: `been
+    // applied` REQUIRES a `has`/`have`/`had` somewhere, and `be`/`being` a modal
+    // or copula. When the leftward walk meets a comma it does not recognise as an
+    // aside while holding only such a frame, it crosses the aside and keeps
+    // looking rather than reading the participle as non-assertive. That is the
+    // fail-closed direction, and it does not depend on any opener list.
+    const needsFiniteRecovery = (auxes: readonly string[]): boolean =>
+      auxes.length > 0
+      && auxes.some((a) => NONFINITE_AUX.test(a))
+      && !auxes.some((a) => FINITE_AUX.test(a) || MODAL.test(a));
     // Coordinators that may join predicates INSIDE one governed proposition.
     // `but` is deliberately absent: it introduces a contrasting assertion, not a
     // continuation of the governed one.
     const COORDINATOR = /^(?:and|or|nor)$/i;
+    // Bare `do`/`don't` is the imperative marker. It heads an INSTRUCTION, never
+    // a claim, so it is neither a categorical assertion nor a continuation of a
+    // governed proposition. `does` and `did` are declarative and emphatic and
+    // stay categorical ("did run", "did not run").
+    const IMPERATIVE_DO = /^do(?:n['’]t)?$/i;
     // "applied set"/"applied state" names an inventory, not an event.
     const ADJECTIVAL_HEAD = /^(?:state|set|inventory|migrations?|list|rows?|files?)$/i;
 
@@ -5338,36 +5394,72 @@ async function run(): Promise<void> {
     // stopping at them, so an aside cannot separate an auxiliary from its verb.
     const interruptionSpans = (toks: readonly Tok[]): Array<[number, number]> => {
       const spans: Array<[number, number]> = [];
+      const parenClose = new Map<number, number>();
       for (let i = 0; i < toks.length; i++) {
-        if (toks[i]?.lower === "(") {
-          const close = toks.findIndex((t, k) => k > i && t.lower === ")");
-          if (close > i) { spans.push([i, close]); i = close; }
-          continue;
-        }
+        if (toks[i]?.lower !== "(") continue;
+        const close = toks.findIndex((t, k) => k > i && t.lower === ")");
+        if (close > i) { spans.push([i, close]); parenClose.set(i, close); i = close; }
+      }
+      for (let i = 0; i < toks.length; i++) {
         if (toks[i]?.lower !== ",") continue;
+        // Candidate opening commas, FARTHEST first, so a nested aside
+        // ("because the report, once reviewed, was signed") is paired as one
+        // outer span instead of leaving its inner commas overlapping. A balanced
+        // parenthesis inside the candidate is stepped over rather than ending
+        // the search, so "(after read-only verification)" cannot split a pair.
+        const candidates: number[] = [];
         for (let j = i - 1; j >= 0; j--) {
           const w = toks[j]?.lower ?? "";
-          if (HARD_BOUNDARY.has(w) || w === "(" || w === ")") break;
-          if (w === ",") {
-            const interior = toks.slice(j + 1, i);
-            const opener = interior[0]?.lower ?? "";
-            // No clausal verb at all — an appositive or adverbial aside. Or a
-            // balanced SUBORDINATE aside, which may carry its own finite verb
-            // and still interrupt rather than end the proposition.
-            if (!interior.some((t) => isClausal(t.lower)) || ASIDE_OPENER.test(opener)) {
-              spans.push([j, i]);
-            }
+          if (HARD_BOUNDARY.has(w)) break;
+          if (w === ")") {
+            let open = -1;
+            for (const [a, b] of parenClose) if (b === j) open = a;
+            if (open < 0) break;
+            j = open; continue;
+          }
+          if (w === "(") break;
+          if (w === ",") candidates.push(j);
+        }
+        for (let c = candidates.length - 1; c >= 0; c--) {
+          const j = candidates[c] as number;
+          const interior = toks.slice(j + 1, i);
+          // No clausal verb at all — an appositive or adverbial aside. Or a
+          // balanced SUBORDINATE aside, which may carry its own finite verb and
+          // still interrupt rather than end the proposition.
+          if (!interior.some((t) => isClausal(t.lower)) || opensAside(interior)) {
+            spans.push([j, i]);
             break;
           }
         }
       }
       return spans;
     };
+    // Spans may share an endpoint ("has, A, B, been applied" pairs (C1,C2) and
+    // (C1,C3)). Resolving the chain to its OUTERMOST start is what keeps a
+    // leftward walk from landing back inside an aside it just stepped over.
     const spanOpenerAt = (
       spans: ReadonlyArray<readonly [number, number]>, idx: number, closingOnly: boolean,
     ): number | null => {
-      const hit = spans.find(([a, b]) => (closingOnly ? b === idx : a === idx || b === idx));
-      return hit ? hit[0] : null;
+      let at = idx, moved = false;
+      for (let guard = 0; guard < spans.length + 1; guard++) {
+        let best: number | null = null;
+        for (const [a, b] of spans) {
+          const hit = closingOnly && !moved ? b === at : (a === at || b === at);
+          if (hit && a < at && (best === null || a < best)) best = a;
+        }
+        if (best === null) break;
+        at = best; moved = true;
+      }
+      return moved ? at : null;
+    };
+    // The nearest comma strictly left of `idx` within the same sentence, or null.
+    const priorComma = (toks: readonly Tok[], idx: number, floor: number): number | null => {
+      for (let j = idx - 1; j > floor && j >= 0; j--) {
+        const w = toks[j]?.lower ?? "";
+        if (HARD_BOUNDARY.has(w)) return null;
+        if (w === ",") return j;
+      }
+      return null;
     };
 
     // Every application-state proposition in one comment block, each judged alone.
@@ -5399,6 +5491,16 @@ async function run(): Promise<void> {
             // "absolutely, unequivocally applied" — a comma separating adverbs is
             // punctuation inside the proposition, not the end of one.
             if (w === "," && j > 0 && isAdverb(toks[j - 1]?.lower ?? "")) continue;
+            // FAIL-CLOSED finite-frame recovery. `been applied` is not a
+            // proposition on its own — its perfect auxiliary must be somewhere to
+            // the left. Rather than read the participle as non-assertive because
+            // an aside was not recognised, cross that aside (to the token before
+            // the comma that opens it) and keep looking for the finite frame.
+            if (w === "," && needsFiniteRecovery(auxes)) {
+              const prior = priorComma(toks, j, previousVerb);
+              j = prior === null ? j : prior;
+              continue;
+            }
             propStart = j + 1; openerBoundary = j; break;
           }
           if (w === "(") { propStart = j + 1; openerBoundary = j; break; }
@@ -5455,10 +5557,17 @@ async function run(): Promise<void> {
           }
           antecedent = toks.slice(a + 1, openerBoundary).map((t) => t.lower).join(" ").trim();
         }
+        // An IMPERATIVE is an instruction, not a claim. Bare `do`/`don't` with no
+        // subject of its own heads one ("Unless 007 is applied, do not run the
+        // rollback."); `does` and `did` are declarative and emphatic and stay
+        // categorical ("did run", "did not run").
+        const imperative = frame === "do-support" && subjectHead === null
+          && auxes.every((a) => IMPERATIVE_DO.test(a) || NEGATOR.test(a) || isAdverb(a));
         // (5) Is this a categorical assertion about a current or past state?
         const assertive = adjunct
           ? /\b007\b|\bmigrations?\b/i.test(antecedent)
-          : ["past", "perfect", "present", "do-support", "elliptical"].includes(frame);
+          : !imperative
+            && ["past", "perfect", "present", "do-support", "elliptical"].includes(frame);
 
         // Exemptions, each bound to THIS predicate rather than to the sentence.
         const after = toks[i + 1];
@@ -5511,12 +5620,28 @@ async function run(): Promise<void> {
           || SUBORDINATOR.test(w) || APPLICATION_VERB.test(w);
         let governed = false;
         if (previousVerb >= 0 && previousGoverned) {
-          const gap = toks.slice(previousVerb + 1, i);
-          const coordinators = gap.filter((t) => COORDINATOR.test(t.lower)).length;
-          const shared = coordinators === 1 && gap.every((t) =>
-            COORDINATOR.test(t.lower) || FINITE_AUX.test(t.lower)
-            || NONFINITE_AUX.test(t.lower) || MODAL.test(t.lower)
-            || NEGATOR.test(t.lower) || isAdverb(t.lower));
+          // The material between the two predicates, with validated interruption
+          // spans removed — a coordinated predicate may still carry a
+          // parenthetical or comma aside of its own ("was applied or (after
+          // read-only verification) ran").
+          const gap: Tok[] = [];
+          for (let k = previousVerb + 1; k < i; k++) {
+            const span = spans.find(([a]) => a === k);
+            if (span && span[1] < i) { k = span[1]; continue; }
+            const t = toks[k];
+            if (t) gap.push(t);
+          }
+          // A serial list ("was applied, ran, or was re-applied") joins the same
+          // governed subject with commas as well as coordinators, so a bare comma
+          // counts as a joint. Everything else in the gap must be an auxiliary, a
+          // negator or an adverb: a new subject, a noun, or any other word means a
+          // separately asserted proposition, judged on its own.
+          const joints = gap.filter((t) => COORDINATOR.test(t.lower) || t.lower === ",").length;
+          const shared = joints >= 1 && gap.every((t) =>
+            !IMPERATIVE_DO.test(t.lower)
+            && (COORDINATOR.test(t.lower) || t.lower === ","
+              || FINITE_AUX.test(t.lower) || NONFINITE_AUX.test(t.lower) || MODAL.test(t.lower)
+              || NEGATOR.test(t.lower) || isAdverb(t.lower)));
           if (shared) governed = true;              // a coordinated predicate, same subject
         }
         for (let s = i - 1; !governed && s > previousVerb && s >= 0; s--) {
@@ -5567,15 +5692,20 @@ async function run(): Promise<void> {
       + "positive or negative, auxiliary or bare past (ran / never ran / did run / did not "
       + "run), with or without the word production, with the auxiliary at any distance from "
       + "its participle and across a parenthetical or comma-delimited aside — including a "
-      + "SUBORDINATE aside carrying its own finite verb, whose verb neither replaces the outer "
-      + "frame nor governs the outer claim — finite whatever procedural manner or re- prefix "
+      + "SUBORDINATE aside carrying its own finite verb, opened by one, two or three tokens, "
+      + "consecutive, nested, or opened by a word on no list at all, because a dangling non-finite "
+      + "frame crosses an unrecognised aside rather than reading as non-assertive — finite "
+      + "whatever procedural manner or re- prefix "
       + "follows it, not maskable by a qualifier in another proposition, not laundered by an "
       + "unrelated introductory clause, and not carried along by a governed sibling, whether "
       + "that sibling is joined by a coordinator, an adversative or a new sentence — while a "
       + "genuinely governed proposition is still accepted with its own internal qualifiers "
-      + "intact and with coordinated predicates that share its subject (whether or not ... has "
-      + "been applied; whether ... has or has not been applied; whether ... was applied or "
-      + "ran) — both state it is UNKNOWN in either direction, both keep the 2026-08-28 reading "
+      + "intact and with coordinated predicates that share its subject, joined by a coordinator "
+      + "or a serial comma and each free to carry an interruption of its own (whether or not ... "
+      + "has been applied; whether ... has or has not been applied; whether ... was applied, ran, "
+      + "or was re-applied), and while a bare imperative do/don't reads as an instruction rather "
+      + "than a claim though does and did stay declarative — both state it is UNKNOWN in either "
+      + "direction, both keep the 2026-08-28 reading "
       + "dated, and both require separate authorization",
       !(await readdir(resolve(REPO_ROOT, "state/migrations")))
          .some((f) => /rollback/i.test(f))

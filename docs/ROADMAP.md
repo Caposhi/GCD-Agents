@@ -856,7 +856,7 @@ than the end of one. **The guarantee is deliberately narrow**: it recognises the
 authoritative-comment language of these two files and is not a claim of general natural-language
 understanding.
 
-Six earlier forms did not meet that bar, and every one of them was found by independent review
+Seven earlier forms did not meet that bar, and every one of them was found by independent review
 rather than by us. The first accepted a qualifier that merely **co-occurred** in the clause. The
 second accepted any subordinator that merely **preceded** the predicate, which let an unrelated
 introductory clause launder the assertion behind it (*"Before we verify, migration 007 is
@@ -881,71 +881,77 @@ after the report was signed, been applied."* read as a bare participle rather th
 assertion), and treated every coordinator as the end of a governor's reach, which wrongly rejected
 the authorized coordinated forms (*"Whether or not migration 007 has been applied is `UNKNOWN` in
 either direction."*, *"Whether migration 007 was applied or ran in production is `UNKNOWN` in either
-direction."*). A balanced pair opened by a subordinator from a closed list is now an interruption
-even when it carries a finite verb — that verb belongs to the aside, and the aside's own
-subordinator governs nothing outside it — while a coordinator is stepped over only inside one
-governed proposition: within the governor's reach when the token beside it is one the reach already
-admits, and between two predicates only when nothing but that coordinator, an auxiliary, a negator
-or an adverb separates them. A new subject, an adversative, or any other intervening word makes the
-next predicate a separate assertion, judged on its own.
+direction."*). A balanced pair opened by a subordinator is now an interruption even when it carries
+a finite verb — that verb belongs to the aside, and the aside's own subordinator governs nothing
+outside it — while a coordinator is stepped over only inside one governed proposition. **The
+seventh** was that correction's own limits, again found by independent review. Its opener list took
+a **single** token, so natural asides opened by a phrase (*even though*, *now that*, *provided
+that*) still severed the frame; commas were paired **greedily with the nearest** one, so two
+consecutive asides or a nested one left overlapping pairs a leftward walk fell back inside; the
+coordination gap admitted neither a **serial comma** (*was applied, ran, or was re-applied*) nor an
+interruption span of its own; and an imperative *do not run* was classified as a categorical do-
+support claim. Openers are now matched over one, two or three leading tokens; comma pairing prefers
+the **outermost** qualifying opener and resolves shared endpoints to that outermost start, so nested
+and consecutive asides are stepped over as one; the coordination gap admits serial commas and skips
+validated spans, while still refusing a new subject, an adversative, a bare imperative *do* or any
+other word; and bare *do*/*don't* with no subject of its own is read as an instruction, while *does*
+and *did* stay declarative and emphatic. Above all, **finite-frame recovery now fails closed and
+depends on no list at all**: `been applied` is not a proposition, so when the walk meets a comma it
+does not recognise while holding only a non-finite frame, it crosses that aside and keeps looking
+for the finite auxiliary rather than reading the participle as non-assertive.
 
-**One hundred and seventy-six mutations** in `npm run test:payload-mutation` prove it load-bearing
-in both directions: **one hundred and fifty-two prohibited** forms (`M34`–`M111`, `M118`–`M163`,
-`M174`–`M201`) that must make `CC5` fail by name, and **twenty-four authorized** forms
-(`M112`–`M117`, `M164`–`M173`, `M202`–`M209`) that must leave the suite green, so an over-broad
-guard fails in CI rather than in review. That brings the harness to **two hundred and nine mutations
-across ten target files**, enumerated from its own `MUTATIONS` array and run output rather than
-recalled. Of the prohibited forms, twenty-six are declaration and masking classes, fourteen
-introductory-clause and `ran`/`did run` classes against each file, twelve multi-proposition classes
-against each file, twenty-three token/proposition classes against each file (`M118`–`M163`), and
-**fourteen balanced-aside and coordinated-sibling classes against each file** (`M174`–`M201`): ten
-outer finite frames split by an aside carrying its own verb — comma and parenthetical shapes,
-perfect, past and present frames, positive and negative, explicit *Migration 007* and contextual
-*It* subjects, several words between the auxiliary and the participle, and a conditional hidden
-inside the aside — and four categorical siblings placed beside a genuinely governed **coordinated**
-proposition, joined by an adversative, by a coordinator introducing a new subject, and by a sentence
-boundary in either order.
+**Two hundred and twenty-four mutations** in `npm run test:payload-mutation` prove it load-bearing
+in both directions: **one hundred and eighty-four prohibited** forms (`M34`–`M111`, `M118`–`M163`,
+`M174`–`M201`, `M210`–`M241`) that must make `CC5` fail by name, and **forty authorized** forms
+(`M112`–`M117`, `M164`–`M173`, `M202`–`M209`, `M242`–`M257`) that must leave the suite green, so an
+over-broad guard fails in CI rather than in review. That brings the harness to **two hundred and
+fifty-seven mutations across ten target files**, enumerated from its own `MUTATIONS` array and run
+output rather than recalled. Of the prohibited forms, twenty-six are declaration and masking
+classes, fourteen introductory-clause and `ran`/`did run` classes against each file, twelve multi-
+proposition classes against each file, twenty-three token/proposition classes against each file
+(`M118`–`M163`), fourteen balanced-aside and coordinated-sibling classes against each file
+(`M174`–`M201`), and **sixteen natural-aside and instructional classes against each file**
+(`M210`–`M241`): two-token and unlisted openers, consecutive and nested asides, negative and
+contextual-*It* shapes, a new subject after a serial comma, an unrelated aside following a governed
+proposition, an emphatic `did run` hidden behind an imperative, and an aside-split assertion
+carrying a coordinated bare-past sibling.
 
 **What each correction is actually load-bearing for was measured, not assumed.** Against the
 reviewed head `c189d2b`, **seventeen of the twenty-three token/proposition prohibited classes
-bypassed `CC5`** and **three of the five authorized classes added with them were wrongly rejected**;
-the other six prohibited classes were already caught there and are retained as coverage, not claimed
-as new bypasses. Five focused probes then altered the built suite in one way each and re-ran all
-twenty-eight of those classes: exempting a finite claim on procedural manner or a `re-` prefix again
-lets **nine** classes through (`M118`–`M129`, `M154`–`M157`, `M160`–`M161`); restoring the fixed
-twenty-eight-character auxiliary lookup lets **five** through (`M130`–`M133`, `M136`–`M137`,
-`M140`–`M143`); treating every comma and parenthesis as a proposition boundary again lets **five**
-through (`M130`–`M133`, `M136`–`M137`, `M146`–`M147`, `M158`–`M159`) **and** wrongly rejects the
-three governed-with-internal-qualifier allowances (`M164`–`M169`); judging only the earliest
-predicate lets **three** through (`M154`–`M155`, `M158`–`M159`, `M162`–`M163`); and disabling the
-contextual-antecedent rule lets the **two** participial-adjunct classes through (`M150`–`M153`).
-Four classes (`M134`–`M135`, `M138`–`M139`, `M144`–`M145`, `M148`–`M149`) survive every probe
-because two independent parts of the analysis catch each of them, so no single correction is claimed
-to be uniquely responsible for those. Re-running the earliest-predicate-only probe against the
+bypassed `CC5`** and **three of the five authorized classes added with them were wrongly rejected**.
+Against `83af628`, both finite-aside forms bypassed on **both** SQL files and all four coordinated
+governed forms were wrongly rejected on both. Against `3f173d5`, **all twelve reported forms were
+misclassified on both files** — eight natural subordinate asides passing as non-assertive, and four
+governed or instructional forms wrongly refused.
+
+**Seven focused probes measured the current group**, each altering the built suite in one way, each
+re-running all twenty-four new classes against the migration file, each followed by a byte-for-byte
+restore. Removing **fail-closed finite-frame recovery** lets the two unlisted-opener classes through
+(`M238`–`M241`). Removing **multi-token openers** wrongly rejects the modal aside allowance
+(`M250`–`M251`) while the prohibited classes stay caught by recovery. Removing **both** reopens the
+bypass for six classes (`M210`–`M213`, `M224`–`M225`, `M236`–`M241`) — the two guards are
+deliberately redundant, and neither alone is claimed to carry the group. Reverting the coordination
+gap to a single coordinator with no serial comma wrongly rejects three serial-list allowances
+(`M242`–`M243`, `M252`–`M255`); not removing validated spans from that gap wrongly rejects the
+parenthetical-carrying allowance (`M244`–`M245`); removing the imperative/declarative `do`
+distinction wrongly rejects both instructional allowances (`M248`–`M249`, `M256`–`M257`); and
+letting a coordinated chain reach across an independently asserted sibling lets the new-subject and
+hidden-`did run` classes through (`M226`–`M227`, `M232`–`M233`). Eight prohibited classes
+(`M214`–`M223`, `M228`–`M231`, `M234`–`M235`) and one allowance (`M246`–`M247`) survive every probe,
+caught or preserved by other parts of the analysis; they are retained as coverage and are **not**
+claimed as proof of any single correction. Re-running the earliest-predicate-only probe against the
 twelve multi-proposition classes reproduced the earlier measurement exactly: **eight classes
-(sixteen mutations) go undetected**, while the other four stay caught and are retained as coverage
-rather than cited as proof.
+(sixteen mutations) go undetected**, while the other four stay caught.
 
-**The balanced-aside and coordination corrections were measured the same way.** Against the reviewed
-head `83af628`, both finite-aside forms bypassed `CC5` on **both** SQL files and all four
-coordinated governed forms were wrongly rejected on both — twelve reproduced misclassifications
-before any edit. Four further probes then measured the new group: removing balanced-aside
-preservation lets **six** classes through (`M174`–`M177`, `M182`–`M187`, `M192`–`M193`), while the
-two parenthetical classes stay caught because a parenthesis pair is an interruption unconditionally
-and the past and present aside classes stay caught by the contextual-antecedent rule, so the group
-is **not** claimed to be uniquely load-bearing; removing the coordinator-inside-the-reach rule
-wrongly rejects `M202`–`M205`; removing coordinated-predicate propagation wrongly rejects
-`M206`–`M209`, the two halves being complementary and neither covering the other's classes; and
-letting a coordinated chain reach across an independently asserted sibling lets `M194`–`M197`
-through together with four of the older multi-proposition classes, while the two sentence-boundary
-classes (`M198`–`M201`) stay caught by the hard boundary alone. The implementation was restored
-byte-for-byte after every probe.
-
-Separately, a manual adversarial matrix ran **seventy-three prohibited forms and twenty authorized
-forms against each of the two SQL files** through the real suite: **one hundred and forty-six
-rejections and forty allowances, zero misclassifications**, with both scripts restored byte-for-byte
-(migration `fb5128b4ae207e75…`, rollback `31e0ab0c1f92ccaf…`), `state/` clean and a green final
-baseline.
+Separately, a manual adversarial matrix ran **eighty-nine prohibited forms and twenty-eight
+authorized forms against each of the two SQL files** through the real suite: **one hundred and
+seventy-eight rejections and fifty-six allowances, zero misclassifications** across two hundred and
+thirty-four executions, with both scripts restored byte-for-byte after each (migration
+`fb5128b4ae207e75…`, rollback `31e0ab0c1f92ccaf…`), `state/` clean and a green final baseline. An
+earlier round reported a matrix of one hundred and forty-six rejections and forty allowances;
+independent review then found natural aside and coordination variants that matrix did not contain,
+so that figure describes the earlier, narrower matrix only and the classes it missed are now covered
+here.
 
 **Migration-path classification, accepted and not bypassed.** Because that change touches
 `state/migrations/**`, `scripts/render/deployment-controller.mjs` evaluates
