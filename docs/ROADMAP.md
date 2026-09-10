@@ -829,51 +829,92 @@ production"*, and the `CC5` regression in `src/harness/contentIntelligence.selft
 required those exact strings and would therefore have rejected a corrected comment. Both comments
 now state that 007's live application state is **`UNKNOWN` in either direction**, keep the
 2026-08-28 reading of `_migrations` at `001–006` as an explicitly dated observation, and require
-read-only verification and separate authorization. `CC5` no longer pins a sentence, and no longer
-keys on qualifier keywords: it splits each file's comment prose into clauses — reassembling hard
-wraps first, so a line break neither manufactures a fragment nor hides a declaration, and treating
-every comma as a clause boundary — then enumerates **every** application-state predicate in each
-clause and classifies each one by **proposition**. Any predicate declaring 007's application state
-is refused **in either direction**: positive or negative, present, perfect or past, verbless
-elliptical (*"Not applied to production."*), contracted (*"isn't applied"*), bare past (*ran*,
-*never ran*) or emphatic (*did run*, *did not run*), in plain and contextual-*It* shapes, with or
-without the word *production*. **Qualification must govern the proposition, which is a structural
-test rather than a vocabulary one.** A subordinator — *whether*, *if*, *after*, *once*, *when*,
-*whenever*, *before*, *until*, *unless* or *should* — counts only when it introduces the very clause
-the predicate heads: everything between it and the predicate must be that clause's own subject,
-matched against a whitelist, so the rule fails closed. **And every predicate is judged on its own**:
-all three judgements are bound to that predicate's own local frame — the text between the previous
-predicate and this one — a subordinator cannot reach across a predicate it already governs, and a
-clause is clean only when every predicate it carries is exempt or governed. Three earlier forms did
-not meet that bar, and each was found by independent review rather than by us. The first accepted a
-qualifier that merely **co-occurred** in the clause. The second accepted any subordinator that
-merely **preceded** the predicate, which let an unrelated introductory clause launder the assertion
-behind it (*"Before we verify, migration 007 is applied."*). The third stopped at the **earliest**
-predicate and allowed the whole clause once that one was governed, which let an authorized
-proposition carry a categorical sibling (*"Whether migration 007 is applied is UNKNOWN and migration
-007 is applied."*); splitting on `and`/`but` would not have fixed it, since those conjunctions occur
-inside governed propositions too. The epistemic statement (*"whether … is `UNKNOWN`"*), the dated
-observation, verification and authorization instructions, adjectival uses (*applied set*) and
-procedural uses (*applied by hand*) remain allowed — each now tested against the specific predicate
-rather than the whole clause. **Eighty-four mutations** in `npm run test:payload-mutation` prove it
-load-bearing in both directions: **seventy-eight prohibited** forms (`M34`–`M111`) that must make
-`CC5` fail by name — twenty-six declaration and masking classes, fourteen introductory-clause and
-`ran`/`did run` classes against each file, and **twelve multi-proposition classes against each
-file** (`and`, `but`, conditional, parenthetical, newline, em dash, semicolon, either order,
-opposite polarity, bare-past sibling and contextual-*It*) — and **six authorized** forms
-(`M112`–`M117`) that must leave the suite green, so an over-broad guard fails in CI rather than in
-review. That brings the harness to **one hundred and seventeen mutations across ten target files**,
-enumerated from its own `MUTATIONS` array and run output rather than recalled. The every-predicate
-behaviour was proved load-bearing by reverting `CC5` to its earliest-predicate-only form and running
-the twelve multi-proposition classes against both files: **eight classes (sixteen mutations) went
-undetected** — `and`, `but`, conditional, parenthetical, both contextual-*It* forms, the bare-past
-sibling and the newline variant — while the remaining four (categorical assertion first, opposite
-polarity, em dash, semicolon) stayed caught by clause splitting alone and are therefore retained as
-coverage rather than cited as proof. The implementation was then restored byte-for-byte
-(`f308c8f7…`). Separately, a manual adversarial matrix ran twenty-one prohibited forms and seven
-authorized forms against both files through the real suite: **forty-two rejections and fourteen
-allowances, zero misclassifications**, with both scripts restored byte-for-byte and a green final
-baseline.
+read-only verification and separate authorization. `CC5` no longer pins a sentence, no longer keys
+on qualifier keywords, and no longer splits prose on punctuation. It **tokenises** each file's
+comment prose once — reassembling hard wraps first, so a line break neither manufactures a fragment
+nor hides a declaration — and analyses **every** application predicate in place, making five
+judgements independently for that one predicate from its own tokens: its subject, or the contextual
+antecedent it modifies; its auxiliary/tense frame; its own proposition boundaries; the governing
+conditional or epistemic construction, if any; and whether what remains is a categorical
+current-state assertion. **No judgement is measured in characters, and no punctuation mark is a
+boundary by itself.** Any predicate declaring 007's application state is refused **in either
+direction**: positive or negative, present, perfect or past, verbless elliptical (*"Not applied to
+production."*), contracted (*"isn't applied"*), bare past (*ran*, *never ran*) or emphatic (*did
+run*, *did not run*), in plain and contextual-*It* shapes, with or without the word *production*,
+with the auxiliary at any distance from its participle and across a parenthetical or comma-delimited
+aside, and finite whatever procedural manner or `re-` prefix follows the verb. **Qualification must
+govern the proposition, which is a structural test rather than a vocabulary one.** A subordinator —
+*whether*, *if*, *after*, *once*, *when*, *whenever*, *before*, *until*, *unless* or *should* —
+counts only when it introduces the very clause the predicate heads: everything between it and the
+predicate must be that clause's own subject, matched against a whitelist, so the rule fails closed.
+**Every predicate is judged on its own**, so a subordinator cannot reach across a predicate it
+already governs and a governed proposition never covers for a categorical sibling. Conversely a
+governed proposition keeps its **own internal qualifiers** (*"Whether migration 007, after read-only
+verification, is applied remains `UNKNOWN` in either direction."*), because a comma pair or a
+parenthesis whose interior carries no finite verb is an interruption inside one proposition rather
+than the end of one. **The guarantee is deliberately narrow**: it recognises the supported
+authoritative-comment language of these two files and is not a claim of general natural-language
+understanding.
+
+Five earlier forms did not meet that bar, and every one of them was found by independent review
+rather than by us. The first accepted a qualifier that merely **co-occurred** in the clause. The
+second accepted any subordinator that merely **preceded** the predicate, which let an unrelated
+introductory clause launder the assertion behind it (*"Before we verify, migration 007 is
+applied."*). The third stopped at the **earliest** predicate and allowed the whole clause once that
+one was governed, which let an authorized proposition carry a categorical sibling (*"Whether
+migration 007 is applied is UNKNOWN and migration 007 is applied."*); splitting on `and`/`but` would
+not have fixed it, since those conjunctions occur inside governed propositions too. The fourth
+exempted a **finite** occurrence claim whenever procedural manner or a `re-` prefix followed the
+verb, so *"Migration 007 was applied by hand to production."* and *"Migration 007 was re-applied to
+production."* passed; the exemption is now bound to the tense frame, and reaches only a genuinely
+non-assertive one. The fifth hunted the auxiliary inside a fixed **twenty-eight-character window**
+and treated every comma as a clause boundary, so *"Migration 007 has, according to the operator,
+been applied to production."* escaped while *"Whether migration 007, after read-only verification,
+is applied …"* was wrongly rejected; both are now decided structurally, by associating an auxiliary
+with its verb inside one proposition and by recognising an interruption for what it is. The
+epistemic statement (*"whether … is `UNKNOWN`"*), the dated observation, verification and
+authorization instructions, adjectival uses (*applied set*) and procedural uses in a non-assertive
+frame (*applied by hand*) remain allowed — each tested against the specific predicate rather than
+the whole sentence.
+
+**One hundred and forty mutations** in `npm run test:payload-mutation` prove it load-bearing in both
+directions: **one hundred and twenty-four prohibited** forms (`M34`–`M111`, `M118`–`M163`) that must
+make `CC5` fail by name, and **sixteen authorized** forms (`M112`–`M117`, `M164`–`M173`) that must
+leave the suite green, so an over-broad guard fails in CI rather than in review. That brings the
+harness to **one hundred and seventy-three mutations across ten target files**, enumerated from its
+own `MUTATIONS` array and run output rather than recalled. Of the prohibited forms, twenty-six are
+declaration and masking classes, fourteen introductory-clause and `ran`/`did run` classes against
+each file, twelve multi-proposition classes against each file, and **twenty-three token/proposition
+classes against each file** (`M118`–`M163`): finite procedural and `re-` claims, comma-,
+parenthetical-, adverbial- and degree-interrupted auxiliaries, copular predicates with intervening
+adverbs, participial adjuncts whose contextual antecedent **is** 007, and five combinations pairing
+one of these with a genuinely governed proposition.
+
+**What each correction is actually load-bearing for was measured, not assumed.** Against the
+reviewed head `c189d2b`, **seventeen of the twenty-three new prohibited classes bypassed `CC5`** and
+**three of the five new authorized classes were wrongly rejected**; the other six prohibited classes
+were already caught there and are retained as coverage, not claimed as new bypasses. Five focused
+probes then altered the built suite in one way each and re-ran all twenty-eight new classes:
+exempting a finite claim on procedural manner or a `re-` prefix again lets **nine** classes through
+(`M118`–`M129`, `M154`–`M157`, `M160`–`M161`); restoring the fixed twenty-eight-character auxiliary
+lookup lets **five** through (`M130`–`M133`, `M136`–`M137`, `M140`–`M143`); treating every comma and
+parenthesis as a proposition boundary again lets **five** through (`M130`–`M133`, `M136`–`M137`,
+`M146`–`M147`, `M158`–`M159`) **and** wrongly rejects the three governed-with-internal-qualifier
+allowances (`M164`–`M169`); judging only the earliest predicate lets **three** through
+(`M154`–`M155`, `M158`–`M159`, `M162`–`M163`); and disabling the contextual-antecedent rule lets the
+**two** participial-adjunct classes through (`M150`–`M153`). Four classes (`M134`–`M135`,
+`M138`–`M139`, `M144`–`M145`, `M148`–`M149`) survive every probe because two independent parts of
+the analysis catch each of them, so no single correction is claimed to be uniquely responsible for
+those. Re-running the earliest-predicate-only probe against the twelve multi-proposition classes
+reproduced the earlier measurement exactly: **eight classes (sixteen mutations) go undetected**,
+while the other four stay caught and are retained as coverage rather than cited as proof. The
+implementation was restored byte-for-byte after every probe.
+
+Separately, a manual adversarial matrix ran **fifty-nine prohibited forms and sixteen authorized
+forms against each of the two SQL files** through the real suite: **one hundred and eighteen
+rejections and thirty-two allowances, zero misclassifications**, with both scripts restored
+byte-for-byte (migration `fb5128b4ae207e75…`, rollback `31e0ab0c1f92ccaf…`), `state/` clean and a
+green final baseline.
 
 **Migration-path classification, accepted and not bypassed.** Because that change touches
 `state/migrations/**`, `scripts/render/deployment-controller.mjs` evaluates

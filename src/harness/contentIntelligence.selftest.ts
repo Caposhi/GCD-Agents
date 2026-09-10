@@ -5231,170 +5231,294 @@ async function run(): Promise<void> {
     // applied" nor "it is not applied" is established. These two files are
     // authoritative repository inputs, so neither may declare it.
     //
-    // The check is PROPOSITION-BOUND and fail-closed. Three earlier forms were
-    // not. Requiring "production" near the predicate missed "remains unapplied".
-    // Accepting any qualifier word anywhere in a period-delimited sentence let a
-    // categorical assertion hide behind a "verify"/"UNKNOWN"/"observed" elsewhere
-    // in the same sentence. And accepting any subordinator that merely PRECEDED
-    // the predicate let an unrelated introductory clause launder the assertion
-    // that followed it ("Before we verify, migration 007 is applied.").
+    // The check is PROPOSITION-BOUND and fail-closed. Five earlier forms were
+    // not, and each taught the same lesson: a character window or a punctuation
+    // rule is not a proposition boundary.
     //
-    // So qualification must GOVERN the proposition, which is a structural test,
-    // not a vocabulary one: the subordinator has to introduce the very clause the
-    // predicate heads, with nothing between the two but that clause's own
-    // subject. The subject is whitelisted, so anything unexpected in that gap —
-    // another finite verb, a closing comma, an adverbial — means the subordinate
-    // clause ended before the assertion began, and the assertion stands bare.
+    //   1. Requiring "production" near the predicate missed "remains unapplied".
+    //   2. Accepting any qualifier word anywhere in a period-delimited sentence
+    //      let a categorical assertion hide behind an "UNKNOWN" elsewhere in it.
+    //   3. Accepting any subordinator that merely PRECEDED the predicate let an
+    //      unrelated introductory clause launder the assertion behind it
+    //      ("Before we verify, migration 007 is applied.").
+    //   4. Judging only the EARLIEST predicate in a clause let one genuinely
+    //      governed proposition carry a categorical sibling along ("Whether
+    //      migration 007 is applied is UNKNOWN and migration 007 is applied.").
+    //   5. Splitting the text on every comma while hunting the auxiliary inside a
+    //      fixed 28-character window. The split cut governed propositions apart at
+    //      their own internal qualifiers ("Whether migration 007, after read-only
+    //      verification, is applied ..."), and the window let a categorical claim
+    //      escape by placing an aside between auxiliary and participle
+    //      ("Migration 007 has, according to the operator, been applied.").
     //
-    // A fourth form was still not enough. It found only the EARLIEST predicate in
-    // a clause and, if that one was governed, allowed the whole clause. So a
-    // genuinely authorized proposition could carry a categorical sibling along
-    // with it: "Whether migration 007 is applied is UNKNOWN and migration 007 is
-    // applied." Splitting on a fixed conjunction list would not fix that either —
-    // "and"/"but" occur inside governed propositions too.
+    // So the comment text is TOKENISED once, and every application verb in it is
+    // analysed in place. Five judgements are made independently, for that one
+    // predicate, from its own tokens: (1) its subject, or the contextual
+    // antecedent it modifies; (2) its auxiliary/tense frame; (3) its own
+    // proposition boundaries; (4) the governing conditional or epistemic
+    // construction, if any; (5) whether what remains is a categorical
+    // current-state assertion. No judgement is measured in characters, and no
+    // punctuation mark is a boundary by itself.
     //
-    // So EVERY predicate is enumerated and judged on its own, and each of the
-    // three judgements below — where the predicate starts, whether an exemption
-    // applies, which subordinator governs it — is bound to that one predicate's
-    // own local frame: the text between the previous predicate and this one. A
-    // subordinator that already governs an earlier predicate cannot reach across
-    // it, so an authorized proposition authorizes nothing but itself.
+    // The guarantee is deliberately narrow. This recognises the supported
+    // authoritative-comment language of these two files — declarative English
+    // about one migration's application state — and is not a claim of general
+    // natural-language understanding.
     //
     // Positive and negative forms are treated identically: neither is established.
-    //
-    // Every place an application verb appears is a candidate proposition.
-    const APPLICATION_VERB = /\b(?:applied|unapplied|ran|run)\b/gi;
-    const AUXILIARY =
-      /\b(?:is|are|was|were|has|have|had|does|do|did|remains?|stays?)(?:n['’]t)?\b/gi;
-    // The auxiliary NEAREST the verb, never the leftmost: a leftmost match can
-    // belong to the preceding proposition, and using it would drag this
-    // predicate's start back across its own subordinator and fake governance.
-    const nearestAuxiliary = (frame: string): number | null => {
-      let at: number | null = null;
-      AUXILIARY.lastIndex = 0;
-      for (let a = AUXILIARY.exec(frame); a; a = AUXILIARY.exec(frame)) {
-        const between = frame.slice(a.index + a[0].length);
-        if (between.length <= 28 && !/[;:,]/.test(between)) at = a.index;
-      }
-      return at;
+    type Tok = {
+      readonly text: string; readonly lower: string;
+      readonly start: number; readonly end: number;
     };
-    // Verbless elliptical declarations ("Not applied to production.", "Never
-    // applied.") assert the same proposition with the copula elided, so a clause
-    // that OPENS with the participle counts as a predicate too.
-    const ELLIPTICAL_LEAD = /^\s*(?:not|never|already|still|currently|yet)?\s*$/i;
-    // "applied set"/"applied state" is adjectival — it names an inventory, not an
-    // event. Tested against what follows THIS verb, so an adjectival use
-    // elsewhere in the clause cannot exempt a categorical assertion here.
-    const ADJECTIVAL_AFTER = /^\s+(?:state|set|inventory|migrations?|list|rows?|files?)\b/i;
-    // Procedural manner ("applied by hand", "re-applied as a new migration") says
-    // HOW something is applied when it is, not that it has been.
-    const PROCEDURAL_AFTER = /^\s+by\s+hand\b/i;
-    // A predicate whose own frame names 001-006 and not 007 is the dated
-    // baseline, not a 007 claim.
-    const NON_007_SUBJECT = /\b00[1-6]\b|001[^0-9]{0,3}006/;
-    // Only these can subordinate the proposition: an embedded question
-    // ("whether/if") or a hypothetical/temporal frame ("after 007 has been
-    // applied, ..."). Bare "verify", "observed", "check", "unknown", "establish"
-    // are NOT enough, and neither is position alone — see SUBJECT_ONLY.
-    const SUBORDINATOR =
-      /\b(?:whether|if|after|once|when|whenever|before|until|unless|should)\b/gi;
-    // Everything a subordinator may span before reaching the predicate: the
-    // subject of the clause it introduces, and nothing else. A whitelist, so an
-    // introductory clause that closed before the assertion ("Before we verify,",
-    // "If this note is read,", "Once more,") governs nothing and the assertion
-    // that follows it is judged bare.
-    const SUBJECT_ONLY =
-      /^[\s"'`(]*(?:(?:the|this|that|these|those|its|a|an|any|each|either|both|no)\s+)*(?:migration|rollback|script|file|it|they|one|007)?(?:[\s'"`)]+(?:migration|rollback|script|file|007))?(?:'s)?[\s"'`)]*$/i;
-    const sqlClauses = (sql: string): string[] => sql
-      .split("\n")
-      .filter((line) => /^\s*--/.test(line))
-      .map((line) => line.replace(/^\s*--\s?/, ""))
-      // Join with a space so a hard-wrapped sentence is reassembled before it is
-      // split — otherwise the wrap itself manufactures clause fragments. Masking
-      // by line break is still caught: the assertion's own terminator splits it.
-      .join(" ")
-      // Every comma is a clause boundary, not only comma-plus-conjunction: an
-      // introductory subordinate clause closes with a bare comma, and treating
-      // that comma as ordinary text is exactly what let it launder the main
-      // clause behind it.
-      .split(/[.;:,]|\s—\s|\s–\s|\s-\s/)
-      .map((clause) => clause.trim())
-      .filter(Boolean);
-    // True only when a subordinator introduces THIS predicate's own clause: it
-    // must sit after the previous predicate (so it cannot reach across a sibling
-    // proposition it already governs) and reach this predicate over nothing but
-    // that clause's subject.
-    const isGoverned = (
-      clause: string, predicateStart: number, previousEnd: number,
-    ): boolean => {
-      SUBORDINATOR.lastIndex = 0;
-      for (let m = SUBORDINATOR.exec(clause); m; m = SUBORDINATOR.exec(clause)) {
-        if (m.index >= predicateStart) break;
-        if (m.index < previousEnd) continue;
-        if (SUBJECT_ONLY.test(clause.slice(m.index + m[0].length, predicateStart))) return true;
+    // A terminator, semicolon, colon or dash always ends a proposition. A COMMA
+    // does not: it is sometimes a boundary and sometimes punctuation inside one,
+    // and which it is has to be decided structurally.
+    const HARD_BOUNDARY = new Set([".", ";", ":", "—", "–"]);
+    const APPLICATION_VERB = /^(?:re-)?(?:applied|unapplied|ran|run)$/i;
+    const FINITE_AUX =
+      /^(?:is|are|was|were|has|have|had|does|do|did|remains?|stays?)(?:n['’]t)?$/i;
+    const NONFINITE_AUX = /^(?:be|been|being)$/i;
+    const MODAL = /^(?:will|would|shall|should|may|might|must|can|could)$/i;
+    // Only a finite verb, a modal or an application verb heads a clause of its
+    // own. An infinitive marker or a preposition does not — which is what
+    // separates a parenthetical aside from a second proposition.
+    const isClausal = (w: string): boolean =>
+      FINITE_AUX.test(w) || APPLICATION_VERB.test(w) || MODAL.test(w);
+    const NEGATOR = /^(?:not|never|no)$/i;
+    const ADVERB_SET = new Set([
+      "already", "still", "currently", "yet", "also", "then", "just", "ever", "now",
+      "therefore", "only", "again", "hereby", "deliberately", "perhaps", "apparently",
+    ]);
+    const isAdverb = (w: string): boolean => /ly$/i.test(w) || ADVERB_SET.has(w);
+    // Everything a subordinator may span before reaching the predicate it
+    // governs: the subject of the clause it introduces, and nothing else.
+    const SUBJECT_WORD = /^(?:the|this|that|these|those|its|it|a|an|any|each|either|both|no|one|they|migrations?|rollback|script|file|state|set|007|00[1-6])$/i;
+    // An embedded question ("whether/if") or a hypothetical/temporal frame.
+    // "verify", "observed", "check", "UNKNOWN" and "establish" are NOT enough,
+    // and neither is position alone.
+    const SUBORDINATOR = /^(?:whether|if|after|once|when|whenever|before|until|unless|should)$/i;
+    // "applied set"/"applied state" names an inventory, not an event.
+    const ADJECTIVAL_HEAD = /^(?:state|set|inventory|migrations?|list|rows?|files?)$/i;
+
+    const tokenize = (text: string): Tok[] => {
+      const out: Tok[] = [];
+      const re = /[A-Za-z0-9_][A-Za-z0-9_'’\-]*|[.,;:()—–]/g;
+      for (let m = re.exec(text); m; m = re.exec(text)) {
+        out.push({
+          text: m[0], lower: m[0].toLowerCase(),
+          start: m.index, end: m.index + m[0].length,
+        });
       }
-      return false;
+      return out;
     };
-    // Every ungoverned application-state proposition in one clause. A clause is
-    // clean only when EVERY predicate it carries is exempt or governed; one
-    // authorized proposition never covers for a categorical sibling.
-    const bareClaimsInClause = (clause: string): string[] => {
+    // A paren pair, or a comma pair whose interior carries no clausal verb, is an
+    // INTERRUPTION: an appositive or adverbial aside inside one proposition, not
+    // a second proposition. The leftward walks step over these rather than
+    // stopping at them, so an aside cannot separate an auxiliary from its verb.
+    const interruptionSpans = (toks: readonly Tok[]): Array<[number, number]> => {
+      const spans: Array<[number, number]> = [];
+      for (let i = 0; i < toks.length; i++) {
+        if (toks[i]?.lower === "(") {
+          const close = toks.findIndex((t, k) => k > i && t.lower === ")");
+          if (close > i) { spans.push([i, close]); i = close; }
+          continue;
+        }
+        if (toks[i]?.lower !== ",") continue;
+        for (let j = i - 1; j >= 0; j--) {
+          const w = toks[j]?.lower ?? "";
+          if (HARD_BOUNDARY.has(w) || w === "(" || w === ")") break;
+          if (w === ",") {
+            if (!toks.slice(j + 1, i).some((t) => isClausal(t.lower))) spans.push([j, i]);
+            break;
+          }
+        }
+      }
+      return spans;
+    };
+    const spanOpenerAt = (
+      spans: ReadonlyArray<readonly [number, number]>, idx: number, closingOnly: boolean,
+    ): number | null => {
+      const hit = spans.find(([a, b]) => (closingOnly ? b === idx : a === idx || b === idx));
+      return hit ? hit[0] : null;
+    };
+
+    // Every application-state proposition in one comment block, each judged alone.
+    const analyzeComments = (text: string): string[] => {
+      const toks = tokenize(text);
+      const spans = interruptionSpans(toks);
       const offending: string[] = [];
-      let previousEnd = 0;
-      APPLICATION_VERB.lastIndex = 0;
-      for (let site = APPLICATION_VERB.exec(clause); site; site = APPLICATION_VERB.exec(clause)) {
-        const token = site[0];
-        const frame = clause.slice(previousEnd, site.index);
-        const after = clause.slice(site.index + token.length);
-        const siteEnd = site.index + token.length;
+      let previousVerb = -1;
+      for (let i = 0; i < toks.length; i++) {
+        const verb = toks[i];
+        if (!verb || !APPLICATION_VERB.test(verb.lower)) continue;
+        const rePrefixed = /^re-/i.test(verb.lower);
+        const bare = verb.lower.replace(/^re-/, "");
 
-        // Where this predicate begins, which is what governance is measured to.
-        let predicateStart: number | null = null;
-        if (/^ran$/i.test(token)) {
-          // A finite past main verb IS the predicate; it takes no auxiliary, and
-          // looking for one would find the previous proposition's.
-          predicateStart = site.index;
-        } else {
-          const auxiliaryAt = nearestAuxiliary(frame);
-          if (auxiliaryAt !== null) predicateStart = previousEnd + auxiliaryAt;
-          else if (previousEnd === 0 && ELLIPTICAL_LEAD.test(frame)) predicateStart = 0;
+        // (1)-(3) One leftward walk collects the auxiliary/tense frame, finds the
+        // subject, and fixes this proposition's own left boundary. Interruptions,
+        // adverbs and negators are stepped over; a hard terminator, a genuine
+        // comma boundary, or the previous predicate ends it.
+        const auxes: string[] = [];
+        let j = i - 1, subjectHead: number | null = null, propStart = 0, onlyAdverbs = true;
+        let openerBoundary = -1;
+        for (; j > previousVerb && j >= 0; j--) {
+          const w = toks[j]?.lower ?? "";
+          if (HARD_BOUNDARY.has(w)) { propStart = j + 1; break; }
+          if (w === ")" || w === ",") {
+            const open = spanOpenerAt(spans, j, w === ")");
+            if (open !== null && open < j) { j = open; continue; }
+            // "absolutely, unequivocally applied" — a comma separating adverbs is
+            // punctuation inside the proposition, not the end of one.
+            if (w === "," && j > 0 && isAdverb(toks[j - 1]?.lower ?? "")) continue;
+            propStart = j + 1; openerBoundary = j; break;
+          }
+          if (w === "(") { propStart = j + 1; openerBoundary = j; break; }
+          if (FINITE_AUX.test(w) || NONFINITE_AUX.test(w) || MODAL.test(w)) {
+            auxes.unshift(w); onlyAdverbs = false; continue;
+          }
+          if (NEGATOR.test(w) || isAdverb(w)) continue;
+          if ((w === "and" || w === "or") && j > 0 && isAdverb(toks[j - 1]?.lower ?? "")) continue;
+          // A degree modifier ("quite deliberately"): a token immediately
+          // followed by an adverb belongs to that adverbial, not to the subject.
+          // Structural, so the adverbial run between an auxiliary and its
+          // participle can be any length without a word list growing to match.
+          if (j + 1 < toks.length && isAdverb(toks[j + 1]?.lower ?? "")) continue;
+          // The subject head. This proposition starts at the head of its subject
+          // NOUN PHRASE, so keep stepping left over the determiners and
+          // modifiers that belong to it — and stop there. Anything further left
+          // belongs to an earlier proposition and is not this predicate's
+          // subject, so it must not be read as one.
+          subjectHead = j; onlyAdverbs = false; propStart = j;
+          for (let k = j - 1; k > previousVerb && k >= 0; k--) {
+            const p = toks[k]?.lower ?? "";
+            if (SUBJECT_WORD.test(p) || isAdverb(p) || NEGATOR.test(p)) { propStart = k; continue; }
+            break;
+          }
+          break;
         }
-        // No auxiliary and no elision: a participle used as a modifier, not a
-        // predicate ("the current applied set", "With this applied and ...").
-        if (predicateStart === null) { previousEnd = siteEnd; continue; }
+        if (j <= previousVerb) propStart = previousVerb + 1;
 
-        // Exemptions, each bound to THIS verb rather than to the clause.
-        const reApplied = clause.slice(Math.max(0, site.index - 3), site.index) === "re-";
-        if (ADJECTIVAL_AFTER.test(after)) { previousEnd = siteEnd; continue; }
-        if (PROCEDURAL_AFTER.test(after) || reApplied) { previousEnd = siteEnd; continue; }
-        if (NON_007_SUBJECT.test(frame) && !/\b007\b/.test(frame)) {
-          previousEnd = siteEnd; continue;
+        // (2) The tense frame, from this predicate's own auxiliaries.
+        const has = (re: RegExp): boolean => auxes.some((a) => re.test(a));
+        let frame: string;
+        if (has(MODAL)) frame = "modal";
+        else if (has(/^(?:was|were)(?:n['’]t)?$/)) frame = "past";
+        else if (has(/^(?:has|have|had)(?:n['’]t)?$/)) frame = "perfect";
+        else if (has(/^(?:does|do|did)(?:n['’]t)?$/)) frame = "do-support";
+        else if (has(/^(?:is|are|remains?|stays?)(?:n['’]t)?$/)) frame = "present";
+        else if (auxes.length) frame = "nonfinite";
+        else if (bare === "ran") frame = "past";           // a finite past main verb
+        else if (subjectHead === null && onlyAdverbs) frame = "elliptical";
+        else frame = "none";
+
+        // (1b) A bare participle with no subject and no auxiliary that OPENS a
+        // comma- or paren-delimited adjunct inside a running sentence is not a
+        // proposition: it modifies the nominal before the opener. Resolve that
+        // contextual antecedent and judge the adjunct by it. An elliptical
+        // declaration that heads the prose ("Not applied to production.") has no
+        // such antecedent and stays an assertion.
+        let antecedent = "";
+        const adjunct = frame === "elliptical" && openerBoundary > 0;
+        if (adjunct) {
+          let a = openerBoundary - 1;
+          for (; a > previousVerb && a >= 0; a--) {
+            if (HARD_BOUNDARY.has(toks[a]?.lower ?? "")) break;
+          }
+          antecedent = toks.slice(a + 1, openerBoundary).map((t) => t.lower).join(" ").trim();
+        }
+        // (5) Is this a categorical assertion about a current or past state?
+        const assertive = adjunct
+          ? /\b007\b|\bmigrations?\b/i.test(antecedent)
+          : ["past", "perfect", "present", "do-support", "elliptical"].includes(frame);
+
+        // Exemptions, each bound to THIS predicate rather than to the sentence.
+        const after = toks[i + 1];
+        const adjectival = after !== undefined && ADJECTIVAL_HEAD.test(after.lower)
+          && frame !== "elliptical";
+        const byHand = after?.lower === "by" && toks[i + 2]?.lower === "hand";
+        const subjectText = adjunct
+          ? antecedent
+          : toks.slice(propStart, i).map((t) => t.lower).join(" ");
+        // The remainder of THIS proposition, to its own right-hand boundary —
+        // not a character window: "is applied by hand" reads as procedural only
+        // when the proposition it sits in is not about 007.
+        let rest = "";
+        for (let k = i + 1; k < toks.length; k++) {
+          const w = toks[k]?.lower ?? "";
+          if (HARD_BOUNDARY.has(w)) break;
+          rest += ` ${w}`;
+        }
+        const about007 = /\b007\b/.test(subjectText) || /\b007\b/.test(rest);
+        // A predicate whose own subject names 001-006 and not 007 is the dated
+        // baseline, not a 007 claim.
+        const nonOwn = /\b00[1-6]\b/.test(subjectText) && !/\b007\b/.test(subjectText);
+        // Procedural manner ("applied by hand", "re-applied as a new migration")
+        // says HOW something is applied when it is. It never exempts a FINITE
+        // OCCURRENCE claim: "was applied by hand" and "was re-applied" assert that
+        // it happened, and stay categorical. Only a genuinely non-assertive frame
+        // — hypothetical, conditional, modal, infinitive or instructional — can be
+        // read as procedural.
+        const procedural = (byHand || rePrefixed)
+          && (frame === "modal" || frame === "nonfinite" || frame === "none"
+              || (frame === "present" && !about007));
+
+        // (4) Governance: a subordinator must introduce THIS proposition,
+        // reachable over its subject alone, and never from before the previous
+        // predicate — so a subordinator that already governs an earlier
+        // proposition cannot reach across it to authorize this one.
+        let governed = false;
+        for (let s = i - 1; s > previousVerb && s >= 0; s--) {
+          const w = toks[s]?.lower ?? "";
+          if (HARD_BOUNDARY.has(w)) break;
+          if (w === ")" || w === ",") {
+            const open = spanOpenerAt(spans, s, w === ")");
+            if (open !== null && open < s) { s = open; continue; }
+            if (w === "," && s > 0 && isAdverb(toks[s - 1]?.lower ?? "")) continue;
+            break;
+          }
+          if (SUBORDINATOR.test(w)) { governed = true; break; }
+          if (FINITE_AUX.test(w) || NONFINITE_AUX.test(w) || MODAL.test(w)) continue;
+          if (NEGATOR.test(w) || isAdverb(w)) continue;
+          if (SUBJECT_WORD.test(w)) continue;
+          if ((w === "and" || w === "or") && s > 0 && isAdverb(toks[s - 1]?.lower ?? "")) continue;
+          break;                                    // anything else ends the reach
         }
 
-        if (!isGoverned(clause, predicateStart, previousEnd)) {
-          offending.push(clause.slice(predicateStart, Math.min(clause.length, siteEnd + 16)).trim());
+        if (assertive && !adjectival && !procedural && !nonOwn && !governed) {
+          offending.push(text.slice(toks[propStart]?.start ?? verb.start,
+            Math.min(text.length, verb.end + 18)).replace(/\s+/g, " ").trim());
         }
-        previousEnd = siteEnd;
+        previousVerb = i;
       }
       return offending;
     };
-    const bareApplicationClaims = (sql: string): string[] =>
-      sqlClauses(sql).flatMap((clause) => bareClaimsInClause(clause));
+    // Full-line comments are the authoritative prose. They are joined with a
+    // space so a hard-wrapped sentence is reassembled before it is analysed —
+    // otherwise the wrap itself would manufacture proposition fragments.
+    const sqlComments = (sql: string): string => sql
+      .split("\n")
+      .filter((line) => /^\s*--/.test(line))
+      .map((line) => line.replace(/^\s*--\s?/, ""))
+      .join(" ");
+    const bareApplicationClaims = (sql: string): string[] => analyzeComments(sqlComments(sql));
     const migrationClaims = bareApplicationClaims(migrationSql);
     const rollbackClaims = bareApplicationClaims(rollbackSql);
     if (migrationClaims.length || rollbackClaims.length) {
       console.log(`      offending propositions: ${
         JSON.stringify([...migrationClaims, ...rollbackClaims])}`);
     }
-    check("CC5. the rollback lives outside the forward-only runner's directory; EVERY "
-      + "application-state proposition in either file is judged on its own, so neither file "
-      + "declares 007's application state in either direction — positive or negative, auxiliary "
-      + "or bare past (ran / never ran / did run / did not run), with or without the word "
-      + "production, not maskable by a qualifier in another clause, not laundered by an "
-      + "unrelated introductory clause, and not carried along by a governed sibling "
-      + "proposition, because qualification must govern the proposition itself — both state "
-      + "it is UNKNOWN in either direction, both keep the 2026-08-28 reading dated, and both "
-      + "require separate authorization",
+    check("CC5. the rollback lives outside the forward-only runner's directory; a token-level "
+      + "analysis enumerates EVERY application predicate in either file and judges each on its "
+      + "own subject or antecedent, tense frame, proposition boundaries and governing "
+      + "construction, so neither file declares 007's application state in either direction — "
+      + "positive or negative, auxiliary or bare past (ran / never ran / did run / did not "
+      + "run), with or without the word production, with the auxiliary at any distance from "
+      + "its participle and across a parenthetical or comma-delimited aside, finite whatever "
+      + "procedural manner or re- prefix follows it, not maskable by a qualifier in another "
+      + "proposition, not laundered by an unrelated introductory clause, and not carried along "
+      + "by a governed sibling — while a genuinely governed proposition is still accepted with "
+      + "its own internal qualifiers intact — both state it is UNKNOWN in either direction, "
+      + "both keep the 2026-08-28 reading dated, and both require separate authorization",
       !(await readdir(resolve(REPO_ROOT, "state/migrations")))
          .some((f) => /rollback/i.test(f))
         && (await readdir(resolve(REPO_ROOT, "state/rollback")))
@@ -5404,10 +5528,18 @@ async function run(): Promise<void> {
         // applied", the negatives "is not / has not been / was not / has never
         // been / is not yet applied" and "remains unapplied", their contractions,
         // contextual "It ..." forms, "the rollback has (not) been run", the bare
-        // past "ran"/"never ran" and the emphatic "did run"/"did not run" —
-        // whether or not the clause says "production", whether or not an
+        // past "ran"/"never ran" and the emphatic "did run"/"did not run" — and
+        // now also the finite procedural forms "was applied by hand" and "was
+        // re-applied", and predicates whose auxiliary is separated from the
+        // participle by an aside ("has, according to the operator, been
+        // applied"), a parenthesis, or a run of adverbs of any length. It holds
+        // whether or not the sentence says "production", whether or not an
         // unrelated subordinate clause is placed in front of it, and whether or
-        // not a properly governed proposition sits beside it in the same clause.
+        // not a properly governed proposition sits beside it in the same
+        // sentence. Conversely a governed proposition keeps its own internal
+        // qualifiers ("Whether migration 007, after read-only verification, is
+        // applied remains UNKNOWN in either direction."), because a comma or a
+        // parenthesis is not by itself a proposition boundary.
         && migrationClaims.length === 0
         && rollbackClaims.length === 0
         // Both must state the unknown explicitly, and in both directions.

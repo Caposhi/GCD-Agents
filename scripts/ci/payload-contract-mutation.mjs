@@ -25,13 +25,31 @@
  * conditional, a parenthetical, a newline, an em dash or a semicolon, in either
  * order and in contextual-`It` shape. Each requires CC5 to report the failure BY
  * NAME. The multi-proposition group is load-bearing only because CC5 enumerates
- * EVERY predicate: with an earliest-predicate-only check these mutations pass
- * unnoticed, which is exactly the regression they exist to catch.
+ * EVERY predicate: with an earliest-predicate-only check SIXTEEN of those
+ * twenty-four mutations — eight of the twelve classes — pass unnoticed, measured
+ * by restoring that behaviour and re-running them. The other four classes are
+ * still caught by another part of the check, so the group is load-bearing
+ * without being uniquely so.
  *
- * That group also runs the other direction. Cases marked `mustPass` insert the
+ * A later group (M118-M163) covers the token/proposition analysis that replaced
+ * the clause-splitting form: finite occurrence claims whose procedural manner or
+ * `re-` prefix follows the verb (`was applied by hand`, `has been re-applied`);
+ * predicates whose auxiliary is separated from its participle by a
+ * comma-delimited aside, a parenthetical, a long adverbial run or a degree
+ * modifier; copular predicates with intervening adverbs; participial adjuncts
+ * whose contextual antecedent IS 007; and combinations pairing any of these with
+ * a genuinely governed proposition in the same sentence. Seventeen of those
+ * twenty-three classes bypassed CC5 at the reviewed head c189d2b; the other six
+ * were already caught there and are carried for coverage, not as new bypasses.
+ *
+ * Those groups also run the other direction. Cases marked `mustPass` insert the
  * wording the files are REQUIRED to carry — the epistemic form, the dated
- * 2026-08-28 observation of 001-006, the not-established form — and require the
- * suite to stay GREEN, so an over-broad guard fails here rather than in review.
+ * 2026-08-28 observation of 001-006, the not-established form, a governed
+ * proposition holding its own internal qualifier behind a comma or a
+ * parenthesis, and the procedural manner the two files themselves use — and
+ * require the suite to stay GREEN, so an over-broad guard fails here rather than
+ * in review. Three of those five new allowed classes were wrongly rejected at
+ * c189d2b.
  *
  * It is offline and deterministic: no network, no database, no provider, no
  * credential. It mutates only files inside this repository's `src/` and
@@ -1051,6 +1069,464 @@ const MUTATIONS = [
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first.\n"
       + "-- Whether it was applied is not established and requires read-only verification.",
+    mustPass: true,
+    expect: [],
+  },
+  {
+    name: "the migration comment declares 007 applied in a FINITE past frame whose procedural manner follows the verb \u2014 `was applied by hand`",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
+      + "\\n-- Migration 007 was applied by hand to production.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment declares 007 applied in a FINITE past frame whose procedural manner follows the verb \u2014 `was applied by hand`",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first."
+      + "\\n-- Migration 007 was applied by hand to production.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment declares 007 applied in a FINITE perfect frame whose procedural manner follows the verb \u2014 `has been applied by hand`",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
+      + "\\n-- Migration 007 has been applied by hand to production.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment declares 007 applied in a FINITE perfect frame whose procedural manner follows the verb \u2014 `has been applied by hand`",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first."
+      + "\\n-- Migration 007 has been applied by hand to production.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment declares 007 applied in a FINITE past frame, contextual `It`, procedural manner after the verb",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
+      + "\\n-- It was applied by hand after the 2026-08-28 reading.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment declares 007 applied in a FINITE past frame, contextual `It`, procedural manner after the verb",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first."
+      + "\\n-- It was applied by hand after the 2026-08-28 reading.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment declares 007 applied in a FINITE past frame behind a `re-` prefix \u2014 `was re-applied`",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
+      + "\\n-- Migration 007 was re-applied to production after rollback.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment declares 007 applied in a FINITE past frame behind a `re-` prefix \u2014 `was re-applied`",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first."
+      + "\\n-- Migration 007 was re-applied to production after rollback.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment declares 007 applied in a FINITE perfect frame behind a `re-` prefix \u2014 `has been re-applied`",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
+      + "\\n-- Migration 007 has been re-applied to production.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment declares 007 applied in a FINITE perfect frame behind a `re-` prefix \u2014 `has been re-applied`",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first."
+      + "\\n-- Migration 007 has been re-applied to production.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment declares 007 applied in a FINITE past frame combining both procedural forms \u2014 `was re-applied by hand`",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
+      + "\\n-- It was re-applied by hand after the rollback.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment declares 007 applied in a FINITE past frame combining both procedural forms \u2014 `was re-applied by hand`",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first."
+      + "\\n-- It was re-applied by hand after the rollback.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment separates the auxiliary from its participle with a comma-delimited aside \u2014 `has, according to the operator, been applied`",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
+      + "\\n-- Migration 007 has, according to the operator, been applied to production.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment separates the auxiliary from its participle with a comma-delimited aside \u2014 `has, according to the operator, been applied`",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first."
+      + "\\n-- Migration 007 has, according to the operator, been applied to production.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment separates the auxiliary from its participle with a comma-delimited aside, contextual `It`",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
+      + "\\n-- It has, per the 2026-09-02 audit, been applied to production.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment separates the auxiliary from its participle with a comma-delimited aside, contextual `It`",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first."
+      + "\\n-- It has, per the 2026-09-02 audit, been applied to production.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment separates a past auxiliary from its participle with a one-word comma-delimited aside",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
+      + "\\n-- Migration 007 was, regrettably, applied to production.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment separates a past auxiliary from its participle with a one-word comma-delimited aside",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first."
+      + "\\n-- Migration 007 was, regrettably, applied to production.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment separates the auxiliary from its participle with a PARENTHETICAL aside \u2014 `has (according to the operator) been applied`",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
+      + "\\n-- Migration 007 has (according to the operator) been applied to production.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment separates the auxiliary from its participle with a PARENTHETICAL aside \u2014 `has (according to the operator) been applied`",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first."
+      + "\\n-- Migration 007 has (according to the operator) been applied to production.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment separates a past auxiliary from its participle with a PARENTHETICAL aside",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
+      + "\\n-- Migration 007 was (per the audit) applied to production.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment separates a past auxiliary from its participle with a PARENTHETICAL aside",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first."
+      + "\\n-- Migration 007 was (per the audit) applied to production.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment separates the auxiliary from its participle with a long run of adverbs \u2014 beyond any fixed lookup window",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
+      + "\\n-- Migration 007 has definitely and indisputably already been applied to production.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment separates the auxiliary from its participle with a long run of adverbs \u2014 beyond any fixed lookup window",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first."
+      + "\\n-- Migration 007 has definitely and indisputably already been applied to production.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment separates the auxiliary from its participle with a long adverbial run carrying degree modifiers, contextual `It`",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
+      + "\\n-- It has quite deliberately and quite unambiguously already been applied.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment separates the auxiliary from its participle with a long adverbial run carrying degree modifiers, contextual `It`",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first."
+      + "\\n-- It has quite deliberately and quite unambiguously already been applied.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment separates a copula from its participle with comma-separated adverbs \u2014 `is absolutely, unequivocally applied`",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
+      + "\\n-- Migration 007 is absolutely, unequivocally applied to production.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment separates a copula from its participle with comma-separated adverbs \u2014 `is absolutely, unequivocally applied`",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first."
+      + "\\n-- Migration 007 is absolutely, unequivocally applied to production.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment separates a copula from its participle with a comma-delimited aside, contextual `It`",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
+      + "\\n-- It is, without question, applied to production.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment separates a copula from its participle with a comma-delimited aside, contextual `It`",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first."
+      + "\\n-- It is, without question, applied to production.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment separates `remains` from its participle with a comma-delimited aside",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
+      + "\\n-- Migration 007 remains, as of today, applied to production.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment separates `remains` from its participle with a comma-delimited aside",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first."
+      + "\\n-- Migration 007 remains, as of today, applied to production.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment asserts application in a comma-delimited participial adjunct whose antecedent IS 007",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
+      + "\\n-- Migration 007, applied to production, bounds every evidence row.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment asserts application in a comma-delimited participial adjunct whose antecedent IS 007",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first."
+      + "\\n-- Migration 007, applied to production, bounds every evidence row.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment asserts application in a PARENTHETICAL participial adjunct whose antecedent IS 007",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
+      + "\\n-- Migration 007 (applied to production) bounds every evidence row.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment asserts application in a PARENTHETICAL participial adjunct whose antecedent IS 007",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first."
+      + "\\n-- Migration 007 (applied to production) bounds every evidence row.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment pairs a governed UNKNOWN proposition with a categorical FINITE procedural sibling",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
+      + "\\n-- Whether migration 007 is applied is UNKNOWN and migration 007 was applied by hand.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment pairs a governed UNKNOWN proposition with a categorical FINITE procedural sibling",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first."
+      + "\\n-- Whether migration 007 is applied is UNKNOWN and migration 007 was applied by hand.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment pairs a categorical FINITE procedural proposition FIRST with a governed UNKNOWN sibling second",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
+      + "\\n-- Migration 007 has been applied by hand and whether it ran is UNKNOWN.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment pairs a categorical FINITE procedural proposition FIRST with a governed UNKNOWN sibling second",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first."
+      + "\\n-- Migration 007 has been applied by hand and whether it ran is UNKNOWN.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment pairs a governed UNKNOWN proposition with a categorical sibling whose auxiliary is interrupted by an aside",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
+      + "\\n-- Whether it ran is UNKNOWN and it has, per the audit, been applied.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment pairs a governed UNKNOWN proposition with a categorical sibling whose auxiliary is interrupted by an aside",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first."
+      + "\\n-- Whether it ran is UNKNOWN and it has, per the audit, been applied.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment pairs a categorical `re-applied` proposition FIRST with a governed UNKNOWN sibling second",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
+      + "\\n-- Migration 007 was re-applied and whether it is applied is UNKNOWN.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment pairs a categorical `re-applied` proposition FIRST with a governed UNKNOWN sibling second",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first."
+      + "\\n-- Migration 007 was re-applied and whether it is applied is UNKNOWN.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment pairs a governed proposition carrying its OWN internal qualifier with a categorical sibling",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
+      + "\\n-- Whether migration 007, after read-only verification, is applied is UNKNOWN and it is applied.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment pairs a governed proposition carrying its OWN internal qualifier with a categorical sibling",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first."
+      + "\\n-- Whether migration 007, after read-only verification, is applied is UNKNOWN and it is applied.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment carries authorized wording \u2014 a governed proposition whose subordinate clause carries a comma-delimited internal qualifier",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
+      + "\\n-- Whether migration 007, after read-only verification, is applied remains UNKNOWN in either direction.",
+    mustPass: true,
+    expect: [],
+  },
+  {
+    name: "the rollback comment carries authorized wording \u2014 a governed proposition whose subordinate clause carries a comma-delimited internal qualifier",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first."
+      + "\\n-- Whether migration 007, after read-only verification, is applied remains UNKNOWN in either direction.",
+    mustPass: true,
+    expect: [],
+  },
+  {
+    name: "the migration comment carries authorized wording \u2014 a governed proposition whose subordinate clause carries a parenthetical internal qualifier",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
+      + "\\n-- Whether migration 007 (after read-only verification) is applied remains UNKNOWN in either direction.",
+    mustPass: true,
+    expect: [],
+  },
+  {
+    name: "the rollback comment carries authorized wording \u2014 a governed proposition whose subordinate clause carries a parenthetical internal qualifier",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first."
+      + "\\n-- Whether migration 007 (after read-only verification) is applied remains UNKNOWN in either direction.",
+    mustPass: true,
+    expect: [],
+  },
+  {
+    name: "the migration comment carries authorized wording \u2014 a conditional whose own qualifier is fronted inside the conditional clause",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
+      + "\\n-- If, after read-only verification, migration 007 is applied, operators must stop.",
+    mustPass: true,
+    expect: [],
+  },
+  {
+    name: "the rollback comment carries authorized wording \u2014 a conditional whose own qualifier is fronted inside the conditional clause",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first."
+      + "\\n-- If, after read-only verification, migration 007 is applied, operators must stop.",
+    mustPass: true,
+    expect: [],
+  },
+  {
+    name: "the migration comment carries authorized wording \u2014 procedural manner in a NON-assertive present frame that is not about 007",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
+      + "\\n-- The rollback is applied by hand under its own authorization.",
+    mustPass: true,
+    expect: [],
+  },
+  {
+    name: "the rollback comment carries authorized wording \u2014 procedural manner in a NON-assertive present frame that is not about 007",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first."
+      + "\\n-- The rollback is applied by hand under its own authorization.",
+    mustPass: true,
+    expect: [],
+  },
+  {
+    name: "the migration comment carries authorized wording \u2014 a participial adjunct whose antecedent is this file, not 007",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
+      + "\\n-- This file is documented SQL, run by hand under its own authorization.",
+    mustPass: true,
+    expect: [],
+  },
+  {
+    name: "the rollback comment carries authorized wording \u2014 a participial adjunct whose antecedent is this file, not 007",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first."
+      + "\\n-- This file is documented SQL, run by hand under its own authorization.",
     mustPass: true,
     expect: [],
   },
