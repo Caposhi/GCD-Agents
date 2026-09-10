@@ -10,6 +10,13 @@
  * the file byte-for-byte — verified by SHA-256 against the bytes captured
  * before the mutation — rebuilds, and requires the suite to pass again.
  *
+ * The rebuild is skipped only where it cannot matter: `dist/` is compiled from
+ * `src/` alone, and the suite reads `state/**` at RUNTIME, so a mutation to a
+ * SQL file needs no compile. It still rebuilds when the PREVIOUS mutation
+ * touched `src/`, because that mutation's restore left `dist/` compiled from
+ * mutated sources. Nothing else changes: every mutation still runs the whole
+ * suite, and a `src/` mutation that fails to compile is still not a pass.
+ *
  * The final group is not a derivation but an epistemic invariant: migration
  * 007's live application state is UNKNOWN in either direction, and neither the
  * migration nor its rollback script may declare it. Those mutations insert
@@ -1614,7 +1621,13 @@ async function main() {
     process.exit(1);
   }
 
+  // `dist/` is compiled from `src/` only; the suite reads `state/**` at RUNTIME.
+  // So a mutation to a SQL file needs no rebuild — unless the previous mutation
+  // touched `src/`, whose restore left `dist/` compiled from mutated sources.
+  // Skipping those rebuilds is what keeps the run inside the CI job budget.
+  let distStale = false;
   for (const [index, mutation] of MUTATIONS.entries()) {
+    const compiled = mutation.file.startsWith("src/");
     const path = resolve(REPO_ROOT, mutation.file);
     const original = readFileSync(path, "utf8");
     const originalDigest = sha256(original);
@@ -1637,11 +1650,14 @@ async function main() {
       writeFileSync(path, original.replace(mutation.from, mutation.to), "utf8");
       let result;
       let buildFailed = false;
-      try {
-        build();
-      } catch {
-        buildFailed = true;
+      if (compiled || distStale) {
+        try {
+          build();
+        } catch {
+          buildFailed = true;
+        }
       }
+      distStale = compiled;
       result = buildFailed ? { failed: [], crashed: true } : runSuite();
 
       if (mutation.mustPass) {
