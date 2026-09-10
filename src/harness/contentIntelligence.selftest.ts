@@ -5250,6 +5250,13 @@ async function run(): Promise<void> {
     //      verification, is applied ..."), and the window let a categorical claim
     //      escape by placing an aside between auxiliary and participle
     //      ("Migration 007 has, according to the operator, been applied.").
+    //   6. Recognising a balanced aside only when its interior carried no verb of
+    //      its own, so a SUBORDINATE aside severed the outer frame it interrupts
+    //      ("Migration 007 has, after the report was signed, been applied." read
+    //      as a bare participle rather than a perfect assertion), and treating
+    //      every coordinator as the end of a governor's reach, which rejected the
+    //      authorized coordinated forms ("Whether or not 007 has been applied is
+    //      UNKNOWN", "Whether 007 was applied or ran is UNKNOWN").
     //
     // So the comment text is TOKENISED once, and every application verb in it is
     // analysed in place. Five judgements are made independently, for that one
@@ -5272,7 +5279,8 @@ async function run(): Promise<void> {
     };
     // A terminator, semicolon, colon or dash always ends a proposition. A COMMA
     // does not: it is sometimes a boundary and sometimes punctuation inside one,
-    // and which it is has to be decided structurally.
+    // and which it is has to be decided structurally — by what the balanced pair
+    // it may open actually contains, not by the comma itself.
     const HARD_BOUNDARY = new Set([".", ";", ":", "—", "–"]);
     const APPLICATION_VERB = /^(?:re-)?(?:applied|unapplied|ran|run)$/i;
     const FINITE_AUX =
@@ -5297,6 +5305,19 @@ async function run(): Promise<void> {
     // "verify", "observed", "check", "UNKNOWN" and "establish" are NOT enough,
     // and neither is position alone.
     const SUBORDINATOR = /^(?:whether|if|after|once|when|whenever|before|until|unless|should)$/i;
+    // What may OPEN a balanced aside. A comma pair or parenthesis introduced by
+    // one of these is a subordinate or appositive interruption inside one
+    // proposition, even though it carries a finite verb of its own ("has, after
+    // the report was signed, been applied"). Its verb belongs to the aside; it
+    // neither replaces the outer auxiliary frame nor governs the outer claim,
+    // because both leftward walks step over the whole span. A closed list, so
+    // an ordinary coordinate clause is never mistaken for an aside.
+    const ASIDE_OPENER =
+      /^(?:whether|if|after|once|when|whenever|before|until|unless|should|as|because|since|while|although|though|per|according|given|assuming|pending)$/i;
+    // Coordinators that may join predicates INSIDE one governed proposition.
+    // `but` is deliberately absent: it introduces a contrasting assertion, not a
+    // continuation of the governed one.
+    const COORDINATOR = /^(?:and|or|nor)$/i;
     // "applied set"/"applied state" names an inventory, not an event.
     const ADJECTIVAL_HEAD = /^(?:state|set|inventory|migrations?|list|rows?|files?)$/i;
 
@@ -5328,7 +5349,14 @@ async function run(): Promise<void> {
           const w = toks[j]?.lower ?? "";
           if (HARD_BOUNDARY.has(w) || w === "(" || w === ")") break;
           if (w === ",") {
-            if (!toks.slice(j + 1, i).some((t) => isClausal(t.lower))) spans.push([j, i]);
+            const interior = toks.slice(j + 1, i);
+            const opener = interior[0]?.lower ?? "";
+            // No clausal verb at all — an appositive or adverbial aside. Or a
+            // balanced SUBORDINATE aside, which may carry its own finite verb
+            // and still interrupt rather than end the proposition.
+            if (!interior.some((t) => isClausal(t.lower)) || ASIDE_OPENER.test(opener)) {
+              spans.push([j, i]);
+            }
             break;
           }
         }
@@ -5348,6 +5376,7 @@ async function run(): Promise<void> {
       const spans = interruptionSpans(toks);
       const offending: string[] = [];
       let previousVerb = -1;
+      let previousGoverned = false;
       for (let i = 0; i < toks.length; i++) {
         const verb = toks[i];
         if (!verb || !APPLICATION_VERB.test(verb.lower)) continue;
@@ -5466,8 +5495,31 @@ async function run(): Promise<void> {
         // reachable over its subject alone, and never from before the previous
         // predicate — so a subordinator that already governs an earlier
         // proposition cannot reach across it to authorize this one.
+        //
+        // Two forms of coordination are distinguished, and only one propagates.
+        // A coordinator INSIDE the reach ("whether or not 007 has been applied",
+        // "whether 007 has or has not been applied") joins material that already
+        // belongs to the governed clause, so the reach steps over it when the
+        // token beside it is itself something the reach admits. A coordinator
+        // BETWEEN two predicates ("was applied or ran") continues the same
+        // governed proposition only when nothing but that coordinator, an
+        // auxiliary, a negator or an adverb separates them: a new subject or any
+        // other word means a separately asserted proposition, judged on its own.
+        const reachAdmits = (w: string): boolean =>
+          FINITE_AUX.test(w) || NONFINITE_AUX.test(w) || MODAL.test(w)
+          || NEGATOR.test(w) || isAdverb(w) || SUBJECT_WORD.test(w)
+          || SUBORDINATOR.test(w) || APPLICATION_VERB.test(w);
         let governed = false;
-        for (let s = i - 1; s > previousVerb && s >= 0; s--) {
+        if (previousVerb >= 0 && previousGoverned) {
+          const gap = toks.slice(previousVerb + 1, i);
+          const coordinators = gap.filter((t) => COORDINATOR.test(t.lower)).length;
+          const shared = coordinators === 1 && gap.every((t) =>
+            COORDINATOR.test(t.lower) || FINITE_AUX.test(t.lower)
+            || NONFINITE_AUX.test(t.lower) || MODAL.test(t.lower)
+            || NEGATOR.test(t.lower) || isAdverb(t.lower));
+          if (shared) governed = true;              // a coordinated predicate, same subject
+        }
+        for (let s = i - 1; !governed && s > previousVerb && s >= 0; s--) {
           const w = toks[s]?.lower ?? "";
           if (HARD_BOUNDARY.has(w)) break;
           if (w === ")" || w === ",") {
@@ -5480,7 +5532,7 @@ async function run(): Promise<void> {
           if (FINITE_AUX.test(w) || NONFINITE_AUX.test(w) || MODAL.test(w)) continue;
           if (NEGATOR.test(w) || isAdverb(w)) continue;
           if (SUBJECT_WORD.test(w)) continue;
-          if ((w === "and" || w === "or") && s > 0 && isAdverb(toks[s - 1]?.lower ?? "")) continue;
+          if (COORDINATOR.test(w) && s > 0 && reachAdmits(toks[s - 1]?.lower ?? "")) continue;
           break;                                    // anything else ends the reach
         }
 
@@ -5489,6 +5541,7 @@ async function run(): Promise<void> {
             Math.min(text.length, verb.end + 18)).replace(/\s+/g, " ").trim());
         }
         previousVerb = i;
+        previousGoverned = governed;
       }
       return offending;
     };
@@ -5513,12 +5566,17 @@ async function run(): Promise<void> {
       + "construction, so neither file declares 007's application state in either direction — "
       + "positive or negative, auxiliary or bare past (ran / never ran / did run / did not "
       + "run), with or without the word production, with the auxiliary at any distance from "
-      + "its participle and across a parenthetical or comma-delimited aside, finite whatever "
-      + "procedural manner or re- prefix follows it, not maskable by a qualifier in another "
-      + "proposition, not laundered by an unrelated introductory clause, and not carried along "
-      + "by a governed sibling — while a genuinely governed proposition is still accepted with "
-      + "its own internal qualifiers intact — both state it is UNKNOWN in either direction, "
-      + "both keep the 2026-08-28 reading dated, and both require separate authorization",
+      + "its participle and across a parenthetical or comma-delimited aside — including a "
+      + "SUBORDINATE aside carrying its own finite verb, whose verb neither replaces the outer "
+      + "frame nor governs the outer claim — finite whatever procedural manner or re- prefix "
+      + "follows it, not maskable by a qualifier in another proposition, not laundered by an "
+      + "unrelated introductory clause, and not carried along by a governed sibling, whether "
+      + "that sibling is joined by a coordinator, an adversative or a new sentence — while a "
+      + "genuinely governed proposition is still accepted with its own internal qualifiers "
+      + "intact and with coordinated predicates that share its subject (whether or not ... has "
+      + "been applied; whether ... has or has not been applied; whether ... was applied or "
+      + "ran) — both state it is UNKNOWN in either direction, both keep the 2026-08-28 reading "
+      + "dated, and both require separate authorization",
       !(await readdir(resolve(REPO_ROOT, "state/migrations")))
          .some((f) => /rollback/i.test(f))
         && (await readdir(resolve(REPO_ROOT, "state/rollback")))
@@ -5532,14 +5590,21 @@ async function run(): Promise<void> {
         // now also the finite procedural forms "was applied by hand" and "was
         // re-applied", and predicates whose auxiliary is separated from the
         // participle by an aside ("has, according to the operator, been
-        // applied"), a parenthesis, or a run of adverbs of any length. It holds
-        // whether or not the sentence says "production", whether or not an
-        // unrelated subordinate clause is placed in front of it, and whether or
-        // not a properly governed proposition sits beside it in the same
+        // applied"), a parenthesis, or a run of adverbs of any length — and now
+        // also across a SUBORDINATE aside carrying its own finite verb ("has,
+        // after the report was signed, been applied"), whose verb belongs to the
+        // aside and neither replaces the outer frame nor governs the outer claim.
+        // It holds whether or not the sentence says "production", whether or not
+        // an unrelated subordinate clause is placed in front of it, and whether
+        // or not a properly governed proposition sits beside it in the same
         // sentence. Conversely a governed proposition keeps its own internal
         // qualifiers ("Whether migration 007, after read-only verification, is
         // applied remains UNKNOWN in either direction."), because a comma or a
-        // parenthesis is not by itself a proposition boundary.
+        // parenthesis is not by itself a proposition boundary; and it keeps
+        // coordinated predicates that share its subject ("whether ... was applied
+        // or ran"), because a coordinator inside one governed proposition is not
+        // the end of it. A coordinator that introduces a NEW subject, or any
+        // adversative, is a separate assertion and is judged on its own.
         && migrationClaims.length === 0
         && rollbackClaims.length === 0
         // Both must state the unknown explicitly, and in both directions.
