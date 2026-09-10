@@ -18,9 +18,15 @@
  * without the word `production`, in plain and contextual-`It` shapes; masking
  * forms that place a declaration beside the required UNKNOWN sentence across a
  * semicolon, a comma-conjunction, a newline, reported speech and an adjacent
- * sentence; and laundering forms that put an unrelated introductory clause in
- * front of the assertion, closed by a comma, an em dash, a semicolon or nothing
- * at all. Each requires CC5 to report the failure BY NAME.
+ * sentence; laundering forms that put an unrelated introductory clause in front
+ * of the assertion, closed by a comma, an em dash, a semicolon or nothing at
+ * all; and MULTI-PROPOSITION forms that pair a genuinely authorized proposition
+ * with a categorical sibling in the same clause, joined by `and`, `but`, a
+ * conditional, a parenthetical, a newline, an em dash or a semicolon, in either
+ * order and in contextual-`It` shape. Each requires CC5 to report the failure BY
+ * NAME. The multi-proposition group is load-bearing only because CC5 enumerates
+ * EVERY predicate: with an earliest-predicate-only check these mutations pass
+ * unnoticed, which is exactly the regression they exist to catch.
  *
  * That group also runs the other direction. Cases marked `mustPass` insert the
  * wording the files are REQUIRED to carry — the epistemic form, the dated
@@ -800,6 +806,198 @@ const MUTATIONS = [
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first.\n"
       + "-- It did not run in production.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment masks a categorical assertion behind a governed proposition — authorized UNKNOWN proposition, then a categorical assertion joined by `and`",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.\n"
+      + "-- Whether migration 007 is applied is UNKNOWN and migration 007 is applied.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment masks a categorical assertion behind a governed proposition — authorized UNKNOWN proposition, then a categorical assertion joined by `and`",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first.\n"
+      + "-- Whether migration 007 is applied is UNKNOWN and migration 007 is applied.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment masks a categorical assertion behind a governed proposition — authorized UNKNOWN proposition, then a categorical assertion joined by `but`",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.\n"
+      + "-- Whether it has been applied is UNKNOWN but it has been applied.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment masks a categorical assertion behind a governed proposition — authorized UNKNOWN proposition, then a categorical assertion joined by `but`",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first.\n"
+      + "-- Whether it has been applied is UNKNOWN but it has been applied.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment masks a categorical assertion behind a governed proposition — conditional proposition, then a categorical assertion",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.\n"
+      + "-- If migration 007 has been applied then operators must stop and migration 007 is applied.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment masks a categorical assertion behind a governed proposition — conditional proposition, then a categorical assertion",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first.\n"
+      + "-- If migration 007 has been applied then operators must stop and migration 007 is applied.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment masks a categorical assertion behind a governed proposition — parenthetical qualification, then a categorical assertion",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.\n"
+      + "-- Whether migration 007 is applied is UNKNOWN (pending verification) and it is applied.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment masks a categorical assertion behind a governed proposition — parenthetical qualification, then a categorical assertion",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first.\n"
+      + "-- Whether migration 007 is applied is UNKNOWN (pending verification) and it is applied.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment masks a categorical assertion behind a governed proposition — categorical assertion FIRST, authorized UNKNOWN proposition second",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.\n"
+      + "-- Migration 007 is applied and whether it is applied is UNKNOWN.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment masks a categorical assertion behind a governed proposition — categorical assertion FIRST, authorized UNKNOWN proposition second",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first.\n"
+      + "-- Migration 007 is applied and whether it is applied is UNKNOWN.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment masks a categorical assertion behind a governed proposition — two categorical predicates in one clause, positive then negative",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.\n"
+      + "-- Migration 007 is applied and it has never been applied.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment masks a categorical assertion behind a governed proposition — two categorical predicates in one clause, positive then negative",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first.\n"
+      + "-- Migration 007 is applied and it has never been applied.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment masks a categorical assertion behind a governed proposition — contextual `It` sibling — UNKNOWN, then `but it has been applied`",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.\n"
+      + "-- Whether it is applied is UNKNOWN but it has been applied.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment masks a categorical assertion behind a governed proposition — contextual `It` sibling — UNKNOWN, then `but it has been applied`",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first.\n"
+      + "-- Whether it is applied is UNKNOWN but it has been applied.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment masks a categorical assertion behind a governed proposition — contextual `It` sibling — UNKNOWN, then `and it did not run`",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.\n"
+      + "-- Whether migration 007 is applied is UNKNOWN and it did not run in production.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment masks a categorical assertion behind a governed proposition — contextual `It` sibling — UNKNOWN, then `and it did not run`",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first.\n"
+      + "-- Whether migration 007 is applied is UNKNOWN and it did not run in production.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment masks a categorical assertion behind a governed proposition — bare-past sibling — UNKNOWN over `ran`, then a categorical `ran`",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.\n"
+      + "-- Whether it ran is UNKNOWN and it ran in production.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment masks a categorical assertion behind a governed proposition — bare-past sibling — UNKNOWN over `ran`, then a categorical `ran`",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first.\n"
+      + "-- Whether it ran is UNKNOWN and it ran in production.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment masks a categorical assertion behind a governed proposition — newline between the governed proposition and the categorical one",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.\n"
+      + "-- Whether it has been applied is UNKNOWN\\nand migration 007 is applied.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment masks a categorical assertion behind a governed proposition — newline between the governed proposition and the categorical one",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first.\n"
+      + "-- Whether it has been applied is UNKNOWN\\nand migration 007 is applied.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment masks a categorical assertion behind a governed proposition — em dash between the governed proposition and the categorical one",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.\n"
+      + "-- Whether it is applied is UNKNOWN — migration 007 is applied.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment masks a categorical assertion behind a governed proposition — em dash between the governed proposition and the categorical one",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first.\n"
+      + "-- Whether it is applied is UNKNOWN — migration 007 is applied.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment masks a categorical assertion behind a governed proposition — semicolon between the governed proposition and the categorical one",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.\n"
+      + "-- Whether it is applied is UNKNOWN; migration 007 ran in production.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment masks a categorical assertion behind a governed proposition — semicolon between the governed proposition and the categorical one",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first.\n"
+      + "-- Whether it is applied is UNKNOWN; migration 007 ran in production.",
     expect: ["CC5."],
   },
   {

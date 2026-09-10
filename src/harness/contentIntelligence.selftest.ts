@@ -5246,27 +5246,51 @@ async function run(): Promise<void> {
     // another finite verb, a closing comma, an adverbial — means the subordinate
     // clause ended before the assertion began, and the assertion stands bare.
     //
+    // A fourth form was still not enough. It found only the EARLIEST predicate in
+    // a clause and, if that one was governed, allowed the whole clause. So a
+    // genuinely authorized proposition could carry a categorical sibling along
+    // with it: "Whether migration 007 is applied is UNKNOWN and migration 007 is
+    // applied." Splitting on a fixed conjunction list would not fix that either —
+    // "and"/"but" occur inside governed propositions too.
+    //
+    // So EVERY predicate is enumerated and judged on its own, and each of the
+    // three judgements below — where the predicate starts, whether an exemption
+    // applies, which subordinator governs it — is bound to that one predicate's
+    // own local frame: the text between the previous predicate and this one. A
+    // subordinator that already governs an earlier predicate cannot reach across
+    // it, so an authorized proposition authorizes nothing but itself.
+    //
     // Positive and negative forms are treated identically: neither is established.
-    const APPLICATION_PREDICATE =
-      /(?:\b(?:is|are|was|were|has|have|had|does|do|did|remains?|remain|stays?)\b|\b(?:is|are|was|were|has|have|had|does|do|did)n['’]t\b)[^;:,]{0,28}?\b(?:applied|unapplied|run|ran)\b/i;
-    // A finite past-tense main verb carries the proposition with no auxiliary at
-    // all: "Migration 007 ran in production.", "It never ran." Bare "run" is
-    // deliberately NOT here — it is a noun in "any production run" and a fragment
-    // of "re-run"; as a verb it always arrives with an auxiliary, which the rule
-    // above already covers ("did run", "did not run", "has not been run").
-    const FINITE_PAST_PREDICATE = /\b(?:never\s+|not\s+|already\s+|then\s+)?ran\b/i;
+    //
+    // Every place an application verb appears is a candidate proposition.
+    const APPLICATION_VERB = /\b(?:applied|unapplied|ran|run)\b/gi;
+    const AUXILIARY =
+      /\b(?:is|are|was|were|has|have|had|does|do|did|remains?|stays?)(?:n['’]t)?\b/gi;
+    // The auxiliary NEAREST the verb, never the leftmost: a leftmost match can
+    // belong to the preceding proposition, and using it would drag this
+    // predicate's start back across its own subordinator and fake governance.
+    const nearestAuxiliary = (frame: string): number | null => {
+      let at: number | null = null;
+      AUXILIARY.lastIndex = 0;
+      for (let a = AUXILIARY.exec(frame); a; a = AUXILIARY.exec(frame)) {
+        const between = frame.slice(a.index + a[0].length);
+        if (between.length <= 28 && !/[;:,]/.test(between)) at = a.index;
+      }
+      return at;
+    };
     // Verbless elliptical declarations ("Not applied to production.", "Never
     // applied.") assert the same proposition with the copula elided, so a clause
     // that OPENS with the participle counts as a predicate too.
-    const ELLIPTICAL_PREDICATE =
-      /^(?:not|never|already|still|currently|yet)?\s*(?:applied|unapplied|ran)\b/i;
-    // "applied set"/"applied state" is adjectival — it names an inventory, not an event.
-    const ADJECTIVAL_APPLIED =
-      /\bapplied\s+(?:state|set|inventory|migrations?|list|rows?|files?)\b/i;
+    const ELLIPTICAL_LEAD = /^\s*(?:not|never|already|still|currently|yet)?\s*$/i;
+    // "applied set"/"applied state" is adjectival — it names an inventory, not an
+    // event. Tested against what follows THIS verb, so an adjectival use
+    // elsewhere in the clause cannot exempt a categorical assertion here.
+    const ADJECTIVAL_AFTER = /^\s+(?:state|set|inventory|migrations?|list|rows?|files?)\b/i;
     // Procedural manner ("applied by hand", "re-applied as a new migration") says
     // HOW something is applied when it is, not that it has been.
-    const PROCEDURAL_APPLIED = /\bapplied\s+by\s+hand\b|\bre-applied\b/i;
-    // A clause about 001-006 and not about 007 is the dated baseline, not a 007 claim.
+    const PROCEDURAL_AFTER = /^\s+by\s+hand\b/i;
+    // A predicate whose own frame names 001-006 and not 007 is the dated
+    // baseline, not a 007 claim.
     const NON_007_SUBJECT = /\b00[1-6]\b|001[^0-9]{0,3}006/;
     // Only these can subordinate the proposition: an embedded question
     // ("whether/if") or a hypothetical/temporal frame ("after 007 has been
@@ -5296,50 +5320,81 @@ async function run(): Promise<void> {
       .split(/[.;:,]|\s—\s|\s–\s|\s-\s/)
       .map((clause) => clause.trim())
       .filter(Boolean);
-    // The earliest application predicate a clause carries, whichever form it takes.
-    const applicationPredicate = (clause: string): RegExpExecArray | null => {
-      const found = [
-        APPLICATION_PREDICATE.exec(clause),
-        FINITE_PAST_PREDICATE.exec(clause),
-        ELLIPTICAL_PREDICATE.exec(clause),
-      ].filter((m): m is RegExpExecArray => m !== null);
-      return found.length
-        ? found.reduce((earliest, m) => (m.index < earliest.index ? m : earliest))
-        : null;
-    };
-    // True only when some subordinator introduces the predicate's own clause —
-    // i.e. everything between the two is that clause's subject and nothing more.
-    const isGoverned = (clause: string, predicateIndex: number): boolean => {
+    // True only when a subordinator introduces THIS predicate's own clause: it
+    // must sit after the previous predicate (so it cannot reach across a sibling
+    // proposition it already governs) and reach this predicate over nothing but
+    // that clause's subject.
+    const isGoverned = (
+      clause: string, predicateStart: number, previousEnd: number,
+    ): boolean => {
       SUBORDINATOR.lastIndex = 0;
       for (let m = SUBORDINATOR.exec(clause); m; m = SUBORDINATOR.exec(clause)) {
-        if (m.index >= predicateIndex) break;
-        if (SUBJECT_ONLY.test(clause.slice(m.index + m[0].length, predicateIndex))) return true;
+        if (m.index >= predicateStart) break;
+        if (m.index < previousEnd) continue;
+        if (SUBJECT_ONLY.test(clause.slice(m.index + m[0].length, predicateStart))) return true;
       }
       return false;
     };
-    // A clause DECLARES 007's application state iff it carries an application
-    // predicate that no subordinator in that same clause actually governs.
-    const bareApplicationClaims = (sql: string): string[] => sqlClauses(sql)
-      .filter((clause) => {
-        const predicate = applicationPredicate(clause);
-        if (!predicate) return false;
-        if (ADJECTIVAL_APPLIED.test(clause) || PROCEDURAL_APPLIED.test(clause)) return false;
-        if (NON_007_SUBJECT.test(clause) && !/\b007\b/.test(clause)) return false;
-        return !isGoverned(clause, predicate.index);
-      });
+    // Every ungoverned application-state proposition in one clause. A clause is
+    // clean only when EVERY predicate it carries is exempt or governed; one
+    // authorized proposition never covers for a categorical sibling.
+    const bareClaimsInClause = (clause: string): string[] => {
+      const offending: string[] = [];
+      let previousEnd = 0;
+      APPLICATION_VERB.lastIndex = 0;
+      for (let site = APPLICATION_VERB.exec(clause); site; site = APPLICATION_VERB.exec(clause)) {
+        const token = site[0];
+        const frame = clause.slice(previousEnd, site.index);
+        const after = clause.slice(site.index + token.length);
+        const siteEnd = site.index + token.length;
+
+        // Where this predicate begins, which is what governance is measured to.
+        let predicateStart: number | null = null;
+        if (/^ran$/i.test(token)) {
+          // A finite past main verb IS the predicate; it takes no auxiliary, and
+          // looking for one would find the previous proposition's.
+          predicateStart = site.index;
+        } else {
+          const auxiliaryAt = nearestAuxiliary(frame);
+          if (auxiliaryAt !== null) predicateStart = previousEnd + auxiliaryAt;
+          else if (previousEnd === 0 && ELLIPTICAL_LEAD.test(frame)) predicateStart = 0;
+        }
+        // No auxiliary and no elision: a participle used as a modifier, not a
+        // predicate ("the current applied set", "With this applied and ...").
+        if (predicateStart === null) { previousEnd = siteEnd; continue; }
+
+        // Exemptions, each bound to THIS verb rather than to the clause.
+        const reApplied = clause.slice(Math.max(0, site.index - 3), site.index) === "re-";
+        if (ADJECTIVAL_AFTER.test(after)) { previousEnd = siteEnd; continue; }
+        if (PROCEDURAL_AFTER.test(after) || reApplied) { previousEnd = siteEnd; continue; }
+        if (NON_007_SUBJECT.test(frame) && !/\b007\b/.test(frame)) {
+          previousEnd = siteEnd; continue;
+        }
+
+        if (!isGoverned(clause, predicateStart, previousEnd)) {
+          offending.push(clause.slice(predicateStart, Math.min(clause.length, siteEnd + 16)).trim());
+        }
+        previousEnd = siteEnd;
+      }
+      return offending;
+    };
+    const bareApplicationClaims = (sql: string): string[] =>
+      sqlClauses(sql).flatMap((clause) => bareClaimsInClause(clause));
     const migrationClaims = bareApplicationClaims(migrationSql);
     const rollbackClaims = bareApplicationClaims(rollbackSql);
     if (migrationClaims.length || rollbackClaims.length) {
-      console.log(`      offending clauses: ${
+      console.log(`      offending propositions: ${
         JSON.stringify([...migrationClaims, ...rollbackClaims])}`);
     }
-    check("CC5. the rollback lives outside the forward-only runner's directory; neither file "
+    check("CC5. the rollback lives outside the forward-only runner's directory; EVERY "
+      + "application-state proposition in either file is judged on its own, so neither file "
       + "declares 007's application state in either direction — positive or negative, auxiliary "
       + "or bare past (ran / never ran / did run / did not run), with or without the word "
-      + "production, not maskable by a qualifier in another clause, and not laundered by an "
-      + "unrelated introductory clause, because qualification must govern the proposition "
-      + "itself — both state it is UNKNOWN in either direction, both keep the 2026-08-28 "
-      + "reading dated, and both require separate authorization",
+      + "production, not maskable by a qualifier in another clause, not laundered by an "
+      + "unrelated introductory clause, and not carried along by a governed sibling "
+      + "proposition, because qualification must govern the proposition itself — both state "
+      + "it is UNKNOWN in either direction, both keep the 2026-08-28 reading dated, and both "
+      + "require separate authorization",
       !(await readdir(resolve(REPO_ROOT, "state/migrations")))
          .some((f) => /rollback/i.test(f))
         && (await readdir(resolve(REPO_ROOT, "state/rollback")))
@@ -5350,8 +5405,9 @@ async function run(): Promise<void> {
         // been / is not yet applied" and "remains unapplied", their contractions,
         // contextual "It ..." forms, "the rollback has (not) been run", the bare
         // past "ran"/"never ran" and the emphatic "did run"/"did not run" —
-        // whether or not the clause says "production", and whether or not an
-        // unrelated subordinate clause is placed in front of it.
+        // whether or not the clause says "production", whether or not an
+        // unrelated subordinate clause is placed in front of it, and whether or
+        // not a properly governed proposition sits beside it in the same clause.
         && migrationClaims.length === 0
         && rollbackClaims.length === 0
         // Both must state the unknown explicitly, and in both directions.
