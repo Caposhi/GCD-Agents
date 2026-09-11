@@ -73,6 +73,15 @@
  * an aside, and instructional imperatives. All twelve forms an independent
  * review reported were misclassified at 3f173d5 on BOTH SQL files.
  *
+ * A fifth group (M242-M247, M264-M267) covers NESTED PARENTHESES. Pairing an
+ * opening parenthesis with the first later ")" recorded an inner close as the
+ * outer one and left the real outer close unmatched, so "has (according to the
+ * operator (per the audit)) been applied" read as a bare participle and passed.
+ * Pairing is depth-aware now; the prohibited cases are held redundantly by that
+ * and by recovery crossing an unmatched ")", and the two allowed cases -- a
+ * governed proposition and a modal frame, each carrying nested parentheses --
+ * depend on the pairing alone.
+ *
  * Those groups also run the other direction. Cases marked `mustPass` insert the
  * wording the files are REQUIRED to carry — the epistemic form, the dated
  * 2026-08-28 observation of 001-006, the not-established form, a governed
@@ -83,8 +92,9 @@
  * was applied or ran, operators must stop") — and require the suite to stay
  * GREEN, so an over-broad guard fails here rather than in review. Three of the
  * five allowed classes added at ed7291b were wrongly rejected at c189d2b, all
- * four coordinated classes were wrongly rejected at 83af628, and four of the
- * eight newest were wrongly rejected at 3f173d5.
+ * four coordinated classes were wrongly rejected at 83af628, four of the eight
+ * added next were wrongly rejected at 3f173d5, and both nested-parenthesis
+ * classes were wrongly rejected at 4a4c4b2.
  *
  * It is offline and deterministic: no network, no database, no provider, no
  * credential. It mutates only files inside this repository's `src/` and
@@ -2118,6 +2128,54 @@ const MUTATIONS = [
     expect: ["CC5."],
   },
   {
+    name: "the migration comment splits an outer perfect frame with NESTED parentheses",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
+      + "\\n-- Migration 007 has (according to the operator (per the 2026-09-02 audit)) been applied to production.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment splits an outer perfect frame with NESTED parentheses",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first."
+      + "\\n-- Migration 007 has (according to the operator (per the 2026-09-02 audit)) been applied to production.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment splits a NEGATIVE outer perfect frame with nested parentheses",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
+      + "\\n-- Migration 007 has not (according to the operator (per the 2026-09-02 audit)) been applied to production.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment splits a NEGATIVE outer perfect frame with nested parentheses",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first."
+      + "\\n-- Migration 007 has not (according to the operator (per the 2026-09-02 audit)) been applied to production.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment splits an outer perfect frame with doubly nested parentheses, contextual `It` subject",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
+      + "\\n-- It has ((per the audit)) been applied to production.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment splits an outer perfect frame with doubly nested parentheses, contextual `It` subject",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first."
+      + "\\n-- It has ((per the audit)) been applied to production.",
+    expect: ["CC5."],
+  },
+  {
     name: "the migration comment carries authorized wording \u2014 a governed SERIAL list of coordinated predicates \u2014 `was applied, ran, or was re-applied`",
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
@@ -2258,6 +2316,42 @@ const MUTATIONS = [
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
       + "\\n-- Unless migration 007 is applied, do not run this rollback by hand.",
+    mustPass: true,
+    expect: [],
+  },
+  {
+    name: "the migration comment carries authorized wording \u2014 a governed proposition whose internal qualifier carries NESTED parentheses",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
+      + "\\n-- Whether migration 007 (per the operator (after read-only verification)) is applied remains UNKNOWN in either direction.",
+    mustPass: true,
+    expect: [],
+  },
+  {
+    name: "the rollback comment carries authorized wording \u2014 a governed proposition whose internal qualifier carries NESTED parentheses",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first."
+      + "\\n-- Whether migration 007 (per the operator (after read-only verification)) is applied remains UNKNOWN in either direction.",
+    mustPass: true,
+    expect: [],
+  },
+  {
+    name: "the migration comment carries authorized wording \u2014 a MODAL frame split by nested parentheses, which stays non-assertive",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
+      + "\\n-- Migration 007 may (per the operator (after the audit)) have been applied.",
+    mustPass: true,
+    expect: [],
+  },
+  {
+    name: "the rollback comment carries authorized wording \u2014 a MODAL frame split by nested parentheses, which stays non-assertive",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first."
+      + "\\n-- Migration 007 may (per the operator (after the audit)) have been applied.",
     mustPass: true,
     expect: [],
   },

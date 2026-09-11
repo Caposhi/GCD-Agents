@@ -5257,6 +5257,13 @@ async function run(): Promise<void> {
     //      every coordinator as the end of a governor's reach, which rejected the
     //      authorized coordinated forms ("Whether or not 007 has been applied is
     //      UNKNOWN", "Whether 007 was applied or ran is UNKNOWN").
+    //   7a. A pairing bug in the same correction: an opening parenthesis was
+    //      matched to the FIRST later ")", so with nested parentheses the inner
+    //      close was recorded as the outer one and the real outer close was left
+    //      unmatched, which the leftward walk read as a proposition boundary
+    //      ("has (according to the operator (per the audit)) been applied").
+    //      Parentheses are paired BY DEPTH now, and recovery crosses an unmatched
+    //      closing parenthesis as well as an unrecognised comma.
     //   7. That correction's own limits. Its opener list took a SINGLE token, so
     //      "even though"/"now that"/"provided that" still severed the frame;
     //      commas were paired with the NEAREST one, so consecutive and nested
@@ -5394,11 +5401,19 @@ async function run(): Promise<void> {
     // stopping at them, so an aside cannot separate an auxiliary from its verb.
     const interruptionSpans = (toks: readonly Tok[]): Array<[number, number]> => {
       const spans: Array<[number, number]> = [];
+      // DEPTH-AWARE pairing. Matching an opening parenthesis to the first later
+      // ")" records an INNER close as the outer one and leaves the real outer
+      // close unmatched, which a leftward walk then reads as a proposition
+      // boundary. A stack pairs every parenthesis with its own partner, so
+      // nested asides yield nested spans and no close is left dangling.
       const parenClose = new Map<number, number>();
+      const open: number[] = [];
       for (let i = 0; i < toks.length; i++) {
-        if (toks[i]?.lower !== "(") continue;
-        const close = toks.findIndex((t, k) => k > i && t.lower === ")");
-        if (close > i) { spans.push([i, close]); parenClose.set(i, close); i = close; }
+        const w = toks[i]?.lower;
+        if (w === "(") { open.push(i); continue; }
+        if (w !== ")") continue;
+        const start = open.pop();
+        if (start !== undefined) { spans.push([start, i]); parenClose.set(start, i); }
       }
       for (let i = 0; i < toks.length; i++) {
         if (toks[i]?.lower !== ",") continue;
@@ -5496,14 +5511,20 @@ async function run(): Promise<void> {
             // the left. Rather than read the participle as non-assertive because
             // an aside was not recognised, cross that aside (to the token before
             // the comma that opens it) and keep looking for the finite frame.
-            if (w === "," && needsFiniteRecovery(auxes)) {
+            if (needsFiniteRecovery(auxes)) {
+              // A closing parenthesis with no partner is not a proposition
+              // boundary either; cross it and keep looking for the finite frame.
+              if (w === ")") continue;
               const prior = priorComma(toks, j, previousVerb);
               j = prior === null ? j : prior;
               continue;
             }
             propStart = j + 1; openerBoundary = j; break;
           }
-          if (w === "(") { propStart = j + 1; openerBoundary = j; break; }
+          if (w === "(") {
+            if (needsFiniteRecovery(auxes)) continue;     // unmatched opener
+            propStart = j + 1; openerBoundary = j; break;
+          }
           if (FINITE_AUX.test(w) || NONFINITE_AUX.test(w) || MODAL.test(w)) {
             auxes.unshift(w); onlyAdverbs = false; continue;
           }
@@ -5693,8 +5714,9 @@ async function run(): Promise<void> {
       + "run), with or without the word production, with the auxiliary at any distance from "
       + "its participle and across a parenthetical or comma-delimited aside — including a "
       + "SUBORDINATE aside carrying its own finite verb, opened by one, two or three tokens, "
-      + "consecutive, nested, or opened by a word on no list at all, because a dangling non-finite "
-      + "frame crosses an unrecognised aside rather than reading as non-assertive — finite "
+      + "consecutive, nested, or opened by a word on no list at all, and across NESTED parentheses "
+      + "paired by depth, because a dangling non-finite frame crosses an unrecognised aside or an "
+      + "unmatched closing parenthesis rather than reading as non-assertive — finite "
       + "whatever procedural manner or re- prefix "
       + "follows it, not maskable by a qualifier in another proposition, not laundered by an "
       + "unrelated introductory clause, and not carried along by a governed sibling, whether "

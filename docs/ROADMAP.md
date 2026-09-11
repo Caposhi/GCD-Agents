@@ -856,7 +856,7 @@ than the end of one. **The guarantee is deliberately narrow**: it recognises the
 authoritative-comment language of these two files and is not a claim of general natural-language
 understanding.
 
-Seven earlier forms did not meet that bar, and every one of them was found by independent review
+Eight earlier forms did not meet that bar, and every one of them was found by independent review
 rather than by us. The first accepted a qualifier that merely **co-occurred** in the clause. The
 second accepted any subordinator that merely **preceded** the predicate, which let an unrelated
 introductory clause launder the assertion behind it (*"Before we verify, migration 007 is
@@ -898,60 +898,68 @@ other word; and bare *do*/*don't* with no subject of its own is read as an instr
 and *did* stay declarative and emphatic. Above all, **finite-frame recovery now fails closed and
 depends on no list at all**: `been applied` is not a proposition, so when the walk meets a comma it
 does not recognise while holding only a non-finite frame, it crosses that aside and keeps looking
-for the finite auxiliary rather than reading the participle as non-assertive.
+for the finite auxiliary rather than reading the participle as non-assertive. **The eighth** was a
+pairing bug in that same correction: an opening parenthesis was matched to the FIRST later `)`, so
+with nested parentheses the inner close was recorded as the outer one and the real outer close was
+left unmatched — a leftward walk then read it as a proposition boundary and *"Migration 007 has
+(according to the operator (per the audit)) been applied."* passed as a bare participle. Parentheses
+are now paired **by depth**, with a stack, so nested asides yield nested spans and no close is left
+dangling; and fail-closed recovery now crosses an unmatched closing parenthesis as well as an
+unrecognised comma.
 
-**Two hundred and twenty-four mutations** in `npm run test:payload-mutation` prove it load-bearing
-in both directions: **one hundred and eighty-four prohibited** forms (`M34`–`M111`, `M118`–`M163`,
-`M174`–`M201`, `M210`–`M241`) that must make `CC5` fail by name, and **forty authorized** forms
-(`M112`–`M117`, `M164`–`M173`, `M202`–`M209`, `M242`–`M257`) that must leave the suite green, so an
+**Two hundred and thirty-four mutations** in `npm run test:payload-mutation` prove it load-bearing
+in both directions: **one hundred and ninety prohibited** forms (`M34`–`M111`, `M118`–`M163`,
+`M174`–`M201`, `M210`–`M247`) that must make `CC5` fail by name, and **forty-four authorized** forms
+(`M112`–`M117`, `M164`–`M173`, `M202`–`M209`, `M248`–`M267`) that must leave the suite green, so an
 over-broad guard fails in CI rather than in review. That brings the harness to **two hundred and
-fifty-seven mutations across ten target files**, enumerated from its own `MUTATIONS` array and run
+sixty-seven mutations across ten target files**, enumerated from its own `MUTATIONS` array and run
 output rather than recalled. Of the prohibited forms, twenty-six are declaration and masking
 classes, fourteen introductory-clause and `ran`/`did run` classes against each file, twelve multi-
 proposition classes against each file, twenty-three token/proposition classes against each file
 (`M118`–`M163`), fourteen balanced-aside and coordinated-sibling classes against each file
-(`M174`–`M201`), and **sixteen natural-aside and instructional classes against each file**
-(`M210`–`M241`): two-token and unlisted openers, consecutive and nested asides, negative and
-contextual-*It* shapes, a new subject after a serial comma, an unrelated aside following a governed
-proposition, an emphatic `did run` hidden behind an imperative, and an aside-split assertion
-carrying a coordinated bare-past sibling.
+(`M174`–`M201`), sixteen natural-aside and instructional classes against each file (`M210`–`M241`),
+and **three NESTED-PARENTHESIS classes against each file** (`M242`–`M247`): a positive and a
+negative outer perfect frame split by nested parentheses, and a doubly nested contextual-*It* form.
 
-**What each correction is actually load-bearing for was measured, not assumed.** Against the
-reviewed head `c189d2b`, **seventeen of the twenty-three token/proposition prohibited classes
-bypassed `CC5`** and **three of the five authorized classes added with them were wrongly rejected**.
-Against `83af628`, both finite-aside forms bypassed on **both** SQL files and all four coordinated
-governed forms were wrongly rejected on both. Against `3f173d5`, **all twelve reported forms were
-misclassified on both files** — eight natural subordinate asides passing as non-assertive, and four
-governed or instructional forms wrongly refused.
+**What each correction is actually load-bearing for was measured, not assumed.** Against `c189d2b`,
+seventeen of the twenty-three token/proposition prohibited classes bypassed `CC5` and three of the
+five authorized classes added with them were wrongly rejected. Against `83af628`, both finite-aside
+forms bypassed on both SQL files and all four coordinated governed forms were wrongly rejected on
+both. Against `3f173d5`, all twelve reported forms were misclassified on both files. Against
+`4a4c4b2`, the nested-parenthesis forms were misclassified on both files in **both** directions —
+two positive and negative claims passing as non-assertive, and a governed proposition carrying
+nested parentheses wrongly refused.
 
-**Seven focused probes measured the current group**, each altering the built suite in one way, each
-re-running all twenty-four new classes against the migration file, each followed by a byte-for-byte
+**Nine focused probes measured the current groups**, each altering the built suite in one way, each
+re-running all twenty-nine classes against the migration file, each followed by a byte-for-byte
 restore. Removing **fail-closed finite-frame recovery** lets the two unlisted-opener classes through
-(`M238`–`M241`). Removing **multi-token openers** wrongly rejects the modal aside allowance
-(`M250`–`M251`) while the prohibited classes stay caught by recovery. Removing **both** reopens the
-bypass for six classes (`M210`–`M213`, `M224`–`M225`, `M236`–`M241`) — the two guards are
-deliberately redundant, and neither alone is claimed to carry the group. Reverting the coordination
-gap to a single coordinator with no serial comma wrongly rejects three serial-list allowances
-(`M242`–`M243`, `M252`–`M255`); not removing validated spans from that gap wrongly rejects the
-parenthetical-carrying allowance (`M244`–`M245`); removing the imperative/declarative `do`
-distinction wrongly rejects both instructional allowances (`M248`–`M249`, `M256`–`M257`); and
+(`M238`–`M241`). Removing **multi-token openers** wrongly rejects the modal-aside allowance
+(`M256`–`M257`) while the prohibited classes stay caught by recovery. Removing **both** reopens the
+bypass for six classes (`M210`–`M213`, `M224`–`M225`, `M236`–`M241`). Reverting **parenthesis
+pairing** to first-later-`)` wrongly rejects both nested-parenthesis allowances (`M264`–`M267`) but
+does **not** let the nested-parenthesis prohibited classes through, because recovery also crosses an
+unmatched `)`; reverting **both** pairing and recovery is what lets `M242`–`M247` escape — that, and
+not depth-aware pairing alone, is the honest attribution for those three classes. Reverting the
+coordination gap to a single coordinator with no serial comma wrongly rejects three serial-list
+allowances (`M248`–`M249`, `M258`–`M261`); leaving validated spans in that gap wrongly rejects the
+parenthetical-carrying allowance (`M250`–`M251`); removing the imperative/declarative `do`
+distinction wrongly rejects both instructional allowances (`M254`–`M255`, `M262`–`M263`); and
 letting a coordinated chain reach across an independently asserted sibling lets the new-subject and
-hidden-`did run` classes through (`M226`–`M227`, `M232`–`M233`). Eight prohibited classes
-(`M214`–`M223`, `M228`–`M231`, `M234`–`M235`) and one allowance (`M246`–`M247`) survive every probe,
+hidden-*did run* classes through (`M226`–`M227`, `M232`–`M233`). Eight prohibited classes
+(`M214`–`M223`, `M228`–`M231`, `M234`–`M235`) and one allowance (`M252`–`M253`) survive every probe,
 caught or preserved by other parts of the analysis; they are retained as coverage and are **not**
 claimed as proof of any single correction. Re-running the earliest-predicate-only probe against the
 twelve multi-proposition classes reproduced the earlier measurement exactly: **eight classes
 (sixteen mutations) go undetected**, while the other four stay caught.
 
-Separately, a manual adversarial matrix ran **eighty-nine prohibited forms and twenty-eight
-authorized forms against each of the two SQL files** through the real suite: **one hundred and
-seventy-eight rejections and fifty-six allowances, zero misclassifications** across two hundred and
-thirty-four executions, with both scripts restored byte-for-byte after each (migration
-`fb5128b4ae207e75…`, rollback `31e0ab0c1f92ccaf…`), `state/` clean and a green final baseline. An
-earlier round reported a matrix of one hundred and forty-six rejections and forty allowances;
-independent review then found natural aside and coordination variants that matrix did not contain,
-so that figure describes the earlier, narrower matrix only and the classes it missed are now covered
-here.
+Separately, a manual adversarial matrix ran **ninety-two prohibited forms and thirty authorized
+forms against each of the two SQL files** through the real suite: **one hundred and eighty-four
+rejections and sixty allowances, zero misclassifications** across two hundred and forty-four
+executions, with both scripts restored byte-for-byte after each (migration `fb5128b4ae207e75…`,
+rollback `31e0ab0c1f92ccaf…`), `state/` clean and a green final baseline. Two earlier rounds
+reported narrower matrices — one hundred and forty-six rejections with forty allowances, then one
+hundred and seventy-eight with fifty-six; each figure was accurate for the matrix it described, and
+each was superseded when independent review found variants that matrix did not contain.
 
 **Migration-path classification, accepted and not bypassed.** Because that change touches
 `state/migrations/**`, `scripts/render/deployment-controller.mjs` evaluates
