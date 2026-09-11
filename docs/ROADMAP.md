@@ -181,6 +181,38 @@ Keep these changes separable unless a reviewed design shows they must be atomic.
 
 The former worker lease/reaper item is `SUPERSEDED` and is no longer active work. Its rationale and re-entry condition are preserved in the PR #36 record above.
 
+## Post-MVP hardening backlog
+
+Deferred findings are recorded durably in
+[`docs/KNOWN_ISSUES_AND_HARDENING.md`](KNOWN_ISSUES_AND_HARDENING.md), which also
+defines the backlog entry template, the finding categories, and the two-lane
+workflow.
+
+**This backlog is not the immediate feature cursor.** Items here do **not** block
+the MVP implementer from continuing unrelated roadmap work. A finding blocks the
+MVP lane only when it affects reachable production behaviour, authorization,
+publication, secrets, data integrity, migration safety, rollback safety, or when
+it makes a PR's stated guarantees false without those guarantees being narrowed.
+
+**Workflow.** Items are taken by a **separate, fresh hardening implementer**
+working with an **independent inspector** — not by the author of the original
+finding, so the design is reconsidered rather than extended by reflex.
+
+| ID | Title | Status | Origin | Reachability | Must-fix trigger |
+|---|---|---|---|---|---|
+| `CC5-SYNTAX-001` | Past `remain`/`stay` application-state declarations | **OPEN — accepted and deferred** | PR #57, head `8238f37622b816e043b2f449f2b0e33da685eb58` | **Dormant, non-runtime.** A false negative in the repository's `CC5` comment-validation test only. No executable SQL changes; no production route enabled; all six executors remain disabled and unreachable. | Mandatory before the **first** of: production enablement of the Content Intelligence execution chain; removal of the current comment freeze; or any claim that `CC5` comprehensively rejects past/perfect application-state declarations. |
+
+**`CC5-SYNTAX-001` in brief.** `CC5` does not reject
+*"Migration 007 remained unapplied."*, *"… has remained unapplied."*,
+*"… stayed unapplied."*, *"… has stayed unapplied."*, or their contextual-*It*
+shapes, because `FINITE_AUX` matches only the present *remains*/*stays*. The
+defect is **reproduced and open**, not fixed. Neither authoritative file
+currently contains such a claim, and migration 007's production application
+state remains **`UNKNOWN` in either direction**. Compensating controls, the full
+reproduction, and the definition of done are recorded in the backlog document.
+The planned closure is by a **separate hardening agent with an independent
+inspector**, and the design is deliberately not predetermined.
+
 ## Phase 0B prerequisite — fact and evidence contract
 
 **State:** `MERGED` · **`DEPLOYED`**. Delivered by the Phase 0B.0 foundation change (`44d7336…`). Migration 006 was applied **exactly once, to the shared production database, by the API pre-deploy runner** on 2026-08-28; the API, worker, and scheduler were then **separately deployed at the target commit**. A migration is applied to a database, not to a service — the three services share one database and none of them ran the migration except the API's pre-deploy step. The tables are correctly empty until an authorized operator runs `evidence:sync`, which has not yet happened.
@@ -837,12 +869,17 @@ judgements independently for that one predicate from its own tokens: its subject
 antecedent it modifies; its auxiliary/tense frame; its own proposition boundaries; the governing
 conditional or epistemic construction, if any; and whether what remains is a categorical
 current-state assertion. **No judgement is measured in characters, and no punctuation mark is a
-boundary by itself.** Any predicate declaring 007's application state is refused **in either
-direction**: positive or negative, present, perfect or past, verbless elliptical (*"Not applied to
+boundary by itself.** Within the **specifically tested bounded grammar**, a predicate declaring
+007's application state is refused **in either direction**: positive or negative, present, perfect or past, verbless elliptical (*"Not applied to
 production."*), contracted (*"isn't applied"*), bare past (*ran*, *never ran*) or emphatic (*did
 run*, *did not run*), in plain and contextual-*It* shapes, with or without the word *production*,
 with the auxiliary at any distance from its participle and across a parenthetical or comma-delimited
-aside, and finite whatever procedural manner or `re-` prefix follows the verb. **Qualification must
+aside, and finite application assertions remain categorical regardless of procedural wording
+following the verb or a `re-` prefix. **That grammar is bounded, not complete English:** past
+*remain*/*stay* declarations (*"remained unapplied"*, *"has stayed unapplied"*, and their
+contextual-*It* shapes) are **not** rejected, and are recorded as the accepted deferred issue
+**`CC5-SYNTAX-001`** in [`docs/KNOWN_ISSUES_AND_HARDENING.md`](KNOWN_ISSUES_AND_HARDENING.md).
+**Qualification must
 govern the proposition, which is a structural test rather than a vocabulary one.** A subordinator —
 *whether*, *if*, *after*, *once*, *when*, *whenever*, *before*, *until*, *unless* or *should* —
 counts only when it introduces the very clause the predicate heads: everything between it and the

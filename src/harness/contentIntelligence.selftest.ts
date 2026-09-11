@@ -5307,7 +5307,12 @@ async function run(): Promise<void> {
     // about one migration's application state — and is not a claim of general
     // natural-language understanding.
     //
-    // Positive and negative forms are treated identically: neither is established.
+    // Positive and negative forms are treated identically WITHIN the tested bounded grammar:
+    // neither is established. That grammar is not complete English. Known unsupported forms
+    // are recorded as CC5-SYNTAX-001 in docs/KNOWN_ISSUES_AND_HARDENING.md -- past
+    // remain/stay declarations ("remained unapplied", "has stayed unapplied", and their
+    // contextual-It shapes) are NOT rejected, because FINITE_AUX matches only the present
+    // `remains?`/`stays?`. That gap is accepted and deferred, not fixed.
     type Tok = {
       readonly text: string; readonly lower: string;
       readonly start: number; readonly end: number;
@@ -5753,7 +5758,8 @@ async function run(): Promise<void> {
         JSON.stringify([...migrationClaims, ...rollbackClaims])}`);
     }
     check("CC5. the rollback lives outside the forward-only runner's directory; a token-level "
-      + "analysis enumerates EVERY application predicate in either file and judges each on its "
+      + "analysis enumerates the application predicates of the tested bounded grammar in either "
+      + "file (past remain/stay forms are NOT covered — see CC5-SYNTAX-001) and judges each on its "
       + "own subject or antecedent, tense frame, proposition boundaries and governing "
       + "construction, so neither file declares 007's application state in either direction — "
       + "positive or negative, auxiliary or bare past (ran / never ran / did run / did not "
@@ -5765,9 +5771,9 @@ async function run(): Promise<void> {
       + "crosses an unrecognised aside rather than reading as non-assertive — while an UNMATCHED "
       + "closing parenthesis is malformed prose that fails this check STRUCTURALLY, before any "
       + "predicate is classified and whatever else the prose authorizes, so it can never be "
-      + "skipped as though it were a valid interruption boundary — finite "
-      + "whatever procedural manner or re- prefix "
-      + "follows it, not maskable by a qualifier in another proposition, not laundered by an "
+      + "skipped as though it were a valid interruption boundary — finite application "
+      + "assertions remaining categorical regardless of procedural wording following the verb "
+      + "or a re- prefix, not maskable by a qualifier in another proposition, not laundered by an "
       + "unrelated introductory clause, and not carried along by a governed sibling, whether "
       + "that sibling is joined by a coordinator, an adversative or a new sentence — while a "
       + "genuinely governed proposition is still accepted with its own internal qualifiers "
