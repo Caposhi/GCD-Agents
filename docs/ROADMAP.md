@@ -904,16 +904,22 @@ with nested parentheses the inner close was recorded as the outer one and the re
 left unmatched — a leftward walk then read it as a proposition boundary and *"Migration 007 has
 (according to the operator (per the audit)) been applied."* passed as a bare participle. Parentheses
 are now paired **by depth**, with a stack, so nested asides yield nested spans and no close is left
-dangling; and fail-closed recovery now crosses an unmatched closing parenthesis as well as an
-unrecognised comma.
+dangling. **The ninth** was that same fix's own fail-open: recovery was also taught to **cross** an
+unmatched `)`, so one stray close bought a bypass outright — *"Migration 007 has, according to the
+operator) been applied to production."* left the whole suite exiting 0, because the walk skipped the
+`)`, halted at the noun `operator` before reaching the outer `has`, and read `been applied` as a bare
+participle; an authorized `UNKNOWN` sentence beside it changed nothing. An unmatched close is
+**malformed prose**, never an aside, so a depth scan of the normalized comment prose now fails `CC5`
+**structurally** on any `)` at depth zero, **before** any application predicate is classified, and the
+recovery-through-unmatched-close behaviour is **removed**. Balanced parentheses, single and nested,
+still pair by depth. The unmatched **opening** parenthesis remains explicitly **unclaimed**.
 
-**Two hundred and thirty-four mutations** in `npm run test:payload-mutation` prove it load-bearing
-in both directions: **one hundred and ninety prohibited** forms (`M34`–`M111`, `M118`–`M163`,
-`M174`–`M201`, `M210`–`M247`) that must make `CC5` fail by name, and **forty-four authorized** forms
-(`M112`–`M117`, `M164`–`M173`, `M202`–`M209`, `M248`–`M267`) that must leave the suite green, so an
-over-broad guard fails in CI rather than in review. That brings the harness to **two hundred and
-sixty-seven mutations across ten target files**, enumerated from its own `MUTATIONS` array and run
-output rather than recalled. Of the prohibited forms, twenty-six are declaration and masking
+**Two hundred and fifty-two mutations** in `npm run test:payload-mutation` prove it load-bearing
+in both directions: **two hundred and six prohibited** forms that must make `CC5` fail by name, and
+**forty-six authorized** forms that must leave the suite green, so an over-broad guard fails in CI
+rather than in review. That brings the harness to **two hundred and eighty-five mutations across ten
+target files** — **two hundred and thirty-nine prohibited** in total — enumerated from its own
+`MUTATIONS` array and run output rather than recalled. Of the prohibited forms, twenty-six are declaration and masking
 classes, fourteen introductory-clause and `ran`/`did run` classes against each file, twelve multi-
 proposition classes against each file, twenty-three token/proposition classes against each file
 (`M118`–`M163`), fourteen balanced-aside and coordinated-sibling classes against each file
@@ -930,16 +936,17 @@ both. Against `3f173d5`, all twelve reported forms were misclassified on both fi
 two positive and negative claims passing as non-assertive, and a governed proposition carrying
 nested parentheses wrongly refused.
 
-**Nine focused probes measured the current groups**, each altering the built suite in one way, each
-re-running all twenty-nine classes against the migration file, each followed by a byte-for-byte
+**Twelve focused probes measured the current groups**, each altering the built suite in one way, each
+re-running every class against the migration file, each followed by a byte-for-byte
 restore. Removing **fail-closed finite-frame recovery** lets the two unlisted-opener classes through
 (`M238`–`M241`). Removing **multi-token openers** wrongly rejects the modal-aside allowance
 (`M256`–`M257`) while the prohibited classes stay caught by recovery. Removing **both** reopens the
 bypass for six classes (`M210`–`M213`, `M224`–`M225`, `M236`–`M241`). Reverting **parenthesis
-pairing** to first-later-`)` wrongly rejects both nested-parenthesis allowances (`M264`–`M267`) but
-does **not** let the nested-parenthesis prohibited classes through, because recovery also crosses an
-unmatched `)`; reverting **both** pairing and recovery is what lets `M242`–`M247` escape — that, and
-not depth-aware pairing alone, is the honest attribution for those three classes. Reverting the
+pairing** to first-later-`)` wrongly rejects both nested-parenthesis allowances (`M264`–`M267`); the
+nested-parenthesis prohibited classes (`M242`–`M247`) stay caught, now by the **structural
+unmatched-close failure**, which refuses the dangling close that pairing bug produces. The earlier
+attribution — that reverting both pairing and recovery is what lets `M242`–`M247` escape — is
+**superseded**, because recovery through an unmatched `)` no longer exists. Reverting the
 coordination gap to a single coordinator with no serial comma wrongly rejects three serial-list
 allowances (`M248`–`M249`, `M258`–`M261`); leaving validated spans in that gap wrongly rejects the
 parenthetical-carrying allowance (`M250`–`M251`); removing the imperative/declarative `do`
@@ -952,6 +959,34 @@ claimed as proof of any single correction. Re-running the earliest-predicate-onl
 twelve multi-proposition classes reproduced the earlier measurement exactly: **eight classes
 (sixteen mutations) go undetected**, while the other four stay caught.
 
+**Eighteen mutations (`M268`–`M285`) cover the unmatched closing parenthesis**, nine classes against
+each SQL file: the exact reported comma-opened form beside an authorized `UNKNOWN` sentence, a
+contextual-*It* form, more than one unmatched close, an unmatched close inside a sentence carrying an
+authorized `UNKNOWN` proposition, one before and one after the application predicate, two **no-comma**
+forms, and a balanced **single**-parenthesis authorized counterpart.
+
+**What that group is load-bearing for was measured, and the measurement corrected the claim first made
+for it.** With the structural failure disabled and everything else intact, the comma-opened classes
+(`M268`–`M275`) are **still rejected** — removing the unsafe `)`-crossing lets the pre-existing
+fail-closed **comma** recovery jump to the comma before the stray close and recover the outer `has`, so
+for those classes the structural check is **redundant** and is **not** claimed as their protection.
+Deleting the comma isolates it: `priorComma` has nothing to jump to, the walk halts at the noun, and the
+claim escapes — so the **no-comma classes `M282`–`M285` are this correction's load-bearing evidence**,
+and they were added because the probe said so rather than because the shape looked plausible. With the
+structural failure removed **and** the old `)`-crossing restored — the reviewed head `05b8c4b` —
+`M268`–`M275` and `M282`–`M285` all escape, reproducing the reported bypass. `M276`–`M279` survive both
+probes, caught by other parts of the analysis, and are retained as coverage only.
+
+**A harness payload-escaping defect was found and corrected in the same round.** One hundred and
+fifty-two payloads (`M106`–`M107`, `M118`–`M267`) wrote a **literal backslash and `n`** instead of a
+newline, so they produced **one** physical comment line rather than two and **never exercised the
+multi-line comment path**, including the hard-wrap reassembly in `sqlComments`. `M106`–`M107` are
+*named* for a **newline between the governed proposition and the categorical one** and delivered none.
+All one hundred and fifty-two now use real newlines; `M106`–`M107` take `\n-- ` rather than a bare
+`\n`, because the escape sits mid-sentence and a bare newline would have written a line with no `--`
+prefix — non-comment text injected into executable SQL and invisible to `sqlComments`. Two other
+newline-claiming mutations already used real newlines and were left unchanged.
+
 Separately, a manual adversarial matrix ran **ninety-two prohibited forms and thirty authorized
 forms against each of the two SQL files** through the real suite: **one hundred and eighty-four
 rejections and sixty allowances, zero misclassifications** across two hundred and forty-four
@@ -959,7 +994,14 @@ executions, with both scripts restored byte-for-byte after each (migration `fb51
 rollback `31e0ab0c1f92ccaf…`), `state/` clean and a green final baseline. Two earlier rounds
 reported narrower matrices — one hundred and forty-six rejections with forty allowances, then one
 hundred and seventy-eight with fifty-six; each figure was accurate for the matrix it described, and
-each was superseded when independent review found variants that matrix did not contain.
+each was superseded when independent review found variants that matrix did not contain. **That
+figure is likewise superseded for this round**: it predates the unmatched-close forms, which it did
+not contain. Those were verified separately — **ten classes against each of the two SQL files, twenty
+executions, zero misclassifications**, each restoring byte-for-byte: six prohibited unmatched-close
+forms rejected, a balanced single- and a balanced nested-parenthesis authorized form allowed, and two
+balanced categorical forms rejected for their categorical content rather than for balance. Every
+unmatched-close class is now held durably as `M268`–`M285` in the harness rather than by a manual
+matrix alone.
 
 **Migration-path classification, accepted and not bypassed.** Because that change touches
 `state/migrations/**`, `scripts/render/deployment-controller.mjs` evaluates

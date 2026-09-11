@@ -97,6 +97,23 @@
  * has nothing to jump to -- so those are the classes the structural failure
  * uniquely protects, and they are this correction's load-bearing evidence.
  *
+ * PAYLOAD NEWLINE ESCAPES, corrected in this round. 152 payloads (M106-M107,
+ * M118-M267) carried "\\n" -- a literal backslash and an 'n' -- instead of
+ * "\n". They wrote that literal into the SQL file, so each produced ONE
+ * physical comment line rather than two, left \n-- embedded in the analysed
+ * prose as stray tokens, and NEVER exercised the multi-line comment path,
+ * including the hard-wrap reassembly in sqlComments(). M106-M107 were the
+ * worst case: they are NAMED for a newline between the governed proposition
+ * and the categorical one, and delivered no newline at all.
+ *
+ * All 152 now use real newlines. M106-M107 needed a DIFFERENT repair: their
+ * escape sits mid-sentence, so a bare \n would have written a line with no
+ * '--' prefix -- non-comment text injected into executable SQL, and invisible
+ * to sqlComments() -- so they take '\n-- ' and both propositions stay comment
+ * lines. Two other newline-claiming mutations already used real newlines and
+ * were left alone. Every corrected payload was re-run and compared
+ * mutation-by-mutation against the pre-correction log.
+ *
  * Those groups also run the other direction. Cases marked `mustPass` insert the
  * wording the files are REQUIRED to carry — the epistemic form, the dated
  * 2026-08-28 observation of 001-006, the not-established form, a governed
@@ -1035,7 +1052,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.\n"
-      + "-- Whether it has been applied is UNKNOWN\\nand migration 007 is applied.",
+      + "-- Whether it has been applied is UNKNOWN\n-- and migration 007 is applied.",
     expect: ["CC5."],
   },
   {
@@ -1043,7 +1060,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first.\n"
-      + "-- Whether it has been applied is UNKNOWN\\nand migration 007 is applied.",
+      + "-- Whether it has been applied is UNKNOWN\n-- and migration 007 is applied.",
     expect: ["CC5."],
   },
   {
@@ -1137,7 +1154,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Migration 007 was applied by hand to production.",
+      + "\n-- Migration 007 was applied by hand to production.",
     expect: ["CC5."],
   },
   {
@@ -1145,7 +1162,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Migration 007 was applied by hand to production.",
+      + "\n-- Migration 007 was applied by hand to production.",
     expect: ["CC5."],
   },
   {
@@ -1153,7 +1170,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Migration 007 has been applied by hand to production.",
+      + "\n-- Migration 007 has been applied by hand to production.",
     expect: ["CC5."],
   },
   {
@@ -1161,7 +1178,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Migration 007 has been applied by hand to production.",
+      + "\n-- Migration 007 has been applied by hand to production.",
     expect: ["CC5."],
   },
   {
@@ -1169,7 +1186,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- It was applied by hand after the 2026-08-28 reading.",
+      + "\n-- It was applied by hand after the 2026-08-28 reading.",
     expect: ["CC5."],
   },
   {
@@ -1177,7 +1194,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- It was applied by hand after the 2026-08-28 reading.",
+      + "\n-- It was applied by hand after the 2026-08-28 reading.",
     expect: ["CC5."],
   },
   {
@@ -1185,7 +1202,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Migration 007 was re-applied to production after rollback.",
+      + "\n-- Migration 007 was re-applied to production after rollback.",
     expect: ["CC5."],
   },
   {
@@ -1193,7 +1210,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Migration 007 was re-applied to production after rollback.",
+      + "\n-- Migration 007 was re-applied to production after rollback.",
     expect: ["CC5."],
   },
   {
@@ -1201,7 +1218,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Migration 007 has been re-applied to production.",
+      + "\n-- Migration 007 has been re-applied to production.",
     expect: ["CC5."],
   },
   {
@@ -1209,7 +1226,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Migration 007 has been re-applied to production.",
+      + "\n-- Migration 007 has been re-applied to production.",
     expect: ["CC5."],
   },
   {
@@ -1217,7 +1234,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- It was re-applied by hand after the rollback.",
+      + "\n-- It was re-applied by hand after the rollback.",
     expect: ["CC5."],
   },
   {
@@ -1225,7 +1242,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- It was re-applied by hand after the rollback.",
+      + "\n-- It was re-applied by hand after the rollback.",
     expect: ["CC5."],
   },
   {
@@ -1233,7 +1250,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Migration 007 has, according to the operator, been applied to production.",
+      + "\n-- Migration 007 has, according to the operator, been applied to production.",
     expect: ["CC5."],
   },
   {
@@ -1241,7 +1258,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Migration 007 has, according to the operator, been applied to production.",
+      + "\n-- Migration 007 has, according to the operator, been applied to production.",
     expect: ["CC5."],
   },
   {
@@ -1249,7 +1266,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- It has, per the 2026-09-02 audit, been applied to production.",
+      + "\n-- It has, per the 2026-09-02 audit, been applied to production.",
     expect: ["CC5."],
   },
   {
@@ -1257,7 +1274,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- It has, per the 2026-09-02 audit, been applied to production.",
+      + "\n-- It has, per the 2026-09-02 audit, been applied to production.",
     expect: ["CC5."],
   },
   {
@@ -1265,7 +1282,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Migration 007 was, regrettably, applied to production.",
+      + "\n-- Migration 007 was, regrettably, applied to production.",
     expect: ["CC5."],
   },
   {
@@ -1273,7 +1290,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Migration 007 was, regrettably, applied to production.",
+      + "\n-- Migration 007 was, regrettably, applied to production.",
     expect: ["CC5."],
   },
   {
@@ -1281,7 +1298,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Migration 007 has (according to the operator) been applied to production.",
+      + "\n-- Migration 007 has (according to the operator) been applied to production.",
     expect: ["CC5."],
   },
   {
@@ -1289,7 +1306,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Migration 007 has (according to the operator) been applied to production.",
+      + "\n-- Migration 007 has (according to the operator) been applied to production.",
     expect: ["CC5."],
   },
   {
@@ -1297,7 +1314,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Migration 007 was (per the audit) applied to production.",
+      + "\n-- Migration 007 was (per the audit) applied to production.",
     expect: ["CC5."],
   },
   {
@@ -1305,7 +1322,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Migration 007 was (per the audit) applied to production.",
+      + "\n-- Migration 007 was (per the audit) applied to production.",
     expect: ["CC5."],
   },
   {
@@ -1313,7 +1330,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Migration 007 has definitely and indisputably already been applied to production.",
+      + "\n-- Migration 007 has definitely and indisputably already been applied to production.",
     expect: ["CC5."],
   },
   {
@@ -1321,7 +1338,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Migration 007 has definitely and indisputably already been applied to production.",
+      + "\n-- Migration 007 has definitely and indisputably already been applied to production.",
     expect: ["CC5."],
   },
   {
@@ -1329,7 +1346,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- It has quite deliberately and quite unambiguously already been applied.",
+      + "\n-- It has quite deliberately and quite unambiguously already been applied.",
     expect: ["CC5."],
   },
   {
@@ -1337,7 +1354,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- It has quite deliberately and quite unambiguously already been applied.",
+      + "\n-- It has quite deliberately and quite unambiguously already been applied.",
     expect: ["CC5."],
   },
   {
@@ -1345,7 +1362,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Migration 007 is absolutely, unequivocally applied to production.",
+      + "\n-- Migration 007 is absolutely, unequivocally applied to production.",
     expect: ["CC5."],
   },
   {
@@ -1353,7 +1370,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Migration 007 is absolutely, unequivocally applied to production.",
+      + "\n-- Migration 007 is absolutely, unequivocally applied to production.",
     expect: ["CC5."],
   },
   {
@@ -1361,7 +1378,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- It is, without question, applied to production.",
+      + "\n-- It is, without question, applied to production.",
     expect: ["CC5."],
   },
   {
@@ -1369,7 +1386,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- It is, without question, applied to production.",
+      + "\n-- It is, without question, applied to production.",
     expect: ["CC5."],
   },
   {
@@ -1377,7 +1394,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Migration 007 remains, as of today, applied to production.",
+      + "\n-- Migration 007 remains, as of today, applied to production.",
     expect: ["CC5."],
   },
   {
@@ -1385,7 +1402,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Migration 007 remains, as of today, applied to production.",
+      + "\n-- Migration 007 remains, as of today, applied to production.",
     expect: ["CC5."],
   },
   {
@@ -1393,7 +1410,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Migration 007, applied to production, bounds every evidence row.",
+      + "\n-- Migration 007, applied to production, bounds every evidence row.",
     expect: ["CC5."],
   },
   {
@@ -1401,7 +1418,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Migration 007, applied to production, bounds every evidence row.",
+      + "\n-- Migration 007, applied to production, bounds every evidence row.",
     expect: ["CC5."],
   },
   {
@@ -1409,7 +1426,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Migration 007 (applied to production) bounds every evidence row.",
+      + "\n-- Migration 007 (applied to production) bounds every evidence row.",
     expect: ["CC5."],
   },
   {
@@ -1417,7 +1434,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Migration 007 (applied to production) bounds every evidence row.",
+      + "\n-- Migration 007 (applied to production) bounds every evidence row.",
     expect: ["CC5."],
   },
   {
@@ -1425,7 +1442,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Whether migration 007 is applied is UNKNOWN and migration 007 was applied by hand.",
+      + "\n-- Whether migration 007 is applied is UNKNOWN and migration 007 was applied by hand.",
     expect: ["CC5."],
   },
   {
@@ -1433,7 +1450,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Whether migration 007 is applied is UNKNOWN and migration 007 was applied by hand.",
+      + "\n-- Whether migration 007 is applied is UNKNOWN and migration 007 was applied by hand.",
     expect: ["CC5."],
   },
   {
@@ -1441,7 +1458,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Migration 007 has been applied by hand and whether it ran is UNKNOWN.",
+      + "\n-- Migration 007 has been applied by hand and whether it ran is UNKNOWN.",
     expect: ["CC5."],
   },
   {
@@ -1449,7 +1466,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Migration 007 has been applied by hand and whether it ran is UNKNOWN.",
+      + "\n-- Migration 007 has been applied by hand and whether it ran is UNKNOWN.",
     expect: ["CC5."],
   },
   {
@@ -1457,7 +1474,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Whether it ran is UNKNOWN and it has, per the audit, been applied.",
+      + "\n-- Whether it ran is UNKNOWN and it has, per the audit, been applied.",
     expect: ["CC5."],
   },
   {
@@ -1465,7 +1482,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Whether it ran is UNKNOWN and it has, per the audit, been applied.",
+      + "\n-- Whether it ran is UNKNOWN and it has, per the audit, been applied.",
     expect: ["CC5."],
   },
   {
@@ -1473,7 +1490,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Migration 007 was re-applied and whether it is applied is UNKNOWN.",
+      + "\n-- Migration 007 was re-applied and whether it is applied is UNKNOWN.",
     expect: ["CC5."],
   },
   {
@@ -1481,7 +1498,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Migration 007 was re-applied and whether it is applied is UNKNOWN.",
+      + "\n-- Migration 007 was re-applied and whether it is applied is UNKNOWN.",
     expect: ["CC5."],
   },
   {
@@ -1489,7 +1506,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Whether migration 007, after read-only verification, is applied is UNKNOWN and it is applied.",
+      + "\n-- Whether migration 007, after read-only verification, is applied is UNKNOWN and it is applied.",
     expect: ["CC5."],
   },
   {
@@ -1497,7 +1514,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Whether migration 007, after read-only verification, is applied is UNKNOWN and it is applied.",
+      + "\n-- Whether migration 007, after read-only verification, is applied is UNKNOWN and it is applied.",
     expect: ["CC5."],
   },
   {
@@ -1505,7 +1522,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Whether migration 007, after read-only verification, is applied remains UNKNOWN in either direction.",
+      + "\n-- Whether migration 007, after read-only verification, is applied remains UNKNOWN in either direction.",
     mustPass: true,
     expect: [],
   },
@@ -1514,7 +1531,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Whether migration 007, after read-only verification, is applied remains UNKNOWN in either direction.",
+      + "\n-- Whether migration 007, after read-only verification, is applied remains UNKNOWN in either direction.",
     mustPass: true,
     expect: [],
   },
@@ -1523,7 +1540,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Whether migration 007 (after read-only verification) is applied remains UNKNOWN in either direction.",
+      + "\n-- Whether migration 007 (after read-only verification) is applied remains UNKNOWN in either direction.",
     mustPass: true,
     expect: [],
   },
@@ -1532,7 +1549,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Whether migration 007 (after read-only verification) is applied remains UNKNOWN in either direction.",
+      + "\n-- Whether migration 007 (after read-only verification) is applied remains UNKNOWN in either direction.",
     mustPass: true,
     expect: [],
   },
@@ -1541,7 +1558,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- If, after read-only verification, migration 007 is applied, operators must stop.",
+      + "\n-- If, after read-only verification, migration 007 is applied, operators must stop.",
     mustPass: true,
     expect: [],
   },
@@ -1550,7 +1567,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- If, after read-only verification, migration 007 is applied, operators must stop.",
+      + "\n-- If, after read-only verification, migration 007 is applied, operators must stop.",
     mustPass: true,
     expect: [],
   },
@@ -1559,7 +1576,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- The rollback is applied by hand under its own authorization.",
+      + "\n-- The rollback is applied by hand under its own authorization.",
     mustPass: true,
     expect: [],
   },
@@ -1568,7 +1585,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- The rollback is applied by hand under its own authorization.",
+      + "\n-- The rollback is applied by hand under its own authorization.",
     mustPass: true,
     expect: [],
   },
@@ -1577,7 +1594,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- This file is documented SQL, run by hand under its own authorization.",
+      + "\n-- This file is documented SQL, run by hand under its own authorization.",
     mustPass: true,
     expect: [],
   },
@@ -1586,7 +1603,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- This file is documented SQL, run by hand under its own authorization.",
+      + "\n-- This file is documented SQL, run by hand under its own authorization.",
     mustPass: true,
     expect: [],
   },
@@ -1595,7 +1612,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Migration 007 has, after the report was signed, been applied.",
+      + "\n-- Migration 007 has, after the report was signed, been applied.",
     expect: ["CC5."],
   },
   {
@@ -1603,7 +1620,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Migration 007 has, after the report was signed, been applied.",
+      + "\n-- Migration 007 has, after the report was signed, been applied.",
     expect: ["CC5."],
   },
   {
@@ -1611,7 +1628,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- It has, after the report was signed, been applied.",
+      + "\n-- It has, after the report was signed, been applied.",
     expect: ["CC5."],
   },
   {
@@ -1619,7 +1636,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- It has, after the report was signed, been applied.",
+      + "\n-- It has, after the report was signed, been applied.",
     expect: ["CC5."],
   },
   {
@@ -1627,7 +1644,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Migration 007 has (after the report was signed) been applied.",
+      + "\n-- Migration 007 has (after the report was signed) been applied.",
     expect: ["CC5."],
   },
   {
@@ -1635,7 +1652,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Migration 007 has (after the report was signed) been applied.",
+      + "\n-- Migration 007 has (after the report was signed) been applied.",
     expect: ["CC5."],
   },
   {
@@ -1643,7 +1660,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- It has (after the report was signed) been applied.",
+      + "\n-- It has (after the report was signed) been applied.",
     expect: ["CC5."],
   },
   {
@@ -1651,7 +1668,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- It has (after the report was signed) been applied.",
+      + "\n-- It has (after the report was signed) been applied.",
     expect: ["CC5."],
   },
   {
@@ -1659,7 +1676,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Migration 007 has, because the audit was completed, already clearly been applied.",
+      + "\n-- Migration 007 has, because the audit was completed, already clearly been applied.",
     expect: ["CC5."],
   },
   {
@@ -1667,7 +1684,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Migration 007 has, because the audit was completed, already clearly been applied.",
+      + "\n-- Migration 007 has, because the audit was completed, already clearly been applied.",
     expect: ["CC5."],
   },
   {
@@ -1675,7 +1692,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Migration 007 has not, after the report was signed, been applied.",
+      + "\n-- Migration 007 has not, after the report was signed, been applied.",
     expect: ["CC5."],
   },
   {
@@ -1683,7 +1700,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Migration 007 has not, after the report was signed, been applied.",
+      + "\n-- Migration 007 has not, after the report was signed, been applied.",
     expect: ["CC5."],
   },
   {
@@ -1691,7 +1708,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- It has not, since the audit was completed, been applied.",
+      + "\n-- It has not, since the audit was completed, been applied.",
     expect: ["CC5."],
   },
   {
@@ -1699,7 +1716,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- It has not, since the audit was completed, been applied.",
+      + "\n-- It has not, since the audit was completed, been applied.",
     expect: ["CC5."],
   },
   {
@@ -1707,7 +1724,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Migration 007 was, while the operator was present, applied to production.",
+      + "\n-- Migration 007 was, while the operator was present, applied to production.",
     expect: ["CC5."],
   },
   {
@@ -1715,7 +1732,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Migration 007 was, while the operator was present, applied to production.",
+      + "\n-- Migration 007 was, while the operator was present, applied to production.",
     expect: ["CC5."],
   },
   {
@@ -1723,7 +1740,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Migration 007 is, as the record shows, applied to production.",
+      + "\n-- Migration 007 is, as the record shows, applied to production.",
     expect: ["CC5."],
   },
   {
@@ -1731,7 +1748,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Migration 007 is, as the record shows, applied to production.",
+      + "\n-- Migration 007 is, as the record shows, applied to production.",
     expect: ["CC5."],
   },
   {
@@ -1739,7 +1756,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Migration 007 has, if the audit is repeated, been applied.",
+      + "\n-- Migration 007 has, if the audit is repeated, been applied.",
     expect: ["CC5."],
   },
   {
@@ -1747,7 +1764,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Migration 007 has, if the audit is repeated, been applied.",
+      + "\n-- Migration 007 has, if the audit is repeated, been applied.",
     expect: ["CC5."],
   },
   {
@@ -1755,7 +1772,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Whether migration 007 was applied or ran is UNKNOWN, but migration 007 was applied.",
+      + "\n-- Whether migration 007 was applied or ran is UNKNOWN, but migration 007 was applied.",
     expect: ["CC5."],
   },
   {
@@ -1763,7 +1780,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Whether migration 007 was applied or ran is UNKNOWN, but migration 007 was applied.",
+      + "\n-- Whether migration 007 was applied or ran is UNKNOWN, but migration 007 was applied.",
     expect: ["CC5."],
   },
   {
@@ -1771,7 +1788,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- If migration 007 was applied or ran, operators must stop, and migration 007 was applied.",
+      + "\n-- If migration 007 was applied or ran, operators must stop, and migration 007 was applied.",
     expect: ["CC5."],
   },
   {
@@ -1779,7 +1796,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- If migration 007 was applied or ran, operators must stop, and migration 007 was applied.",
+      + "\n-- If migration 007 was applied or ran, operators must stop, and migration 007 was applied.",
     expect: ["CC5."],
   },
   {
@@ -1787,7 +1804,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Whether migration 007 was applied or ran is UNKNOWN in either direction. It is applied to production.",
+      + "\n-- Whether migration 007 was applied or ran is UNKNOWN in either direction. It is applied to production.",
     expect: ["CC5."],
   },
   {
@@ -1795,7 +1812,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Whether migration 007 was applied or ran is UNKNOWN in either direction. It is applied to production.",
+      + "\n-- Whether migration 007 was applied or ran is UNKNOWN in either direction. It is applied to production.",
     expect: ["CC5."],
   },
   {
@@ -1803,7 +1820,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Migration 007 is applied to production. Whether migration 007 was applied or ran is UNKNOWN in either direction.",
+      + "\n-- Migration 007 is applied to production. Whether migration 007 was applied or ran is UNKNOWN in either direction.",
     expect: ["CC5."],
   },
   {
@@ -1811,7 +1828,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Migration 007 is applied to production. Whether migration 007 was applied or ran is UNKNOWN in either direction.",
+      + "\n-- Migration 007 is applied to production. Whether migration 007 was applied or ran is UNKNOWN in either direction.",
     expect: ["CC5."],
   },
   {
@@ -1819,7 +1836,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Whether or not migration 007 has been applied is UNKNOWN in either direction.",
+      + "\n-- Whether or not migration 007 has been applied is UNKNOWN in either direction.",
     mustPass: true,
     expect: [],
   },
@@ -1828,7 +1845,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Whether or not migration 007 has been applied is UNKNOWN in either direction.",
+      + "\n-- Whether or not migration 007 has been applied is UNKNOWN in either direction.",
     mustPass: true,
     expect: [],
   },
@@ -1837,7 +1854,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Whether migration 007 has or has not been applied remains UNKNOWN in either direction.",
+      + "\n-- Whether migration 007 has or has not been applied remains UNKNOWN in either direction.",
     mustPass: true,
     expect: [],
   },
@@ -1846,7 +1863,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Whether migration 007 has or has not been applied remains UNKNOWN in either direction.",
+      + "\n-- Whether migration 007 has or has not been applied remains UNKNOWN in either direction.",
     mustPass: true,
     expect: [],
   },
@@ -1855,7 +1872,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Whether migration 007 was applied or ran in production is UNKNOWN in either direction.",
+      + "\n-- Whether migration 007 was applied or ran in production is UNKNOWN in either direction.",
     mustPass: true,
     expect: [],
   },
@@ -1864,7 +1881,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Whether migration 007 was applied or ran in production is UNKNOWN in either direction.",
+      + "\n-- Whether migration 007 was applied or ran in production is UNKNOWN in either direction.",
     mustPass: true,
     expect: [],
   },
@@ -1873,7 +1890,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- If migration 007 was applied or ran, operators must stop.",
+      + "\n-- If migration 007 was applied or ran, operators must stop.",
     mustPass: true,
     expect: [],
   },
@@ -1882,7 +1899,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- If migration 007 was applied or ran, operators must stop.",
+      + "\n-- If migration 007 was applied or ran, operators must stop.",
     mustPass: true,
     expect: [],
   },
@@ -1891,7 +1908,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Migration 007 has, even though the report was signed, been applied to production.",
+      + "\n-- Migration 007 has, even though the report was signed, been applied to production.",
     expect: ["CC5."],
   },
   {
@@ -1899,7 +1916,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Migration 007 has, even though the report was signed, been applied to production.",
+      + "\n-- Migration 007 has, even though the report was signed, been applied to production.",
     expect: ["CC5."],
   },
   {
@@ -1907,7 +1924,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Migration 007 has, now that approval was recorded, been applied to production.",
+      + "\n-- Migration 007 has, now that approval was recorded, been applied to production.",
     expect: ["CC5."],
   },
   {
@@ -1915,7 +1932,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Migration 007 has, now that approval was recorded, been applied to production.",
+      + "\n-- Migration 007 has, now that approval was recorded, been applied to production.",
     expect: ["CC5."],
   },
   {
@@ -1923,7 +1940,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Migration 007 has, provided that the report was signed, been applied to production.",
+      + "\n-- Migration 007 has, provided that the report was signed, been applied to production.",
     expect: ["CC5."],
   },
   {
@@ -1931,7 +1948,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Migration 007 has, provided that the report was signed, been applied to production.",
+      + "\n-- Migration 007 has, provided that the report was signed, been applied to production.",
     expect: ["CC5."],
   },
   {
@@ -1939,7 +1956,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Migration 007 has, notwithstanding that the report was signed, been applied to production.",
+      + "\n-- Migration 007 has, notwithstanding that the report was signed, been applied to production.",
     expect: ["CC5."],
   },
   {
@@ -1947,7 +1964,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Migration 007 has, notwithstanding that the report was signed, been applied to production.",
+      + "\n-- Migration 007 has, notwithstanding that the report was signed, been applied to production.",
     expect: ["CC5."],
   },
   {
@@ -1955,7 +1972,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Migration 007 has, whereas the report was signed, been applied to production.",
+      + "\n-- Migration 007 has, whereas the report was signed, been applied to production.",
     expect: ["CC5."],
   },
   {
@@ -1963,7 +1980,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Migration 007 has, whereas the report was signed, been applied to production.",
+      + "\n-- Migration 007 has, whereas the report was signed, been applied to production.",
     expect: ["CC5."],
   },
   {
@@ -1971,7 +1988,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Migration 007 has, after the report was signed, according to the operator, been applied.",
+      + "\n-- Migration 007 has, after the report was signed, according to the operator, been applied.",
     expect: ["CC5."],
   },
   {
@@ -1979,7 +1996,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Migration 007 has, after the report was signed, according to the operator, been applied.",
+      + "\n-- Migration 007 has, after the report was signed, according to the operator, been applied.",
     expect: ["CC5."],
   },
   {
@@ -1987,7 +2004,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Migration 007 has, because the report, once reviewed, was signed, been applied to production.",
+      + "\n-- Migration 007 has, because the report, once reviewed, was signed, been applied to production.",
     expect: ["CC5."],
   },
   {
@@ -1995,7 +2012,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Migration 007 has, because the report, once reviewed, was signed, been applied to production.",
+      + "\n-- Migration 007 has, because the report, once reviewed, was signed, been applied to production.",
     expect: ["CC5."],
   },
   {
@@ -2003,7 +2020,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- It has, even though the report was signed, been applied to production.",
+      + "\n-- It has, even though the report was signed, been applied to production.",
     expect: ["CC5."],
   },
   {
@@ -2011,7 +2028,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- It has, even though the report was signed, been applied to production.",
+      + "\n-- It has, even though the report was signed, been applied to production.",
     expect: ["CC5."],
   },
   {
@@ -2019,7 +2036,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Whether migration 007 was applied, migration 007 was applied.",
+      + "\n-- Whether migration 007 was applied, migration 007 was applied.",
     expect: ["CC5."],
   },
   {
@@ -2027,7 +2044,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Whether migration 007 was applied, migration 007 was applied.",
+      + "\n-- Whether migration 007 was applied, migration 007 was applied.",
     expect: ["CC5."],
   },
   {
@@ -2035,7 +2052,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Whether it is applied is UNKNOWN, if you must know, migration 007 is applied.",
+      + "\n-- Whether it is applied is UNKNOWN, if you must know, migration 007 is applied.",
     expect: ["CC5."],
   },
   {
@@ -2043,7 +2060,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Whether it is applied is UNKNOWN, if you must know, migration 007 is applied.",
+      + "\n-- Whether it is applied is UNKNOWN, if you must know, migration 007 is applied.",
     expect: ["CC5."],
   },
   {
@@ -2051,7 +2068,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Migration 007 has, even though the report was signed, been applied to production, and it ran.",
+      + "\n-- Migration 007 has, even though the report was signed, been applied to production, and it ran.",
     expect: ["CC5."],
   },
   {
@@ -2059,7 +2076,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Migration 007 has, even though the report was signed, been applied to production, and it ran.",
+      + "\n-- Migration 007 has, even though the report was signed, been applied to production, and it ran.",
     expect: ["CC5."],
   },
   {
@@ -2067,7 +2084,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Whether it is applied is UNKNOWN, do not run the rollback, and migration 007 did run.",
+      + "\n-- Whether it is applied is UNKNOWN, do not run the rollback, and migration 007 did run.",
     expect: ["CC5."],
   },
   {
@@ -2075,7 +2092,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Whether it is applied is UNKNOWN, do not run the rollback, and migration 007 did run.",
+      + "\n-- Whether it is applied is UNKNOWN, do not run the rollback, and migration 007 did run.",
     expect: ["CC5."],
   },
   {
@@ -2083,7 +2100,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Migration 007 did not run in production, whereas the rollback was documented.",
+      + "\n-- Migration 007 did not run in production, whereas the rollback was documented.",
     expect: ["CC5."],
   },
   {
@@ -2091,7 +2108,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Migration 007 did not run in production, whereas the rollback was documented.",
+      + "\n-- Migration 007 did not run in production, whereas the rollback was documented.",
     expect: ["CC5."],
   },
   {
@@ -2099,7 +2116,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- It has, now that approval was recorded, not been applied to production.",
+      + "\n-- It has, now that approval was recorded, not been applied to production.",
     expect: ["CC5."],
   },
   {
@@ -2107,7 +2124,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- It has, now that approval was recorded, not been applied to production.",
+      + "\n-- It has, now that approval was recorded, not been applied to production.",
     expect: ["CC5."],
   },
   {
@@ -2115,7 +2132,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Migration 007 has, seeing as the report was signed, been applied to production.",
+      + "\n-- Migration 007 has, seeing as the report was signed, been applied to production.",
     expect: ["CC5."],
   },
   {
@@ -2123,7 +2140,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Migration 007 has, seeing as the report was signed, been applied to production.",
+      + "\n-- Migration 007 has, seeing as the report was signed, been applied to production.",
     expect: ["CC5."],
   },
   {
@@ -2131,7 +2148,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- It has, considering the report was signed, been applied to production.",
+      + "\n-- It has, considering the report was signed, been applied to production.",
     expect: ["CC5."],
   },
   {
@@ -2139,7 +2156,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- It has, considering the report was signed, been applied to production.",
+      + "\n-- It has, considering the report was signed, been applied to production.",
     expect: ["CC5."],
   },
   {
@@ -2147,7 +2164,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Migration 007 has (according to the operator (per the 2026-09-02 audit)) been applied to production.",
+      + "\n-- Migration 007 has (according to the operator (per the 2026-09-02 audit)) been applied to production.",
     expect: ["CC5."],
   },
   {
@@ -2155,7 +2172,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Migration 007 has (according to the operator (per the 2026-09-02 audit)) been applied to production.",
+      + "\n-- Migration 007 has (according to the operator (per the 2026-09-02 audit)) been applied to production.",
     expect: ["CC5."],
   },
   {
@@ -2163,7 +2180,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Migration 007 has not (according to the operator (per the 2026-09-02 audit)) been applied to production.",
+      + "\n-- Migration 007 has not (according to the operator (per the 2026-09-02 audit)) been applied to production.",
     expect: ["CC5."],
   },
   {
@@ -2171,7 +2188,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Migration 007 has not (according to the operator (per the 2026-09-02 audit)) been applied to production.",
+      + "\n-- Migration 007 has not (according to the operator (per the 2026-09-02 audit)) been applied to production.",
     expect: ["CC5."],
   },
   {
@@ -2179,7 +2196,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- It has ((per the audit)) been applied to production.",
+      + "\n-- It has ((per the audit)) been applied to production.",
     expect: ["CC5."],
   },
   {
@@ -2187,7 +2204,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- It has ((per the audit)) been applied to production.",
+      + "\n-- It has ((per the audit)) been applied to production.",
     expect: ["CC5."],
   },
   {
@@ -2195,7 +2212,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Whether migration 007 was applied, ran, or was re-applied remains UNKNOWN in either direction.",
+      + "\n-- Whether migration 007 was applied, ran, or was re-applied remains UNKNOWN in either direction.",
     mustPass: true,
     expect: [],
   },
@@ -2204,7 +2221,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Whether migration 007 was applied, ran, or was re-applied remains UNKNOWN in either direction.",
+      + "\n-- Whether migration 007 was applied, ran, or was re-applied remains UNKNOWN in either direction.",
     mustPass: true,
     expect: [],
   },
@@ -2213,7 +2230,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Whether migration 007 was applied or (after read-only verification) ran remains UNKNOWN in either direction.",
+      + "\n-- Whether migration 007 was applied or (after read-only verification) ran remains UNKNOWN in either direction.",
     mustPass: true,
     expect: [],
   },
@@ -2222,7 +2239,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Whether migration 007 was applied or (after read-only verification) ran remains UNKNOWN in either direction.",
+      + "\n-- Whether migration 007 was applied or (after read-only verification) ran remains UNKNOWN in either direction.",
     mustPass: true,
     expect: [],
   },
@@ -2231,7 +2248,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Whether migration 007, after read-only verification, and (per the operator) after a fresh audit, is applied remains UNKNOWN in either direction.",
+      + "\n-- Whether migration 007, after read-only verification, and (per the operator) after a fresh audit, is applied remains UNKNOWN in either direction.",
     mustPass: true,
     expect: [],
   },
@@ -2240,7 +2257,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Whether migration 007, after read-only verification, and (per the operator) after a fresh audit, is applied remains UNKNOWN in either direction.",
+      + "\n-- Whether migration 007, after read-only verification, and (per the operator) after a fresh audit, is applied remains UNKNOWN in either direction.",
     mustPass: true,
     expect: [],
   },
@@ -2249,7 +2266,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Unless migration 007 is applied, do not run the rollback.",
+      + "\n-- Unless migration 007 is applied, do not run the rollback.",
     mustPass: true,
     expect: [],
   },
@@ -2258,7 +2275,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Unless migration 007 is applied, do not run the rollback.",
+      + "\n-- Unless migration 007 is applied, do not run the rollback.",
     mustPass: true,
     expect: [],
   },
@@ -2267,7 +2284,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Migration 007 may, even though the report was signed, have been applied.",
+      + "\n-- Migration 007 may, even though the report was signed, have been applied.",
     mustPass: true,
     expect: [],
   },
@@ -2276,7 +2293,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Migration 007 may, even though the report was signed, have been applied.",
+      + "\n-- Migration 007 may, even though the report was signed, have been applied.",
     mustPass: true,
     expect: [],
   },
@@ -2285,7 +2302,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Whether migration 007 was applied, ran, or was re-applied is UNKNOWN in either direction.",
+      + "\n-- Whether migration 007 was applied, ran, or was re-applied is UNKNOWN in either direction.",
     mustPass: true,
     expect: [],
   },
@@ -2294,7 +2311,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Whether migration 007 was applied, ran, or was re-applied is UNKNOWN in either direction.",
+      + "\n-- Whether migration 007 was applied, ran, or was re-applied is UNKNOWN in either direction.",
     mustPass: true,
     expect: [],
   },
@@ -2303,7 +2320,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- If migration 007 was applied, ran, or was re-applied, operators must stop.",
+      + "\n-- If migration 007 was applied, ran, or was re-applied, operators must stop.",
     mustPass: true,
     expect: [],
   },
@@ -2312,7 +2329,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- If migration 007 was applied, ran, or was re-applied, operators must stop.",
+      + "\n-- If migration 007 was applied, ran, or was re-applied, operators must stop.",
     mustPass: true,
     expect: [],
   },
@@ -2321,7 +2338,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Unless migration 007 is applied, do not run this rollback by hand.",
+      + "\n-- Unless migration 007 is applied, do not run this rollback by hand.",
     mustPass: true,
     expect: [],
   },
@@ -2330,7 +2347,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Unless migration 007 is applied, do not run this rollback by hand.",
+      + "\n-- Unless migration 007 is applied, do not run this rollback by hand.",
     mustPass: true,
     expect: [],
   },
@@ -2339,7 +2356,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Whether migration 007 (per the operator (after read-only verification)) is applied remains UNKNOWN in either direction.",
+      + "\n-- Whether migration 007 (per the operator (after read-only verification)) is applied remains UNKNOWN in either direction.",
     mustPass: true,
     expect: [],
   },
@@ -2348,7 +2365,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Whether migration 007 (per the operator (after read-only verification)) is applied remains UNKNOWN in either direction.",
+      + "\n-- Whether migration 007 (per the operator (after read-only verification)) is applied remains UNKNOWN in either direction.",
     mustPass: true,
     expect: [],
   },
@@ -2357,7 +2374,7 @@ const MUTATIONS = [
     file: MIGRATION,
     from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
     to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation."
-      + "\\n-- Migration 007 may (per the operator (after the audit)) have been applied.",
+      + "\n-- Migration 007 may (per the operator (after the audit)) have been applied.",
     mustPass: true,
     expect: [],
   },
@@ -2366,7 +2383,7 @@ const MUTATIONS = [
     file: ROLLBACK,
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
-      + "\\n-- Migration 007 may (per the operator (after the audit)) have been applied.",
+      + "\n-- Migration 007 may (per the operator (after the audit)) have been applied.",
     mustPass: true,
     expect: [],
   },
