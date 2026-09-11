@@ -213,8 +213,29 @@ node scripts/ops/migration-state-read.mjs --milestone M1 \
 ```
 
 It computes `F(A)`, `D` and `P`, and evaluates **all seven** comparisons individually, printing the
-differing identifiers by name. It rejects a branch name or tag as the artifact, per **A1**. It emits
-`decision: pass` or `decision: stop`, where **`stop` means the deployment is not triggered**.
+differing filenames by name. It emits `decision: pass` or `decision: stop`, where **`stop` means the
+deployment is not triggered**.
+
+**Migration identity is the complete filename, never its numeric prefix.** `_migrations` stores the
+filename, and the general migration runner applies whichever file is present. A migration renamed
+`007_anything_else.sql` shares the prefix `007` with the authorized migration while being a different
+file containing different SQL. All four expected sets are therefore written as complete canonical
+filenames, and every one of the seven comparisons compares filenames verbatim. No numeric-prefix
+projection takes part in any authorization decision.
+
+**The artifact must be a COMMIT object.** A 40-hex-character check alone is not enough: `git ls-tree`
+enumerates a *tree* SHA just as happily as a commit, so a tree, blob or annotated-tag object would
+otherwise be recordable as the deployed artifact — with no commit ancestry, no possible exact-head CI
+run, and no reviewable or deployable identity. The tool runs `git cat-file -t` and requires the type
+to be exactly `commit` before it enumerates anything. A branch name or tag *name* is still rejected by
+the full-SHA check, per **A1**.
+
+**Failures print a bounded code, never the driver's message.** A raw driver message routinely embeds
+the database user and the host:port it tried (`role "…" does not exist`, `connect ECONNREFUSED
+127.0.0.1:1`). Both operator scripts emit only a PostgreSQL SQLSTATE or Node system error code,
+matched against a strict pattern so an unexpected value degrades to `UNKNOWN`. This holds the
+scripts' stated promise that they print no connection string, user, host, or password — which matters
+because operator logs and committed evidence carry whatever is printed.
 
 **Executed proof against the disposable database — every failure mode, each restored afterwards:**
 
@@ -225,6 +246,13 @@ differing identifiers by name. It rejects a branch name or tag as the artifact, 
 | **C** unauthorized `008` already applied | `001`–`006`, `008` | **`007`** | **stop** | 2, **4**, **6** |
 | **D** expected `006` missing | `001`–`005` | `006`, `007` | **stop** | 2, 3, **5** |
 | **E** baseline restored | `001`–`006` | `007` | **pass** | none |
+| **F** artifact renames `007` → `007_malicious.sql`, canonical `001`–`006` applied | `001`–`006` | `007_malicious.sql` | **stop** | **1**, **3** |
+| **G** artifact renames applied baseline `006` → `006_tampered.sql` | `001`–`006` canonical | `006_tampered.sql`, `007` | **stop** | **1**, **3**, **4** |
+| **H** database holds renamed baseline `006_tampered.sql`, artifact canonical | `…005`, `006_tampered.sql` | `006`, `007` | **stop** | **2**, **3**, **4**, **5**, **6** |
+
+**Cases F, G and H were added after an independent inspection found a real bypass**, recorded in full
+below. Under the previous prefix-based comparison, case F returned **all seven comparisons `true`,
+`decision: pass`, exit 0** with an unauthorized `007_malicious.sql` pending.
 
 **Case C is the one that justifies the whole design.** The pending set reads `['007']` — *exactly
 what M1 expects* — yet the tool stops, because comparisons 4 and 6 catch the unauthorized
@@ -234,6 +262,24 @@ central claim, demonstrated rather than asserted.
 **Stated limitation, carried from §4.4:** `_migrations` stores `name` and `applied_at` and **no
 checksum or content column**. Every comparison above is an **identity** claim. Nothing here
 establishes that an applied migration's *content* matches the file of the same name in the artifact.
+Comparing complete filenames closes the rename bypass; it does **not** and cannot detect a file
+edited in place under an unchanged name.
+
+### Two functional defects found by independent inspection, and corrected
+
+An earlier revision of this package asserted that both operator scripts had **no functional defect**.
+**That assertion was false**, and is withdrawn. An independent inspection found two, both reproduced
+here before being fixed:
+
+| # | Defect | Reproduction, before the fix | Correction |
+|---|---|---|---|
+| 1 | Migration identity was reduced to its numeric prefix, so `007_malicious.sql` compared equal to `007_evidence_bounds.sql` | Artifact with `007` renamed, canonical `001`–`006` applied: **all seven comparisons `true`, `decision: pass`, exit 0** — an unauthorized pending migration would have passed G3a/A4 and then been applied by the general runner | All four expected sets are complete canonical filenames; `fFiles`, `dFiles` and `pFiles` compare verbatim; the prefix projection is deleted, not merely bypassed; regression cases **F**, **G** and **H** added |
+| 2 | **A1** validated only 40 lowercase hex characters, so any Git object was accepted | Tree SHA `b94c30b9c0b321c8d9f95e6af25acbb0c7aa8a68` was accepted, enumerated migrations, reported comparison 1 `true`, exit 0 — despite being a tree, not a commit | `git cat-file -t` must return exactly `commit` before any enumeration; tree, blob, annotated-tag and non-existent-object SHAs each exit **2** |
+
+The prefix projection was load-bearing for the bypass, not incidental: comparison **4** already
+compared full filenames, which is why case G is caught by 4 as well as by 1 and 3, while case F —
+where the rename is on the *pending* migration and so never appears in `D` — was caught by **nothing
+at all**.
 
 ---
 
@@ -260,7 +306,10 @@ is unproven. Two further facts constrain it, both from §4.4:
 
 **Supporting, and explicitly not a substitute:** the repository's disposable-PostgreSQL suite passed
 **208 checks** (fresh 59, upgrade 80, durable 69) on PostgreSQL 16.13 at this branch's base. That is
-evidence about **`A`**, not about `R`.
+evidence about **the historical candidate — this branch's base — not about `A`, and not about `R`.**
+`A` does not yet exist, so no evidence here can be evidence about it. This suite **must be rerun
+against the newly established `A`** at M1 time; the run recorded here carries no forward authority
+and may not be reused merely because the migration file set appears unchanged.
 
 ---
 

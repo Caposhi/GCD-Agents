@@ -32,24 +32,46 @@
  * Safety: read-only session, read-only transaction, a single fixed query
  * against `_migrations`. Identifiers only — `_migrations` has no checksum or
  * content column, so this establishes IDENTITY, never content integrity.
+ *
+ * Identity here means the COMPLETE FILENAME. A numeric prefix is not an
+ * identity: `007_something_else.sql` is a different file with different SQL.
+ * `--artifact` must name a COMMIT object, not merely 40 hex characters. On
+ * failure only a bounded error code is printed, never the driver's message,
+ * which routinely names the database user and the host:port.
  */
 
 import { execFileSync } from "node:child_process";
 import pg from "pg";
 
 // --- the four expected sets, per §4.4.2's contract table -------------------
-const M = (n) => `${String(n).padStart(3, "0")}`;
-const THROUGH = (n) => Array.from({ length: n }, (_, i) => M(i + 1));
+//
+// These are COMPLETE CANONICAL FILENAMES, never numeric prefixes. `_migrations`
+// stores the filename, and the general migration runner applies whatever file is
+// present — so an identifier reduced to its leading digits is not an identity.
+// A migration renamed `007_anything_else.sql` shares the prefix `007` with the
+// authorized migration while being a different file with different SQL; comparing
+// prefixes would report it as expected and authorize applying it. Every
+// comparison below therefore compares filenames verbatim.
+const CANONICAL = [
+  "001_init.sql",
+  "002_brief_and_approval.sql",
+  "003_media.sql",
+  "004_events.sql",
+  "005_approval_integrity.sql",
+  "006_content_evidence.sql",
+  "007_evidence_bounds.sql",
+];
+const THROUGH = (n) => CANONICAL.slice(0, n);
 
 const MILESTONES = {
   M1: {
-    // E_files: 001–007 and no later migration.
+    // E_files: exactly 001–007 by filename, and no later migration.
     files: THROUGH(7),
-    // E_applied_pre: exactly the authorized baseline 001–006.
+    // E_applied_pre: exactly the authorized baseline 001–006, by filename.
     applied_pre: THROUGH(6),
     // E_pending: exactly {007_evidence_bounds.sql}.
-    pending: ["007"],
-    // E_applied_post: exactly 001–007.
+    pending: ["007_evidence_bounds.sql"],
+    // E_applied_post: exactly 001–007, by filename.
     applied_post: THROUGH(7),
   },
 };
@@ -67,6 +89,41 @@ const parseArgs = () => {
   };
 };
 
+/**
+ * Reject anything that is not a COMMIT object.
+ *
+ * `git ls-tree` happily enumerates a TREE sha, so a 40-hex check alone lets a
+ * tree, blob or annotated-tag object be recorded as the deployed artifact. Such
+ * an object has no commit ancestry, cannot have an exact-head CI run, and is not
+ * a reviewable or deployable identity — all of which requirement A1 (§4.4)
+ * depends on. Verified with `git cat-file -t`, which returns the object's true
+ * type, before any enumeration happens.
+ */
+const assertCommitObject = (sha) => {
+  let type;
+  try {
+    type = execFileSync("git", ["cat-file", "-t", sha], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    console.error(
+      `--artifact ${sha} is not an object in this repository.\n` +
+        "Requirement A1 (§4.4) needs the full SHA of a commit that exists here.",
+    );
+    process.exit(2);
+  }
+  if (type !== "commit") {
+    console.error(
+      `--artifact must name a COMMIT object; git reports its type as "${type}".\n` +
+        "A tree, blob or annotated-tag SHA is rejected by requirement A1 (§4.4):\n" +
+        "the artifact must have commit ancestry, an exact-head CI run, and a\n" +
+        "reviewable, deployable commit identity.",
+    );
+    process.exit(2);
+  }
+};
+
 /** Migration filenames present in the artifact commit, from git alone. */
 const filesAtArtifact = (sha) => {
   const out = execFileSync(
@@ -82,13 +139,31 @@ const filesAtArtifact = (sha) => {
     .sort();
 };
 
-/** The leading numeric identifier of a migration filename, e.g. 007. */
-const idOf = (filename) => {
-  const m = /^(\d+)/.exec(filename);
-  return m ? m[1] : filename;
-};
-
 const setEq = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
+
+const LABEL = "migration-state read";
+
+/**
+ * A failure report that cannot leak connection identity.
+ *
+ * A raw driver message routinely embeds the database user and the host:port it
+ * tried (`password authentication failed for user "..."`, `connect ECONNREFUSED
+ * 127.0.0.1:1`). This script's contract is that it prints no connection string,
+ * user, host, or password, and operator logs or committed evidence would carry
+ * whatever is printed here. Only a bounded code is emitted: a PostgreSQL
+ * SQLSTATE or a Node system error code, matched against a strict pattern so an
+ * unexpected value degrades to UNKNOWN rather than passing text through.
+ */
+const sanitizedFailure = (error) => {
+  const raw = error?.code;
+  const code = typeof raw === "string" && /^[A-Za-z0-9_]{1,20}$/.test(raw) ? raw : "UNKNOWN";
+  return (
+    `${LABEL} failed. error_code=${code}\n` +
+    "The driver's own message is deliberately withheld: it can contain the database " +
+    "user, host or port. Check the connection settings in your own shell; they are " +
+    "not echoed here."
+  );
+};
 
 const main = async () => {
   const { milestone, artifact, offline } = parseArgs();
@@ -104,6 +179,7 @@ const main = async () => {
     );
     process.exit(2);
   }
+  assertCommitObject(artifact);
 
   const record = {
     milestone,
@@ -114,9 +190,7 @@ const main = async () => {
 
   // --- F(A), from the artifact, no database required ----------------------
   const fFiles = filesAtArtifact(artifact);
-  const fIds = fFiles.map(idOf);
   record["F(A)"] = fFiles;
-  record["F(A)_ids"] = fIds;
   record.expected = {
     E_files: expected.files,
     E_applied_pre: expected.applied_pre,
@@ -126,7 +200,7 @@ const main = async () => {
 
   if (offline) {
     record.comparisons = {
-      "1_F(A)==E_files": setEq(fIds, expected.files),
+      "1_F(A)==E_files": setEq(fFiles, expected.files),
     };
     record.note =
       "OFFLINE: no database was contacted. D, P and comparisons 2-7 are NOT YET EXECUTED " +
@@ -166,26 +240,25 @@ const main = async () => {
   }
 
   const dFiles = dRows.map((r) => r.name).sort();
-  const dIds = dFiles.map(idOf);
   record.D = dFiles;
-  record.D_ids = dIds;
   record.D_row_count = dRows.length;
   record.D_distinct_identifier_count = new Set(dFiles).size;
 
   // --- P = F(A) − D --------------------------------------------------------
   const pFiles = fFiles.filter((f) => !dFiles.includes(f));
   record.P = pFiles;
-  record.P_ids = pFiles.map(idOf);
 
   // --- all seven comparisons, each stated individually ---------------------
+  // Every one compares COMPLETE FILENAMES. No numeric-prefix projection takes
+  // part in any authorization decision.
   const appliedNotInArtifact = dFiles.filter((f) => !fFiles.includes(f));
-  const expectedAppliedMissing = expected.applied_pre.filter((id) => !dIds.includes(id));
-  const unexpectedApplied = dIds.filter((id) => !expected.applied_pre.includes(id));
+  const expectedAppliedMissing = expected.applied_pre.filter((f) => !dFiles.includes(f));
+  const unexpectedApplied = dFiles.filter((f) => !expected.applied_pre.includes(f));
 
   const comparisons = {
-    "1_F(A)==E_files": setEq(fIds, expected.files),
-    "2_D==E_applied_pre": setEq(dIds, expected.applied_pre),
-    "3_P==E_pending": setEq(record.P_ids, expected.pending),
+    "1_F(A)==E_files": setEq(fFiles, expected.files),
+    "2_D==E_applied_pre": setEq(dFiles, expected.applied_pre),
+    "3_P==E_pending": setEq(pFiles, expected.pending),
     "4_every_D_present_in_F(A)": appliedNotInArtifact.length === 0,
     "5_no_expected_applied_absent_from_D": expectedAppliedMissing.length === 0,
     "6_no_unexpected_applied_in_D": unexpectedApplied.length === 0,
@@ -211,6 +284,6 @@ const main = async () => {
 };
 
 main().catch((error) => {
-  console.error(`migration-state read failed: ${error?.message ?? String(error)}`);
+  console.error(sanitizedFailure(error));
   process.exit(1);
 });

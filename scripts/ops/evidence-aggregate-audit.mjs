@@ -20,7 +20,10 @@
  *   - the query set is fixed; nothing is interpolated from argv or env;
  *   - it returns COUNTS, EXISTENCE and MAXIMA only. It never selects claim
  *     text, subject text, any other row content, PII, or credential values;
- *   - it prints no connection string, user, host, or password.
+ *   - it prints no connection string, user, host, or password — including on
+ *     the failure path, where only a bounded SQLSTATE or Node error code is
+ *     emitted and the driver's own message is withheld, because that message
+ *     routinely names the user and the host:port.
  *
  * What it answers is exactly one question, per §4.1: *can the immediately
  * validated constraints of migration 007 pass against the data actually
@@ -118,6 +121,30 @@ const TABLE_EXISTENCE = `
     AND table_name IN ('content_evidence', 'content_evidence_relations', '_migrations')
   ORDER BY table_name
 `;
+
+const LABEL = "audit";
+
+/**
+ * A failure report that cannot leak connection identity.
+ *
+ * A raw driver message routinely embeds the database user and the host:port it
+ * tried (`password authentication failed for user "..."`, `connect ECONNREFUSED
+ * 127.0.0.1:1`). This script's contract is that it prints no connection string,
+ * user, host, or password, and operator logs or committed evidence would carry
+ * whatever is printed here. Only a bounded code is emitted: a PostgreSQL
+ * SQLSTATE or a Node system error code, matched against a strict pattern so an
+ * unexpected value degrades to UNKNOWN rather than passing text through.
+ */
+const sanitizedFailure = (error) => {
+  const raw = error?.code;
+  const code = typeof raw === "string" && /^[A-Za-z0-9_]{1,20}$/.test(raw) ? raw : "UNKNOWN";
+  return (
+    `${LABEL} failed. error_code=${code}\n` +
+    "The driver's own message is deliberately withheld: it can contain the database " +
+    "user, host or port. Check the connection settings in your own shell; they are " +
+    "not echoed here."
+  );
+};
 
 const main = async () => {
   const url = process.env.GCD_AUDIT_DATABASE_URL;
@@ -218,7 +245,6 @@ const main = async () => {
 };
 
 main().catch((error) => {
-  // Never print the connection string or any credential material.
-  console.error(`audit failed: ${error?.message ?? String(error)}`);
+  console.error(sanitizedFailure(error));
   process.exit(1);
 });
