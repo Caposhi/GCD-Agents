@@ -60,4 +60,4 @@ A merge SHA cannot be known before merging, so documentation that names the curr
 
 ## Required validation
 
-Run the relevant build, typecheck, the offline self-test suite (`npm run test:offline`, currently seven suites), simulated dry run, deployment-controller fixtures, dependency audit, AgentShield scan when available, Markdown-link validation, environment coverage comparison, credential/PII scan with manual triage, `git diff --check`, and complete diff review. Report checks that cannot run and why.
+Run the relevant build, typecheck, the offline self-test suite (`npm run test:offline`, currently eight suites), simulated dry run, deployment-controller fixtures, dependency audit, AgentShield scan when available, Markdown-link validation, environment coverage comparison, credential/PII scan with manual triage, `git diff --check`, and complete diff review. Report checks that cannot run and why.

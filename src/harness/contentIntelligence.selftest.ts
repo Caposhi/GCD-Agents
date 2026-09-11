@@ -5226,15 +5226,603 @@ async function run(): Promise<void> {
         && /CREATE FUNCTION gcd_content_evidence_tags_within_v007/.test(migrationSql)
         && !/CREATE OR REPLACE FUNCTION gcd_content_evidence_tags_within_v007/.test(migrationSql)
         && /DELETE FROM _migrations WHERE name = '007_evidence_bounds\.sql'/.test(rollbackSql));
-    check("CC5. the rollback lives outside the forward-only runner's directory, and neither "
-      + "file claims to have been applied to production",
+    // Migration 007's live application state is UNKNOWN in either direction: no
+    // production database has been inspected since 2026-08-28, so neither "it is
+    // applied" nor "it is not applied" is established. These two files are
+    // authoritative repository inputs, so neither may declare it.
+    //
+    // The check is PROPOSITION-BOUND and fail-closed. Five earlier forms were
+    // not, and each taught the same lesson: a character window or a punctuation
+    // rule is not a proposition boundary.
+    //
+    //   1. Requiring "production" near the predicate missed "remains unapplied".
+    //   2. Accepting any qualifier word anywhere in a period-delimited sentence
+    //      let a categorical assertion hide behind an "UNKNOWN" elsewhere in it.
+    //   3. Accepting any subordinator that merely PRECEDED the predicate let an
+    //      unrelated introductory clause launder the assertion behind it
+    //      ("Before we verify, migration 007 is applied.").
+    //   4. Judging only the EARLIEST predicate in a clause let one genuinely
+    //      governed proposition carry a categorical sibling along ("Whether
+    //      migration 007 is applied is UNKNOWN and migration 007 is applied.").
+    //   5. Splitting the text on every comma while hunting the auxiliary inside a
+    //      fixed 28-character window. The split cut governed propositions apart at
+    //      their own internal qualifiers ("Whether migration 007, after read-only
+    //      verification, is applied ..."), and the window let a categorical claim
+    //      escape by placing an aside between auxiliary and participle
+    //      ("Migration 007 has, according to the operator, been applied.").
+    //   6. Recognising a balanced aside only when its interior carried no verb of
+    //      its own, so a SUBORDINATE aside severed the outer frame it interrupts
+    //      ("Migration 007 has, after the report was signed, been applied." read
+    //      as a bare participle rather than a perfect assertion), and treating
+    //      every coordinator as the end of a governor's reach, which rejected the
+    //      authorized coordinated forms ("Whether or not 007 has been applied is
+    //      UNKNOWN", "Whether 007 was applied or ran is UNKNOWN").
+    //   7a. A pairing bug in the same correction: an opening parenthesis was
+    //      matched to the FIRST later ")", so with nested parentheses the inner
+    //      close was recorded as the outer one and the real outer close was left
+    //      unmatched, which the leftward walk read as a proposition boundary
+    //      ("has (according to the operator (per the audit)) been applied").
+    //      Parentheses are paired BY DEPTH now.
+    //   7b. That fix's OWN fail-open: recovery was also taught to CROSS an
+    //      unmatched ")", which is the opposite of failing closed. A single
+    //      stray close then bought a bypass outright --
+    //      "Migration 007 has, according to the operator) been applied to
+    //      production." -- because the walk skipped the ")", halted at the noun
+    //      `operator` before reaching the outer `has`, and read `been applied`
+    //      as a bare non-finite participle. An authorized UNKNOWN sentence
+    //      beside it made no difference; nothing rejected the categorical one.
+    //      An unmatched close is MALFORMED PROSE, not an aside, so it is now a
+    //      STRUCTURAL CC5 failure raised before any predicate is classified, and
+    //      the recovery-through-unmatched-close behaviour is REMOVED. Depth-aware
+    //      pairing is retained for BALANCED parentheses, single or nested.
+    //   7. That correction's own limits. Its opener list took a SINGLE token, so
+    //      "even though"/"now that"/"provided that" still severed the frame;
+    //      commas were paired with the NEAREST one, so consecutive and nested
+    //      asides left overlapping pairs a leftward walk fell back inside; the
+    //      coordination gap admitted neither a serial comma ("was applied, ran,
+    //      or was re-applied") nor an interruption span of its own; and an
+    //      imperative "do not run" was read as a categorical do-support claim.
+    //
+    // Openers are therefore matched over one, two or three leading tokens; comma
+    // pairing prefers the OUTERMOST qualifying opener and resolves shared
+    // endpoints to that start; the coordination gap admits serial commas and
+    // skips validated spans while still refusing a new subject, an adversative or
+    // a bare imperative `do`; and `do`/`don't` with no subject heads an
+    // instruction rather than a claim. Above all, FINITE-FRAME RECOVERY FAILS
+    // CLOSED AND USES NO LIST: `been applied` is not a proposition, so a walk that
+    // meets an unrecognised comma while holding only a non-finite frame crosses
+    // that aside and keeps looking for the finite auxiliary.
+    //
+    // So the comment text is TOKENISED once, and every application verb in it is
+    // analysed in place. Five judgements are made independently, for that one
+    // predicate, from its own tokens: (1) its subject, or the contextual
+    // antecedent it modifies; (2) its auxiliary/tense frame; (3) its own
+    // proposition boundaries; (4) the governing conditional or epistemic
+    // construction, if any; (5) whether what remains is a categorical
+    // current-state assertion. No judgement is measured in characters, and no
+    // punctuation mark is a boundary by itself.
+    //
+    // The guarantee is deliberately narrow. This recognises the supported
+    // authoritative-comment language of these two files — declarative English
+    // about one migration's application state — and is not a claim of general
+    // natural-language understanding.
+    //
+    // Positive and negative forms are treated identically WITHIN the tested bounded grammar:
+    // neither is established. That grammar is not complete English. Known unsupported forms
+    // are recorded as CC5-SYNTAX-001 in docs/KNOWN_ISSUES_AND_HARDENING.md -- past
+    // remain/stay declarations ("remained unapplied", "has stayed unapplied", and their
+    // contextual-It shapes) are NOT rejected, because FINITE_AUX matches only the present
+    // `remains?`/`stays?`. That gap is accepted and deferred, not fixed.
+    type Tok = {
+      readonly text: string; readonly lower: string;
+      readonly start: number; readonly end: number;
+    };
+    // A terminator, semicolon, colon or dash always ends a proposition. A COMMA
+    // does not: it is sometimes a boundary and sometimes punctuation inside one,
+    // and which it is has to be decided structurally — by what the balanced pair
+    // it may open actually contains, not by the comma itself.
+    const HARD_BOUNDARY = new Set([".", ";", ":", "—", "–"]);
+    const APPLICATION_VERB = /^(?:re-)?(?:applied|unapplied|ran|run)$/i;
+    const FINITE_AUX =
+      /^(?:is|are|was|were|has|have|had|does|do|did|remains?|stays?)(?:n['’]t)?$/i;
+    const NONFINITE_AUX = /^(?:be|been|being)$/i;
+    const MODAL = /^(?:will|would|shall|should|may|might|must|can|could)$/i;
+    // Only a finite verb, a modal or an application verb heads a clause of its
+    // own. An infinitive marker or a preposition does not — which is what
+    // separates a parenthetical aside from a second proposition.
+    const isClausal = (w: string): boolean =>
+      FINITE_AUX.test(w) || APPLICATION_VERB.test(w) || MODAL.test(w);
+    const NEGATOR = /^(?:not|never|no)$/i;
+    const ADVERB_SET = new Set([
+      "already", "still", "currently", "yet", "also", "then", "just", "ever", "now",
+      "therefore", "only", "again", "hereby", "deliberately", "perhaps", "apparently",
+    ]);
+    const isAdverb = (w: string): boolean => /ly$/i.test(w) || ADVERB_SET.has(w);
+    // Everything a subordinator may span before reaching the predicate it
+    // governs: the subject of the clause it introduces, and nothing else.
+    const SUBJECT_WORD = /^(?:the|this|that|these|those|its|it|a|an|any|each|either|both|no|one|they|migrations?|rollback|script|file|state|set|007|00[1-6])$/i;
+    // An embedded question ("whether/if") or a hypothetical/temporal frame.
+    // "verify", "observed", "check", "UNKNOWN" and "establish" are NOT enough,
+    // and neither is position alone.
+    const SUBORDINATOR = /^(?:whether|if|after|once|when|whenever|before|until|unless|should)$/i;
+    // What may OPEN a balanced aside. A comma pair or parenthesis introduced by
+    // one of these is a subordinate or appositive interruption inside one
+    // proposition, even though it carries a finite verb of its own ("has, after
+    // the report was signed, been applied"). Its verb belongs to the aside; it
+    // neither replaces the outer auxiliary frame nor governs the outer claim,
+    // because both leftward walks step over the whole span. A closed list, so
+    // an ordinary coordinate clause is never mistaken for an aside.
+    // The list is CLOSED and covers one, two and three leading tokens, because a
+    // natural aside often opens with a phrase ("even though", "now that",
+    // "provided that", "as long as"). Anything it misses is caught downstream by
+    // fail-closed finite-frame recovery, not left to pass.
+    const ASIDE_OPENER_1 = new Set([
+      "whether", "if", "after", "once", "when", "whenever", "before", "until", "unless",
+      "should", "as", "because", "since", "while", "whilst", "although", "though", "per",
+      "according", "given", "assuming", "pending", "whereas", "notwithstanding", "providing",
+      "provided", "except", "lest", "albeit", "despite", "barring", "failing", "regardless",
+    ]);
+    const ASIDE_OPENER_2 = new Set([
+      "even though", "even if", "even when", "even after", "now that", "provided that",
+      "providing that", "notwithstanding that", "assuming that", "given that", "except that",
+      "so that", "such that", "in case", "as though", "as if", "only after", "only once",
+      "just after", "shortly after", "regardless of", "despite the", "prior to",
+    ]);
+    const ASIDE_OPENER_3 = new Set([
+      "as long as", "as soon as", "in the event", "on the basis", "at the point",
+      "for as long", "in so far", "by reason of",
+    ]);
+    const opensAside = (interior: readonly Tok[]): boolean => {
+      const w = (k: number): string => interior[k]?.lower ?? "";
+      return ASIDE_OPENER_1.has(w(0))
+        || ASIDE_OPENER_2.has(`${w(0)} ${w(1)}`)
+        || ASIDE_OPENER_3.has(`${w(0)} ${w(1)} ${w(2)}`);
+    };
+    // A non-finite auxiliary with no finite one is not a proposition: `been
+    // applied` REQUIRES a `has`/`have`/`had` somewhere, and `be`/`being` a modal
+    // or copula. When the leftward walk meets a comma it does not recognise as an
+    // aside while holding only such a frame, it crosses the aside and keeps
+    // looking rather than reading the participle as non-assertive. That is the
+    // fail-closed direction, and it does not depend on any opener list.
+    const needsFiniteRecovery = (auxes: readonly string[]): boolean =>
+      auxes.length > 0
+      && auxes.some((a) => NONFINITE_AUX.test(a))
+      && !auxes.some((a) => FINITE_AUX.test(a) || MODAL.test(a));
+    // Coordinators that may join predicates INSIDE one governed proposition.
+    // `but` is deliberately absent: it introduces a contrasting assertion, not a
+    // continuation of the governed one.
+    const COORDINATOR = /^(?:and|or|nor)$/i;
+    // Bare `do`/`don't` is the imperative marker. It heads an INSTRUCTION, never
+    // a claim, so it is neither a categorical assertion nor a continuation of a
+    // governed proposition. `does` and `did` are declarative and emphatic and
+    // stay categorical ("did run", "did not run").
+    const IMPERATIVE_DO = /^do(?:n['’]t)?$/i;
+    // "applied set"/"applied state" names an inventory, not an event.
+    const ADJECTIVAL_HEAD = /^(?:state|set|inventory|migrations?|list|rows?|files?)$/i;
+
+    const tokenize = (text: string): Tok[] => {
+      const out: Tok[] = [];
+      const re = /[A-Za-z0-9_][A-Za-z0-9_'’\-]*|[.,;:()—–]/g;
+      for (let m = re.exec(text); m; m = re.exec(text)) {
+        out.push({
+          text: m[0], lower: m[0].toLowerCase(),
+          start: m.index, end: m.index + m[0].length,
+        });
+      }
+      return out;
+    };
+    // A paren pair, or a comma pair whose interior carries no clausal verb, is an
+    // INTERRUPTION: an appositive or adverbial aside inside one proposition, not
+    // a second proposition. The leftward walks step over these rather than
+    // stopping at them, so an aside cannot separate an auxiliary from its verb.
+    const interruptionSpans = (toks: readonly Tok[]): Array<[number, number]> => {
+      const spans: Array<[number, number]> = [];
+      // DEPTH-AWARE pairing. Matching an opening parenthesis to the first later
+      // ")" records an INNER close as the outer one and leaves the real outer
+      // close unmatched, which a leftward walk then reads as a proposition
+      // boundary. A stack pairs every parenthesis with its own partner, so
+      // nested asides yield nested spans and no close is left dangling.
+      const parenClose = new Map<number, number>();
+      const open: number[] = [];
+      for (let i = 0; i < toks.length; i++) {
+        const w = toks[i]?.lower;
+        if (w === "(") { open.push(i); continue; }
+        if (w !== ")") continue;
+        const start = open.pop();
+        if (start !== undefined) { spans.push([start, i]); parenClose.set(start, i); }
+      }
+      for (let i = 0; i < toks.length; i++) {
+        if (toks[i]?.lower !== ",") continue;
+        // Candidate opening commas, FARTHEST first, so a nested aside
+        // ("because the report, once reviewed, was signed") is paired as one
+        // outer span instead of leaving its inner commas overlapping. A balanced
+        // parenthesis inside the candidate is stepped over rather than ending
+        // the search, so "(after read-only verification)" cannot split a pair.
+        const candidates: number[] = [];
+        for (let j = i - 1; j >= 0; j--) {
+          const w = toks[j]?.lower ?? "";
+          if (HARD_BOUNDARY.has(w)) break;
+          if (w === ")") {
+            let open = -1;
+            for (const [a, b] of parenClose) if (b === j) open = a;
+            if (open < 0) break;
+            j = open; continue;
+          }
+          if (w === "(") break;
+          if (w === ",") candidates.push(j);
+        }
+        for (let c = candidates.length - 1; c >= 0; c--) {
+          const j = candidates[c] as number;
+          const interior = toks.slice(j + 1, i);
+          // No clausal verb at all — an appositive or adverbial aside. Or a
+          // balanced SUBORDINATE aside, which may carry its own finite verb and
+          // still interrupt rather than end the proposition.
+          if (!interior.some((t) => isClausal(t.lower)) || opensAside(interior)) {
+            spans.push([j, i]);
+            break;
+          }
+        }
+      }
+      return spans;
+    };
+    // Spans may share an endpoint ("has, A, B, been applied" pairs (C1,C2) and
+    // (C1,C3)). Resolving the chain to its OUTERMOST start is what keeps a
+    // leftward walk from landing back inside an aside it just stepped over.
+    const spanOpenerAt = (
+      spans: ReadonlyArray<readonly [number, number]>, idx: number, closingOnly: boolean,
+    ): number | null => {
+      let at = idx, moved = false;
+      for (let guard = 0; guard < spans.length + 1; guard++) {
+        let best: number | null = null;
+        for (const [a, b] of spans) {
+          const hit = closingOnly && !moved ? b === at : (a === at || b === at);
+          if (hit && a < at && (best === null || a < best)) best = a;
+        }
+        if (best === null) break;
+        at = best; moved = true;
+      }
+      return moved ? at : null;
+    };
+    // The nearest comma strictly left of `idx` within the same sentence, or null.
+    const priorComma = (toks: readonly Tok[], idx: number, floor: number): number | null => {
+      for (let j = idx - 1; j > floor && j >= 0; j--) {
+        const w = toks[j]?.lower ?? "";
+        if (HARD_BOUNDARY.has(w)) return null;
+        if (w === ",") return j;
+      }
+      return null;
+    };
+
+    // STRUCTURAL PARENTHESIS BALANCE, judged before any predicate is classified.
+    // An unmatched closing parenthesis is MALFORMED authoritative prose, never an
+    // interruption boundary. The previous behaviour SKIPPED such a close during
+    // finite-frame recovery, which let
+    //   "Migration 007 has, according to the operator) been applied to production."
+    // pass: the walk crossed the `)`, stopped at the noun `operator` before it
+    // reached the outer `has`, and read `been applied` as a bare non-finite
+    // participle. Nothing is inferred or recovered through a malformed close now.
+    // The scan counts depth and reports the FIRST `)` that appears at depth zero.
+    // Balanced parentheses -- single or nested -- are untouched and still pair by
+    // depth in `interruptionSpans`.
+    const firstUnmatchedClose = (toks: readonly Tok[]): number | null => {
+      let depth = 0;
+      for (let i = 0; i < toks.length; i++) {
+        const w = toks[i]?.lower;
+        if (w === "(") { depth++; continue; }
+        if (w !== ")") continue;
+        if (depth === 0) return i;
+        depth--;
+      }
+      return null;
+    };
+
+    // Every application-state proposition in one comment block, each judged alone.
+    const analyzeComments = (text: string): string[] => {
+      const toks = tokenize(text);
+      // Fail CLOSED, and FIRST, on malformed structure. This precedes application
+      // predicate analysis deliberately: an authorized UNKNOWN sentence elsewhere
+      // in the prose cannot mask a malformed categorical one, and no recovery
+      // heuristic is ever consulted about an unmatched close.
+      const stray = firstUnmatchedClose(toks);
+      if (stray !== null) {
+        const tok = toks[stray] as Tok;
+        return [`unmatched ")" in authoritative comment prose: ${
+          text.slice(Math.max(0, tok.start - 60), Math.min(text.length, tok.end + 20))
+            .replace(/\s+/g, " ").trim()}`];
+      }
+      const spans = interruptionSpans(toks);
+      const offending: string[] = [];
+      let previousVerb = -1;
+      let previousGoverned = false;
+      for (let i = 0; i < toks.length; i++) {
+        const verb = toks[i];
+        if (!verb || !APPLICATION_VERB.test(verb.lower)) continue;
+        const rePrefixed = /^re-/i.test(verb.lower);
+        const bare = verb.lower.replace(/^re-/, "");
+
+        // (1)-(3) One leftward walk collects the auxiliary/tense frame, finds the
+        // subject, and fixes this proposition's own left boundary. Interruptions,
+        // adverbs and negators are stepped over; a hard terminator, a genuine
+        // comma boundary, or the previous predicate ends it.
+        const auxes: string[] = [];
+        let j = i - 1, subjectHead: number | null = null, propStart = 0, onlyAdverbs = true;
+        let openerBoundary = -1;
+        for (; j > previousVerb && j >= 0; j--) {
+          const w = toks[j]?.lower ?? "";
+          if (HARD_BOUNDARY.has(w)) { propStart = j + 1; break; }
+          if (w === ")" || w === ",") {
+            const open = spanOpenerAt(spans, j, w === ")");
+            if (open !== null && open < j) { j = open; continue; }
+            // "absolutely, unequivocally applied" — a comma separating adverbs is
+            // punctuation inside the proposition, not the end of one.
+            if (w === "," && j > 0 && isAdverb(toks[j - 1]?.lower ?? "")) continue;
+            // FAIL-CLOSED finite-frame recovery. `been applied` is not a
+            // proposition on its own — its perfect auxiliary must be somewhere to
+            // the left. Rather than read the participle as non-assertive because
+            // an aside was not recognised, cross that aside (to the token before
+            // the comma that opens it) and keep looking for the finite frame.
+            if (needsFiniteRecovery(auxes)) {
+              // An unmatched `)` never reaches here: `firstUnmatchedClose` fails
+              // CC5 structurally before any predicate is classified. Recovery is
+              // therefore about COMMAS only, and is never asked to infer a
+              // reading through a malformed close.
+              const prior = priorComma(toks, j, previousVerb);
+              j = prior === null ? j : prior;
+              continue;
+            }
+            propStart = j + 1; openerBoundary = j; break;
+          }
+          if (w === "(") {
+            if (needsFiniteRecovery(auxes)) continue;     // unmatched opener
+            propStart = j + 1; openerBoundary = j; break;
+          }
+          if (FINITE_AUX.test(w) || NONFINITE_AUX.test(w) || MODAL.test(w)) {
+            auxes.unshift(w); onlyAdverbs = false; continue;
+          }
+          if (NEGATOR.test(w) || isAdverb(w)) continue;
+          if ((w === "and" || w === "or") && j > 0 && isAdverb(toks[j - 1]?.lower ?? "")) continue;
+          // A degree modifier ("quite deliberately"): a token immediately
+          // followed by an adverb belongs to that adverbial, not to the subject.
+          // Structural, so the adverbial run between an auxiliary and its
+          // participle can be any length without a word list growing to match.
+          if (j + 1 < toks.length && isAdverb(toks[j + 1]?.lower ?? "")) continue;
+          // The subject head. This proposition starts at the head of its subject
+          // NOUN PHRASE, so keep stepping left over the determiners and
+          // modifiers that belong to it — and stop there. Anything further left
+          // belongs to an earlier proposition and is not this predicate's
+          // subject, so it must not be read as one.
+          subjectHead = j; onlyAdverbs = false; propStart = j;
+          for (let k = j - 1; k > previousVerb && k >= 0; k--) {
+            const p = toks[k]?.lower ?? "";
+            if (SUBJECT_WORD.test(p) || isAdverb(p) || NEGATOR.test(p)) { propStart = k; continue; }
+            break;
+          }
+          break;
+        }
+        if (j <= previousVerb) propStart = previousVerb + 1;
+
+        // (2) The tense frame, from this predicate's own auxiliaries.
+        const has = (re: RegExp): boolean => auxes.some((a) => re.test(a));
+        let frame: string;
+        if (has(MODAL)) frame = "modal";
+        else if (has(/^(?:was|were)(?:n['’]t)?$/)) frame = "past";
+        else if (has(/^(?:has|have|had)(?:n['’]t)?$/)) frame = "perfect";
+        else if (has(/^(?:does|do|did)(?:n['’]t)?$/)) frame = "do-support";
+        else if (has(/^(?:is|are|remains?|stays?)(?:n['’]t)?$/)) frame = "present";
+        else if (auxes.length) frame = "nonfinite";
+        else if (bare === "ran") frame = "past";           // a finite past main verb
+        else if (subjectHead === null && onlyAdverbs) frame = "elliptical";
+        else frame = "none";
+
+        // (1b) A bare participle with no subject and no auxiliary that OPENS a
+        // comma- or paren-delimited adjunct inside a running sentence is not a
+        // proposition: it modifies the nominal before the opener. Resolve that
+        // contextual antecedent and judge the adjunct by it. An elliptical
+        // declaration that heads the prose ("Not applied to production.") has no
+        // such antecedent and stays an assertion.
+        let antecedent = "";
+        const adjunct = frame === "elliptical" && openerBoundary > 0;
+        if (adjunct) {
+          let a = openerBoundary - 1;
+          for (; a > previousVerb && a >= 0; a--) {
+            if (HARD_BOUNDARY.has(toks[a]?.lower ?? "")) break;
+          }
+          antecedent = toks.slice(a + 1, openerBoundary).map((t) => t.lower).join(" ").trim();
+        }
+        // An IMPERATIVE is an instruction, not a claim. Bare `do`/`don't` with no
+        // subject of its own heads one ("Unless 007 is applied, do not run the
+        // rollback."); `does` and `did` are declarative and emphatic and stay
+        // categorical ("did run", "did not run").
+        const imperative = frame === "do-support" && subjectHead === null
+          && auxes.every((a) => IMPERATIVE_DO.test(a) || NEGATOR.test(a) || isAdverb(a));
+        // (5) Is this a categorical assertion about a current or past state?
+        const assertive = adjunct
+          ? /\b007\b|\bmigrations?\b/i.test(antecedent)
+          : !imperative
+            && ["past", "perfect", "present", "do-support", "elliptical"].includes(frame);
+
+        // Exemptions, each bound to THIS predicate rather than to the sentence.
+        const after = toks[i + 1];
+        const adjectival = after !== undefined && ADJECTIVAL_HEAD.test(after.lower)
+          && frame !== "elliptical";
+        const byHand = after?.lower === "by" && toks[i + 2]?.lower === "hand";
+        const subjectText = adjunct
+          ? antecedent
+          : toks.slice(propStart, i).map((t) => t.lower).join(" ");
+        // The remainder of THIS proposition, to its own right-hand boundary —
+        // not a character window: "is applied by hand" reads as procedural only
+        // when the proposition it sits in is not about 007.
+        let rest = "";
+        for (let k = i + 1; k < toks.length; k++) {
+          const w = toks[k]?.lower ?? "";
+          if (HARD_BOUNDARY.has(w)) break;
+          rest += ` ${w}`;
+        }
+        const about007 = /\b007\b/.test(subjectText) || /\b007\b/.test(rest);
+        // A predicate whose own subject names 001-006 and not 007 is the dated
+        // baseline, not a 007 claim.
+        const nonOwn = /\b00[1-6]\b/.test(subjectText) && !/\b007\b/.test(subjectText);
+        // Procedural manner ("applied by hand", "re-applied as a new migration")
+        // says HOW something is applied when it is. It never exempts a FINITE
+        // OCCURRENCE claim: "was applied by hand" and "was re-applied" assert that
+        // it happened, and stay categorical. Only a genuinely non-assertive frame
+        // — hypothetical, conditional, modal, infinitive or instructional — can be
+        // read as procedural.
+        const procedural = (byHand || rePrefixed)
+          && (frame === "modal" || frame === "nonfinite" || frame === "none"
+              || (frame === "present" && !about007));
+
+        // (4) Governance: a subordinator must introduce THIS proposition,
+        // reachable over its subject alone, and never from before the previous
+        // predicate — so a subordinator that already governs an earlier
+        // proposition cannot reach across it to authorize this one.
+        //
+        // Two forms of coordination are distinguished, and only one propagates.
+        // A coordinator INSIDE the reach ("whether or not 007 has been applied",
+        // "whether 007 has or has not been applied") joins material that already
+        // belongs to the governed clause, so the reach steps over it when the
+        // token beside it is itself something the reach admits. A coordinator
+        // BETWEEN two predicates ("was applied or ran") continues the same
+        // governed proposition only when nothing but that coordinator, an
+        // auxiliary, a negator or an adverb separates them: a new subject or any
+        // other word means a separately asserted proposition, judged on its own.
+        const reachAdmits = (w: string): boolean =>
+          FINITE_AUX.test(w) || NONFINITE_AUX.test(w) || MODAL.test(w)
+          || NEGATOR.test(w) || isAdverb(w) || SUBJECT_WORD.test(w)
+          || SUBORDINATOR.test(w) || APPLICATION_VERB.test(w);
+        let governed = false;
+        if (previousVerb >= 0 && previousGoverned) {
+          // The material between the two predicates, with validated interruption
+          // spans removed — a coordinated predicate may still carry a
+          // parenthetical or comma aside of its own ("was applied or (after
+          // read-only verification) ran").
+          const gap: Tok[] = [];
+          for (let k = previousVerb + 1; k < i; k++) {
+            const span = spans.find(([a]) => a === k);
+            if (span && span[1] < i) { k = span[1]; continue; }
+            const t = toks[k];
+            if (t) gap.push(t);
+          }
+          // A serial list ("was applied, ran, or was re-applied") joins the same
+          // governed subject with commas as well as coordinators, so a bare comma
+          // counts as a joint. Everything else in the gap must be an auxiliary, a
+          // negator or an adverb: a new subject, a noun, or any other word means a
+          // separately asserted proposition, judged on its own.
+          const joints = gap.filter((t) => COORDINATOR.test(t.lower) || t.lower === ",").length;
+          const shared = joints >= 1 && gap.every((t) =>
+            !IMPERATIVE_DO.test(t.lower)
+            && (COORDINATOR.test(t.lower) || t.lower === ","
+              || FINITE_AUX.test(t.lower) || NONFINITE_AUX.test(t.lower) || MODAL.test(t.lower)
+              || NEGATOR.test(t.lower) || isAdverb(t.lower)));
+          if (shared) governed = true;              // a coordinated predicate, same subject
+        }
+        for (let s = i - 1; !governed && s > previousVerb && s >= 0; s--) {
+          const w = toks[s]?.lower ?? "";
+          if (HARD_BOUNDARY.has(w)) break;
+          if (w === ")" || w === ",") {
+            const open = spanOpenerAt(spans, s, w === ")");
+            if (open !== null && open < s) { s = open; continue; }
+            if (w === "," && s > 0 && isAdverb(toks[s - 1]?.lower ?? "")) continue;
+            break;
+          }
+          if (SUBORDINATOR.test(w)) { governed = true; break; }
+          if (FINITE_AUX.test(w) || NONFINITE_AUX.test(w) || MODAL.test(w)) continue;
+          if (NEGATOR.test(w) || isAdverb(w)) continue;
+          if (SUBJECT_WORD.test(w)) continue;
+          if (COORDINATOR.test(w) && s > 0 && reachAdmits(toks[s - 1]?.lower ?? "")) continue;
+          break;                                    // anything else ends the reach
+        }
+
+        if (assertive && !adjectival && !procedural && !nonOwn && !governed) {
+          offending.push(text.slice(toks[propStart]?.start ?? verb.start,
+            Math.min(text.length, verb.end + 18)).replace(/\s+/g, " ").trim());
+        }
+        previousVerb = i;
+        previousGoverned = governed;
+      }
+      return offending;
+    };
+    // Full-line comments are the authoritative prose. They are joined with a
+    // space so a hard-wrapped sentence is reassembled before it is analysed —
+    // otherwise the wrap itself would manufacture proposition fragments.
+    const sqlComments = (sql: string): string => sql
+      .split("\n")
+      .filter((line) => /^\s*--/.test(line))
+      .map((line) => line.replace(/^\s*--\s?/, ""))
+      .join(" ");
+    const bareApplicationClaims = (sql: string): string[] => analyzeComments(sqlComments(sql));
+    const migrationClaims = bareApplicationClaims(migrationSql);
+    const rollbackClaims = bareApplicationClaims(rollbackSql);
+    if (migrationClaims.length || rollbackClaims.length) {
+      console.log(`      offending propositions: ${
+        JSON.stringify([...migrationClaims, ...rollbackClaims])}`);
+    }
+    check("CC5. the rollback lives outside the forward-only runner's directory; a token-level "
+      + "analysis enumerates the application predicates of the tested bounded grammar in either "
+      + "file (past remain/stay forms are NOT covered — see CC5-SYNTAX-001) and judges each on its "
+      + "own subject or antecedent, tense frame, proposition boundaries and governing "
+      + "construction, so neither file declares 007's application state in either direction — "
+      + "positive or negative, auxiliary or bare past (ran / never ran / did run / did not "
+      + "run), with or without the word production, with the auxiliary at any distance from "
+      + "its participle and across a parenthetical or comma-delimited aside — including a "
+      + "SUBORDINATE aside carrying its own finite verb, opened by one, two or three tokens, "
+      + "consecutive, nested, or opened by a word on no list at all, and across BALANCED "
+      + "parentheses, single or nested, paired by depth, because a dangling non-finite frame "
+      + "crosses an unrecognised aside rather than reading as non-assertive — while an UNMATCHED "
+      + "closing parenthesis is malformed prose that fails this check STRUCTURALLY, before any "
+      + "predicate is classified and whatever else the prose authorizes, so it can never be "
+      + "skipped as though it were a valid interruption boundary — finite application "
+      + "assertions remaining categorical regardless of procedural wording following the verb "
+      + "or a re- prefix, not maskable by a qualifier in another proposition, not laundered by an "
+      + "unrelated introductory clause, and not carried along by a governed sibling, whether "
+      + "that sibling is joined by a coordinator, an adversative or a new sentence — while a "
+      + "genuinely governed proposition is still accepted with its own internal qualifiers "
+      + "intact and with coordinated predicates that share its subject, joined by a coordinator "
+      + "or a serial comma and each free to carry an interruption of its own (whether or not ... "
+      + "has been applied; whether ... has or has not been applied; whether ... was applied, ran, "
+      + "or was re-applied), and while a bare imperative do/don't reads as an instruction rather "
+      + "than a claim though does and did stay declarative — both state it is UNKNOWN in either "
+      + "direction, both keep the 2026-08-28 reading "
+      + "dated, and both require separate authorization",
       !(await readdir(resolve(REPO_ROOT, "state/migrations")))
          .some((f) => /rollback/i.test(f))
         && (await readdir(resolve(REPO_ROOT, "state/rollback")))
              .includes("007_evidence_bounds_rollback.sql")
-        && /Not applied to production\./.test(rollbackSql)
-        && /It has not been applied to production\./.test(migrationSql)
-        && /SEPARATE, SEPARATELY AUTHORIZED/.test(migrationSql));
+        // No bare declaration, either direction, in either file. This subsumes
+        // "is/has been/was/remains/is currently/is already/has already been
+        // applied", the negatives "is not / has not been / was not / has never
+        // been / is not yet applied" and "remains unapplied", their contractions,
+        // contextual "It ..." forms, "the rollback has (not) been run", the bare
+        // past "ran"/"never ran" and the emphatic "did run"/"did not run" — and
+        // now also the finite procedural forms "was applied by hand" and "was
+        // re-applied", and predicates whose auxiliary is separated from the
+        // participle by an aside ("has, according to the operator, been
+        // applied"), a parenthesis, or a run of adverbs of any length — and now
+        // also across a SUBORDINATE aside carrying its own finite verb ("has,
+        // after the report was signed, been applied"), whose verb belongs to the
+        // aside and neither replaces the outer frame nor governs the outer claim.
+        // It holds whether or not the sentence says "production", whether or not
+        // an unrelated subordinate clause is placed in front of it, and whether
+        // or not a properly governed proposition sits beside it in the same
+        // sentence. Conversely a governed proposition keeps its own internal
+        // qualifiers ("Whether migration 007, after read-only verification, is
+        // applied remains UNKNOWN in either direction."), because a comma or a
+        // parenthesis is not by itself a proposition boundary; and it keeps
+        // coordinated predicates that share its subject ("whether ... was applied
+        // or ran"), because a coordinator inside one governed proposition is not
+        // the end of it. A coordinator that introduces a NEW subject, or any
+        // adversative, is a separate assertion and is judged on its own.
+        && migrationClaims.length === 0
+        && rollbackClaims.length === 0
+        // Both must state the unknown explicitly, and in both directions.
+        && /UNKNOWN in either direction/.test(migrationSql)
+        && /UNKNOWN in either direction/.test(rollbackSql)
+        // The dated observation is retained as dated, not as current truth.
+        && /2026-08-28/.test(migrationSql)
+        && /2026-08-28/.test(rollbackSql)
+        // Separate authorization is required by both.
+        && /SEPARATE, SEPARATELY AUTHORIZED/.test(migrationSql)
+        && /SEPARATE, SEPARATELY AUTHORIZED/.test(rollbackSql));
 
     // --- CC-B. the evidence bounds are real, and invalidate nothing valid ---
     check("CC6. an over-long claim, subject, attribute, tag, tag list, source ref, "

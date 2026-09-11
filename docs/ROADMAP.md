@@ -181,6 +181,38 @@ Keep these changes separable unless a reviewed design shows they must be atomic.
 
 The former worker lease/reaper item is `SUPERSEDED` and is no longer active work. Its rationale and re-entry condition are preserved in the PR #36 record above.
 
+## Post-MVP hardening backlog
+
+Deferred findings are recorded durably in
+[`docs/KNOWN_ISSUES_AND_HARDENING.md`](KNOWN_ISSUES_AND_HARDENING.md), which also
+defines the backlog entry template, the finding categories, and the two-lane
+workflow.
+
+**This backlog is not the immediate feature cursor.** Items here do **not** block
+the MVP implementer from continuing unrelated roadmap work. A finding blocks the
+MVP lane only when it affects reachable production behaviour, authorization,
+publication, secrets, data integrity, migration safety, rollback safety, or when
+it makes a PR's stated guarantees false without those guarantees being narrowed.
+
+**Workflow.** Items are taken by a **separate, fresh hardening implementer**
+working with an **independent inspector** — not by the author of the original
+finding, so the design is reconsidered rather than extended by reflex.
+
+| ID | Title | Status | Origin | Reachability | Must-fix trigger |
+|---|---|---|---|---|---|
+| `CC5-SYNTAX-001` | Past `remain`/`stay` application-state declarations | **OPEN — accepted and deferred** | PR #57, head `8238f37622b816e043b2f449f2b0e33da685eb58` | **Dormant, non-runtime.** A false negative in the repository's `CC5` comment-validation test only. No executable SQL changes; no production route enabled; all six executors remain disabled and unreachable. | Mandatory before the **first** of: production enablement of the Content Intelligence execution chain; removal of the current comment freeze; or any claim that `CC5` comprehensively rejects past/perfect application-state declarations. |
+
+**`CC5-SYNTAX-001` in brief.** `CC5` does not reject
+*"Migration 007 remained unapplied."*, *"… has remained unapplied."*,
+*"… stayed unapplied."*, *"… has stayed unapplied."*, or their contextual-*It*
+shapes, because `FINITE_AUX` matches only the present *remains*/*stays*. The
+defect is **reproduced and open**, not fixed. Neither authoritative file
+currently contains such a claim, and migration 007's production application
+state remains **`UNKNOWN` in either direction**. Compensating controls, the full
+reproduction, and the definition of done are recorded in the backlog document.
+The planned closure is by a **separate hardening agent with an independent
+inspector**, and the design is deliberately not predetermined.
+
 ## Phase 0B prerequisite — fact and evidence contract
 
 **State:** `MERGED` · **`DEPLOYED`**. Delivered by the Phase 0B.0 foundation change (`44d7336…`). Migration 006 was applied **exactly once, to the shared production database, by the API pre-deploy runner** on 2026-08-28; the API, worker, and scheduler were then **separately deployed at the target commit**. A migration is applied to a database, not to a service — the three services share one database and none of them ran the migration except the API's pre-deploy step. The tables are correctly empty until an authorized operator runs `evidence:sync`, which has not yet happened.
@@ -506,7 +538,7 @@ Documents reconciled after merge: `README.md`, `docs/AI_HANDOFF.md`, `docs/ARCHI
 
 **PR / merge / ancestry.** PR #54, *"feat: reconcile the Content Intelligence payload contract"*. Base `a000557e4910d84e001d3be9078630542d21bb42`; reviewed head `0362e354bc942416c640e93d403c537421a184e3`; merge commit `0c13ab1af9c7ca796a1d48ed37207715a47166e4`, merged 2026-09-04. The merge commit's **ordered parents are exactly the recorded base then the exact reviewed head** — first parent `a000557e…`, second parent `0362e354…` — verified by direct Git inspection. These are historical, immutable identifiers.
 
-**The prerequisite is satisfied in repository state.** Every stage listed in the seven numbered requirements above is now delivered on `main`. That satisfies the gate this reconciliation was defined to be; it establishes nothing about production. The next product cursor is a **separately reviewed production-wiring design** — named here and, *as of PR #54*, neither designed nor begun. (This is the durable record of PR #54; the draft design in PR #56 was written afterwards and did not exist at this merge.) Performance ingestion, governed learning, and the proposed future Google Business Profile expansion remain later work and are not begun by this reconciliation.
+**The prerequisite is satisfied in repository state.** Every stage listed in the seven numbered requirements above is now delivered on `main`. That satisfies the gate this reconciliation was defined to be; it establishes nothing about production. The next product cursor is a **separately reviewed production-wiring design** — named here and, *as of PR #54*, neither designed nor begun. (This is the durable record of PR #54; the design was written afterwards, in PR #56, and did not exist at this merge. It has since been accepted and merged — see its own record below.) Performance ingestion, governed learning, and the proposed future Google Business Profile expansion remain later work and are not begun by this reconciliation.
 
 **The production evidence-data audit, and who ran it.** Before any database bound was chosen, an **operator ran** an aggregate-only, read-only audit against the production database through Render's read-only query capability (`gcd-social-db` / `gcd_social`, PostgreSQL 18, 2026-09-02, read-only transactions). It was **run independently by the operator and not from an agent session**; no database credentials were requested or received, and no raw claim text, subject text, PII, or credential value was retrieved. Results: `_migrations`, `content_evidence` and `content_evidence_relations` all exist; `content_evidence` **0 rows**; `content_evidence_relations` **0 rows**; blank-claim rows 0; blank-subject rows 0; rows carrying `detail` JSON 0; relations carrying notes 0; the aggregate length query returned no populated values because both tables are empty.
 
@@ -520,7 +552,7 @@ Documents reconciled after merge: `README.md`, `docs/AI_HANDOFF.md`, `docs/ARCHI
 
 **Every guard equals its producer's ceiling.** Nine adjacent producer/consumer pairs (Stage 1 → 2 and 3, Stage 2 → 3, Stage 3 → 4, 5 and 6, Stage 4 → 5 and 6, Stage 5 → 6). Regressions assert **equality**, not sufficiency: a guard above its producer's ceiling would hide a later contract change instead of failing on it, and a guard below it would refuse a structurally valid handoff.
 
-**Evidence bounds, cardinalities, and the migration pair.** `EVIDENCE_LIMITS` retains the documented text numbers and applies them as both characters/code units and UTF-8 bytes. Every record is revalidated at the real pack builder, durable-row reconstruction, pack projection, and shared pre-model boundaries, so a hand-built pack or malformed database row cannot bypass the owning record contract. `maxProjectedRecords` is an executed 64-record builder contract, not only a derivation input. Exhaustive conflicts have an independent 64-entry consumer contract: 64 valid same-subject/same-attribute facts still produce all 2,016 pairs, after which the real renderer and shared pre-model boundary refuse the intact pack. No conflict is discarded. `detail` is one compatible 4,000-byte PostgreSQL-canonical `jsonb::text` contract; TypeScript conservatively accounts for JSONB formatting and numeric expansion, including the 327-byte canonical representation of the signed finite value `-5e-324`. Relation notes use the 500 bound at TypeScript relation consumption/read boundaries. Migration 007 rejects NULL tag elements and uses the uniquely versioned `gcd_content_evidence_tags_within_v007` helper with plain `CREATE`, so an exact-name collision fails without overwriting an unrelated function. Disposable PostgreSQL 16 and 18 each pass apply, enforcement, documented rollback, compiled reapply, and collision-refusal coverage. **Neither migration 007 nor its rollback has been applied to production.** Applying either remains separately authorized.
+**Evidence bounds, cardinalities, and the migration pair.** `EVIDENCE_LIMITS` retains the documented text numbers and applies them as both characters/code units and UTF-8 bytes. Every record is revalidated at the real pack builder, durable-row reconstruction, pack projection, and shared pre-model boundaries, so a hand-built pack or malformed database row cannot bypass the owning record contract. `maxProjectedRecords` is an executed 64-record builder contract, not only a derivation input. Exhaustive conflicts have an independent 64-entry consumer contract: 64 valid same-subject/same-attribute facts still produce all 2,016 pairs, after which the real renderer and shared pre-model boundary refuse the intact pack. No conflict is discarded. `detail` is one compatible 4,000-byte PostgreSQL-canonical `jsonb::text` contract; TypeScript conservatively accounts for JSONB formatting and numeric expansion, including the 327-byte canonical representation of the signed finite value `-5e-324`. Relation notes use the 500 bound at TypeScript relation consumption/read boundaries. Migration 007 rejects NULL tag elements and uses the uniquely versioned `gcd_content_evidence_tags_within_v007` helper with plain `CREATE`, so an exact-name collision fails without overwriting an unrelated function. Disposable PostgreSQL 16 and 18 each pass apply, enforcement, documented rollback, compiled reapply, and collision-refusal coverage. **Whether migration 007 or its rollback has been applied to production is `UNKNOWN` in either direction.** Repository state is not production evidence; the only dated observation is the 2026-08-28 read-only reading of `_migrations` at `001–006`, and the current state requires fresh read-only verification. Applying either remains separately authorized.
 
 **Output contracts reconciled with token budgets.** The ordinary-prose estimate is gone. Every bounded output string must fit both its code-unit allowance and the same numeric UTF-8 byte allowance. The escaping-aware transport ceiling is therefore also a serialized UTF-8 byte ceiling, and a lossless worst case of one token per byte covers every contract-valid output, including adversarial non-ordinary text. The derived policy budgets are `reasoning-heavy` 40,000, `reasoning-standard` 79,000, and `critic` 73,000, replacing 4,000 / 3,000 / 2,000. Anthropic Opus 5 adaptive thinking shares the request's `max_tokens`; the centralized typed stage policy therefore sends `thinking: { type: "disabled" }` explicitly so the full derived ceiling is available to visible JSON. Model selection, budgets, thinking, and the documented 128,000-token caps stay centralized in `modelPolicy.ts`; legacy `runAgent` callers and `runVision` retain their prior behavior. No tokenizer or provider is contacted and no stage names a model.
 
@@ -554,11 +586,11 @@ The two bounds are now separate values with separate names, and the second is en
 
 **The throughput floor, described honestly.** Twenty output tokens per second is an **explicit operational assumption and safety policy**, not a measurement and not a guarantee: this repository holds no measurement of a real model rate, because no test here reaches one and no production caller exists, so there is nothing in repository evidence to measure (whether any executor was ever invoked against a real model outside this repository is **UNKNOWN / NOT ESTABLISHED**), and the earlier claim that observed model rates are several times it has been removed rather than substantiated. The derivation comment now also records the budgets the policies actually carry — 40,000 / 79,000 / 73,000 — in place of stale 8,000 / 15,000 / 15,000 figures that survived an earlier round of budget changes; a regression compares that comment against `POLICY_MAX_TOKENS` so it cannot go stale again silently.
 
-**Regressions.** `CC1`–`CC81` retain the original derivation, adjacency, dormancy, and no-provider proofs and add the exact production Anthropic request with thinking disabled, the exact 4,000/4,001 JSONB edges, the signed `-5e-324` counterexample, TypeScript relation-note parity, the real 64-record/2,016-conflict builder and renderer path, record validation at builder and pre-model boundaries, durable-row reconstruction refusal, executed record cardinality, adversarial multibyte output, collision-safe helper creation, and NULL-tag rejection. `npm run test:payload-mutation` now applies thirty-three focused mutations across nine files, requires named failures rather than crashes, restores every byte by SHA-256, and finishes green. The thinking request, signed JSONB numeric measure, pack record validation, record/conflict cardinalities, canonical-detail measure, relation bound, UTF-8 output bound, NULL-tag rule, and no-overwrite helper rule each have independent mutation evidence.
+**Regressions.** `CC1`–`CC81` retain the original derivation, adjacency, dormancy, and no-provider proofs and add the exact production Anthropic request with thinking disabled, the exact 4,000/4,001 JSONB edges, the signed `-5e-324` counterexample, TypeScript relation-note parity, the real 64-record/2,016-conflict builder and renderer path, record validation at builder and pre-model boundaries, durable-row reconstruction refusal, executed record cardinality, adversarial multibyte output, collision-safe helper creation, and NULL-tag rejection. `npm run test:payload-mutation`, **as delivered by that merge**, applied thirty-three focused mutations across nine files, requiring named failures rather than crashes, restoring every byte by SHA-256, and finishing green. It has since been extended — see [Testing](TESTING.md) for the current count. The thinking request, signed JSONB numeric measure, pack record validation, record/conflict cardinalities, canonical-detail measure, relation bound, UTF-8 output bound, NULL-tag rule, and no-overwrite helper rule each have independent mutation evidence.
 
 **Testing.** At the corrected head, `test:content-intelligence` reports **969** passing checks and the routine eight-suite offline sequence reports **1,367 assertions**. The combined output contains **1,254** `PASS`-prefixed lines from posting (52), image (18), orchestrator (108), gate (56), API (51), and content-intelligence (969). Render-identity reports one invariant-suite pass and ownership/recovery reports 112 checks in summary form, bringing the eight-suite total to **1,367**. Counting `PASS`-prefixed lines alone therefore omits those two suites and understates the total. The PostgreSQL suite reports **208 checks per server** (fresh 59, upgrade 80, durable 69) and passed locally on PostgreSQL 16.15 and 18.6. Every model call uses an injected fake runner. The complete validation contract, exact-head GitHub matrix, and final empirical statistics are recorded in PR #54; no provider, production database, or Render service is involved.
 
-**Limitations, stated rather than implied.** One token per serialized UTF-8 byte is a deliberately loose worst-case ceiling, not a measured tokenizer distribution. The `EVIDENCE` ceiling deliberately over-approximates 64 maximum records plus 64 maximum conflict entries; packs with more conflicts fail closed intact. Stage 5 still over-approximates caption and hashtag content separately although the provider-visible rule makes them share one allowance. The JSONB detail upper bound may reject a TypeScript value PostgreSQL would fit, but never accepts one PostgreSQL rejects. Database coverage is disposable only; migration 007 has **not** run in production. No bound has been validated against a real model, real workload, or populated production table.
+**Limitations, stated rather than implied.** One token per serialized UTF-8 byte is a deliberately loose worst-case ceiling, not a measured tokenizer distribution. The `EVIDENCE` ceiling deliberately over-approximates 64 maximum records plus 64 maximum conflict entries; packs with more conflicts fail closed intact. Stage 5 still over-approximates caption and hashtag content separately although the provider-visible rule makes them share one allowance. The JSONB detail upper bound may reject a TypeScript value PostgreSQL would fit, but never accepts one PostgreSQL rejects. Database coverage is disposable only and is not production evidence: whether migration 007 has run in production is **`UNKNOWN` in either direction** and requires fresh read-only verification. No bound has been validated against a real model, real workload, or populated production table.
 
 **The count corrections that followed the last review round.** A review found the mutation harness described as spanning **ten** files in four active documents — `docs/ROADMAP.md`, `docs/TESTING.md`, `docs/STATUS.md` and `docs/AI_HANDOFF.md` — when it spans **nine** distinct physical paths. The figure is enumerated from the `MUTATIONS` array rather than recalled: 33 entries naming nine file constants, each resolving to one of `payloadContract.ts`, `modelPolicy.ts`, `finalCritic.ts`, `packagingAdaptation.ts`, `stageExecution.ts`, `evidence/pack.ts`, `evidence/contract.ts`, `sdk.ts`, and `007_evidence_bounds.sql`. All four were corrected, and a sweep for equivalent stale counts also found the harness's own header calling them *"the two files that must agree with it"* — true when the script covered three files, and eight since the semantic and request-policy mutations were added; it was corrected in the same change. No historical count describing an earlier harness version existed, so none was preserved or rewritten. That correction changed no implementation, test, migration, limit, or mutation definition: five single-line edits, four in Markdown and one in a comment.
 
@@ -566,25 +598,467 @@ The two bounds are now separate values with separate names, and the second is en
 
 **Security and privacy implications.** Every control this reconciliation adds fails **closed** and before any model boundary. Record and conflict cardinalities are independently enforced; evidence records are revalidated at pack construction, durable-row reconstruction, pack projection, and the shared pre-model boundary, so neither a hand-built pack nor a malformed direct-database row can bypass the owning contract. A conflict's `aClaim`, `bClaim` and `subject` must be exact snapshots of records the pack holds, which closes a path by which text no record ever made could have reached a model through the exclusion list rather than through a citation. Output text is byte-bounded, so the worst-case token proof covers adversarial non-ordinary text, and the centralized policy disables adaptive thinking because it shares `max_tokens`. Nothing became reachable: no `executionEnabled` changed, and no route, worker wiring, scheduler, retry, repair call, model tool, approval authority, publishing authority, or provider contact was added. A nonempty `ANTHROPIC_API_KEY` still causes no provider call — an injected runner or injected stream remains the only path to a model, asserted by regression. No credential, prompt, evidence text, model prose, or unpublished content is logged by any boundary this change touches, and no database credential was requested or received at any point in the work.
 
-**Unresolved follow-ups.** Migration 007's application to production, under the separate authorization, audit, rollout, and verification recorded below. The separately reviewed production-wiring design, which is the next cursor and which, *as of PR #54*, was not begun. (A first draft of it was written afterwards, in PR #56, and is unaccepted, unmerged, and unimplemented; it did not exist at this merge and it authorizes nothing.) Everything already open elsewhere in this roadmap is unchanged by this merge: the provider operation ledger and reconciliation, PostgreSQL network restriction, token lifecycle, control/reviewer identity, retention and backup/restore, the external readiness register, and the deployment-authority cutover proof.
+**Unresolved follow-ups.** Migration 007's application to production — its live application state is **`UNKNOWN` in either direction**, so unless fresh read-only verification establishes that it has already been applied, application requires the separate authorization, audit, rollout, and verification recorded below. The separately reviewed production-wiring design, which is the next cursor and which, *as of PR #54*, was not begun. (It was written afterwards, in PR #56, and has since been accepted and merged as design while remaining unimplemented — see its own record below. It did not exist at this merge, and neither its writing nor its acceptance authorizes anything.) Everything already open elsewhere in this roadmap is unchanged by this merge: the provider operation ledger and reconciliation, PostgreSQL network restriction, token lifecycle, control/reviewer identity, retention and backup/restore, the external readiness register, and the deployment-authority cutover proof.
 
 **Exact-head CI and independent reinspection.** The final reviewed head `0362e354bc942416c640e93d403c537421a184e3` passed all five GitHub CI jobs — Node 22 offline quality gates, PostgreSQL 16 integration, PostgreSQL 18 integration, AgentShield 1.4.0, and Workflow and YAML static validation — in run `33776745879`, whose recorded `head_sha` is that exact head. The two preceding reviewed heads were each independently reinspected and each returned blocking findings that were corrected rather than argued: `54e409e…` was found to carry a semantic validator that rejected the conflict packs the builder actually produces and a derived deadline that did not bound the stream it was named for; `3cfff64…` was found to overstate the harness file count. Both rounds are recorded above. That is repository validation for a dormant change — **not** deployment or production evidence.
 
 **Explicit non-actions.** Nothing was enabled, deployed, approved, scheduled, or published. No production SQL was applied, no migration was run, no `evidence:sync` was run, no Render or GitHub variable or settings change was made, no brief was created, no automation was enabled, no content was approved, and no provider or model call was made — every test used an injected runner. No production route, worker wiring, scheduler, retry, repair call, model tool, approval authority, or publishing authority was added. PR #39 was left untouched.
 
-**Rollback / recovery status.** Rollback is to revert merge commit `0c13ab1af9c7ca796a1d48ed37207715a47166e4`, which removes the reconciliation in one step. No database, Render, provider, approval, publication, or production cleanup is required, because none was introduced: the merge applied no migration, and added no route, environment variable, credential, dependency, lockfile change, workflow change or `render.yaml` change, and changed no `executionEnabled` field. Migration 007 is **in source and unapplied**, so reverting the merge removes a file rather than unwinding a schema. If 007 is ever applied and must be reversed, `state/rollback/007_evidence_bounds_rollback.sql` is the documented operation, applied by hand under its own authorization — note that it relaxes the database only: the TypeScript contract still refuses an oversized record, so the system continues to fail closed.
+**Rollback / recovery status.** Rollback is to revert merge commit `0c13ab1af9c7ca796a1d48ed37207715a47166e4`, which removes the reconciliation in one step. No database, Render, provider, approval, publication, or production cleanup is required, because none was introduced: the merge applied no migration, and added no route, environment variable, credential, dependency, lockfile change, workflow change or `render.yaml` change, and changed no `executionEnabled` field. Migration 007 is **in source**, and **whether it is applied in production is `UNKNOWN` — not established in either direction**. If it is unapplied, reverting the merge removes a file rather than unwinding a schema; if it has been applied, reverting the merge removes the file while leaving the schema changed, which is a database question and not a revert. **Establish which case holds, read-only, before reverting.** If 007 is ever applied and must be reversed, `state/rollback/007_evidence_bounds_rollback.sql` is the documented operation, applied by hand under its own authorization — note that it relaxes the database only: the TypeScript contract still refuses an oversized record, so the system continues to fail closed.
 
-**Migration 007 is unapplied, and merging it granted no authority to apply it.** Before `state/migrations/007_evidence_bounds.sql` may reach production it needs, separately and in order: its own explicit authorization; a fresh read-only production audit establishing that the immediately validated constraints can pass against the data actually stored (the 2026-09-02 audit is a **dated** fact, not a standing one); the separately authorized migration-bearing rollout procedure rather than the ordinary controller path, with exactly one migration runner and no schema-dependent consumer racing it; and post-application verification. None of that is performed or authorized by this merge.
+**Migration 007's applied state in production is `UNKNOWN` — not established in either direction — and merging it granted no authority to apply it.** Before `state/migrations/007_evidence_bounds.sql` may reach production it needs, separately and in order: its own explicit authorization; a fresh read-only production audit establishing that the immediately validated constraints can pass against the data actually stored (the 2026-09-02 audit is a **dated** fact, not a standing one); the separately authorized migration-bearing rollout procedure rather than the ordinary controller path, with exactly one migration runner and no schema-dependent consumer racing it; and post-application verification. None of that is performed or authorized by this merge.
 
 **Documents updated at completion.** In the implementing pull request — `README.md`, `docs/ARCHITECTURE.md`, `docs/ROADMAP.md`, `docs/STATUS.md`, `docs/TESTING.md`, and `docs/AI_HANDOFF.md`. In the post-merge reconciliation that added this durable record — all of the above plus `docs/DATA_MODEL.md` and `docs/SECURITY_AND_CONTINUITY.md`.
 
-**Next: a separately reviewed production-wiring design.** It follows this reconciliation and does not precede it; neither is a new phase number, and no stage may be enabled before that design is separately reviewed and accepted. **A first draft of that design now exists in PR #56**, as [`docs/PRODUCTION_WIRING_DESIGN.md`](PRODUCTION_WIRING_DESIGN.md) — **open, draft, unaccepted, unmerged, and unimplemented**, and **a design only**: it implements no wiring, enables nothing, applies no migration, and **authorizes neither implementation nor operations**. No production wiring, deployment, enablement, migration application, or production validation has occurred. Its load-bearing finding is that `executionEnabled` is currently a declarative registry field that no execution path consults, so today's dormancy rests on there being no caller and no default runner rather than on the flag. Performance ingestion, governed learning, and the proposed future Google Business Profile expansion all remain later work, in that order, and none of them is begun here. Deployment-authority work remains an independent track and must not be combined with any of them.
+**Next, as of this merge: a separately reviewed production-wiring design.** It follows this reconciliation and does not precede it; neither is a new phase number, and no stage could be enabled before that design was separately reviewed and accepted. **That design has since been accepted and `MERGED` through PR #56**, as [`docs/PRODUCTION_WIRING_DESIGN.md`](PRODUCTION_WIRING_DESIGN.md) — recorded in its own section below. It remains **`UNIMPLEMENTED`** and is **a design only**: it implements no wiring, enables nothing, applies no migration, and **authorizes neither implementation nor operations**. No production wiring, deployment, enablement, migration application, or production validation has occurred. Its load-bearing finding is that `executionEnabled` is currently a declarative registry field that no execution path consults, so today's dormancy rests on there being no caller and no default runner rather than on the flag. Performance ingestion, governed learning, and the proposed future Google Business Profile expansion all remain later work, in that order, and none of them is begun here. Deployment-authority work remains an independent track and must not be combined with any of them.
+
+## Production-wiring design — `MERGED` as accepted design (PR #56), `UNIMPLEMENTED`
+
+**State:** **`MERGED`** as **accepted repository design** — and **`UNIMPLEMENTED`**. Not a new phase
+number. **Accepted means exactly one thing: [`docs/PRODUCTION_WIRING_DESIGN.md`](PRODUCTION_WIRING_DESIGN.md)
+is present on `main` as this repository's accepted production-wiring design.** It does **not** mean
+production wiring is implemented, and it authorizes **no** implementation PR and **no** operator
+milestone. **None of the eight implementation PRs (P1–P8) exists; none of the seven operator
+milestones (M1–M7) has been performed**, M4's five acts included. The merge establishes **no**
+deployment, production validation, database readiness, migration application, executor enablement,
+model execution, approval, or publication. No stage's `executionEnabled` changed; all six remain
+`false`, and no production path reaches any of them. **Production evidence: none.**
+
+**PR / merge / ancestry.** PR #56, *"docs: add the production-wiring design as a reviewable
+document"*. Base `e6f9b0275fc25f0c508708f5e421a474daeebbae`; reviewed head
+`42f83a122910981f6af3bc9b9024d27ac8b839ff`; merge commit
+`53e2c2bb6115e457670c1f99956d11a1a54530cd`, merged 2026-09-08. The merge commit's **ordered parents
+are exactly the recorded base then the exact reviewed head** — first parent `e6f9b027…`, second
+parent `42f83a12…` — verified by direct Git inspection. These are historical, immutable identifiers.
+
+**Documentation-only scope, with empirical statistics.** `6 files changed, 1724 insertions(+), 19
+deletions(-)` across 10 commits: `docs/PRODUCTION_WIRING_DESIGN.md` new at **1,702 lines**, plus
+one-line and few-line status reconciliations in `README.md`, `docs/AI_HANDOFF.md`,
+`docs/ARCHITECTURE.md`, `docs/ROADMAP.md`, and `docs/STATUS.md`. **Every changed path ends `.md`.** No
+source, test, migration, workflow, dependency, lockfile, configuration, `render.yaml`, agent, skill,
+or prompt file changed.
+
+**Accepted design boundaries.** The design's own boundary statements are what was accepted, and they
+are narrow: it implements nothing, enables nothing, deploys nothing, applies no migration, contacts no
+provider, and publishes nothing. It grants no authorization. **Each implementation PR and each
+operator milestone still requires its own review, its own explicit authorization, and its own
+evidence**, and no single approval covers more than the one unit it names. Every live Render and
+database fact it discusses remains **`UNKNOWN` unless separately verified** — a merged document is
+repository evidence, never production evidence.
+
+**The load-bearing finding.** `executionEnabled` is a *declarative registry field that no execution
+path consults*: `invokeStage` never reads it, nor does any of the six executor modules; its only
+consumer is `assertPreviewIsInert`, which keeps the preview inert. **Today's dormancy therefore rests
+on two structural facts — no production caller, and no default runner — not on the flag.** An
+implementer who treats the flag as the safety mechanism would build on something that is not load-bearing.
+
+**Sequence, and the counts that define it.** **Eight implementation PRs (P1–P8)** and **seven
+operator milestones (M1–M7)** — different kinds of thing, numbered separately: a PR is reviewed and
+merged, a milestone is performed by an authorized operator and produces an evidence record, not a
+diff. **Every source change is a numbered PR, including the one that activates the stages (P8).** M4
+is one milestone comprising **five separately authorized single-control acts (M4.1–M4.5)**; those
+acts are not additional milestones. **Five enforcement checkpoints** are owned by named PRs:
+**C1 → P3**, **C2 → P2**, **C3 → P2**, **C4 → P5**, **C5 → P6**.
+
+**Six controls that must never be collapsed.** The design separates, as independent controls:
+**registry activation** (`executionEnabled`, moved by P8 and deployed by M3); the **runtime authority
+gate** (durable `OFF`/`SHADOW`/`LIVE`, whose effective mode is the *lower* of the gate, the
+deployment-time ceiling `CONTENT_INTELLIGENCE_MAX_AUTHORITY`, and any grant's `max_authority`);
+**manual dispatch** (layer 4a — ceiling `CONTENT_INTELLIGENCE_MANUAL_DISPATCH_ENABLED`, plus a
+bounded, expiring, transactionally consumed grant, so a ceiling without a grant starts nothing);
+**scheduled/queue dispatch** (layer 4b — ceiling `CONTENT_INTELLIGENCE_SCHEDULED_DISPATCH_ENABLED`,
+owned by **worker and scheduler only**); **approval** (checkpoint C4, api); and **publication**
+(checkpoint C5, worker). The two dispatch ceilings are deliberately separate variables. **No act
+changes more than one control** — which is why M3 (registry activation) and M4.1 (authority ceiling)
+are separate acts with separate deployments. **Scheduled dispatch implies neither approval nor
+publication.**
+
+**Migration 007 / 008 ordering.** **M1 applies 007 first**, while `main` still carries no migration
+beyond it, and **P1 must not merge before M1** — that is M1's protecting invariant, not a
+convenience. P1 then introduces migration **008** with the control plane and grant schema, and **M2**
+is the migration-bearing release that applies 008. The design is explicit that 007's application is
+neither authorized nor established by anything in it.
+
+**API `preDeployCommand` is the only migration authority.** `render.yaml` gives
+`preDeployCommand: npm run migrate` to `gcd-social-api` **and to no other service**, and the standing
+rule in [`ROLLOUT_PHASE_0B0.md §5`](ROLLOUT_PHASE_0B0.md) forbids running `npm run migrate` by hand or
+applying the SQL through `psql`. The consequence is load-bearing and easy to get wrong: **applying a
+migration *is* an API deployment**, not a standalone database operation. The runner
+(`src/state/migrate.ts`) is forward-only and **sweeps every pending file in lexical order** — there is
+no per-file selector — so the authorized set must be established before the deployment, never assumed
+from intent.
+
+**Complete migration-state validation, not pending-only.** The preflight compares the **whole applied
+state**, not just what is pending: the migration files at the artifact commit `F(A)`, the `_migrations` rows
+`D`, and the computed pending set `P = F(A) − D`, against four expected sets (`E_files`,
+`E_applied_pre`, `E_pending`, `E_applied_post`) under **seven conditions**. The reason is exact: a
+pending-set difference **cannot see an unexpected already-applied migration**, because such a file
+cancels out of `F(A) − D` and leaves the pending set looking correct. The operator record is in **two
+timed parts** — Part 1, the pre-deployment record, completed and passing **before** the deployment is
+triggered; Part 2, the post-deployment closure (`D_post`, the comparison outcome, and the
+validation-versus-rollback decision), completed **after** it, without which the milestone is not
+complete.
+
+**A/L deployment ancestry.** For any api deployment in this rollout, with `A` the artifact commit and
+`L` the live api commit **read immediately before**: allow `A == L`, or `L` an ancestor of `A`;
+**reject** `A` a proper ancestor of `L` (a runtime rollback) and mutual non-ancestry (divergence);
+**stop** if `L` cannot be obtained. Equality is tested **first**, because `git merge-base
+--is-ancestor` is reflexive and would otherwise mask the same-commit case. `L` is read, never inferred
+from repository ordering.
+
+**Rollback-artifact compatibility is an entry gate, not an assumption.** M1's recovery path redeploys
+the previously live image **while leaving 007 applied** — old code against a newer schema. Before M1
+may be authorized, the rollback artifact `R` (normally the pre-M1 live api artifact, i.e. `L`, named
+by full SHA) must be **proven** compatible by executed evidence against a disposable database migrated
+through 007, on **PostgreSQL 16 and 18**: startup and readiness, every production-reachable read,
+every production-reachable write path, values at and around each new constraint, ordinary existing
+rows, and restart behaviour. **"Additive", "`NOT VALID`", and "the old image starts" are explicitly
+not compatibility evidence.** If compatibility cannot be established, redeploying `R` is not an
+authorized recovery action and M1 must not begin.
+
+**Partial-release handling.** When `A ≠ L`, M1 deliberately advances the api ahead of the worker and
+scheduler, creating exactly the service-identity mismatch the automated controller treats as
+`PARTIAL_RELEASE_STATE` and refuses to release from. M2 therefore proceeds from a deliberately partial
+state and is executed as an **explicitly authorized manual departure from the controller**, carrying
+every obligation the controller would otherwise enforce, and it closes the interval by bringing all
+three services to one commit with `/healthz` plus durable readiness evidence.
+
+**Same-commit `preDeployCommand` behaviour remains `UNKNOWN`.** Whether an api deployment requested at
+a commit equal to the live one re-invokes `preDeployCommand` is **not established in either
+direction**, and the design says so rather than guessing. On the `A == L` path the controller confirms
+all three services at target and then **deploys nothing**, so obtaining the migration run requires
+requesting an api deployment anyway — a deliberate, explicitly authorized departure. If the equality
+path may be used, that behaviour must be confirmed first.
+
+**M7 service ownership.** M7 is three separate single-control acts with **different service targets**:
+**M7-a** (`CONTENT_INTELLIGENCE_MAX_AUTHORITY` `SHADOW` → `LIVE`, **worker and api**) is a real api
+deployment and takes the full §4.4.2 preflight and both record parts; **M7-b**
+(`CONTENT_INTELLIGENCE_SCHEDULED_DISPATCH_ENABLED`, **worker and scheduler only**) restarts no api and
+takes no migration gate; **M7-c** is a control-plane row, not a deployment. After M7, manual dispatch
+requires a **new** separately authorized bounded grant — M7 issues none.
+
+**Material alternatives rejected.** *Treating `executionEnabled` as the dormancy guarantee* was
+rejected on read evidence that no execution path consults it. *Validating only the pending set before
+a migration-bearing deployment* was rejected because an unexpected already-applied migration cancels
+out of the pending difference and is invisible to it. *Running `npm run migrate` standalone, or
+applying the SQL through `psql`*, was rejected as prohibited by the standing rule and by there being
+one migration authority. *Inferring the live commit `L` from repository ordering, or assuming `A == L`*
+was rejected — `L` is read immediately before, or the milestone stops. *Testing ancestry before
+equality* was rejected because `--is-ancestor` is reflexive and would mask the same-commit case.
+*Accepting "additive", "`NOT VALID`", or "the old image starts" as rollback-compatibility evidence*
+was rejected: none establishes that `R`'s **writes** are still accepted. *One combined dispatch
+control* was rejected because it would make a scheduled run reachable by way of enabling a manual one.
+*Combining registry activation with the authority ceiling in one act* was rejected under the
+one-control-per-act rule. *A single approval covering the whole rollout* was rejected: authorization is
+per named PR and per named milestone. *Recording the operator's post-deployment readings in the
+pre-deployment step* was rejected as a sequence no operator can perform. *A new Render service* was
+rejected in favour of existing infrastructure. *Beginning the GBP expansion alongside this work* was
+rejected outright.
+
+**Security and privacy implications.** The design adds nothing executable, so it changes no live
+attack surface; its security content is in what it refuses to allow later. Every proposed gate fails
+**closed**: an absent, unreadable, or unrecognized authority value is `OFF`; the effective mode is the
+*lower* of ceiling, gate and grant; a manual grant is bounded, expiring, and consumed transactionally
+in the same transaction that creates the run row, so two simultaneous submissions against
+`runs_remaining: 1` yield exactly one accepted run; approval (C4) and publication (C5) are refused
+until the gate reaches `LIVE` and remain independent controls even then. The proposed authority gate
+sits **in front of — never instead of —** the existing Phase 0A approval gate, which is unchanged.
+**Content integrity of applied migrations is not verifiable at all**: `_migrations` stores
+`name text PRIMARY KEY` and `applied_at`, with **no checksum column**, so identifiers are verifiable
+and contents are not — the design states this limitation rather than implying integrity it cannot
+prove. No credential was requested or received at any point, no production database or Render state
+was inspected, and the document contains no secret, token, credential, customer datum, or raw
+analytics value.
+
+**Automated validation and exact-head CI.** At the reviewed head `42f83a12…`: `npm ci` with 0
+vulnerabilities, typecheck, build, the **eight offline suites ALL PASS (1,367 assertions)**, **33
+payload-contract mutations ALL PASS** with byte-for-byte restoration across exactly 9 target files,
+final rebuild, disposable **PostgreSQL 16 — 208 checks** (fresh 59, upgrade 80, durable 69), simulated
+dry run, deployment-controller fixtures, Markdown links, environment coverage (35 variables),
+credential/PII scan, `npm audit --omit=dev` with 0 production vulnerabilities, YAML parse, AgentShield
+**grade A (93/100)**, and `git diff --check` clean. **Exact-head CI: run `34272982709` — all five jobs
+`success`, each on attempt 1, every one reporting `head_sha` `42f83a12…`**: Node 22 offline quality
+gates, PostgreSQL 16 integration, PostgreSQL 18 integration, AgentShield 1.4.0, and Workflow and YAML
+static validation. Every model call in every suite used an injected fake runner. **That is repository
+validation for a documentation-only change — not deployment, not production validation.**
+
+**Independent review before acceptance.** The document was corrected in place across **nine rounds of
+independent inspection**, on the same branch, with no replacement PR and no rewritten history. The
+corrections were substantive, and each is now part of the accepted design rather than an artifact of
+review: the **complete migration-state contract** replaced a pending-set-only check once the
+cancelling-out defect was identified; the **A/L ancestry predicate** was generalized from M1 to every
+api deployment in the rollout and reordered to test equality first; the **rollback-artifact
+compatibility gate** was added after "additive" was found to be doing work it cannot do; the
+**migration-versus-deployment contradiction** was resolved once `preDeployCommand` was confirmed as
+the sole migration authority; **M3/M4 were split into single-control acts** and **M7 into three acts
+with distinct service targets**; the **partial-release interval** M1 creates was named and its
+controller departure labelled; **same-commit `preDeployCommand`** was recorded as `UNKNOWN` rather
+than assumed; and the **operator record was split into a pre-deployment Part 1 and a post-deployment
+Part 2** after a reviewer showed the single-step version described a sequence no operator can perform.
+Two of those rounds were opened by findings against the reviewer's own prior corrections, and both
+were corrected rather than argued. The full round-by-round diff history is preserved in PR #56.
+
+**Rollback / recovery status.** Rollback of this documentation change is to revert merge commit
+`53e2c2bb6115e457670c1f99956d11a1a54530cd`, which removes the design document and the status
+reconciliations in one step. **No database, Render, provider, approval, publication, or production
+cleanup is required, because none was introduced** — the merge applied no migration and changed no
+source, workflow, dependency, configuration, `render.yaml`, or `executionEnabled` value. Reverting it
+removes an accepted design; it unwinds no operational state, because none was created.
+
+**Production evidence: none.** No production database was inspected, queried, mutated, or
+credentialed; no Render service was inspected; no provider or model was contacted; `evidence:sync` was
+not run. The only production evidence anywhere near this work remains the operator's **dated**
+2026-09-02 aggregate read-only audit recorded under PR #54, which is a dated observation and not a
+statement about now.
+
+**Unresolved questions carried forward by the accepted design.** Live Render service versions, health,
+and control settings; **`L`, the commit each service currently runs**; whether a same-commit api
+deployment re-invokes `preDeployCommand`; whether the rollback artifact `R` tolerates the post-007
+schema; the contents of `_migrations` and of the production evidence tables; **whether migration 007
+has been applied — not established in either direction**; whether any executor has ever been invoked
+against a real model historically; whether a shadow run should build its evidence pack from
+`config/approved-facts.json` via the adapter or require `evidence:sync` to have populated
+`content_evidence` first; per-run and per-day cost ceilings and the behaviour on breach; whether one
+brief per day remains the right cadence once six stages run per brief; and retention for
+`content_intelligence_stage_results`. **Content integrity of applied migrations is not verifiable at
+all**, the migration table carrying no checksum.
+
+**Follow-up — the next cursor, stated narrowly.** The next action is **not** "implement production
+wiring" and is **not** the Google Business Profile expansion, which stays deferred. It is the accepted
+design's own **first prerequisite: a read-only verification of live production identity and database
+state** — the three service commits (which establishes `L`, and with it the candidate rollback
+artifact `R`), `/healthz`, the control settings, and **the complete migration-state evidence §4.4.2
+requires**: the full `_migrations` identifier set `D` **enumerated**, its row count recorded alongside
+its distinct-identifier count, and the artifact's migration files `F(A)` at the commit each service
+runs, so that `P = F(A) − D` and all **seven** §4.4.2 conditions can be evaluated rather than assumed.
+**Collecting the `_migrations` rows alone is not sufficient**, and neither is the pending set: an
+unexpected already-applied migration appears in both `F(A)` and `D` and cancels out of `P`, so the
+complete applied set must be validated in its own right against an expected inventory. This
+verification is **evidence only** — it is not the §4.1 aggregate audit, not the §4.2 decision record,
+not the rollback-artifact compatibility proof, and not M1; each of those remains its own separate gate
+requiring its own authorization. Performed by an authorized operator, read-only, and recorded as a
+dated observation. Everything else the design gates
+on depends on facts that verification produces. Only after it, and each under its own separate
+authorization, come: the **migration-007 aggregate read-only audit and its committed decision record**
+(§4.1–§4.2); **confirmation of same-commit `preDeployCommand` behaviour**, if the `A == L` path may be
+used; and **rollback-artifact compatibility planning and executed evidence** for `R`. **This
+reconciliation performs none of them, and M1 is not authorized.**
+
+**Documents updated at completion.** In the implementing pull request (PR #56) — `README.md`,
+`docs/AI_HANDOFF.md`, `docs/ARCHITECTURE.md`, `docs/ROADMAP.md`, `docs/STATUS.md`, and the new
+`docs/PRODUCTION_WIRING_DESIGN.md`. In this post-merge reconciliation — all ten
+documents it changes: `README.md`, `docs/AI_HANDOFF.md`, `docs/ARCHITECTURE.md`,
+`docs/DATA_MODEL.md`, `docs/PRODUCTION_WIRING_DESIGN.md`, `docs/ROADMAP.md`,
+`docs/SECURITY_AND_CONTINUITY.md`, `docs/STATUS.md`, `docs/TESTING.md`, and
+`docs/credentials-setup.md`. That reconciliation also carries three non-documentation paths,
+recorded in the next paragraph.
+
+**The reconciliation is not documentation-only, and is classified as migration-touching.** Alongside
+the ten documents it corrects three authoritative repository inputs that asserted what the
+documentation no longer asserts: the **comments** in `state/migrations/007_evidence_bounds.sql` and
+`state/rollback/007_evidence_bounds_rollback.sql`, which declared 007 *"has not been applied to
+production"*, and the `CC5` regression in `src/harness/contentIntelligence.selftest.ts`, which
+required those exact strings and would therefore have rejected a corrected comment. Both comments
+now state that 007's live application state is **`UNKNOWN` in either direction**, keep the
+2026-08-28 reading of `_migrations` at `001–006` as an explicitly dated observation, and require
+read-only verification and separate authorization. `CC5` no longer pins a sentence, no longer keys
+on qualifier keywords, and no longer splits prose on punctuation. It **tokenises** each file's
+comment prose once — reassembling hard wraps first, so a line break neither manufactures a fragment
+nor hides a declaration — and analyses **every** application predicate in place, making five
+judgements independently for that one predicate from its own tokens: its subject, or the contextual
+antecedent it modifies; its auxiliary/tense frame; its own proposition boundaries; the governing
+conditional or epistemic construction, if any; and whether what remains is a categorical
+current-state assertion. **No judgement is measured in characters, and no punctuation mark is a
+boundary by itself.** Within the **specifically tested bounded grammar**, a predicate declaring
+007's application state is refused **in either direction**: positive or negative, present, perfect or past, verbless elliptical (*"Not applied to
+production."*), contracted (*"isn't applied"*), bare past (*ran*, *never ran*) or emphatic (*did
+run*, *did not run*), in plain and contextual-*It* shapes, with or without the word *production*,
+with the auxiliary at any distance from its participle and across a parenthetical or comma-delimited
+aside, and finite application assertions remain categorical regardless of procedural wording
+following the verb or a `re-` prefix. **That grammar is bounded, not complete English:** past
+*remain*/*stay* declarations (*"remained unapplied"*, *"has stayed unapplied"*, and their
+contextual-*It* shapes) are **not** rejected, and are recorded as the accepted deferred issue
+**`CC5-SYNTAX-001`** in [`docs/KNOWN_ISSUES_AND_HARDENING.md`](KNOWN_ISSUES_AND_HARDENING.md).
+**Qualification must
+govern the proposition, which is a structural test rather than a vocabulary one.** A subordinator —
+*whether*, *if*, *after*, *once*, *when*, *whenever*, *before*, *until*, *unless* or *should* —
+counts only when it introduces the very clause the predicate heads: everything between it and the
+predicate must be that clause's own subject, matched against a whitelist, so the rule fails closed.
+**Every predicate is judged on its own**, so a subordinator cannot reach across a predicate it
+already governs and a governed proposition never covers for a categorical sibling. Conversely a
+governed proposition keeps its **own internal qualifiers** (*"Whether migration 007, after read-only
+verification, is applied remains `UNKNOWN` in either direction."*), because a comma pair or a
+parenthesis whose interior carries no finite verb is an interruption inside one proposition rather
+than the end of one. **The guarantee is deliberately narrow**: it recognises the supported
+authoritative-comment language of these two files and is not a claim of general natural-language
+understanding.
+
+Eight earlier forms did not meet that bar, and every one of them was found by independent review
+rather than by us. The first accepted a qualifier that merely **co-occurred** in the clause. The
+second accepted any subordinator that merely **preceded** the predicate, which let an unrelated
+introductory clause launder the assertion behind it (*"Before we verify, migration 007 is
+applied."*). The third stopped at the **earliest** predicate and allowed the whole clause once that
+one was governed, which let an authorized proposition carry a categorical sibling (*"Whether
+migration 007 is applied is UNKNOWN and migration 007 is applied."*); splitting on `and`/`but` would
+not have fixed it, since those conjunctions occur inside governed propositions too. The fourth
+exempted a **finite** occurrence claim whenever procedural manner or a `re-` prefix followed the
+verb, so *"Migration 007 was applied by hand to production."* and *"Migration 007 was re-applied to
+production."* passed; the exemption is now bound to the tense frame, and reaches only a genuinely
+non-assertive one. The fifth hunted the auxiliary inside a fixed **twenty-eight-character window**
+and treated every comma as a clause boundary, so *"Migration 007 has, according to the operator,
+been applied to production."* escaped while *"Whether migration 007, after read-only verification,
+is applied …"* was wrongly rejected; both are now decided structurally, by associating an auxiliary
+with its verb inside one proposition and by recognising an interruption for what it is. The
+epistemic statement (*"whether … is `UNKNOWN`"*), the dated observation, verification and
+authorization instructions, adjectival uses (*applied set*) and procedural uses in a non-assertive
+frame (*applied by hand*) remain allowed — each tested against the specific predicate rather than
+the whole sentence. The sixth recognised a balanced aside only when its interior carried no verb of
+its own, so a **subordinate** aside severed the outer frame it interrupts (*"Migration 007 has,
+after the report was signed, been applied."* read as a bare participle rather than a perfect
+assertion), and treated every coordinator as the end of a governor's reach, which wrongly rejected
+the authorized coordinated forms (*"Whether or not migration 007 has been applied is `UNKNOWN` in
+either direction."*, *"Whether migration 007 was applied or ran in production is `UNKNOWN` in either
+direction."*). A balanced pair opened by a subordinator is now an interruption even when it carries
+a finite verb — that verb belongs to the aside, and the aside's own subordinator governs nothing
+outside it — while a coordinator is stepped over only inside one governed proposition. **The
+seventh** was that correction's own limits, again found by independent review. Its opener list took
+a **single** token, so natural asides opened by a phrase (*even though*, *now that*, *provided
+that*) still severed the frame; commas were paired **greedily with the nearest** one, so two
+consecutive asides or a nested one left overlapping pairs a leftward walk fell back inside; the
+coordination gap admitted neither a **serial comma** (*was applied, ran, or was re-applied*) nor an
+interruption span of its own; and an imperative *do not run* was classified as a categorical do-
+support claim. Openers are now matched over one, two or three leading tokens; comma pairing prefers
+the **outermost** qualifying opener and resolves shared endpoints to that outermost start, so nested
+and consecutive asides are stepped over as one; the coordination gap admits serial commas and skips
+validated spans, while still refusing a new subject, an adversative, a bare imperative *do* or any
+other word; and bare *do*/*don't* with no subject of its own is read as an instruction, while *does*
+and *did* stay declarative and emphatic. Above all, **finite-frame recovery now fails closed and
+depends on no list at all**: `been applied` is not a proposition, so when the walk meets a comma it
+does not recognise while holding only a non-finite frame, it crosses that aside and keeps looking
+for the finite auxiliary rather than reading the participle as non-assertive. **The eighth** was a
+pairing bug in that same correction: an opening parenthesis was matched to the FIRST later `)`, so
+with nested parentheses the inner close was recorded as the outer one and the real outer close was
+left unmatched — a leftward walk then read it as a proposition boundary and *"Migration 007 has
+(according to the operator (per the audit)) been applied."* passed as a bare participle. Parentheses
+are now paired **by depth**, with a stack, so nested asides yield nested spans and no close is left
+dangling. **The ninth** was that same fix's own fail-open: recovery was also taught to **cross** an
+unmatched `)`, so one stray close bought a bypass outright — *"Migration 007 has, according to the
+operator) been applied to production."* left the whole suite exiting 0, because the walk skipped the
+`)`, halted at the noun `operator` before reaching the outer `has`, and read `been applied` as a bare
+participle; an authorized `UNKNOWN` sentence beside it changed nothing. An unmatched close is
+**malformed prose**, never an aside, so a depth scan of the normalized comment prose now fails `CC5`
+**structurally** on any `)` at depth zero, **before** any application predicate is classified, and the
+recovery-through-unmatched-close behaviour is **removed**. Balanced parentheses, single and nested,
+still pair by depth. The unmatched **opening** parenthesis remains explicitly **unclaimed**.
+
+**Two hundred and fifty-two mutations** in `npm run test:payload-mutation` prove it load-bearing
+in both directions: **two hundred and six prohibited** forms that must make `CC5` fail by name, and
+**forty-six authorized** forms that must leave the suite green, so an over-broad guard fails in CI
+rather than in review. That brings the harness to **two hundred and eighty-five mutations across ten
+target files** — **two hundred and thirty-nine prohibited** in total — enumerated from its own
+`MUTATIONS` array and run output rather than recalled. Of the prohibited forms, twenty-six are declaration and masking
+classes, fourteen introductory-clause and `ran`/`did run` classes against each file, twelve multi-
+proposition classes against each file, twenty-three token/proposition classes against each file
+(`M118`–`M163`), fourteen balanced-aside and coordinated-sibling classes against each file
+(`M174`–`M201`), sixteen natural-aside and instructional classes against each file (`M210`–`M241`),
+and **three NESTED-PARENTHESIS classes against each file** (`M242`–`M247`): a positive and a
+negative outer perfect frame split by nested parentheses, and a doubly nested contextual-*It* form.
+
+**What each correction is actually load-bearing for was measured, not assumed.** Against `c189d2b`,
+seventeen of the twenty-three token/proposition prohibited classes bypassed `CC5` and three of the
+five authorized classes added with them were wrongly rejected. Against `83af628`, both finite-aside
+forms bypassed on both SQL files and all four coordinated governed forms were wrongly rejected on
+both. Against `3f173d5`, all twelve reported forms were misclassified on both files. Against
+`4a4c4b2`, the nested-parenthesis forms were misclassified on both files in **both** directions —
+two positive and negative claims passing as non-assertive, and a governed proposition carrying
+nested parentheses wrongly refused.
+
+**Twelve focused probes measured the current groups**, each altering the built suite in one way, each
+re-running every class against the migration file, each followed by a byte-for-byte
+restore. Removing **fail-closed finite-frame recovery** lets the two unlisted-opener classes through
+(`M238`–`M241`). Removing **multi-token openers** wrongly rejects the modal-aside allowance
+(`M256`–`M257`) while the prohibited classes stay caught by recovery. Removing **both** reopens the
+bypass for six classes (`M210`–`M213`, `M224`–`M225`, `M236`–`M241`). Reverting **parenthesis
+pairing** to first-later-`)` wrongly rejects both nested-parenthesis allowances (`M264`–`M267`); the
+nested-parenthesis prohibited classes (`M242`–`M247`) stay caught, now by the **structural
+unmatched-close failure**, which refuses the dangling close that pairing bug produces. The earlier
+attribution — that reverting both pairing and recovery is what lets `M242`–`M247` escape — is
+**superseded**, because recovery through an unmatched `)` no longer exists. Reverting the
+coordination gap to a single coordinator with no serial comma wrongly rejects three serial-list
+allowances (`M248`–`M249`, `M258`–`M261`); leaving validated spans in that gap wrongly rejects the
+parenthetical-carrying allowance (`M250`–`M251`); removing the imperative/declarative `do`
+distinction wrongly rejects both instructional allowances (`M254`–`M255`, `M262`–`M263`); and
+letting a coordinated chain reach across an independently asserted sibling lets the new-subject and
+hidden-*did run* classes through (`M226`–`M227`, `M232`–`M233`). Eight prohibited classes
+(`M214`–`M223`, `M228`–`M231`, `M234`–`M235`) and one allowance (`M252`–`M253`) survive every probe,
+caught or preserved by other parts of the analysis; they are retained as coverage and are **not**
+claimed as proof of any single correction. Re-running the earliest-predicate-only probe against the
+twelve multi-proposition classes reproduced the earlier measurement exactly: **eight classes
+(sixteen mutations) go undetected**, while the other four stay caught.
+
+**Eighteen mutations (`M268`–`M285`) cover the unmatched closing parenthesis**, nine classes against
+each SQL file: the exact reported comma-opened form beside an authorized `UNKNOWN` sentence, a
+contextual-*It* form, more than one unmatched close, an unmatched close inside a sentence carrying an
+authorized `UNKNOWN` proposition, one before and one after the application predicate, two **no-comma**
+forms, and a balanced **single**-parenthesis authorized counterpart.
+
+**What that group is load-bearing for was measured, and the measurement corrected the claim first made
+for it.** With the structural failure disabled and everything else intact, the comma-opened classes
+(`M268`–`M275`) are **still rejected** — removing the unsafe `)`-crossing lets the pre-existing
+fail-closed **comma** recovery jump to the comma before the stray close and recover the outer `has`, so
+for those classes the structural check is **redundant** and is **not** claimed as their protection.
+Deleting the comma isolates it: `priorComma` has nothing to jump to, the walk halts at the noun, and the
+claim escapes — so the **no-comma classes `M282`–`M285` are this correction's load-bearing evidence**,
+and they were added because the probe said so rather than because the shape looked plausible. With the
+structural failure removed **and** the old `)`-crossing restored — the reviewed head `05b8c4b` —
+`M268`–`M275` and `M282`–`M285` all escape, reproducing the reported bypass. `M276`–`M279` survive both
+probes, caught by other parts of the analysis, and are retained as coverage only.
+
+**A harness payload-escaping defect was found and corrected in the same round.** One hundred and
+fifty-two payloads (`M106`–`M107`, `M118`–`M267`) wrote a **literal backslash and `n`** instead of a
+newline, so they produced **one** physical comment line rather than two and **never exercised the
+multi-line comment path**, including the hard-wrap reassembly in `sqlComments`. `M106`–`M107` are
+*named* for a **newline between the governed proposition and the categorical one** and delivered none.
+All one hundred and fifty-two now use real newlines; `M106`–`M107` take `\n-- ` rather than a bare
+`\n`, because the escape sits mid-sentence and a bare newline would have written a line with no `--`
+prefix — non-comment text injected into executable SQL and invisible to `sqlComments`. Two other
+newline-claiming mutations already used real newlines and were left unchanged.
+
+Separately, a manual adversarial matrix ran **ninety-two prohibited forms and thirty authorized
+forms against each of the two SQL files** through the real suite: **one hundred and eighty-four
+rejections and sixty allowances, zero misclassifications** across two hundred and forty-four
+executions, with both scripts restored byte-for-byte after each (migration `fb5128b4ae207e75…`,
+rollback `31e0ab0c1f92ccaf…`), `state/` clean and a green final baseline. Two earlier rounds
+reported narrower matrices — one hundred and forty-six rejections with forty allowances, then one
+hundred and seventy-eight with fifty-six; each figure was accurate for the matrix it described, and
+each was superseded when independent review found variants that matrix did not contain. **That
+figure is likewise superseded for this round**: it predates the unmatched-close forms, which it did
+not contain. Those were verified separately — **ten classes against each of the two SQL files, twenty
+executions, zero misclassifications**, each restoring byte-for-byte: six prohibited unmatched-close
+forms rejected, a balanced single- and a balanced nested-parenthesis authorized form allowed, and two
+balanced categorical forms rejected for their categorical content rather than for balance. Every
+unmatched-close class is now held durably as `M268`–`M285` in the harness rather than by a manual
+matrix alone.
+
+**Migration-path classification, accepted and not bypassed.** Because that change touches
+`state/migrations/**`, `scripts/render/deployment-controller.mjs` evaluates
+`git diff --name-only <live>..<target> -- state/migrations/**`, finds a match, sets
+`report.result = "blocked"` and stops with **`MIGRATION_ROLLOUT_REQUIRED`**. The guard uses
+`--name-only` and **does not distinguish a comment-only edit** from a schema change. That
+classification is **correct and deliberately left intact** — the guard was not suppressed, bypassed,
+weakened, or excluded, and the controller, workflows and `render.yaml` are unmodified. **Any release
+range containing this change therefore requires the separately authorized migration-bearing rollout.**
+**No executable SQL changed:** stripping full-line `--` comments and blank lines leaves both scripts
+byte-identical to the base — migration `6e39722…`, rollback `21a8ac8…`, 40 and 19 executable lines
+respectively — and the disposable PostgreSQL 16/18 suites still apply, enforce, roll back and reapply
+007 at 208 checks each. **None of this implies migration 007 was applied, authorized, or deployed;
+its live application state remains `UNKNOWN` in either direction.**
 
 ## Phase 0B — Content Intelligence runtime
 
 **State:** foundation `MERGED` and `DEPLOYED`; all six executors — `strategy-concept`, `automotive-truth`, `hook-story-script`, `production-direction`, `packaging-adaptation`, and `final-critic` — **`MERGED`** and dormant, the sixth through PR #52; the payload-contract reconciliation **`MERGED`** through PR #54. **None is `ENABLED`, established as `DEPLOYED`, or `PRODUCTION-VALIDATED`**, and none has production evidence. **All six target stages now have a merged executor on `main`**, and every registry entry reports `executionEnabled: false`.
 
-**Last merged slice: the payload-contract reconciliation, `MERGED` through PR #54** (merge `0c13ab1af9c7ca796a1d48ed37207715a47166e4`), recorded in its own section above. Before it, Phase 0B.6 — the dormant `final-critic` stage executor — was `MERGED` through PR #52; see its dedicated section for the full record and durable identifiers. The reconciliation that gates production wiring is therefore **satisfied in repository state**: it is present on `main`, and it is not established as deployed, not enabled, and not production-validated. Deployment-authority work remains an independent track and must not be combined with any of this. **Next: a separately reviewed production-wiring design. A first draft of it now exists in PR #56 — open, draft, unaccepted, unmerged, and unimplemented, authorizing neither implementation nor operations. Not a new phase number, and no production wiring, deployment, enablement, migration application, or production validation has occurred.**
+**Last merged slice: the payload-contract reconciliation, `MERGED` through PR #54** (merge `0c13ab1af9c7ca796a1d48ed37207715a47166e4`), recorded in its own section above. Before it, Phase 0B.6 — the dormant `final-critic` stage executor — was `MERGED` through PR #52; see its dedicated section for the full record and durable identifiers. The reconciliation that gates production wiring is therefore **satisfied in repository state**: it is present on `main`, and it is not established as deployed, not enabled, and not production-validated. Deployment-authority work remains an independent track and must not be combined with any of this. **The separately reviewed production-wiring design is accepted and `MERGED` through PR #56** (merge `53e2c2bb6115e457670c1f99956d11a1a54530cd`), recorded in its own section above, and is **`UNIMPLEMENTED`** — authorizing neither implementation nor operations. **No implementation PR (P1–P8) exists and no operator milestone (M1–M7) has been performed.** Not a new phase number, and no production wiring, deployment, enablement, migration application, or production validation has occurred.
 
 Phase 0B.0 delivered the two runtime primitives the rest of the phase depends on:
 
@@ -594,7 +1068,7 @@ Phase 0B.0 delivered the two runtime primitives the rest of the phase depends on
 
 `executionEnabled` is `false` on every registered stage and the preview asserts it. Registration is not execution: no stage runs a model call, and the live publishing pipeline is untouched.
 
-**Remaining slices, in order:** the payload-contract reconciliation recorded in its own section above is **`MERGED`**, so that prerequisite is met in repository state and no longer blocks the sequence; next is a **separately reviewed production-wiring design**, of which a first draft now exists in PR #56 — open, draft, unaccepted, unmerged, and unimplemented, authorizing neither implementation nor operations, and which no merge so far authorizes; then performance ingestion; then governed learning. The proposed future Google Business Profile expansion sits after those and is not part of this repository's scope today. The roughly 22 originally researched specialist roles remain conceptual capabilities — most belong as deterministic services, references, or policy modules, not as mandatory model calls. After the operational prerequisites are accepted, return to the core mission with approximately six primary model reasoning stages:
+**Remaining slices, in order:** the payload-contract reconciliation recorded in its own section above is **`MERGED`**, so that prerequisite is met in repository state and no longer blocks the sequence; the **separately reviewed production-wiring design** is now accepted and `MERGED` through PR #56 and remains **`UNIMPLEMENTED`**, authorizing neither implementation nor operations, so the next work is that design's own **first prerequisite** — a read-only verification of live production identity and database state, recorded in its section above and separately unauthorized; then its eight implementation PRs and seven operator milestones, each under its own authorization; then performance ingestion; then governed learning. The proposed future Google Business Profile expansion sits after those and is not part of this repository's scope today. The roughly 22 originally researched specialist roles remain conceptual capabilities — most belong as deterministic services, references, or policy modules, not as mandatory model calls. After the operational prerequisites are accepted, return to the core mission with approximately six primary model reasoning stages:
 
 1. strategy-concept;
 2. automotive-truth;

@@ -4,8 +4,41 @@
 migration, workflow, configuration, `render.yaml`, agent, skill, or prompt file changes with it.
 Nothing here enables an executor, applies a migration, deploys a release, contacts a provider, or
 publishes content. It is the separately reviewed production-wiring design that
-[`docs/ROADMAP.md`](ROADMAP.md) names as the next product cursor. **It is a draft under review and has
-not been accepted.**
+[`docs/ROADMAP.md`](ROADMAP.md) names as the next product cursor.
+
+## Status — accepted as design, and unimplemented
+
+**ACCEPTED AND MERGED AS DESIGN.** This document was reviewed and merged to `main` through **PR #56**
+(merge `53e2c2bb6115e457670c1f99956d11a1a54530cd`, whose ordered parents are base
+`e6f9b0275fc25f0c508708f5e421a474daeebbae` then reviewed head
+`42f83a122910981f6af3bc9b9024d27ac8b839ff`). It is no longer a draft, and it is no longer under
+review as a proposal. **Accepted means exactly one thing: this design document is present on `main`
+as the repository's accepted production-wiring design.**
+
+**It is `UNIMPLEMENTED`, and acceptance changed nothing operational.** Specifically, merging it did
+**not**:
+
+- implement any production wiring, or create any of the eight implementation PRs (P1–P8) it proposes;
+- execute, authorize, or schedule **any** operator milestone — **no milestone M1–M7 has been
+  performed**, and M4's five single-control acts are likewise unperformed;
+- deploy anything, apply migration 007 or 008, or grant authority to apply either;
+- enable an executor, change any `executionEnabled` value, raise any dispatch ceiling, issue any
+  manual-dispatch grant, or move the runtime authority gate off `OFF`;
+- contact a provider or model, approve content, or publish anything;
+- establish deployment, production validation, or database readiness.
+
+**Every live fact remains `UNKNOWN` unless separately verified.** Nothing in this document — before
+or after merge — establishes live Render service identity, health or control settings; the commit
+each service runs; the contents of `_migrations`; whether migration 007 is applied; or any other
+production state. **A merged document is repository evidence, never production evidence**, and no
+live fact may be inferred from the fact that this design is accepted. Each such fact must be
+established by its own read-only verification, dated as the observation it is.
+
+**Operational execution requires separate authorization, per named unit.** Acceptance of this design
+is not authorization to execute it. **Each implementation PR (P1–P8) and each operator milestone
+(M1–M7), including each of M4's five acts, still requires its own review, its own explicit
+authorization, and its own evidence** — no single approval covers more than the one unit it names,
+and none of them is implied by this merge.
 
 **Evidence labels used throughout.** Every claim carries one:
 
@@ -137,10 +170,13 @@ about external systems, and **this design does not assert it**.
 
 **VERIFIED** — `state/migrations/007_evidence_bounds.sql` and
 `state/rollback/007_evidence_bounds_rollback.sql` both exist in source. The migration's own header
-states that applying it to production is a separate, separately authorized operation and that it has
-not been applied.
+states that applying it to production is a separate, separately authorized operation and that 007's
+live application state is `UNKNOWN` in either direction, retaining the 2026-08-28 read-only reading
+of `_migrations` at `001–006` as an explicitly dated observation.
 
-**VERIFIED** — the repository contains no claim that 007 has been applied to production.
+**VERIFIED** — the repository asserts nothing about 007's live application state in either
+direction. Repository state is not production evidence: it establishes neither that 007 has been
+applied nor that it has not, and the current state requires fresh read-only verification.
 
 **UNKNOWN / REQUIRES OPERATOR ACTION** — whether the production evidence tables are in a state that
 allows 007's immediately validated constraints to pass. A dated aggregate-only audit is recorded in
@@ -564,8 +600,11 @@ migration; the artifact simply does not contain any migration beyond the authori
 
 With that invariant held, the M1 artifact is the **reviewed head of `main` at M1 time**: it contains
 `001`–`007` and no later migration, and its application code is the current reviewed code. The
-pending set is `{007}` at M1 and `{008}` at M2 by construction. No older artifact is needed, and this
-design does not propose one.
+artifact's file set yields a pending set of `{007}` at M1 and `{008}` at M2 **only if** the target
+database's applied set is exactly the authorized baseline. Because 007's live application state is
+`UNKNOWN` in either direction, each pending set is an **expectation the milestone's own read-only
+gate must establish** (`G3a`, §4.4.2 and §7), never a present fact. No older artifact is needed, and
+this design does not propose one.
 
 **That invariant does not by itself make M1 a forward deployment.** Whether deploying the artifact
 moves the api forward, backward, or sideways is a fact about the **live** commit, which this design
@@ -1017,7 +1056,8 @@ before those checks can be written or tested.
 - **Exit:** disposable PostgreSQL 16/18 apply / enforce / rollback / reapply coverage; regressions
   prove an absent, unreadable, or unrecognized mode resolves to `OFF`, that an absent grant authorizes
   nothing, and that an expired or zero-`runs_remaining` grant is spent.
-- **Rollback:** revert; 008 has not been applied to production by this PR.
+- **Rollback:** revert. P1 applies no migration to production — see **Prohibited** below — so
+  reverting removes files rather than unwinding a schema.
 - **Prohibited:** applying **any** migration to production; wiring a caller; changing any
   `executionEnabled` value; touching `render.yaml`.
 
@@ -1698,5 +1738,7 @@ run production SQL, contact a provider or model, approve or publish content, cha
 any workflow, create any environment variable, mutate or inspect anything in Render, or begin the GBP
 expansion. It changes no source, test, migration, configuration, agent, skill, or prompt file.
 
-**It grants no authorization, and it has not been accepted.** Every layer in §3, every gate in §4, and
-every PR and milestone in §6 still requires its own review, authorization, and evidence.
+**It grants no authorization.** It is accepted and merged **as a design** (see the Status section at
+the top of this document), and acceptance authorizes nothing: every layer in §3, every gate in §4, and
+every PR and milestone in §6 still requires its own review, its own explicit authorization, and its
+own evidence. **No milestone M1–M7 has been performed, and no implementation PR P1–P8 exists.**
