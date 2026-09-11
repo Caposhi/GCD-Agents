@@ -89,8 +89,13 @@
  * passed with the suite exiting 0. An unmatched close is malformed prose, so
  * CC5 now fails STRUCTURALLY on a ")" at depth zero before any predicate is
  * classified, and the recovery-through-unmatched-close behaviour is REMOVED.
- * That structural failure is the SOLE protection for this group's prohibited
- * cases -- neither depth-aware pairing nor finite-frame recovery catches them.
+ * Which guard is load-bearing for which case was MEASURED, not assumed. With
+ * the structural failure disabled and the rest intact, the comma-opened forms
+ * are still rejected, because fail-closed COMMA recovery jumps to the comma
+ * before the stray ")" and recovers the outer auxiliary; they are retained as
+ * coverage, not claimed as proof. The NO-COMMA forms escape -- comma recovery
+ * has nothing to jump to -- so those are the classes the structural failure
+ * uniquely protects, and they are this correction's load-bearing evidence.
  *
  * Those groups also run the other direction. Cases marked `mustPass` insert the
  * wording the files are REQUIRED to carry — the epistemic form, the dated
@@ -2507,6 +2512,54 @@ const MUTATIONS = [
       + "-- Whether migration 007 (per the operator) is applied remains UNKNOWN in either direction.",
     mustPass: true,
     expect: [],
+  },
+  // The two classes below are the ones the STRUCTURAL BALANCE FAILURE uniquely
+  // protects, and they were added because the load-bearing probe said so rather
+  // than because the shape looked plausible.
+  //
+  // Measured: with the structural failure disabled and everything else intact,
+  // the comma-opened forms above (M268-M275) are STILL rejected -- the
+  // pre-existing fail-closed COMMA recovery jumps to the comma before the stray
+  // ")" and recovers the outer `has`, so the perfect frame is seen after all.
+  // For those classes the structural check is redundant, and it is NOT claimed
+  // as their sole protection.
+  //
+  // Remove the comma and that recovery has nothing to jump to: `priorComma`
+  // returns null, the walk halts at the noun, `been applied` reads as a bare
+  // participle, and the claim ESCAPES. These two classes therefore fail only
+  // because an unmatched ")" is refused structurally, before any predicate is
+  // classified. They are the load-bearing evidence for this correction.
+  {
+    name: "the migration comment carries an unmatched `)` with NO comma before it, which ONLY the structural balance failure catches",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.\n"
+      + "-- Migration 007 has according to the operator) been applied to production.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment carries an unmatched `)` with NO comma before it, which ONLY the structural balance failure catches",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first.\n"
+      + "-- Migration 007 has according to the operator) been applied to production.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment carries an unmatched `)` with NO comma before it, contextual `It` subject -- structural failure only",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.\n"
+      + "-- It has per the 2026-09-02 audit) been applied to production.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment carries an unmatched `)` with NO comma before it, contextual `It` subject -- structural failure only",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first.\n"
+      + "-- It has per the 2026-09-02 audit) been applied to production.",
+    expect: ["CC5."],
   },
 ];
 
