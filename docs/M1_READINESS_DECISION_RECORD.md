@@ -189,15 +189,27 @@ cannot drift from the contract it checks. The variable is deliberately **not** `
 
 **`scripts/ops/migration-state-read.mjs`**
 
+**`A` is supplied by the operator at M1 time.** The examples below take it from
+`M1_ARTIFACT_SHA` and use `${M1_ARTIFACT_SHA:?…}`, which **aborts the command** with the named
+message if the variable is unset or empty — so a copy-paste with nothing supplied **fails closed**
+rather than silently reading some other commit. **No commit SHA is hard-coded here on purpose**: a
+literal SHA in an operator command is exactly how a superseded artifact gets deployed.
+
 ```bash
+# Set this, deliberately, to the full 40-character SHA of the reviewed head of `main`
+# established at M1 time. Do NOT reuse a SHA from this record, and do NOT use a branch
+# name — `migration-state-read.mjs` rejects anything that is not a full SHA (A1).
+export M1_ARTIFACT_SHA=''   # e.g. export M1_ARTIFACT_SHA=<40-hex-char full SHA>
+
 # Artifact half only — no database, no credential:
 node scripts/ops/migration-state-read.mjs --milestone M1 \
-  --artifact 2f76679afa78721ad9751ea7ce3124c5307b090c --offline
+  --artifact "${M1_ARTIFACT_SHA:?set M1_ARTIFACT_SHA to the full SHA of A, established at M1 time}" \
+  --offline
 
 # Complete reading, immediately before the deployment is triggered:
 export GCD_AUDIT_DATABASE_URL='postgres://READONLY_USER@host:5432/dbname'
 node scripts/ops/migration-state-read.mjs --milestone M1 \
-  --artifact 2f76679afa78721ad9751ea7ce3124c5307b090c
+  --artifact "${M1_ARTIFACT_SHA:?set M1_ARTIFACT_SHA to the full SHA of A, established at M1 time}"
 ```
 
 It computes `F(A)`, `D` and `P`, and evaluates **all seven** comparisons individually, printing the
@@ -258,8 +270,11 @@ Each item is separately authorized work. None of it is granted by this record.
 
 1. **Read-only production identity.** Read the commit served by the api, worker and scheduler.
    Establishes `L`, and with it the candidate `R`. **If `L` cannot be obtained, M1 stops.**
-2. **Evaluate the A/L predicate** against `A = 2f76679a…`: allow only `A == L` or `L` strictly
-   ancestral to `A`; stop on rollback, divergence, or unknown identity.
+2. **Establish `A`** — the exact reviewed head of `main` at M1 time — **by full SHA**, then
+   **evaluate the A/L predicate** against that newly established `A`: allow only `A == L` or `L`
+   strictly ancestral to `A`; stop on rollback, divergence, or unknown identity. `A` is **not** any
+   SHA recorded here, **not** the readiness branch head, and **not** a predicted merge commit — it
+   is read from `main` at the time of the decision.
 3. **If and only if `A == L`:** establish from authoritative Render behaviour that the exact deploy
    action intended for M1 actually invokes the api `preDeployCommand`, and record the exact action
    used. If it cannot be proven, **M1 stops and is re-planned**.
