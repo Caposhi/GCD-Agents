@@ -77,10 +77,20 @@
  * opening parenthesis with the first later ")" recorded an inner close as the
  * outer one and left the real outer close unmatched, so "has (according to the
  * operator (per the audit)) been applied" read as a bare participle and passed.
- * Pairing is depth-aware now; the prohibited cases are held redundantly by that
- * and by recovery crossing an unmatched ")", and the two allowed cases -- a
- * governed proposition and a modal frame, each carrying nested parentheses --
- * depend on the pairing alone.
+ * Pairing is depth-aware now, and the two allowed cases -- a governed
+ * proposition and a modal frame, each carrying nested parentheses -- depend on
+ * that pairing alone. These prohibited BALANCED cases are rejected for their
+ * categorical content.
+ *
+ * A sixth group covers the UNMATCHED CLOSING PARENTHESIS. Depth-aware pairing
+ * had been paired with a fail-OPEN: recovery was taught to CROSS an unmatched
+ * ")", so "has, according to the operator) been applied" skipped the stray
+ * close, halted at the noun before it, never recovered the outer `has`, and
+ * passed with the suite exiting 0. An unmatched close is malformed prose, so
+ * CC5 now fails STRUCTURALLY on a ")" at depth zero before any predicate is
+ * classified, and the recovery-through-unmatched-close behaviour is REMOVED.
+ * That structural failure is the SOLE protection for this group's prohibited
+ * cases -- neither depth-aware pairing nor finite-frame recovery catches them.
  *
  * Those groups also run the other direction. Cases marked `mustPass` insert the
  * wording the files are REQUIRED to carry — the epistemic form, the dated
@@ -2352,6 +2362,149 @@ const MUTATIONS = [
     from: "-- current applied set to be established by read-only verification first.",
     to: "-- current applied set to be established by read-only verification first."
       + "\\n-- Migration 007 may (per the operator (after the audit)) have been applied.",
+    mustPass: true,
+    expect: [],
+  },
+  // ---------------------------------------------------------------------------
+  // UNMATCHED CLOSING PARENTHESIS -- a STRUCTURAL CC5 failure.
+  //
+  // The previous correction paired parentheses by depth and then also taught
+  // finite-frame recovery to CROSS an unmatched ")". That second half was a
+  // fail-OPEN: a single stray close bought a bypass outright, because the walk
+  // skipped the ")", halted at the noun before it, and never recovered the outer
+  // auxiliary. The reported input
+  //   "Migration 007 has, according to the operator) been applied to production."
+  // left the whole suite exiting 0 with the categorical claim unrejected, and an
+  // authorized UNKNOWN sentence beside it changed nothing.
+  //
+  // An unmatched close is MALFORMED PROSE, never an interruption boundary. CC5
+  // now scans the normalized authoritative-comment prose by depth and fails
+  // immediately on a ")" at depth zero, BEFORE any application predicate is
+  // classified -- so no recovery heuristic is consulted about it and no
+  // authorized sentence elsewhere can mask it. The recovery-through-unmatched-
+  // close behaviour is removed outright.
+  //
+  // These prohibited cases are load-bearing on the STRUCTURAL BALANCE FAILURE
+  // ALONE: removing only that failure lets every one of them escape (probe
+  // below). Depth-aware pairing and finite-frame recovery do NOT catch them and
+  // are not credited with doing so. The allowed cases below prove the rule is
+  // structural rather than a ban on parentheses: balanced single and balanced
+  // nested parentheses stay accepted when the wording is otherwise authorized,
+  // and the balanced categorical forms above are still rejected for their
+  // CATEGORICAL CONTENT, not for their balance.
+  {
+    name: "the migration comment carries the exact reported form -- a comma-opened aside closed by an UNMATCHED `)`, beside an authorized UNKNOWN sentence",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.\n"
+      + "-- Whether migration 007 is applied is UNKNOWN in either direction.\n"
+      + "-- Migration 007 has, according to the operator) been applied to production.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment carries the exact reported form -- a comma-opened aside closed by an UNMATCHED `)`, beside an authorized UNKNOWN sentence",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first.\n"
+      + "-- Whether migration 007 is applied is UNKNOWN in either direction.\n"
+      + "-- Migration 007 has, according to the operator) been applied to production.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment carries an UNMATCHED `)` with a contextual `It` subject",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.\n"
+      + "-- It has, according to the operator) been applied to production.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment carries an UNMATCHED `)` with a contextual `It` subject",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first.\n"
+      + "-- It has, according to the operator) been applied to production.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment carries MORE THAN ONE unmatched `)` in a single sentence",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.\n"
+      + "-- Migration 007 has, per the operator) per the 2026-09-02 audit) been applied to production.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment carries MORE THAN ONE unmatched `)` in a single sentence",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first.\n"
+      + "-- Migration 007 has, per the operator) per the 2026-09-02 audit) been applied to production.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment carries an unmatched `)` INSIDE a sentence that also carries an authorized UNKNOWN proposition",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.\n"
+      + "-- Whether 007 is applied is UNKNOWN in either direction, yet it has, per the operator) been applied.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment carries an unmatched `)` INSIDE a sentence that also carries an authorized UNKNOWN proposition",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first.\n"
+      + "-- Whether 007 is applied is UNKNOWN in either direction, yet it has, per the operator) been applied.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment carries an unmatched `)` BEFORE the application predicate",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.\n"
+      + "-- Per the operator) migration 007 has been applied to production.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment carries an unmatched `)` BEFORE the application predicate",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first.\n"
+      + "-- Per the operator) migration 007 has been applied to production.",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment carries an unmatched `)` AFTER the application predicate",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.\n"
+      + "-- Migration 007 has been applied to production (per the operator)).",
+    expect: ["CC5."],
+  },
+  {
+    name: "the rollback comment carries an unmatched `)` AFTER the application predicate",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first.\n"
+      + "-- Migration 007 has been applied to production (per the operator)).",
+    expect: ["CC5."],
+  },
+  {
+    name: "the migration comment carries authorized wording \u2014 a governed proposition whose internal qualifier carries BALANCED SINGLE parentheses",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.\n"
+      + "-- Whether migration 007 (per the operator) is applied remains UNKNOWN in either direction.",
+    mustPass: true,
+    expect: [],
+  },
+  {
+    name: "the rollback comment carries authorized wording \u2014 a governed proposition whose internal qualifier carries BALANCED SINGLE parentheses",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first.\n"
+      + "-- Whether migration 007 (per the operator) is applied remains UNKNOWN in either direction.",
     mustPass: true,
     expect: [],
   },

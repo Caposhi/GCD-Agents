@@ -5262,8 +5262,19 @@ async function run(): Promise<void> {
     //      close was recorded as the outer one and the real outer close was left
     //      unmatched, which the leftward walk read as a proposition boundary
     //      ("has (according to the operator (per the audit)) been applied").
-    //      Parentheses are paired BY DEPTH now, and recovery crosses an unmatched
-    //      closing parenthesis as well as an unrecognised comma.
+    //      Parentheses are paired BY DEPTH now.
+    //   7b. That fix's OWN fail-open: recovery was also taught to CROSS an
+    //      unmatched ")", which is the opposite of failing closed. A single
+    //      stray close then bought a bypass outright --
+    //      "Migration 007 has, according to the operator) been applied to
+    //      production." -- because the walk skipped the ")", halted at the noun
+    //      `operator` before reaching the outer `has`, and read `been applied`
+    //      as a bare non-finite participle. An authorized UNKNOWN sentence
+    //      beside it made no difference; nothing rejected the categorical one.
+    //      An unmatched close is MALFORMED PROSE, not an aside, so it is now a
+    //      STRUCTURAL CC5 failure raised before any predicate is classified, and
+    //      the recovery-through-unmatched-close behaviour is REMOVED. Depth-aware
+    //      pairing is retained for BALANCED parentheses, single or nested.
     //   7. That correction's own limits. Its opener list took a SINGLE token, so
     //      "even though"/"now that"/"provided that" still severed the frame;
     //      commas were paired with the NEAREST one, so consecutive and nested
@@ -5477,9 +5488,43 @@ async function run(): Promise<void> {
       return null;
     };
 
+    // STRUCTURAL PARENTHESIS BALANCE, judged before any predicate is classified.
+    // An unmatched closing parenthesis is MALFORMED authoritative prose, never an
+    // interruption boundary. The previous behaviour SKIPPED such a close during
+    // finite-frame recovery, which let
+    //   "Migration 007 has, according to the operator) been applied to production."
+    // pass: the walk crossed the `)`, stopped at the noun `operator` before it
+    // reached the outer `has`, and read `been applied` as a bare non-finite
+    // participle. Nothing is inferred or recovered through a malformed close now.
+    // The scan counts depth and reports the FIRST `)` that appears at depth zero.
+    // Balanced parentheses -- single or nested -- are untouched and still pair by
+    // depth in `interruptionSpans`.
+    const firstUnmatchedClose = (toks: readonly Tok[]): number | null => {
+      let depth = 0;
+      for (let i = 0; i < toks.length; i++) {
+        const w = toks[i]?.lower;
+        if (w === "(") { depth++; continue; }
+        if (w !== ")") continue;
+        if (depth === 0) return i;
+        depth--;
+      }
+      return null;
+    };
+
     // Every application-state proposition in one comment block, each judged alone.
     const analyzeComments = (text: string): string[] => {
       const toks = tokenize(text);
+      // Fail CLOSED, and FIRST, on malformed structure. This precedes application
+      // predicate analysis deliberately: an authorized UNKNOWN sentence elsewhere
+      // in the prose cannot mask a malformed categorical one, and no recovery
+      // heuristic is ever consulted about an unmatched close.
+      const stray = firstUnmatchedClose(toks);
+      if (stray !== null) {
+        const tok = toks[stray] as Tok;
+        return [`unmatched ")" in authoritative comment prose: ${
+          text.slice(Math.max(0, tok.start - 60), Math.min(text.length, tok.end + 20))
+            .replace(/\s+/g, " ").trim()}`];
+      }
       const spans = interruptionSpans(toks);
       const offending: string[] = [];
       let previousVerb = -1;
@@ -5512,9 +5557,10 @@ async function run(): Promise<void> {
             // an aside was not recognised, cross that aside (to the token before
             // the comma that opens it) and keep looking for the finite frame.
             if (needsFiniteRecovery(auxes)) {
-              // A closing parenthesis with no partner is not a proposition
-              // boundary either; cross it and keep looking for the finite frame.
-              if (w === ")") continue;
+              // An unmatched `)` never reaches here: `firstUnmatchedClose` fails
+              // CC5 structurally before any predicate is classified. Recovery is
+              // therefore about COMMAS only, and is never asked to infer a
+              // reading through a malformed close.
               const prior = priorComma(toks, j, previousVerb);
               j = prior === null ? j : prior;
               continue;
@@ -5714,9 +5760,12 @@ async function run(): Promise<void> {
       + "run), with or without the word production, with the auxiliary at any distance from "
       + "its participle and across a parenthetical or comma-delimited aside — including a "
       + "SUBORDINATE aside carrying its own finite verb, opened by one, two or three tokens, "
-      + "consecutive, nested, or opened by a word on no list at all, and across NESTED parentheses "
-      + "paired by depth, because a dangling non-finite frame crosses an unrecognised aside or an "
-      + "unmatched closing parenthesis rather than reading as non-assertive — finite "
+      + "consecutive, nested, or opened by a word on no list at all, and across BALANCED "
+      + "parentheses, single or nested, paired by depth, because a dangling non-finite frame "
+      + "crosses an unrecognised aside rather than reading as non-assertive — while an UNMATCHED "
+      + "closing parenthesis is malformed prose that fails this check STRUCTURALLY, before any "
+      + "predicate is classified and whatever else the prose authorizes, so it can never be "
+      + "skipped as though it were a valid interruption boundary — finite "
       + "whatever procedural manner or re- prefix "
       + "follows it, not maskable by a qualifier in another proposition, not laundered by an "
       + "unrelated introductory clause, and not carried along by a governed sibling, whether "
