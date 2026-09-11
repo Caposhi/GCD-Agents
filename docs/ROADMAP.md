@@ -239,8 +239,15 @@ assembling M1's **read-only** readiness evidence. That assembly is recorded in t
 commits, `D` (the production `_migrations` identifier set), `P`, comparisons 2–7 of §4.4.2, the A/L
 ancestry decision, same-commit `preDeployCommand` behaviour, the §4.1 aggregate audit, and the
 rollback artifact `R` with its executed compatibility evidence are all **`NOT YET EXECUTED`** —
-there is no read-only production access. `F(A)` is established as `001`–`007` with no later
-migration, and comparison 1 (`F(A) == E_files`) passes.
+there is no read-only production access.
+
+**`A` itself is `NOT YET ESTABLISHED`.** The candidate artifact observed while the package was
+prepared — `2f76679afa78721ad9751ea7ce3124c5307b090c` — held migrations `001`–`007` with no later
+migration, and comparison 1 passed **against that candidate**. Merging the readiness package advances
+`main`, so that SHA becomes historical. Per §4.4, `A` is the **reviewed head of `main` at M1 time**
+and must be **re-established by full SHA** then; `F(A)`, the A/L predicate, the complete
+migration-state reading and all seven comparisons are **recomputed against that new `A`**. No result
+derived from the candidate may be reused merely because the migration file set appears unchanged.
 
 The checked-in operator tooling for the two readings is delivered and proven against a disposable
 database: `scripts/ops/evidence-aggregate-audit.mjs` (§4.1, read-only, aggregate-only) and

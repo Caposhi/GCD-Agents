@@ -33,10 +33,11 @@ state remains **`UNKNOWN` in either direction**. The dated 2026-08-28 reading of
 
 | # | Fact | Status | Value |
 |---|---|---|---|
-| 1 | **`A`** — proposed M1 artifact | **ESTABLISHED** | `2f76679afa78721ad9751ea7ce3124c5307b090c` |
-| 6 | **`F(A)`** — migration files in the artifact | **ESTABLISHED** | `001`–`007`, seven files, **no later migration** |
+| 1 | **Candidate artifact**, observed when this package was prepared — **not** an enduring `A` | **OBSERVED, HISTORICAL** | `2f76679afa78721ad9751ea7ce3124c5307b090c` |
+| 6 | **`F(candidate)`** — migration files at that candidate | **OBSERVED, HISTORICAL** | `001`–`007`, seven files, **no later migration** |
+| — | **`A`** — the artifact M1 would actually deploy | **NOT YET ESTABLISHED** | must be re-read at M1 time; see *The artifact is not pinned* below |
 | — | `E_files`, `E_applied_pre`, `E_pending`, `E_applied_post` | **ESTABLISHED** | from §4.4.2's contract table (below) |
-| — | Comparison **1** — `F(A) == E_files` | **PASS** | verified from the artifact by `git ls-tree` |
+| — | Comparison **1** — `F(candidate) == E_files` | **PASS at the candidate only** | verified by `git ls-tree`; carries no forward authority — recompute at the new `A` |
 | 2 | **`L`** — commit served by the live api | **NOT YET EXECUTED** | no read-only access to the running service |
 | 3 | Commits served by api, worker, scheduler | **NOT YET EXECUTED** | same |
 | 4 | **A/L ancestry decision** | **NOT DETERMINABLE** | undefined without `L`; **stop** per §4.4.1 |
@@ -58,12 +59,46 @@ state remains **`UNKNOWN` in either direction**. The dated 2026-08-28 reading of
 | `E_pending` | **exactly** `{007_evidence_bounds.sql}` |
 | `E_applied_post` | **exactly** `001`–`007` |
 
+### The artifact is not pinned — `A` must be re-established at M1 time
+
+**`2f76679afa78721ad9751ea7ce3124c5307b090c` is the candidate artifact observed while this package
+was prepared. It is a historical observation, not an enduring `A`.**
+
+**Merging PR #60 advances `main`**, because this package is itself a change to `main`. The moment it
+merges, `main` is a new commit and `2f76679a…` is no longer the head of `main`. Per §4.4, *"the M1
+artifact is the **reviewed head of `main` at M1 time**"* — so from that moment `2f76679a…` is
+historical, and citing it as the artifact would be citing a superseded commit.
+
+**`A` is therefore defined as: the exact reviewed head of `main` immediately before the eventual M1
+authorization decision.** It is **`NOT YET ESTABLISHED`** and must be **re-established by full SHA at
+M1 time**, never inherited from this record, from `main` as of any earlier date, or from a branch
+name (which requirement **A1** rejects outright).
+
+**Everything artifact-dependent must be recomputed against that newly established `A`:**
+
+- `F(A)` — the migration filenames enumerated at the new `A`;
+- the **A/L ancestry predicate** of §4.4.1, evaluated afresh with `A` and the immediately preceding
+  live reading `L`;
+- the **complete migration-state reading** of §4.4.2 — `D`, `P = F(A) − D`;
+- **all seven comparisons** against the four expected sets;
+- requirements **A1–A5** in full, including **A3** approval of the application code actually present
+  at the new `A`.
+
+**No result derived from `2f76679a…` may be reused merely because the migration file set appears
+unchanged.** A matching file set is not evidence that the artifact is the same commit, that its
+application code is unchanged, or that a reading taken against it is current. §4.4.1 is explicit that
+*"a stale reading is not a reading"*, and that a result obtained earlier *"is never reused"*. The
+comparison-1 pass recorded above is a fact **about the candidate**, and carries no forward authority.
+
+**This does not change the verdict.** M1 remains **BLOCKED / NO-GO** for the reasons already stated;
+re-establishing `A` is one of the prerequisites, not a route around them.
+
 ### Artifact requirements A1–A5 (§4.4)
 
 | # | Requirement | Status |
 |---|---|---|
-| **A1** | Exact reviewed commit, named by full SHA, exact-head CI green | **PARTIAL** — `A` is named by full SHA and is the PR #57 merge; its own exact-head CI is the CI of this readiness PR's base. **A3 approval is separate and not granted here.** |
-| **A2** | `state/migrations/` contains `001`–`007` and no later migration | **PASS** — enumerated, not assumed |
+| **A1** | Exact reviewed commit, named by full SHA, exact-head CI green | **NOT YET SATISFIED** — `A` is not yet established (see above). The candidate `2f76679a…` was named by full SHA and carried green CI, but it becomes historical once PR #60 merges. A branch name or tag is rejected outright. |
+| **A2** | `state/migrations/` contains `001`–`007` and no later migration | **PASS at the candidate** — enumerated, not assumed; **re-enumerate at the new `A`** |
 | **A3** | Application code separately approved as safe to deploy **and** safe to serve | **NOT GRANTED** — no such approval exists; this record does not grant it |
 | **A4** | Complete §4.4.2 migration-state check passes against the target database | **NOT YET EXECUTED** — `D` unavailable |
 | **A5** | A/L ancestry predicate satisfied | **NOT YET EXECUTED** — `L` unavailable ⇒ **stop** |
@@ -92,11 +127,30 @@ production wiring**, and **no deployment configuration**. Checked at `origin/mai
 `001`–`007` with no `008` or later; all six registry `executionEnabled` values remain `false`;
 `MIGRATION_ROLLOUT_REQUIRED` is intact; `.DS_Store` is unchanged.
 
-**Why this matters for M1 regardless of being benign:** `A` now contains a runtime source change to
-`src/harness/orchestrator.ts` that was **not** part of PR #57's review. Requirement **A3** — the
-artifact's application code separately approved as safe to deploy *and* safe to serve — therefore
-covers PR #59's change too, and that approval does not exist. This is recorded as an input to A3, not
-waved through.
+**What PR #59's `orchestrator.ts` change does and does not imply for M1 — corrected after an
+independent module-graph inspection.**
+
+- The change is in `src/harness/orchestrator.ts`, inside `resolveImage`, which is the default image
+  resolver used by `runBrief`. `runBrief` is imported by `src/worker/index.ts`, so the change is
+  **reachable on the worker**.
+- An independent inspection traversed the module graph from the **api entry point**
+  (`dist/api/server.js`, the target of `npm run start:api`) and found the orchestrator **not present
+  in the api module graph**.
+- **Therefore PR #59's change is not presently shown to affect what the api-only M1 deployment
+  serves.** M1 deploys the api alone; the worker and scheduler are unchanged by it.
+- **PR #59 is accordingly NOT recorded as an independent M1 api blocker**, and must not be treated as
+  one merely because it is present in the repository artifact. Presence in the artifact is not
+  reachability on the service being deployed.
+- **It must still be reviewed before the later worker deployment at M2**, where the code *is*
+  reachable. That review is outstanding: PR #59 has **zero reviews**, and CI-green is its only
+  evidence. No deployment-safety approval exists for it.
+- **A3 is unchanged in force and is service-scoped**: every service deployment must be reviewed
+  against the code actually reachable **on that service**, both before and after the migration.
+
+**Stated limit of the module-graph check:** it followed static relative `from "./…"` imports from the
+api entry point only. It does **not** establish anything about dynamic `import()`, runtime
+require-style loading, configuration-driven dispatch, or reachability on any other service. It is
+evidence about the inspected static graph, and nothing wider.
 
 ---
 
@@ -213,8 +267,11 @@ Each item is separately authorized work. None of it is granted by this record.
 5. **Run the complete §4.4.2 reading** immediately before any deployment; all seven comparisons must
    pass against the four expected sets.
 6. **Identify `R` and produce its executed compatibility evidence** on PostgreSQL 16 and 18.
-7. **Obtain A3 approval** for the artifact's application code as safe to deploy and safe to serve —
-   **including PR #59's orchestrator change**, which PR #57's review did not cover.
+7. **Obtain A3 approval** for the application code reachable **on the api**, at the newly
+   established `A`, as safe to deploy and safe to serve. A3 is service-scoped: the api review covers
+   api-reachable code. **PR #59's `orchestrator.ts` change is not api-reachable on the graph
+   inspected**, so it is not an api-deployment blocker — but it is unreviewed (zero reviews) and
+   **must be reviewed before the worker deployment at M2**, where it is reachable.
 8. **Complete Part 1** of the §4.4.2 operator record, with `decision: pass`, **before** triggering
    anything; complete **Part 2** afterwards. A deployment without **both parts** is unauthorized by
    definition.
