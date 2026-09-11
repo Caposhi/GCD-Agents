@@ -181,6 +181,75 @@ Keep these changes separable unless a reviewed design shows they must be atomic.
 
 The former worker lease/reaper item is `SUPERSEDED` and is no longer active work. Its rationale and re-entry condition are preserved in the PR #36 record above.
 
+## PR #57 — CC5 proposition-bound reconciliation and bounded closeout — `MERGED`
+
+**PR / merge:** PR #57. Base `53e2c2bb6115e457670c1f99956d11a1a54530cd`; reviewed head
+`6afe6ce91914de0b2eb45d4257e10bb784f0d0b3`; merge `2f76679afa78721ad9751ea7ce3124c5307b090c`.
+**Ordered parents: `8cd14f92df3b2ffcfcf33ff6b2e526c4875983bd` then `6afe6ce9…`.** The first parent is
+the merge of **PR #59**, which landed on `main` between this PR's base and its merge; the recorded
+base `53e2c2bb…` remains an ancestor of that first parent. Nineteen commits, linear, zero merge
+commits within the branch.
+
+**Delivered scope.** `CC5` made proposition-bound in both claim directions; unmatched closing
+parentheses made a **structural** failure before predicate classification, with the unsafe
+recovery-through-`)` removed; 152 mutation payloads corrected from a literal `\n` escape to real
+newlines; the remaining 007 live-state claims corrected; and three documentation defects fixed
+(the `M268`–`M285` breakdown, the offline-suite count in `AGENTS.md`, and a malformed guarantee
+sentence in this file and in the runtime `CC5` label).
+
+**Migrations/schema impact:** **none.** Executable SQL is byte-identical to base — comment-stripped
+SHA-256 `6e3972267fe95e99…` (migration) and `21a8ac8b479e309e…` (rollback).
+
+**Automated validation at the reviewed head.** Typecheck, build, eight offline suites (1,367
+assertions), 285 mutations ALL PASS (239 prohibited, 206 naming `CC5`, 46 `mustPass`, 252 `CC5`
+total; 285 byte-for-byte restores, 0 FAIL), dry run, controller fixtures, Markdown links, environment
+coverage, sensitive scan, dependency audit, YAML, whitespace. Exact-head CI run
+[34630277875](https://github.com/Caposhi/GCD-Agents/actions/runs/34630277875) — five of five jobs
+`success`, each `run_attempt: 1`, no re-runs.
+
+**Bounded-closeout verdict.** The PR closed out **bounded**: the reconciliation landed and the
+remaining `CC5` syntax-hardening work was **explicitly deferred**, not completed.
+
+**Accepted limitation — `CC5-SYNTAX-001`, `OPEN` and deferred.** `CC5` does **not** reject past
+`remain`/`stay` application-state declarations (*"Migration 007 remained unapplied."*, *"… has
+remained unapplied."*, *"… stayed unapplied."*, *"… has stayed unapplied."*) or their contextual-*It*
+shapes, because `FINITE_AUX` matches only the present `remains?`/`stays?`. It is **not fixed, not
+resolved, not harmless, and not production-validated.** Compensating controls and the mandatory
+completion trigger are recorded in
+[Known issues and hardening](KNOWN_ISSUES_AND_HARDENING.md) and summarized in the backlog below.
+
+**Production evidence: none.** Merge changed repository state only. It authorizes no production
+wiring, no enablement, no migration application, and no operator milestone.
+
+**Documents updated at completion:** `README.md`, `AGENTS.md`, `docs/AI_HANDOFF.md`,
+`docs/ARCHITECTURE.md`, `docs/DATA_MODEL.md`, `docs/KNOWN_ISSUES_AND_HARDENING.md` (new),
+`docs/PRODUCTION_WIRING_DESIGN.md`, `docs/ROADMAP.md`, `docs/SECURITY_AND_CONTINUITY.md`,
+`docs/STATUS.md`, `docs/TESTING.md`, `docs/credentials-setup.md`.
+
+**Unresolved follow-ups.** `CC5-SYNTAX-001`; and the M1 readiness prerequisites below, none of which
+this merge advances.
+
+## Active product cursor — M1 readiness, evidence only
+
+**M1 has not begun and is not complete.** The cursor is the accepted design's first prerequisite:
+assembling M1's **read-only** readiness evidence. That assembly is recorded in the
+[M1 readiness decision record](M1_READINESS_DECISION_RECORD.md).
+
+**Current verdict: `M1 BLOCKED / NO-GO`.** `L` (the commit the live api serves), the three service
+commits, `D` (the production `_migrations` identifier set), `P`, comparisons 2–7 of §4.4.2, the A/L
+ancestry decision, same-commit `preDeployCommand` behaviour, the §4.1 aggregate audit, and the
+rollback artifact `R` with its executed compatibility evidence are all **`NOT YET EXECUTED`** —
+there is no read-only production access. `F(A)` is established as `001`–`007` with no later
+migration, and comparison 1 (`F(A) == E_files`) passes.
+
+The checked-in operator tooling for the two readings is delivered and proven against a disposable
+database: `scripts/ops/evidence-aggregate-audit.mjs` (§4.1, read-only, aggregate-only) and
+`scripts/ops/migration-state-read.mjs` (§4.4.2, all seven comparisons). **Neither has been run
+against production**, and neither authorizes anything.
+
+**Migration 007's applied state remains `UNKNOWN` in either direction.** M1's api deployment requires
+its own explicit authorization after independent inspection, and is not granted here.
+
 ## Post-MVP hardening backlog
 
 Deferred findings are recorded durably in
@@ -200,7 +269,7 @@ finding, so the design is reconsidered rather than extended by reflex.
 
 | ID | Title | Status | Origin | Reachability | Must-fix trigger |
 |---|---|---|---|---|---|
-| `CC5-SYNTAX-001` | Past `remain`/`stay` application-state declarations | **OPEN — accepted and deferred** | PR #57, head `8238f37622b816e043b2f449f2b0e33da685eb58` | **Dormant, non-runtime.** A false negative in the repository's `CC5` comment-validation test only. No executable SQL changes; no production route enabled; all six executors remain disabled and unreachable. | Mandatory before the **first** of: production enablement of the Content Intelligence execution chain; removal of the current comment freeze; or any claim that `CC5` comprehensively rejects past/perfect application-state declarations. |
+| `CC5-SYNTAX-001` | Past `remain`/`stay` application-state declarations | **OPEN — accepted and deferred** | PR #57 (**merged** `2f76679afa78721ad9751ea7ce3124c5307b090c`), head `8238f37622b816e043b2f449f2b0e33da685eb58` | **Dormant, non-runtime.** A false negative in the repository's `CC5` comment-validation test only. No executable SQL changes; no production route enabled; all six executors remain disabled and unreachable. | Mandatory before the **first** of: production enablement of the Content Intelligence execution chain; removal of the current comment freeze; or any claim that `CC5` comprehensively rejects past/perfect application-state declarations. |
 
 **`CC5-SYNTAX-001` in brief.** `CC5` does not reject
 *"Migration 007 remained unapplied."*, *"… has remained unapplied."*,
