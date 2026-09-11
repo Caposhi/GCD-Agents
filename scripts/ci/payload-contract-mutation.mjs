@@ -154,6 +154,9 @@ const EVIDENCE_PACK = "src/harness/evidence/pack.ts";
 const STAGE_EXECUTION = "src/harness/agents/stageExecution.ts";
 const SDK = "src/harness/sdk.ts";
 const ROLLBACK = "state/rollback/007_evidence_bounds_rollback.sql";
+// The CC5-SYNTAX-001 closure's authority manifest. Data, not code: it is read
+// at runtime from `src/`, so mutating it needs no rebuild.
+const SQL_AUTHORITY = "src/harness/sqlAuthority.json";
 
 /**
  * Each mutation names the derivation it breaks, the single edit that breaks it,
@@ -2578,6 +2581,242 @@ const MUTATIONS = [
       + "-- It has per the 2026-09-02 audit) been applied to production.",
     expect: ["CC5."],
   },
+
+  // --- CC5-SYNTAX-001 closure: the frozen-authority control (CC5F) ----------
+  //
+  // CC5's bounded grammar does not recognise these forms and never will without
+  // being taught each one. They are caught here because the prose they add is
+  // not on the authority's allowlist -- a structural property, not a parse.
+  // Each is asserted against BOTH authoritative files.
+  {
+    name: "CC5-SYNTAX-001: the migration comment carries the unauthorized past form `Migration 007 remained unapplied.` in the authorized-insertion zone -- the exact class CC5's grammar does not recognise",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.\n-- Migration 007 remained unapplied.",
+    expect: ["CC5F."],
+  },
+  {
+    name: "CC5-SYNTAX-001: the migration comment carries the unauthorized past form `Migration 007 has remained unapplied.` in the authorized-insertion zone -- the exact class CC5's grammar does not recognise",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.\n-- Migration 007 has remained unapplied.",
+    expect: ["CC5F."],
+  },
+  {
+    name: "CC5-SYNTAX-001: the migration comment carries the unauthorized past form `Migration 007 stayed unapplied.` in the authorized-insertion zone -- the exact class CC5's grammar does not recognise",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.\n-- Migration 007 stayed unapplied.",
+    expect: ["CC5F."],
+  },
+  {
+    name: "CC5-SYNTAX-001: the migration comment carries the unauthorized past form `Migration 007 has stayed unapplied.` in the authorized-insertion zone -- the exact class CC5's grammar does not recognise",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.\n-- Migration 007 has stayed unapplied.",
+    expect: ["CC5F."],
+  },
+  {
+    name: "CC5-SYNTAX-001: the migration comment carries the unauthorized past form `It remained unapplied.` in the authorized-insertion zone -- the exact class CC5's grammar does not recognise",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.\n-- It remained unapplied.",
+    expect: ["CC5F."],
+  },
+  {
+    name: "CC5-SYNTAX-001: the migration comment carries the unauthorized past form `It has remained unapplied.` in the authorized-insertion zone -- the exact class CC5's grammar does not recognise",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.\n-- It has remained unapplied.",
+    expect: ["CC5F."],
+  },
+  {
+    name: "CC5-SYNTAX-001: the migration comment carries the unauthorized past form `It stayed unapplied.` in the authorized-insertion zone -- the exact class CC5's grammar does not recognise",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.\n-- It stayed unapplied.",
+    expect: ["CC5F."],
+  },
+  {
+    name: "CC5-SYNTAX-001: the migration comment carries the unauthorized past form `It has stayed unapplied.` in the authorized-insertion zone -- the exact class CC5's grammar does not recognise",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.\n-- It has stayed unapplied.",
+    expect: ["CC5F."],
+  },
+  {
+    name: "CC5-SYNTAX-001: the rollback comment carries the unauthorized past form `Migration 007 remained unapplied.` in the authorized-insertion zone -- the exact class CC5's grammar does not recognise",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first.\n-- Migration 007 remained unapplied.",
+    expect: ["CC5F."],
+  },
+  {
+    name: "CC5-SYNTAX-001: the rollback comment carries the unauthorized past form `Migration 007 has remained unapplied.` in the authorized-insertion zone -- the exact class CC5's grammar does not recognise",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first.\n-- Migration 007 has remained unapplied.",
+    expect: ["CC5F."],
+  },
+  {
+    name: "CC5-SYNTAX-001: the rollback comment carries the unauthorized past form `Migration 007 stayed unapplied.` in the authorized-insertion zone -- the exact class CC5's grammar does not recognise",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first.\n-- Migration 007 stayed unapplied.",
+    expect: ["CC5F."],
+  },
+  {
+    name: "CC5-SYNTAX-001: the rollback comment carries the unauthorized past form `Migration 007 has stayed unapplied.` in the authorized-insertion zone -- the exact class CC5's grammar does not recognise",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first.\n-- Migration 007 has stayed unapplied.",
+    expect: ["CC5F."],
+  },
+  {
+    name: "CC5-SYNTAX-001: the rollback comment carries the unauthorized past form `It remained unapplied.` in the authorized-insertion zone -- the exact class CC5's grammar does not recognise",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first.\n-- It remained unapplied.",
+    expect: ["CC5F."],
+  },
+  {
+    name: "CC5-SYNTAX-001: the rollback comment carries the unauthorized past form `It has remained unapplied.` in the authorized-insertion zone -- the exact class CC5's grammar does not recognise",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first.\n-- It has remained unapplied.",
+    expect: ["CC5F."],
+  },
+  {
+    name: "CC5-SYNTAX-001: the rollback comment carries the unauthorized past form `It stayed unapplied.` in the authorized-insertion zone -- the exact class CC5's grammar does not recognise",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first.\n-- It stayed unapplied.",
+    expect: ["CC5F."],
+  },
+  {
+    name: "CC5-SYNTAX-001: the rollback comment carries the unauthorized past form `It has stayed unapplied.` in the authorized-insertion zone -- the exact class CC5's grammar does not recognise",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first.\n-- It has stayed unapplied.",
+    expect: ["CC5F."],
+  },
+  {
+    name: "CC5-SYNTAX-001: the migration carries `Migration 007 remained unapplied.` appended after the frozen trailing comment block",
+    file: MIGRATION,
+    from: "-- TypeScript computes a conservative upper bound for this same form.",
+    to: "-- TypeScript computes a conservative upper bound for this same form.\n-- Migration 007 remained unapplied.",
+    expect: ["CC5F."],
+  },
+  {
+    name: "CC5-SYNTAX-001: the rollback carries `Migration 007 remained unapplied.` appended after the frozen trailing comment block",
+    file: ROLLBACK,
+    from: "-- rollback would later remove. Dropped after the calling constraint.",
+    to: "-- rollback would later remove. Dropped after the calling constraint.\n-- Migration 007 remained unapplied.",
+    expect: ["CC5F."],
+  },
+  {
+    name: "the migration's dated 2026-08-28 observation is advanced from 001-006 to 001-007 -- a false history no grammar check reads",
+    file: MIGRATION,
+    from: "`_migrations` holding 001-006; a dated observation is not a statement about now.",
+    to: "`_migrations` holding 001-007; a dated observation is not a statement about now.",
+    expect: ["CC5F."],
+  },
+  {
+    name: "the rollback's dated 2026-08-28 observation is advanced from 001-006 to 001-007 -- a false history no grammar check reads",
+    file: ROLLBACK,
+    from: "-- 001-006. Disposable PostgreSQL tests exercise this script; any production run",
+    to: "-- 001-007. Disposable PostgreSQL tests exercise this script; any production run",
+    expect: ["CC5F."],
+  },
+  {
+    name: "the migration's executable SQL is changed by one semantically neutral byte -- the raw-byte executable digest still moves",
+    file: MIGRATION,
+    from: "    CHECK (length(id) <= 200 AND octet_length(id) <= 200),",
+    to: "    CHECK (length(id) <= 200  AND octet_length(id) <= 200),",
+    expect: ["CC5F."],
+  },
+  {
+    name: "the rollback's executable SQL is changed by one semantically neutral byte -- the raw-byte executable digest still moves",
+    file: ROLLBACK,
+    from: "DELETE FROM _migrations WHERE name = '007_evidence_bounds.sql';",
+    to: "DELETE  FROM _migrations WHERE name = '007_evidence_bounds.sql';",
+    expect: ["CC5F."],
+  },
+
+  // --- the authority manifest itself is a mutation target --------------------
+  //
+  // A freeze is only as good as the manifest that defines it, so the manifest is
+  // attacked the same way the artifacts are.
+  {
+    name: "the authority's migration executable digest is altered by one character, so the pinned identity no longer names the reviewed bytes",
+    file: SQL_AUTHORITY,
+    from: "\"executableSha256\": \"8ac49f6d306b3c3c6516263bf438cacaab7b8c9ed83b8b596a44d99684ad3ef9\"",
+    to: "\"executableSha256\": \"8ac49f6d306b3c3c6516263bf438cacaab7b8c9ed83b8b596a44d99684ad3ef0\"",
+    expect: ["CC5F."],
+  },
+  {
+    name: "the authority's migration leading-segment digest is altered, so the segment no longer attests its own text",
+    file: SQL_AUTHORITY,
+    from: "\"sha256\": \"eb7579cf4f8fef2295ea253fe8effbf88257cefe449fd31665594091bbdac1c8\"",
+    to: "\"sha256\": \"eb7579cf4f8fef2295ea253fe8effbf88257cefe449fd31665594091bbdac1c0\"",
+    expect: ["CC5F."],
+  },
+  {
+    name: "the authority's rollback trailing-segment digest is UPPERCASED -- a digest that is not lowercase 64-hex is refused rather than normalised",
+    file: SQL_AUTHORITY,
+    from: "\"sha256\": \"f69b00f0aff02c0f664f89ce5a5c88db4674b25eb2a046a63867e284b228caf9\"",
+    to: "\"sha256\": \"F69B00F0AFF02C0F664F89CE5A5C88DB4674B25EB2A046A63867E284B228CAF9\"",
+    expect: ["CC5F."],
+  },
+  {
+    name: "the authority's frozen migration prose is edited WITHOUT updating its digest -- the segment must attest its own text",
+    file: SQL_AUTHORITY,
+    from: "Payload-contract reconciliation: bounded evidence text.",
+    to: "Payload-contract reconciliation: bounded evidence texts.",
+    expect: ["CC5F."],
+  },
+  {
+    name: "the authority carries a DUPLICATE top-level property name -- JSON.parse would silently keep the last, so the reviewed text and the enforced text would differ",
+    file: SQL_AUTHORITY,
+    from: "  \"version\": 1,",
+    to: "  \"version\": 1,\n  \"version\": 1,",
+    expect: ["CC5F."],
+  },
+  {
+    name: "the authority carries a duplicate `sha256` in ONE segment object, the second an ESCAPED-EQUIVALENT spelling",
+    file: SQL_AUTHORITY,
+    from: "      \"sha256\": \"be0426e70ce4cd035749f643c7e7ba2502625851985bac4ae0f6d45ac77d5b19\"",
+    to: "      \"sha256\": \"be0426e70ce4cd035749f643c7e7ba2502625851985bac4ae0f6d45ac77d5b19\",\n      \"\\u0073ha256\": \"be0426e70ce4cd035749f643c7e7ba2502625851985bac4ae0f6d45ac77d5b19\"",
+    expect: ["CC5F."],
+  },
+  {
+    name: "the authority carries an UNEXPECTED extra top-level field -- the schema is closed",
+    file: SQL_AUTHORITY,
+    from: "  \"version\": 1,",
+    to: "  \"version\": 1,\n  \"note\": \"informational\",",
+    expect: ["CC5F."],
+  },
+  {
+    name: "the authority's version is not 1 -- an unrecognised authority format is refused, never best-effort interpreted",
+    file: SQL_AUTHORITY,
+    from: "  \"version\": 1,",
+    to: "  \"version\": 2,",
+    expect: ["CC5F."],
+  },
+  {
+    name: "the authority names a path that is not one of the two authoritative artifacts",
+    file: SQL_AUTHORITY,
+    from: "\"path\": \"state/migrations/007_evidence_bounds.sql\"",
+    to: "\"path\": \"state/migrations/007_evidence_bounds_copy.sql\"",
+    expect: ["CC5F."],
+  },
+  {
+    name: "the authority's JSON is malformed -- a manifest that cannot be parsed is a failure, never an empty authority",
+    file: SQL_AUTHORITY,
+    from: "  \"artifacts\": [",
+    to: "  \"artifacts\": [[{",
+    expect: ["CC5F."],
+  },
 ];
 
 const sha256 = (text) => createHash("sha256").update(text, "utf8").digest("hex");
@@ -2668,7 +2907,9 @@ async function main() {
   // Skipping those rebuilds is what keeps the run inside the CI job budget.
   let distStale = false;
   for (const [index, mutation] of MUTATIONS.entries()) {
-    const compiled = mutation.file.startsWith("src/");
+    // `dist/` is compiled from TypeScript only. A JSON data file under `src/` is
+    // read at runtime, so mutating it does not invalidate `dist/`.
+    const compiled = mutation.file.startsWith("src/") && !mutation.file.endsWith(".json");
     const path = resolve(REPO_ROOT, mutation.file);
     const original = readFileSync(path, "utf8");
     const originalDigest = sha256(original);

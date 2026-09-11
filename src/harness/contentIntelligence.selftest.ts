@@ -4,10 +4,21 @@
  * Run: npm run build && npm run test:content-intelligence
  */
 
+import {
+  copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync,
+} from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+  checkSqlAuthority,
+  executableBytes,
+  parseJsonRejectingDuplicateKeys,
+  sha256Bytes,
+  sha256Text,
+} from "./sqlAuthority.js";
 import {
   EVIDENCE_KINDS,
   EvidenceKind,
@@ -5823,6 +5834,160 @@ async function run(): Promise<void> {
         // Separate authorization is required by both.
         && /SEPARATE, SEPARATELY AUTHORIZED/.test(migrationSql)
         && /SEPARATE, SEPARATELY AUTHORIZED/.test(rollbackSql));
+
+    // --- CC5F. the authoritative prose is frozen, not interpreted ------------
+    //
+    // CC5 above is a DENYLIST: it recognises the application-state constructions
+    // it was taught and accepts everything else. Each review round has found
+    // another construction it was not taught, most recently the past
+    // remain/stay family recorded as CC5-SYNTAX-001 ("Migration 007 remained
+    // unapplied."), which CC5 still does not reject. Teaching it one more phrase
+    // closes one form and leaves the class open.
+    //
+    // This check inverts the quantifier. Both authoritative comment blocks are
+    // frozen by exact content, and prose may be added only in one designated
+    // zone whose contents must be byte-identical to a sentence on an explicit
+    // ALLOWLIST in src/harness/sqlAuthority.json. Nothing is interpreted, so
+    // there is no grammar to outrun: an unapproved sentence fails because it is
+    // not on the list, whatever its tense, voice or phrasing.
+    //
+    // It proves what the files SAY. It establishes nothing about what the
+    // production database DID, and claims no semantic understanding.
+    const authority = checkSqlAuthority(REPO_ROOT);
+    if (authority.violations.length) {
+      console.log(`      authority violations: ${JSON.stringify(authority.violations)}`);
+    }
+    check("CC5F. both authoritative 007 comment blocks are frozen by exact content and their "
+      + "executable SQL by raw-byte digest, so an application-state claim CC5's bounded grammar "
+      + "does not recognise — including every CC5-SYNTAX-001 past remain/stay form — still fails "
+      + "closed: prose may be added only in one designated zone and only when byte-identical to an "
+      + "explicitly authorized sentence, the manifest and both artifacts must be regular "
+      + "non-symlink files, the manifest is parsed with duplicate property names rejected per "
+      + "object scope and validated against a closed schema, and any legitimate change therefore "
+      + "requires a visible sqlAuthority.json update rather than passing through as wording "
+      + "variation — this constrains repository text only and establishes nothing about "
+      + "production",
+      authority.violations.length === 0);
+
+    // --- CC5G..CC5K. the structural properties CC5F rests on -----------------
+    //
+    // CC5F is only as strong as the identity it pins. Each of these exercises one
+    // way that identity could be subverted while every digest still "matched".
+    // They run against a DISPOSABLE fixture copied to a temp directory — the
+    // authoritative checkout is never a mutation target — and the fixture is
+    // removed afterwards.
+    const fixtureRoots: string[] = [];
+    const makeFixture = (): string => {
+      const dir = mkdtempSync(join(tmpdir(), "cc5-authority-"));
+      fixtureRoots.push(dir);
+      mkdirSync(join(dir, "src/harness"), { recursive: true });
+      mkdirSync(join(dir, "state/migrations"), { recursive: true });
+      mkdirSync(join(dir, "state/rollback"), { recursive: true });
+      for (const rel of [
+        "src/harness/sqlAuthority.json",
+        "state/migrations/007_evidence_bounds.sql",
+        "state/rollback/007_evidence_bounds_rollback.sql",
+      ]) copyFileSync(resolve(REPO_ROOT, rel), join(dir, rel));
+      return dir;
+    };
+    const MANIFEST_REL = "src/harness/sqlAuthority.json";
+    const SQL_RELS = [
+      "state/migrations/007_evidence_bounds.sql",
+      "state/rollback/007_evidence_bounds_rollback.sql",
+    ];
+    /** Replaces a fixture file with a symlink to byte-identical content. */
+    const relinkToIdenticalContent = (dir: string, rel: string): void => {
+      const target = join(dir, `${rel.replace(/[^A-Za-z0-9]/g, "_")}.copy`);
+      const original = readFileSync(join(dir, rel));
+      writeFileSync(target, original);
+      rmSync(join(dir, rel));
+      symlinkSync(target, join(dir, rel));
+    };
+
+    try {
+      // A clean copy must pass, or every negative below proves nothing.
+      check("CC5G. an untouched disposable copy of the authority and both artifacts passes, so "
+        + "the negative cases below isolate the property each one mutates",
+        checkSqlAuthority(makeFixture()).violations.length === 0);
+
+      // Symlinks. Byte-identical content through a link is still not the
+      // reviewed path, and the link target can be repointed afterwards without
+      // touching anything the manifest pins.
+      const symlinkResults = [MANIFEST_REL, ...SQL_RELS].map((rel) => {
+        const dir = makeFixture();
+        relinkToIdenticalContent(dir, rel);
+        return checkSqlAuthority(dir).violations;
+      });
+      check("CC5H. replacing the manifest, the migration or the rollback with a symbolic link to "
+        + "BYTE-IDENTICAL content is refused for each of the three independently — identity is the "
+        + "reviewed regular file, not merely the bytes currently reachable through it",
+        symlinkResults.every((v) => v.length > 0 && v.some((m) => /symbolic link/.test(m))));
+
+      // Fatal UTF-8. The manifest is updated to the mutated file's RAW digest,
+      // so the digest comparison passes and the decode is the only thing left
+      // that can reject it.
+      const utf8Results = SQL_RELS.map((rel) => {
+        const dir = makeFixture();
+        const path = join(dir, rel);
+        const mutated = Buffer.concat([readFileSync(path), Buffer.from([0x80])]);
+        writeFileSync(path, mutated);
+        const manifestPath = join(dir, MANIFEST_REL);
+        const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+          artifacts: Array<{ path: string; executableSha256: string }>;
+        };
+        const entry = manifest.artifacts.find((a) => a.path === rel);
+        if (entry) entry.executableSha256 = sha256Bytes(executableBytes(mutated));
+        writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+        return checkSqlAuthority(dir).violations;
+      });
+      check("CC5I. malformed UTF-8 in either artifact is refused EVEN WHEN the manifest is updated "
+        + "to the mutated file's raw digest — canonical text is decoded with fatal UTF-8, so a byte "
+        + "sequence that is not text cannot be laundered into a matching authority",
+        utf8Results.every((v) => v.some((m) => /not valid UTF-8/.test(m))));
+
+      // Raw bytes, not decoded strings. Two DISTINCT malformed byte sequences
+      // decode (non-fatally) to the same replacement character, so a digest
+      // taken over decoded text collides while a raw-byte digest does not.
+      const base = Buffer.from("-- authority\n", "utf8");
+      const with80 = Buffer.concat([base, Buffer.from([0x80])]);
+      const with81 = Buffer.concat([base, Buffer.from([0x81])]);
+      const lossy = new TextDecoder("utf-8");
+      check("CC5J. the digest is taken over RAW BYTES, not a decoded string: appending 0x80 and "
+        + "0x81 to otherwise identical bytes yields two different raw digests, while both decode "
+        + "lossily to the same replacement character and would collide onto one digest if the "
+        + "decoded text were hashed instead",
+        sha256Bytes(with80) !== sha256Bytes(with81)
+          && lossy.decode(with80) === lossy.decode(with81)
+          && sha256Text(lossy.decode(with80)) === sha256Text(lossy.decode(with81)));
+
+      // Duplicate decoded property names, per object scope, before any
+      // authority object is built.
+      const dup = (text: string): boolean => {
+        try { parseJsonRejectingDuplicateKeys(text); return false; } catch { return true; }
+      };
+      const ok = (text: string): boolean => {
+        try { parseJsonRejectingDuplicateKeys(text); return true; } catch { return false; }
+      };
+      const RAW_CONTROL = `{"a":"${String.fromCharCode(1)}"}`;
+      check("CC5K. duplicate DECODED property names are rejected while parsing, within each object "
+        + "scope separately — literal duplicates, escaped-equivalent spellings in either order, "
+        + "duplicated `path` and `sha256` fields, and \\u escapes including a surrogate pair — while "
+        + "the same names reused in SIBLING objects stay legal and malformed JSON is refused",
+        [
+          '{"a":1,"a":2}',
+          '{"path":"x","\\u0070ath":"y"}',
+          '{"\\u0070ath":"x","path":"y"}',
+          '{"sha256":"x","\\u0073ha256":"y"}',
+          '{"\\u0073\\u0068a256":"x","sha256":"y"}',
+          '{"g\\uD83D\\uDE00":1,"g\\uD83D\\uDE00":2}',
+          '{"outer":{"a":1},"a":2,"a":3}',
+        ].every(dup)
+          && ok('{"artifacts":[{"path":"a","sha256":"b"},{"path":"c","sha256":"d"}]}')
+          && ok('{"g\\uD83D\\uDE00":1,"h":2}')
+          && ['{"a":1,', '{a:1}', '{"a":1}{"b":2}', '{"a":01}', RAW_CONTROL].every(dup));
+    } finally {
+      for (const dir of fixtureRoots) rmSync(dir, { recursive: true, force: true });
+    }
 
     // --- CC-B. the evidence bounds are real, and invalidate nothing valid ---
     check("CC6. an over-long claim, subject, attribute, tag, tag list, source ref, "
