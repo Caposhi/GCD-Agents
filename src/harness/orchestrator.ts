@@ -357,12 +357,19 @@ async function resolveImage(image: any, runId?: string): Promise<any> {
   for (let attempt = 1; attempt <= MAX_IMAGE_ATTEMPTS; attempt++) {
     attempts = attempt;
     // On a retry, hard-constrain the prompt and remove the prior QC defect.
+    // A plate defect that survived one attempt won't be fixed by repeating the
+    // same "render it blank" ask — production data shows that instruction is
+    // unreliable on a photoreal hero car. Force a compositional change instead.
+    const plateIssue = /plate/i.test(lastIssues.join(" "));
     const prompt =
       attempt === 1
         ? basePrompt
         : `${basePrompt}\n\nCRITICAL FIX: the previous render failed publication QC (${lastIssues.join("; ") || "visual inspection failure"}). ` +
-          `Remove every reported privacy, safety, or misleading element. Render ONLY these exact words — large, sharp, and perfectly legible — with NO other text: no body paragraphs, no second call-to-action, no license-plate text. ` +
-          `Allowed text: ${expected.length ? expected.map((t: string) => `"${t}"`).join(", ") : "the kicker, the headline, one CTA button, the wordmark, and the URL only"}.`;
+          `Remove every reported privacy, safety, or misleading element. Render ONLY these exact words — large, sharp, and perfectly legible — with NO other text: no body paragraphs, no second call-to-action.` +
+          (plateIssue
+            ? ` The license plate keeps rendering with visible characters — do NOT try to render a "blank" plate again. Instead change the composition so no plate is in clear view at all: crop the hero shot just above the bumper/plate line, use a rear 3/4 angle, turn the plate away from camera, or place it behind strong foreground blur/reflection. If any plate-shaped area remains in frame, it must be a smooth solid-color panel — no characters, numbers, or texture of any kind, not even faint ones.`
+            : ` no license-plate text.`) +
+          ` Allowed text: ${expected.length ? expected.map((t: string) => `"${t}"`).join(", ") : "the kicker, the headline, one CTA button, the wordmark, and the URL only"}.`;
     try {
       console.log(`[image] generating via fal (${ct})… attempt ${attempt}/${MAX_IMAGE_ATTEMPTS}`);
       const gen = await generateImage({ contentType: ct, prompt, width, height }, config.imagegenApiKey);
