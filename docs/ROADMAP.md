@@ -260,7 +260,8 @@ pending difference — which is why `D` is validated in its own right. Pattern-m
 error code was rejected as a sanitizer, because a SQLSTATE is chosen by the server.
 
 **Automated validation at the reviewed head.** typecheck 0 · build 0 · eight offline suites all pass
-(1,254 `PASS` lines) · dry run 0 · controller fixtures 0 · Markdown links 60 files · env coverage 35
+(1,367 assertions; 1,254 `PASS`-prefixed lines) · dry run 0 · controller fixtures 0 · Markdown links
+60 files · env coverage 35
 · sensitive scan 151 files · `npm audit --omit=dev` 0 · `git diff --check` clean. Exact-head CI run
 `34700377391`: five jobs, all `success`, each attempt 1, no re-run.
 
