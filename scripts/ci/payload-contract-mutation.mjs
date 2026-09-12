@@ -5,7 +5,7 @@
  * A regression that cannot fail is decoration. This script proves each
  * load-bearing derivation in `src/harness/agents/payloadContract.ts` (and the
  * nine files that must agree with it) is actually load-bearing: it applies one
- * focused mutation, rebuilds, runs the Content Intelligence offline suite, and
+ * focused mutation in a disposable no-Git copy, rebuilds there, runs the Content Intelligence offline suite, and
  * requires the NAMED check that owns that derivation to fail. Then it restores
  * the file byte-for-byte — verified by SHA-256 against the bytes captured
  * before the mutation — rebuilds, and requires the suite to pass again.
@@ -114,35 +114,40 @@
  * were left alone. Every corrected payload was re-run and compared
  * mutation-by-mutation against the pre-correction log.
  *
- * Those groups also run the other direction. Cases marked `mustPass` insert the
- * wording the files are REQUIRED to carry — the epistemic form, the dated
- * 2026-08-28 observation of 001-006, the not-established form, a governed
- * proposition holding its own internal qualifier behind a comma or a
- * parenthesis, the procedural manner the two files themselves use, and the
- * COORDINATED governed forms ("whether or not ... has been applied", "whether
- * ... has or has not been applied", "whether ... was applied or ran", "if ...
- * was applied or ran, operators must stop") — and require the suite to stay
- * GREEN, so an over-broad guard fails here rather than in review. Three of the
- * five allowed classes added at ed7291b were wrongly rejected at c189d2b, all
- * four coordinated classes were wrongly rejected at 83af628, four of the eight
- * added next were wrongly rejected at 3f173d5, and both nested-parenthesis
- * classes were wrongly rejected at 4a4c4b2.
+ * The historical `mustPass` prose cases are no longer treated as authority.
+ * Whole-file identity makes every uncoordinated byte change prohibited. Two
+ * dedicated positive cases update the changed artifact digest and the separate
+ * manifest source pin together, proving legitimate reviewed evolution remains
+ * possible without an English allowlist.
  *
  * It is offline and deterministic: no network, no database, no provider, no
- * credential. It mutates only files inside this repository's `src/` and
- * `state/` trees, and it restores every one of them in a `finally` block, so an
- * interrupted run does not leave a mutated tree behind.
+ * credential. The authoritative checkout is read-only after a disposable copy
+ * is prepared. Catchable signals clean that copy when possible; SIGKILL may
+ * strand the disposable directory, but cannot dirty the authoritative checkout.
  *
  * Run: npm run test:payload-mutation
  */
 
 import { createHash } from "node:crypto";
-import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { execFileSync, spawn } from "node:child_process";
+import {
+  cpSync,
+  existsSync,
+  lstatSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+const SCRIPT_PATH = fileURLToPath(import.meta.url);
+const AUTHORITATIVE_REPO_ROOT = resolve(dirname(SCRIPT_PATH), "../..");
+let REPO_ROOT = AUTHORITATIVE_REPO_ROOT;
 
 const PAYLOAD = "src/harness/agents/payloadContract.ts";
 const MIGRATION = "state/migrations/007_evidence_bounds.sql";
@@ -157,6 +162,7 @@ const ROLLBACK = "state/rollback/007_evidence_bounds_rollback.sql";
 // The CC5-SYNTAX-001 closure's authority manifest. Data, not code: it is read
 // at runtime from `src/`, so mutating it needs no rebuild.
 const SQL_AUTHORITY = "src/harness/sqlAuthority.json";
+const SQL_AUTHORITY_SOURCE = "src/harness/sqlAuthority.ts";
 
 /**
  * Each mutation names the derivation it breaks, the single edit that breaks it,
@@ -164,7 +170,7 @@ const SQL_AUTHORITY = "src/harness/sqlAuthority.json";
  * than a whole line so a wording change to a check does not silently turn a
  * mutation test into a no-op — the id is the stable part.
  */
-const MUTATIONS = [
+const LEGACY_MUTATION_DEFINITIONS = [
   {
     // Not the constant itself — a change there is a type error, because the
     // regressions compare against its literal type. The derivation's USE of it
@@ -2585,9 +2591,8 @@ const MUTATIONS = [
   // --- CC5-SYNTAX-001 closure: the frozen-authority control (CC5F) ----------
   //
   // CC5's bounded grammar does not recognise these forms and never will without
-  // being taught each one. They are caught here because the prose they add is
-  // not on the authority's allowlist -- a structural property, not a parse.
-  // Each is asserted against BOTH authoritative files.
+  // being taught each one. They are caught here because every raw byte of both
+  // authoritative files is pinned, not because any English is interpreted.
   {
     name: "CC5-SYNTAX-001: the migration comment carries the unauthorized past form `Migration 007 remained unapplied.` in the authorized-insertion zone -- the exact class CC5's grammar does not recognise",
     file: MIGRATION,
@@ -2748,59 +2753,59 @@ const MUTATIONS = [
   // A freeze is only as good as the manifest that defines it, so the manifest is
   // attacked the same way the artifacts are.
   {
-    name: "the authority's migration executable digest is altered by one character, so the pinned identity no longer names the reviewed bytes",
+    name: "the authority's migration whole-file digest is altered by one character, so the pinned identity no longer names the reviewed bytes",
     file: SQL_AUTHORITY,
-    from: "\"executableSha256\": \"8ac49f6d306b3c3c6516263bf438cacaab7b8c9ed83b8b596a44d99684ad3ef9\"",
-    to: "\"executableSha256\": \"8ac49f6d306b3c3c6516263bf438cacaab7b8c9ed83b8b596a44d99684ad3ef0\"",
+    from: "\"sha256\": \"fb5128b4ae207e75b7c6b2798519594c72b7d91191b7055a674c22fafdf2ddca\"",
+    to: "\"sha256\": \"fb5128b4ae207e75b7c6b2798519594c72b7d91191b7055a674c22fafdf2ddc0\"",
     expect: ["CC5F."],
   },
   {
-    name: "the authority's migration leading-segment digest is altered, so the segment no longer attests its own text",
+    name: "the authority's rollback whole-file digest is altered, so it no longer names the reviewed bytes",
     file: SQL_AUTHORITY,
-    from: "\"sha256\": \"eb7579cf4f8fef2295ea253fe8effbf88257cefe449fd31665594091bbdac1c8\"",
-    to: "\"sha256\": \"eb7579cf4f8fef2295ea253fe8effbf88257cefe449fd31665594091bbdac1c0\"",
+    from: "\"sha256\": \"31e0ab0c1f92ccafbd30fb827b4ece9856257a997c39ad5fb031bc18cebfe122\"",
+    to: "\"sha256\": \"31e0ab0c1f92ccafbd30fb827b4ece9856257a997c39ad5fb031bc18cebfe120\"",
     expect: ["CC5F."],
   },
   {
-    name: "the authority's rollback trailing-segment digest is UPPERCASED -- a digest that is not lowercase 64-hex is refused rather than normalised",
+    name: "the authority's rollback digest is UPPERCASED -- a digest that is not lowercase 64-hex is refused rather than normalised",
     file: SQL_AUTHORITY,
-    from: "\"sha256\": \"f69b00f0aff02c0f664f89ce5a5c88db4674b25eb2a046a63867e284b228caf9\"",
-    to: "\"sha256\": \"F69B00F0AFF02C0F664F89CE5A5C88DB4674B25EB2A046A63867E284B228CAF9\"",
+    from: "\"sha256\": \"31e0ab0c1f92ccafbd30fb827b4ece9856257a997c39ad5fb031bc18cebfe122\"",
+    to: "\"sha256\": \"31E0AB0C1F92CCAFBD30FB827B4ECE9856257A997C39AD5FB031BC18CEBFE122\"",
     expect: ["CC5F."],
   },
   {
-    name: "the authority's frozen migration prose is edited WITHOUT updating its digest -- the segment must attest its own text",
+    name: "the manifest raw bytes gain insignificant JSON whitespace without updating the independent source pin",
     file: SQL_AUTHORITY,
-    from: "Payload-contract reconciliation: bounded evidence text.",
-    to: "Payload-contract reconciliation: bounded evidence texts.",
+    from: "{\n  \"version\": 2,",
+    to: "{\n \n  \"version\": 2,",
     expect: ["CC5F."],
   },
   {
     name: "the authority carries a DUPLICATE top-level property name -- JSON.parse would silently keep the last, so the reviewed text and the enforced text would differ",
     file: SQL_AUTHORITY,
-    from: "  \"version\": 1,",
-    to: "  \"version\": 1,\n  \"version\": 1,",
+    from: "  \"version\": 2,",
+    to: "  \"version\": 2,\n  \"version\": 2,",
     expect: ["CC5F."],
   },
   {
-    name: "the authority carries a duplicate `sha256` in ONE segment object, the second an ESCAPED-EQUIVALENT spelling",
+    name: "the authority carries a duplicate `sha256` in ONE artifact object, the second an ESCAPED-EQUIVALENT spelling",
     file: SQL_AUTHORITY,
-    from: "      \"sha256\": \"be0426e70ce4cd035749f643c7e7ba2502625851985bac4ae0f6d45ac77d5b19\"",
-    to: "      \"sha256\": \"be0426e70ce4cd035749f643c7e7ba2502625851985bac4ae0f6d45ac77d5b19\",\n      \"\\u0073ha256\": \"be0426e70ce4cd035749f643c7e7ba2502625851985bac4ae0f6d45ac77d5b19\"",
+    from: "      \"sha256\": \"fb5128b4ae207e75b7c6b2798519594c72b7d91191b7055a674c22fafdf2ddca\"",
+    to: "      \"sha256\": \"fb5128b4ae207e75b7c6b2798519594c72b7d91191b7055a674c22fafdf2ddca\",\n      \"\\u0073ha256\": \"fb5128b4ae207e75b7c6b2798519594c72b7d91191b7055a674c22fafdf2ddca\"",
     expect: ["CC5F."],
   },
   {
     name: "the authority carries an UNEXPECTED extra top-level field -- the schema is closed",
     file: SQL_AUTHORITY,
-    from: "  \"version\": 1,",
-    to: "  \"version\": 1,\n  \"note\": \"informational\",",
+    from: "  \"version\": 2,",
+    to: "  \"version\": 2,\n  \"note\": \"informational\",",
     expect: ["CC5F."],
   },
   {
-    name: "the authority's version is not 1 -- an unrecognised authority format is refused, never best-effort interpreted",
+    name: "the authority's version is not 2 -- an unrecognised authority format is refused, never best-effort interpreted",
     file: SQL_AUTHORITY,
-    from: "  \"version\": 1,",
-    to: "  \"version\": 2,",
+    from: "  \"version\": 2,",
+    to: "  \"version\": 3,",
     expect: ["CC5F."],
   },
   {
@@ -2819,7 +2824,257 @@ const MUTATIONS = [
   },
 ];
 
-const sha256 = (text) => createHash("sha256").update(text, "utf8").digest("hex");
+// The former insertion-zone model classified 46 English mutations as
+// authorized merely because their sentence appeared in one global allowlist.
+// Whole-file authority intentionally invalidates that premise: without a
+// coordinated artifact digest and manifest-pin update, every byte change is
+// prohibited. Preserve each historical name and make the changed trust model
+// explicit in the executed inventory.
+const LEGACY_MUTATIONS = LEGACY_MUTATION_DEFINITIONS.map((mutation) => {
+  if (!mutation.mustPass) return mutation;
+  const { mustPass: _invalidLegacyAuthorization, ...rest } = mutation;
+  return {
+    ...rest,
+    name: `${mutation.name} — changed without coordinated whole-file authority`,
+    expect: ["CC5F."],
+  };
+});
+
+const RAW_IDENTITY_MUTATIONS = [
+  {
+    name: "a full-line SQL comment is inserted inside the dollar-quoted helper body after AS $$",
+    file: MIGRATION,
+    from: "AS $$\n  SELECT coalesce(bool_and(",
+    to: "AS $$\n-- This file is documented SQL, run by hand under its own authorization.\n"
+      + "  SELECT coalesce(bool_and(",
+    expect: ["CC5F."],
+  },
+  {
+    name: "two migration comment lines are relocated while executable-line order is preserved",
+    file: MIGRATION,
+    from: "-- Phase 0B.0 gave every evidence field a *presence* rule and no *size* rule:\n"
+      + "-- `claim` and `subject` had to be non-empty and nothing more.",
+    to: "-- `claim` and `subject` had to be non-empty and nothing more.\n"
+      + "-- Phase 0B.0 gave every evidence field a *presence* rule and no *size* rule:",
+    expect: ["CC5F."],
+  },
+  {
+    name: "rollback-only documented-SQL wording is inserted in the forward migration",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.\n"
+      + "-- This file is documented SQL, run by hand under its own authorization.",
+    expect: ["CC5F."],
+  },
+  {
+    name: "a blank double-dash line changes migration identity",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.\n--",
+    expect: ["CC5F."],
+  },
+  {
+    name: "hard-wrapping an apparently acceptable sentence changes migration identity",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.\n"
+      + "-- This file is documented SQL, run by hand\n-- under its own authorization.",
+    expect: ["CC5F."],
+  },
+  {
+    name: "a double-dash tab line changes migration identity",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.\n--\t",
+    expect: ["CC5F."],
+  },
+  {
+    name: "duplicating an existing comment line changes migration identity",
+    file: MIGRATION,
+    from: "-- Establish the current applied set by read-only verification before acting on it.",
+    to: "-- Establish the current applied set by read-only verification before acting on it.\n"
+      + "-- Establish the current applied set by read-only verification before acting on it.",
+    expect: ["CC5F."],
+  },
+  {
+    name: "converting the complete migration from LF to CRLF changes identity",
+    file: MIGRATION,
+    transform: "crlf",
+    expect: ["CC5F."],
+  },
+  {
+    name: "prepending a UTF-8 BOM to the migration changes identity",
+    file: MIGRATION,
+    prependBytes: [0xef, 0xbb, 0xbf],
+    expect: ["CC5F."],
+  },
+  {
+    name: "adding a decomposed Unicode-normalization alternative changes migration identity",
+    file: MIGRATION,
+    appendText: "\n-- cafe\u0301\n",
+    expect: ["CC5F."],
+  },
+  {
+    name: "adding an inline SQL comment changes migration identity",
+    file: MIGRATION,
+    from: "SET LOCAL lock_timeout = '10s';",
+    to: "SET LOCAL lock_timeout = '10s'; -- unchanged behavior",
+    expect: ["CC5F."],
+  },
+  {
+    name: "adding a block SQL comment changes migration identity",
+    file: MIGRATION,
+    from: "SET LOCAL lock_timeout = '10s';",
+    to: "SET LOCAL lock_timeout = '10s'; /* unchanged behavior */",
+    expect: ["CC5F."],
+  },
+  {
+    name: "a partial apparently authorized sentence changes migration identity",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.\n"
+      + "-- This file is documented SQL",
+    expect: ["CC5F."],
+  },
+  {
+    name: "concatenating apparently authorized sentences changes migration identity",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.\n"
+      + "-- Whether it was applied is not established and requires read-only verification."
+      + "This file is documented SQL, run by hand under its own authorization.",
+    expect: ["CC5F."],
+  },
+  {
+    name: "prefix residue after an apparently authorized sentence changes migration identity",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.\n"
+      + "-- This file is documented SQL, run by hand under its own authorization.EXTRA",
+    expect: ["CC5F."],
+  },
+  {
+    name: "repeated spaces in an apparently authorized sentence change migration identity",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.\n"
+      + "-- This  file is documented SQL, run by hand under its own authorization.",
+    expect: ["CC5F."],
+  },
+  {
+    name: "the rollback artifact is substituted for the forward migration",
+    file: MIGRATION,
+    replaceWithFile: ROLLBACK,
+    expect: ["CC5F."],
+  },
+  {
+    name: "the forward migration artifact is substituted for the rollback",
+    file: ROLLBACK,
+    replaceWithFile: MIGRATION,
+    expect: ["CC5F."],
+  },
+  {
+    name: "the migration is replaced by a symlink to the rollback",
+    file: MIGRATION,
+    symlinkTo: ROLLBACK,
+    expect: ["CC5F."],
+  },
+  {
+    name: "the authority manifest is replaced by a symlink to regular JSON bytes",
+    file: SQL_AUTHORITY,
+    symlinkTo: "package.json",
+    expect: ["CC5F."],
+  },
+  {
+    name: "the authority manifest ends in malformed UTF-8",
+    file: SQL_AUTHORITY,
+    appendBytes: [0x80],
+    expect: ["CC5F."],
+  },
+  {
+    name: "the authority carries an escaped-equivalent duplicate top-level version key",
+    file: SQL_AUTHORITY,
+    from: "  \"version\": 2,",
+    to: "  \"\\u0076ersion\": 2,\n  \"version\": 2,",
+    expect: ["CC5F."],
+  },
+  {
+    name: "a reviewed migration comment change succeeds only with its artifact digest and manifest pin updated",
+    file: MIGRATION,
+    from: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
+    to: "-- Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.\n"
+      + "-- Whether migration 007 ran in production remains UNKNOWN in either direction.",
+    coordinatedAuthority: true,
+    mustPass: true,
+    expect: [],
+  },
+  {
+    name: "rollback-specific documented-SQL wording succeeds only with the rollback digest and manifest pin updated",
+    file: ROLLBACK,
+    from: "-- current applied set to be established by read-only verification first.",
+    to: "-- current applied set to be established by read-only verification first.\n"
+      + "-- This file is documented SQL, run by hand under its own authorization.",
+    coordinatedAuthority: true,
+    mustPass: true,
+    expect: [],
+  },
+];
+
+const MUTATIONS = [...LEGACY_MUTATIONS, ...RAW_IDENTITY_MUTATIONS];
+
+const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
+const decodeUtf8Strict = (bytes) => new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+const MUTATION_TARGETS = [
+  ...new Set([...MUTATIONS.map((mutation) => mutation.file), SQL_AUTHORITY_SOURCE]),
+].sort();
+
+const gitStatus = () => execFileSync("git", ["status", "--porcelain=v1", "--untracked-files=all"], {
+  cwd: AUTHORITATIVE_REPO_ROOT,
+  encoding: "utf8",
+});
+
+const snapshotAuthoritative = () => ({
+  status: gitStatus(),
+  files: new Map(MUTATION_TARGETS.map((file) => [
+    file,
+    readFileSync(resolve(AUTHORITATIVE_REPO_ROOT, file)),
+  ])),
+});
+
+const authoritativeSnapshotMatches = (snapshot) => {
+  if (gitStatus() !== snapshot.status) return false;
+  return [...snapshot.files].every(([file, before]) => {
+    const after = readFileSync(resolve(AUTHORITATIVE_REPO_ROOT, file));
+    return after.equals(before) && sha256(after) === sha256(before);
+  });
+};
+
+const prepareDisposableWorkspace = () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), "gcd-payload-mutation-"));
+  const workspace = join(tempRoot, basename(AUTHORITATIVE_REPO_ROOT));
+  cpSync(AUTHORITATIVE_REPO_ROOT, workspace, {
+    recursive: true,
+    filter: (source) => ![".git", "node_modules"].includes(basename(source)),
+  });
+  const dependencies = resolve(AUTHORITATIVE_REPO_ROOT, "node_modules");
+  if (existsSync(dependencies)) {
+    symlinkSync(realpathSync(dependencies), resolve(workspace, "node_modules"), "dir");
+  }
+  if (existsSync(resolve(workspace, ".git"))) {
+    throw new Error("disposable mutation copy unexpectedly contains Git metadata");
+  }
+  return { tempRoot, workspace };
+};
+
+const restoreRaw = (path, original) => {
+  try {
+    const stat = lstatSync(path);
+    if (stat.isSymbolicLink() || !stat.isFile()) rmSync(path, { force: true });
+  } catch {
+    // A missing target is recreated below.
+  }
+  writeFileSync(path, original);
+};
 
 const build = () => {
   execFileSync("npx", ["tsc", "-p", "tsconfig.json"], {
@@ -2827,7 +3082,6 @@ const build = () => {
   });
 };
 
-/** Runs the suite. Returns the set of check ids that FAILED, or null if it crashed. */
 const runSuite = () => {
   let stdout = "";
   try {
@@ -2840,46 +3094,132 @@ const runSuite = () => {
     const failed = stdout.split("\n")
       .filter((line) => line.startsWith("FAIL  "))
       .map((line) => line.slice("FAIL  ".length));
-    // A nonzero exit with no reported failure is a crash: the suite aborted
-    // before it could name anything, which is not a passing mutation test.
     return { failed, crashed: failed.length === 0 };
   }
 };
 
-/**
- * Files mutated right now, so a signal that kills this process mid-mutation
- * still restores the tree.
- *
- * A `finally` block only runs when the process survives to reach it. An earlier
- * run of this harness was killed by an external timeout inside the mutation
- * window and left one source file mutated, which then made the NEXT run's
- * baseline red — a failure mode that looks like a broken test and is really a
- * dirty tree. These handlers close that window.
- */
 const inFlight = new Map();
+let disposableTempRoot = null;
 let restoringOnSignal = false;
 const restoreAll = () => {
   for (const [path, original] of inFlight) {
     try {
-      writeFileSync(path, original, "utf8");
+      restoreRaw(path, original);
     } catch {
-      // Best effort: report below rather than mask the original signal.
+      // Best effort only; the disposable directory is removed next.
     }
   }
-  if (inFlight.size) {
-    console.error(`\n[mutation] restored ${inFlight.size} file(s) after interruption`);
-  }
   inFlight.clear();
+};
+const cleanupDisposable = () => {
+  restoreAll();
+  if (disposableTempRoot !== null) {
+    try {
+      rmSync(disposableTempRoot, { recursive: true, force: true });
+    } catch {
+      // Best effort during process teardown. The authoritative tree was never a write target.
+    }
+    disposableTempRoot = null;
+  }
 };
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
   process.on(signal, () => {
     if (restoringOnSignal) return;
     restoringOnSignal = true;
-    restoreAll();
+    cleanupDisposable();
     process.exit(130);
   });
 }
-process.on("exit", restoreAll);
+process.on("exit", cleanupDisposable);
+
+const interruptionProbeChild = () => {
+  const prepared = prepareDisposableWorkspace();
+  const target = resolve(prepared.workspace, PAYLOAD);
+  const original = readFileSync(target);
+  const text = decodeUtf8Strict(original);
+  const probe = LEGACY_MUTATIONS[0];
+  const mutated = Buffer.from(text.replace(probe.from, () => probe.to), "utf8");
+  writeFileSync(target, mutated);
+  process.stdout.write(`${JSON.stringify({
+    tempRoot: prepared.tempRoot,
+    target,
+    originalDigest: sha256(original),
+  })}\n`);
+  setInterval(() => {}, 60_000);
+};
+
+const runAbruptInterruptionProof = async (authoritativeBefore) => {
+  const child = spawn(process.execPath, [SCRIPT_PATH, "--interrupt-probe-child"], {
+    cwd: AUTHORITATIVE_REPO_ROOT,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const line = await new Promise((resolveLine, reject) => {
+    let stdout = "";
+    let stderr = "";
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(new Error(`interruption probe timed out: ${stderr}`));
+    }, 30_000);
+    child.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+      const newline = stdout.indexOf("\n");
+      if (newline >= 0) {
+        clearTimeout(timer);
+        resolveLine(stdout.slice(0, newline));
+      }
+    });
+  });
+  const probe = JSON.parse(line);
+  const unchangedDuring = authoritativeSnapshotMatches(authoritativeBefore);
+  child.kill("SIGKILL");
+  await new Promise((resolveExit) => child.once("exit", resolveExit));
+  try {
+    const disposableWasActivelyMutated = existsSync(probe.target)
+      && sha256(readFileSync(probe.target)) !== probe.originalDigest;
+    return {
+      disposableWasActivelyMutated,
+      unchangedDuring,
+      unchangedAfter: authoritativeSnapshotMatches(authoritativeBefore),
+    };
+  } finally {
+    rmSync(probe.tempRoot, { recursive: true, force: true });
+  }
+};
+
+const mutationBytes = (mutation, original) => {
+  if (mutation.from !== undefined) {
+    const originalText = decodeUtf8Strict(original);
+    const occurrences = originalText.split(mutation.from).length - 1;
+    if (occurrences !== 1) {
+      throw new Error(
+        `the mutation site appears ${occurrences} times in ${mutation.file}; it must be unique`,
+      );
+    }
+    return Buffer.from(originalText.replace(mutation.from, () => mutation.to), "utf8");
+  }
+  if (mutation.appendBytes !== undefined) {
+    return Buffer.concat([original, Buffer.from(mutation.appendBytes)]);
+  }
+  if (mutation.prependBytes !== undefined) {
+    return Buffer.concat([Buffer.from(mutation.prependBytes), original]);
+  }
+  if (mutation.appendText !== undefined) {
+    return Buffer.concat([original, Buffer.from(mutation.appendText, "utf8")]);
+  }
+  if (mutation.transform === "crlf") {
+    return Buffer.from(decodeUtf8Strict(original).replace(/\r?\n/g, "\r\n"), "utf8");
+  }
+  if (mutation.replaceWithFile !== undefined) {
+    return readFileSync(resolve(REPO_ROOT, mutation.replaceWithFile));
+  }
+  if (mutation.symlinkTo !== undefined) return null;
+  throw new Error(`mutation ${mutation.name} has no mutation operation`);
+};
 
 let failures = 0;
 const check = (name, ok, detail = "") => {
@@ -2889,48 +3229,97 @@ const check = (name, ok, detail = "") => {
 
 async function main() {
   console.log("Payload-contract mutation tests\n");
+  const coordinatedCount = MUTATIONS.filter((mutation) => mutation.mustPass).length;
+  const prohibitedCount = MUTATIONS.length - coordinatedCount;
+  console.log(`Source inventory: ${MUTATIONS.length} mutations (${prohibitedCount} prohibited, `
+    + `${coordinatedCount} coordinated-authority-update)\n`);
 
-  // Baseline. Everything below is measured against this.
+  const authoritativeBefore = snapshotAuthoritative();
+  const prepared = prepareDisposableWorkspace();
+  disposableTempRoot = prepared.tempRoot;
+  REPO_ROOT = prepared.workspace;
+  check("M-isolation. every mutation, build, suite, and restoration targets a disposable no-Git copy",
+    REPO_ROOT !== AUTHORITATIVE_REPO_ROOT && !existsSync(resolve(REPO_ROOT, ".git")));
+  check(`M-capture. captured raw bytes and Git status for all ${MUTATION_TARGETS.length} authoritative targets`,
+    authoritativeBefore.files.size === MUTATION_TARGETS.length);
+  const interruption = await runAbruptInterruptionProof(authoritativeBefore);
+  check("M-kill. the harness was killed by SIGKILL while its disposable target was modified, "
+    + "and authoritative bytes/status were unchanged during and after it",
+  interruption.disposableWasActivelyMutated
+    && interruption.unchangedDuring
+    && interruption.unchangedAfter);
+
   build();
   const baseline = runSuite();
-  check("M0. the unmutated tree builds and the whole suite passes",
+  check("M0. the unmutated disposable copy builds and the whole suite passes",
     !baseline.crashed && baseline.failed.length === 0,
     `failed: ${baseline.failed.join(" | ") || "(crashed)"}`);
   if (failures) {
-    console.log("\nBaseline is not green; mutation results would be meaningless.");
+    console.log("\nBaseline or isolation proof is not green; mutation results would be meaningless.");
     process.exit(1);
   }
 
-  // `dist/` is compiled from `src/` only; the suite reads `state/**` at RUNTIME.
-  // So a mutation to a SQL file needs no rebuild — unless the previous mutation
-  // touched `src/`, whose restore left `dist/` compiled from mutated sources.
-  // Skipping those rebuilds is what keeps the run inside the CI job budget.
   let distStale = false;
   for (const [index, mutation] of MUTATIONS.entries()) {
-    // `dist/` is compiled from TypeScript only. A JSON data file under `src/` is
-    // read at runtime, so mutating it does not invalidate `dist/`.
-    const compiled = mutation.file.startsWith("src/") && !mutation.file.endsWith(".json");
-    const path = resolve(REPO_ROOT, mutation.file);
-    const original = readFileSync(path, "utf8");
-    const originalDigest = sha256(original);
     const id = `M${index + 1}`;
+    const path = resolve(REPO_ROOT, mutation.file);
+    const original = readFileSync(path);
+    const touched = [];
+    let mutated;
+    try {
+      mutated = mutationBytes(mutation, original);
+    } catch (error) {
+      check(`${id}. ${mutation.name}`, false, error instanceof Error ? error.message : String(error));
+      continue;
+    }
 
-    if (!original.includes(mutation.from)) {
-      check(`${id}. ${mutation.name}`, false,
-        `the mutation site is gone from ${mutation.file}: ${JSON.stringify(mutation.from)}`);
-      continue;
-    }
-    const occurrences = original.split(mutation.from).length - 1;
-    if (occurrences !== 1) {
-      check(`${id}. ${mutation.name}`, false,
-        `the mutation site appears ${occurrences} times in ${mutation.file}; it must be unique`);
-      continue;
-    }
+    const touch = (target, bytes) => {
+      if (!inFlight.has(target)) {
+        inFlight.set(target, bytes);
+        touched.push([target, bytes]);
+      }
+    };
 
     try {
-      inFlight.set(path, original);
-      writeFileSync(path, original.replace(mutation.from, mutation.to), "utf8");
-      let result;
+      touch(path, original);
+      if (mutation.symlinkTo !== undefined) {
+        rmSync(path, { force: true });
+        symlinkSync(resolve(REPO_ROOT, mutation.symlinkTo), path);
+      } else {
+        writeFileSync(path, mutated);
+      }
+
+      if (mutation.coordinatedAuthority) {
+        const manifestPath = resolve(REPO_ROOT, SQL_AUTHORITY);
+        const manifestOriginal = readFileSync(manifestPath);
+        const manifestText = decodeUtf8Strict(manifestOriginal);
+        const oldArtifactDigest = sha256(original);
+        const artifactOccurrences = manifestText.split(oldArtifactDigest).length - 1;
+        check(`${id}a. the changed artifact has exactly one manifest digest to update`,
+          artifactOccurrences === 1, `found ${artifactOccurrences}`);
+        if (artifactOccurrences !== 1) continue;
+        touch(manifestPath, manifestOriginal);
+        const manifestMutated = Buffer.from(
+          manifestText.replace(oldArtifactDigest, sha256(mutated)), "utf8",
+        );
+        writeFileSync(manifestPath, manifestMutated);
+
+        const sourcePath = resolve(REPO_ROOT, SQL_AUTHORITY_SOURCE);
+        const sourceOriginal = readFileSync(sourcePath);
+        const sourceText = decodeUtf8Strict(sourceOriginal);
+        const oldManifestDigest = sha256(manifestOriginal);
+        const pinOccurrences = sourceText.split(oldManifestDigest).length - 1;
+        check(`${id}b. the changed manifest has exactly one independent source pin to update`,
+          pinOccurrences === 1, `found ${pinOccurrences}`);
+        if (pinOccurrences !== 1) continue;
+        touch(sourcePath, sourceOriginal);
+        writeFileSync(sourcePath, Buffer.from(
+          sourceText.replace(oldManifestDigest, sha256(manifestMutated)), "utf8",
+        ));
+      }
+
+      const compiled = (mutation.file.startsWith("src/") && !mutation.file.endsWith(".json"))
+        || mutation.coordinatedAuthority;
       let buildFailed = false;
       if (compiled || distStale) {
         try {
@@ -2940,49 +3329,55 @@ async function main() {
         }
       }
       distStale = compiled;
-      result = buildFailed ? { failed: [], crashed: true } : runSuite();
+      const result = buildFailed ? { failed: [], crashed: true } : runSuite();
 
       if (mutation.mustPass) {
-        // An ALLOWED case: authorized wording inserted verbatim. A guard that
-        // rejects it is over-broad, which is as much a defect as one that lets a
-        // declaration through — so this direction is asserted, not assumed.
-        check(`${id}. ${mutation.name} — the suite stays green`,
+        check(`${id}. ${mutation.name} — the suite stays green with coordinated authority`,
           !buildFailed && !result.crashed && result.failed.length === 0,
-          buildFailed ? "the mutated tree did not compile"
+          buildFailed ? "the mutated copy did not compile"
             : result.crashed ? "the suite aborted"
-            : `wrongly reported: ${result.failed.map((l) => l.split(".")[0]).join(", ")}`);
+            : `wrongly reported: ${result.failed.map((line) => line.split(".")[0]).join(", ")}`);
       } else {
         const named = mutation.expect.filter((prefix) =>
           result.failed.some((line) => line.startsWith(prefix)));
         check(`${id}. ${mutation.name} — the suite reports it by name `
           + `(${mutation.expect.join(", ")})`,
-          !buildFailed && !result.crashed && named.length === mutation.expect.length,
-          buildFailed ? "the mutated tree did not compile, so no check could report it"
-            : result.crashed ? "the suite aborted instead of naming a failing check"
-            : `reported: ${result.failed.map((l) => l.split(".")[0]).join(", ") || "nothing"}`);
+        !buildFailed && !result.crashed && named.length === mutation.expect.length,
+        buildFailed ? "the mutated copy did not compile, so no check could report it"
+          : result.crashed ? "the suite aborted instead of naming a failing check"
+          : `reported: ${result.failed.map((line) => line.split(".")[0]).join(", ") || "nothing"}`);
       }
     } finally {
-      writeFileSync(path, original, "utf8");
-      inFlight.delete(path);
-      const restored = readFileSync(path, "utf8");
-      check(`${id}r. ${mutation.file} is restored byte-for-byte`,
-        restored === original && sha256(restored) === originalDigest,
-        `sha256 before=${originalDigest} after=${sha256(restored)}`);
+      for (const [restorePath, restoreBytes] of [...touched].reverse()) {
+        restoreRaw(restorePath, restoreBytes);
+        inFlight.delete(restorePath);
+        const restored = readFileSync(restorePath);
+        check(`${id}r. ${restorePath.slice(REPO_ROOT.length + 1)} is restored byte-for-byte`,
+          restored.equals(restoreBytes) && sha256(restored) === sha256(restoreBytes),
+          `sha256 before=${sha256(restoreBytes)} after=${sha256(restored)}`);
+      }
     }
   }
 
-  // The tree must end exactly where it started, and prove it by running green.
   build();
   const restoredRun = runSuite();
-  check("M-end. after every mutation is reverted the suite passes again",
+  check("M-end. after every raw mutation is reverted the disposable suite passes again",
     !restoredRun.crashed && restoredRun.failed.length === 0,
     `failed: ${restoredRun.failed.join(" | ") || "(crashed)"}`);
+  check("M-authority. authoritative target bytes and Git status stayed unchanged",
+    authoritativeSnapshotMatches(authoritativeBefore));
 
-  console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURE(S)`);
+  console.log(failures === 0
+    ? `\nALL PASS — ${MUTATIONS.length} mutations`
+    : `\n${failures} FAILURE(S) — ${MUTATIONS.length} mutations`);
   process.exit(failures === 0 ? 0 : 1);
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exit(1);
-});
+if (process.argv[2] === "--interrupt-probe-child") {
+  interruptionProbeChild();
+} else {
+  main().catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });
+}

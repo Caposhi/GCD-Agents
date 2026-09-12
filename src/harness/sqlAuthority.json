@@ -1,123 +1,13 @@
 {
-  "version": 1,
+  "version": 2,
   "artifacts": [
     {
       "path": "state/migrations/007_evidence_bounds.sql",
-      "executableSha256": "8ac49f6d306b3c3c6516263bf438cacaab7b8c9ed83b8b596a44d99684ad3ef9",
-      "leadingSegment": {
-        "text": "Payload-contract reconciliation: bounded evidence text.  Phase 0B.0 gave every evidence field a *presence* rule and no *size* rule: `claim` and `subject` had to be non-empty and nothing more. Every projection built from a record inherited that, so no payload the six dormant Content Intelligence stages assemble had a finite maximum, however tightly each stage bounded its own fields.  These constraints use the same numeric ceilings as src/harness/agents/payloadContract.ts → EVIDENCE_LIMITS. TypeScript may conservatively reject a detail object whose worst-case canonical JSONB form exceeds the limit even when one concrete PostgreSQL rendering would fit; it never accepts a detail PostgreSQL rejects. Both layers exist for the same reason migration 006 states: application validation gives good errors, the database makes the invariant true. An offline regression asserts the two sets of numbers agree, so a TypeScript bound cannot be raised without this file being updated with it.  Applying this to production is a SEPARATE, SEPARATELY AUTHORIZED operation.",
-        "sha256": "eb7579cf4f8fef2295ea253fe8effbf88257cefe449fd31665594091bbdac1c8"
-      },
-      "trailingSegment": {
-        "text": "Whether it has been applied to production is UNKNOWN in either direction: this file records no such claim, and nothing in this repository establishes one. The last dated evidence is the 2026-08-28 read-only inspection, which observed `_migrations` holding 001-006; a dated observation is not a statement about now. Establish the current applied set by read-only verification before acting on it. Disposable PostgreSQL 16 and 18 tests apply, enforce, roll back, and reapply it. A read-only, aggregate-only production audit run by the operator on 2026-09-02 found `content_evidence` and `content_evidence_relations` both empty — zero rows, zero blank claims, zero blank subjects, zero rows carrying detail JSON, zero relation notes — so no stored row can violate any bound below and the constraints are written to validate immediately rather than as NOT VALID. That audit is the reason the immediate form is safe; it is not the reason for any particular number.  Rollback: state/rollback/007_evidence_bounds_rollback.sql. The runner is forward-only by design (docs/DATA_MODEL.md), so the rollback lives outside state/migrations and is applied by hand under its own authorization. PostgreSQL forbids a subquery inside a CHECK constraint, and there is no per-element length operator for arrays, so bounding each tag needs a helper. The versioned name and plain CREATE are deliberate: migration 007 must fail on an unexpected name collision, never replace a pre-existing helper and later remove code it did not own. It is IMMUTABLE (its result depends only on its arguments), STRICT (a NULL array yields NULL, which a CHECK accepts, matching every other optional column here), and PARALLEL SAFE. `coalesce` makes the empty array pass rather than yield NULL. Identity and the two required text fields. Optional text. NULL stays permitted; a present value is bounded. Tags: both how many, and how long each may be. `detail` is bounded by PostgreSQL's canonical jsonb text in UTF-8 bytes. TypeScript computes a conservative upper bound for this same form.",
-        "sha256": "99e02790ddb80f688de5b5464f280fa82bb57597ca628af755f516cee070b600"
-      }
+      "sha256": "fb5128b4ae207e75b7c6b2798519594c72b7d91191b7055a674c22fafdf2ddca"
     },
     {
       "path": "state/rollback/007_evidence_bounds_rollback.sql",
-      "executableSha256": "644748cdce513141387bd8b087e61b97dedc41a7e92e40918bc83d1999b052b1",
-      "leadingSegment": {
-        "text": "Rollback for state/migrations/007_evidence_bounds.sql.  **This directory is deliberately outside state/migrations.** The repository migration runner is forward-only: it applies every `*.sql` file in state/migrations in lexical order and records it in `_migrations` (docs/DATA_MODEL.md — \"There is no down migration\"). A down migration placed there would be applied as if it were a forward one, immediately undoing the migration that preceded it. So the rollback is documented SQL, applied by hand under its own authorization, and the runner never sees it.  **When this is the right operation.** Migration 007 only adds CHECK constraints and the one IMMUTABLE helper function the per-tag bound needs (PostgreSQL forbids a subquery in a CHECK, and arrays have no per-element length operator); it changes no column type, writes no row, and drops nothing. Rolling it back therefore cannot lose data — it only stops the database enforcing the bounds. The situation it exists for is a bound found to be too tight against real evidence after 007 has been applied: dropping the constraint restores writes immediately, and the bound is then widened in `payloadContract.ts` and re-applied as a new forward migration.  **What it does not do.** It does not relax the TypeScript contract. With this applied and `payloadContract.ts` unchanged, `assertValidEvidenceRecord` still refuses an oversized record, so `evidence:sync` still will not write one. That asymmetry is deliberate: the database stops being the backstop, the application keeps being the gate, and the system fails closed either way.  **Also remove the `_migrations` row**, or the runner will consider 007 applied and never re-run it. The DELETE below is part of the rollback, not an optional extra.  Whether this rollback has run in production is UNKNOWN in either direction, as is migration 007's applied state; neither is established by this file. The last dated evidence is the 2026-08-28 read-only inspection observing `_migrations` at 001-006. Disposable PostgreSQL tests exercise this script; any production run remains a SEPARATE, SEPARATELY AUTHORIZED operator action, and requires the current applied set to be established by read-only verification first.",
-        "sha256": "6e1803cb5a5676db13933c812ac88ece5a5ebacda4ec3934fe8b66a9fad6c2b2"
-      },
-      "trailingSegment": {
-        "text": "The uniquely versioned helper 007 creates for the per-tag bound. Migration 007 uses plain CREATE, so it can never replace an unrelated helper that this rollback would later remove. Dropped after the calling constraint.",
-        "sha256": "f69b00f0aff02c0f664f89ce5a5c88db4674b25eb2a046a63867e284b228caf9"
-      }
-    }
-  ],
-  "authorizedSentences": [
-    {
-      "text": "As observed on 2026-08-28, only migrations 001-006 were applied to production.",
-      "sha256": "be0426e70ce4cd035749f643c7e7ba2502625851985bac4ae0f6d45ac77d5b19"
-    },
-    {
-      "text": "If migration 007 was applied or ran, operators must stop.",
-      "sha256": "e0fbce368b38e6dfcd294910c600d69d029d37c78e3c1ec95b379ab5ef325a28"
-    },
-    {
-      "text": "If migration 007 was applied, ran, or was re-applied, operators must stop.",
-      "sha256": "b41c8cf0cf0e9faf535b2be793b4b6e04309eecdf95a87ee892764c87994fce1"
-    },
-    {
-      "text": "If, after read-only verification, migration 007 is applied, operators must stop.",
-      "sha256": "166e37018eb1be038e20f26c09358af1aaf2cc18f6f9c143d14c311ee7b0e056"
-    },
-    {
-      "text": "Migration 007 may (per the operator (after the audit)) have been applied.",
-      "sha256": "e67f7272d9f77cb50ccabd0b355445b6dc88788ffc7afee80d6a7eefd0833c0c"
-    },
-    {
-      "text": "Migration 007 may, even though the report was signed, have been applied.",
-      "sha256": "37fff10f9b5b7dfcf8b92338e93fbdb9a5721253a272c0f3e8d1e9f817b7aca7"
-    },
-    {
-      "text": "The rollback is applied by hand under its own authorization.",
-      "sha256": "567acccfda844ce2cb6942bf9535655e91c1d1e17edc8380321d523af1d686d6"
-    },
-    {
-      "text": "This file is documented SQL, run by hand under its own authorization.",
-      "sha256": "af12aaeee959a8d060ede367aead0f92bf982217a9104c27202ebb533a577b92"
-    },
-    {
-      "text": "Unless migration 007 is applied, do not run the rollback.",
-      "sha256": "defc818ba35f46e02a3d686274fed82c2b3bb4df4832bfc3e87b0438308b1781"
-    },
-    {
-      "text": "Unless migration 007 is applied, do not run this rollback by hand.",
-      "sha256": "1392d343971ce67516958160bf12c590cd64c00cbded9a0e4e292c22ceb42e9e"
-    },
-    {
-      "text": "Whether it was applied is not established and requires read-only verification.",
-      "sha256": "48f723fcaa2385ffe575a4d5e087f87c8135381b5957443aa31961e337440b92"
-    },
-    {
-      "text": "Whether migration 007 (after read-only verification) is applied remains UNKNOWN in either direction.",
-      "sha256": "795f3f702b1b015b5ffa5ef429da9626006255e300cefca6f13e461ffe0a586a"
-    },
-    {
-      "text": "Whether migration 007 (per the operator (after read-only verification)) is applied remains UNKNOWN in either direction.",
-      "sha256": "8b03320903742d783ba1893106162f74ed774d4e9cca93b22e4eacc7624b86c4"
-    },
-    {
-      "text": "Whether migration 007 (per the operator) is applied remains UNKNOWN in either direction.",
-      "sha256": "86074810fa72d58bc7f85c673a026abe01bddb72c83f19f6720ac367deeb1342"
-    },
-    {
-      "text": "Whether migration 007 has or has not been applied remains UNKNOWN in either direction.",
-      "sha256": "24e572c14ae5682f4689a0a95f0e4651d8cc17bddcb97c570648d15caceed048"
-    },
-    {
-      "text": "Whether migration 007 ran in production is UNKNOWN in either direction.",
-      "sha256": "9cc46bc0a181ffc164f66a2e33b9636819c8731b5331c963794696e0813cf82a"
-    },
-    {
-      "text": "Whether migration 007 was applied or (after read-only verification) ran remains UNKNOWN in either direction.",
-      "sha256": "b3c9f5dcaeaf1cec33f8c751ac39b1877549999c3ce172e0e61cd1a0a568b4e3"
-    },
-    {
-      "text": "Whether migration 007 was applied or ran in production is UNKNOWN in either direction.",
-      "sha256": "2f52e424460eab56fc2a32bb49a090eb4399887a5f62a7a40c5cca142e16f788"
-    },
-    {
-      "text": "Whether migration 007 was applied, ran, or was re-applied is UNKNOWN in either direction.",
-      "sha256": "7afe7e13e450c2a1f5262aafeb7d85642dc7704f59d5aabafcbc3b20f84b5df2"
-    },
-    {
-      "text": "Whether migration 007 was applied, ran, or was re-applied remains UNKNOWN in either direction.",
-      "sha256": "2d14f8762255b4d7b656e087ca032cd1734c4881851ab1e6162ecdce64022b81"
-    },
-    {
-      "text": "Whether migration 007, after read-only verification, and (per the operator) after a fresh audit, is applied remains UNKNOWN in either direction.",
-      "sha256": "f01db0117de1b9a8be6da20088490a5b83a0b13580c220ffc2da7ae0a1b7a40a"
-    },
-    {
-      "text": "Whether migration 007, after read-only verification, is applied remains UNKNOWN in either direction.",
-      "sha256": "4ff541e2421ed80dce13e57b90960de73d8ac05d2101d9b02017719a8b201288"
-    },
-    {
-      "text": "Whether or not migration 007 has been applied is UNKNOWN in either direction.",
-      "sha256": "ae8d13b69c80d07683483441ac47b690de853029e69a6fb4b2b083d9ec6df91b"
+      "sha256": "31e0ab0c1f92ccafbd30fb827b4ece9856257a997c39ad5fb031bc18cebfe122"
     }
   ]
 }
