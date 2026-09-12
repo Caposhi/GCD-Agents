@@ -229,11 +229,78 @@ wiring, no enablement, no migration application, and no operator milestone.
 **Unresolved follow-ups.** `CC5-SYNTAX-001`; and the M1 readiness prerequisites below, none of which
 this merge advances.
 
-## Active product cursor — M1 readiness, evidence only
+## Completed — M1 readiness evidence package (PR #60)
 
-**M1 has not begun and is not complete.** The cursor is the accepted design's first prerequisite:
-assembling M1's **read-only** readiness evidence. That assembly is recorded in the
-[M1 readiness decision record](M1_READINESS_DECISION_RECORD.md).
+**`MERGED`.** Base `2f76679afa78721ad9751ea7ce3124c5307b090c`, reviewed head
+`d67dcb5158bc2847cc8f1b6190a649c89546e26b`, merge `2a9edb7f86a07ddb7c27bc91e3c214052d0a2dc4` —
+**ordered parents exactly that base then that reviewed head**. Five files, +1138/−1; five linear
+commits, zero merges.
+
+**Delivered.** The [M1 readiness decision record](M1_READINESS_DECISION_RECORD.md); this roadmap and
+[Status](STATUS.md) reconciliation; and two checked-in read-only operator scripts —
+`scripts/ops/evidence-aggregate-audit.mjs` (§4.1 aggregate-only audit) and
+`scripts/ops/migration-state-read.mjs` (§4.4.2 complete migration-state reading, all seven
+comparisons).
+
+**Migrations/schema impact: none.** No `src/`, `state/`, workflow, `render.yaml`, or mutation-harness
+path was touched. Migrations remain `001`–`007` with no `008`.
+
+**Material design decisions.** Migration identity is the **complete filename compared byte for
+byte** — never a numeric prefix, never a trimmed form — because `_migrations` stores the filename and
+`src/state/migrate.ts` applies exactly the entries whose real name ends in `.sql`. Filenames are read
+NUL-delimited (`git ls-tree -z`) so git's path quoting cannot corrupt them. `--artifact` must name a
+**commit object**, verified with `git cat-file -t`. Failure output emits only a **fixed category
+chosen in the script**, never the driver's message and never its server-chosen SQLSTATE. Bounds are
+read from `payloadContract.ts` → `EVIDENCE_LIMITS` so the audit cannot drift from the contract it
+checks, and `GCD_AUDIT_DATABASE_URL` is deliberately not `DATABASE_URL`.
+
+**Material rejected alternatives.** Comparing the pending set `P` alone was rejected: an unexpected
+already-applied migration appears in both `F(A)` and `D`, cancels out of `P`, and is invisible to the
+pending difference — which is why `D` is validated in its own right. Pattern-matching the shape of an
+error code was rejected as a sanitizer, because a SQLSTATE is chosen by the server.
+
+**Automated validation at the reviewed head.** typecheck 0 · build 0 · eight offline suites all pass
+(1,254 `PASS` lines) · dry run 0 · controller fixtures 0 · Markdown links 60 files · env coverage 35
+· sensitive scan 151 files · `npm audit --omit=dev` 0 · `git diff --check` clean. Exact-head CI run
+`34700377391`: five jobs, all `success`, each attempt 1, no re-run.
+
+**Production evidence: none, by design.** Neither script has been run against production. Both were
+exercised only against a disposable PostgreSQL 16.13 cluster, which was removed.
+
+**Rollback/recovery status.** Documentation and two unreferenced operator scripts; no workflow
+invokes either. Reverting the merge would remove the record and the tooling and would change no
+runtime behaviour, because nothing calls them.
+
+**Security and privacy implications.** Both scripts enforce a read-only session *and* a read-only
+transaction, select counts/existence/maxima only, and print no claim text, subject text, connection
+string, user, host, port, or password — including on the failure path. Verified by leak scan: zero
+occurrences of a supplied user, password, host, port, or database name in either script's output.
+
+**Accepted limitations.** `_migrations` stores no checksum or content column, so every comparison is
+an **identity** claim, never content integrity — byte-exact filename comparison closes the rename and
+whitespace bypasses but cannot detect a file edited in place under an unchanged name. **Every
+functional defect in this tooling was found by independent inspection, not by the author's own
+testing** — four across two inspections, two of which returned `decision: pass` with exit 0 on inputs
+that should have stopped.
+
+**Unresolved follow-ups.** `CC5-SYNTAX-001` remains `OPEN` and deferred. Every M1 readiness
+prerequisite below remains outstanding; this merge advanced none of them.
+
+**Documents updated at completion.** `docs/M1_READINESS_DECISION_RECORD.md` (new), `docs/ROADMAP.md`,
+`docs/STATUS.md`; and post-merge, `docs/AI_HANDOFF.md`.
+
+## Active product cursor — M1 readiness completion, still evidence only
+
+**M1 has not begun, is not authorized, and is not complete.** Merging PR #60 delivered the *evidence
+package*; it did **not** complete M1 readiness and it authorized nothing. The cursor is unchanged in
+kind: **completing** the accepted design's first prerequisite — the read-only production facts the
+package could not obtain — recorded in the
+[M1 readiness decision record](M1_READINESS_DECISION_RECORD.md). **The next operational step is M1
+readiness completion, not M1 execution**, and it is blocked pending separately authorized read-only
+production access.
+
+**Not begun and not authorized by this merge:** P1–P8, migration `008`, production wiring, executor
+enablement, and the proposed Google Business Profile expansion.
 
 **Current verdict: `M1 BLOCKED / NO-GO`.** `L` (the commit the live api serves), the three service
 commits, `D` (the production `_migrations` identifier set), `P`, comparisons 2–7 of §4.4.2, the A/L
@@ -243,11 +310,14 @@ there is no read-only production access.
 
 **`A` itself is `NOT YET ESTABLISHED`.** The candidate artifact observed while the package was
 prepared — `2f76679afa78721ad9751ea7ce3124c5307b090c` — held migrations `001`–`007` with no later
-migration, and comparison 1 passed **against that candidate**. Merging the readiness package advances
-`main`, so that SHA becomes historical. Per §4.4, `A` is the **reviewed head of `main` at M1 time**
+migration, and comparison 1 passed **against that candidate**. The readiness package has merged and
+`main` has advanced, so that SHA **is** historical. Per §4.4, `A` is the **reviewed head of `main` at M1 time**
 and must be **re-established by full SHA** then; `F(A)`, the A/L predicate, the complete
 migration-state reading and all seven comparisons are **recomputed against that new `A`**. No result
 derived from the candidate may be reused merely because the migration file set appears unchanged.
+**PR #60 has now merged**, so that candidate SHA is historical in fact and not merely in prospect: it
+is the first parent of merge `2a9edb7f86a07ddb7c27bc91e3c214052d0a2dc4`. The merge SHA is **not** `A`
+either — `A` is read from `main` at M1 time and at no other moment.
 
 The checked-in operator tooling for the two readings is delivered and exercised against a disposable
 database: `scripts/ops/evidence-aggregate-audit.mjs` (§4.1, read-only, aggregate-only) and
