@@ -64,10 +64,16 @@ state remains **`UNKNOWN` in either direction**. The dated 2026-08-28 reading of
 **`2f76679afa78721ad9751ea7ce3124c5307b090c` is the candidate artifact observed while this package
 was prepared. It is a historical observation, not an enduring `A`.**
 
-**Merging PR #60 advances `main`**, because this package is itself a change to `main`. The moment it
-merges, `main` is a new commit and `2f76679a…` is no longer the head of `main`. Per §4.4, *"the M1
-artifact is the **reviewed head of `main` at M1 time**"* — so from that moment `2f76679a…` is
-historical, and citing it as the artifact would be citing a superseded commit.
+**PR #60 has merged, and `main` has advanced**, because this package was itself a change to `main`.
+It merged as `2a9edb7f86a07ddb7c27bc91e3c214052d0a2dc4`, whose ordered parents are
+`2f76679afa78721ad9751ea7ce3124c5307b090c` then the reviewed head
+`d67dcb5158bc2847cc8f1b6190a649c89546e26b`. `2f76679a…` is consequently **no longer the head of
+`main`** — it is that merge's first parent. Per §4.4, *"the M1 artifact is the **reviewed head of
+`main` at M1 time**"*, so `2f76679a…` is now definitively historical, and citing it as the artifact
+would be citing a superseded commit.
+
+**This does not make the merge commit `A` either.** `A` is whatever `main`'s reviewed head is when an
+M1 decision is actually taken, read at that moment — not this merge SHA, not any SHA recorded here.
 
 **`A` is therefore defined as: the exact reviewed head of `main` immediately before the eventual M1
 authorization decision.** It is **`NOT YET ESTABLISHED`** and must be **re-established by full SHA at
@@ -97,7 +103,7 @@ re-establishing `A` is one of the prerequisites, not a route around them.
 
 | # | Requirement | Status |
 |---|---|---|
-| **A1** | Exact reviewed commit, named by full SHA, exact-head CI green | **NOT YET SATISFIED** — `A` is not yet established (see above). The candidate `2f76679a…` was named by full SHA and carried green CI, but it becomes historical once PR #60 merges. A branch name or tag is rejected outright. |
+| **A1** | Exact reviewed commit, named by full SHA, exact-head CI green | **NOT YET SATISFIED** — `A` is not established (see above). The candidate `2f76679a…` was named by full SHA and carried green CI, but PR #60 has merged, so it **is** historical now. A branch name, a tag, a non-commit Git object, and any SHA recorded here are all rejected. |
 | **A2** | `state/migrations/` contains `001`–`007` and no later migration | **PASS at the candidate** — enumerated, not assumed; **re-enumerate at the new `A`** |
 | **A3** | Application code separately approved as safe to deploy **and** safe to serve | **NOT GRANTED** — no such approval exists; this record does not grant it |
 | **A4** | Complete §4.4.2 migration-state check passes against the target database | **NOT YET EXECUTED** — `D` unavailable |
@@ -360,6 +366,52 @@ Each item is separately authorized work. None of it is granted by this record.
 
 **`CC5-SYNTAX-001` is OPEN and deferred**, and its compensating controls require it to be **rechecked
 before any production enablement**. It is not resolved, not harmless, and not production-validated.
+
+---
+
+## Post-merge record — PR #60 merged, and what that did and did not establish
+
+**PR #60 is `MERGED`.** Base `2f76679afa78721ad9751ea7ce3124c5307b090c`; reviewed head
+`d67dcb5158bc2847cc8f1b6190a649c89546e26b`; merge commit
+`2a9edb7f86a07ddb7c27bc91e3c214052d0a2dc4`, whose **ordered parents are exactly that base then that
+reviewed head**. Five files, +1138/−1; five linear commits on the branch, zero merges. This record
+and the two operator scripts are present on `main`.
+
+**What the merge delivered:** this decision record, the roadmap and status reconciliation, and the two
+read-only operator scripts — `scripts/ops/evidence-aggregate-audit.mjs` (§4.1) and
+`scripts/ops/migration-state-read.mjs` (§4.4.2).
+
+**What the merge did NOT do — none of this is changed by it being on `main`:**
+
+- It **did not authorize or execute M1**, and merging an evidence package is never an authorization.
+- Migration 007's production application state remains **`UNKNOWN` in either direction**.
+- The operational verdict remains **`M1 BLOCKED / NO-GO`**.
+- It established **none** of: `A`; `L`; the api/worker/scheduler service identities; `D`, `P`, or
+  comparisons 2–7; the §4.1 aggregate audit against production; or rollback-artifact `R` and its
+  compatibility evidence. Every one of those remains `NOT YET ESTABLISHED` or `NOT YET EXECUTED`.
+- It **deployed nothing**, applied no migration, queried no production database, contacted no Render
+  control plane, enabled no automation, and enabled no executor.
+
+### Post-merge workflow evidence, observed read-only
+
+| Fact | Evidence |
+|---|---|
+| CI at the merge commit | Run **`34712320198`**, `push`, `head_sha 2a9edb7f…` — **five jobs, all `success`, each `run_attempt: 1`** |
+| Deployment workflow | Run **`34712586222`**, `workflow_run`, attempt 1, conclusion **`failure`** |
+| Its provenance step | **Accepted** — `CI_WORKFLOW_NAME: CI`, `CI_CONCLUSION: success`, `CI_EVENT: push`, `CI_HEAD_BRANCH: main`, repository and repository-id matched |
+| Why it then refused | `AUTOMATION_ENABLED: false` → *"Production deployment refused: `RENDER_DEPLOY_AUTOMATION_ENABLED` must be exactly true."*, exit 1 |
+| Release selection | **Skipped** — no release commit was ever selected |
+| `Serialized API, worker, scheduler release` | **Skipped — zero steps executed** |
+| `scripts/render/deployment-controller.mjs` | **Never ran** — the skipped job is its only caller |
+| `MIGRATION_ROLLOUT_REQUIRED` | **Not evaluated in that run** — the controller is its only site |
+
+**No GitHub-driven Render deployment occurred through that workflow.** The gate is closed and behaved
+correctly; the refusal is the designed outcome, and it was not re-run, bypassed, or forced.
+
+**Render-side activity through any unrelated path is `NOT ESTABLISHED`** — the session that recorded
+this had no Render control-plane access, so it can state what GitHub did and did not do, and cannot
+state anything about Render from Render's own side. That is a limit of the evidence, not a finding of
+absence.
 
 ---
 
