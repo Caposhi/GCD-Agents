@@ -254,14 +254,18 @@ database: `scripts/ops/evidence-aggregate-audit.mjs` (§4.1, read-only, aggregat
 `scripts/ops/migration-state-read.mjs` (§4.4.2, all seven comparisons). **Neither has been run
 against production**, and neither authorizes anything.
 
-**An independent inspection found two functional defects in `migration-state-read.mjs`, both now
-corrected and both covered by regression cases.** Migration identity was compared by numeric prefix,
+**Successive independent inspections found four functional defects in the operator tooling, all now
+corrected and all covered by regression cases.** Migration identity was compared by numeric prefix,
 so an artifact whose `007` had been renamed returned `decision: pass` with all seven comparisons
 `true`; every comparison now uses the complete filename. And **A1** validated only 40 hex characters,
 so a Git *tree* SHA was accepted as the artifact; the object type must now be exactly `commit`. A
 previous revision's claim that the scripts had **no functional defect** was false and is withdrawn.
-Both scripts also now print a bounded error code instead of the driver's message, which could carry
-the database user and host.
+A second inspection found two more. Filenames were **trimmed** before comparison, so an artifact whose
+`007` carried a trailing space read as canonical and passed — while the runner, which selects on the
+real name, would have skipped it and **never applied migration 007**; filenames are now read
+NUL-delimited and compared byte for byte. And the failure path echoed a **server-chosen** SQLSTATE,
+so a custom `ERRCODE` reached operator logs; both scripts now emit only fixed categories defined in
+the script, and `UNKNOWN` for anything unrecognised.
 
 **Migration 007's applied state remains `UNKNOWN` in either direction.** M1's api deployment requires
 its own explicit authorization after independent inspection, and is not granted here.

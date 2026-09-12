@@ -34,10 +34,13 @@
  * content column, so this establishes IDENTITY, never content integrity.
  *
  * Identity here means the COMPLETE FILENAME. A numeric prefix is not an
- * identity: `007_something_else.sql` is a different file with different SQL.
- * `--artifact` must name a COMMIT object, not merely 40 hex characters. On
- * failure only a bounded error code is printed, never the driver's message,
- * which routinely names the database user and the host:port.
+ * identity: `007_something_else.sql` is a different file with different SQL, and
+ * neither is surrounding whitespace ignorable — the runner applies exactly the
+ * entries whose real name ends in `.sql`, so filenames are compared byte for
+ * byte and never trimmed. `--artifact` must name a COMMIT object, not merely 40
+ * hex characters. On failure only a fixed category chosen in this file is
+ * printed — never the driver's message, which routinely names the database user
+ * and the host:port, and never its SQLSTATE, which the server chooses.
  */
 
 import { execFileSync } from "node:child_process";
@@ -124,22 +127,84 @@ const assertCommitObject = (sha) => {
   }
 };
 
-/** Migration filenames present in the artifact commit, from git alone. */
+/**
+ * Migration filenames present in the artifact commit, from git alone.
+ *
+ * NUL-delimited and never trimmed, because a filename's surrounding whitespace
+ * is part of its identity. `src/state/migrate.ts` applies exactly the entries
+ * whose REAL name ends in `.sql`, so a file named `007_evidence_bounds.sql `
+ * (trailing space) is silently skipped by the runner. Trimming here would make
+ * that file read as the canonical `007_evidence_bounds.sql`, and the preflight
+ * would authorize a deployment in which migration 007 is never applied.
+ *
+ * `git ls-tree --name-only` also QUOTES a path containing unusual characters,
+ * which would corrupt the name before it is ever compared. `-z` emits raw bytes
+ * with no quoting and no escaping, so what is compared is what is on disk.
+ *
+ * Entries whose real name does not end in `.sql` are excluded from F(A) — the
+ * same rule the runner applies — and returned separately so the operator can
+ * see why F(A) is short instead of reading an unexplained mismatch.
+ */
 const filesAtArtifact = (sha) => {
   const out = execFileSync(
     "git",
-    ["ls-tree", "--name-only", `${sha}`, "state/migrations/"],
+    ["ls-tree", "-z", "--name-only", `${sha}`, "state/migrations/"],
     { encoding: "utf8" },
   );
-  return out
-    .split("\n")
-    .map((l) => l.trim())
-    .filter((l) => l.endsWith(".sql"))
-    .map((l) => l.replace(/^.*\//, ""))
-    .sort();
+  const entries = out
+    .split("\0")
+    .filter((l) => l.length > 0)
+    .map((l) => l.slice(l.lastIndexOf("/") + 1));
+  return {
+    sql: entries.filter((f) => f.endsWith(".sql")).sort(),
+    nonSql: entries.filter((f) => !f.endsWith(".sql")).sort(),
+  };
 };
 
 const setEq = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
+
+/**
+ * The ONLY error identifiers this script will repeat, each mapped to a fixed
+ * category string that is emitted in place of the code itself.
+ *
+ * A SQLSTATE is server-chosen and therefore attacker-controllable; a shape check
+ * on it is not a sanitizer. This list is the sanitizer: an identifier that is not
+ * a key here yields UNKNOWN, and the value emitted is always one of the fixed
+ * strings below, never a value that came off the wire.
+ */
+const KNOWN_ERROR_CATEGORIES = new Map([
+  // PostgreSQL SQLSTATEs (class 08 connection, 28 authorization, others as met).
+  ["08000", "connection_exception"],
+  ["08001", "connection_not_established"],
+  ["08003", "connection_does_not_exist"],
+  ["08004", "connection_rejected"],
+  ["08006", "connection_failure"],
+  ["08007", "transaction_resolution_unknown"],
+  ["28000", "invalid_authorization"],
+  ["28P01", "invalid_password"],
+  ["3D000", "database_does_not_exist"],
+  ["25006", "read_only_transaction"],
+  ["42501", "insufficient_privilege"],
+  ["42P01", "undefined_table"],
+  ["53300", "too_many_connections"],
+  ["55P03", "lock_not_available"],
+  ["57014", "query_canceled"],
+  ["57P01", "admin_shutdown"],
+  ["57P03", "cannot_connect_now"],
+  // Node/system and TLS error codes.
+  ["ECONNREFUSED", "connection_refused"],
+  ["ECONNRESET", "connection_reset"],
+  ["ETIMEDOUT", "connection_timeout"],
+  ["ENOTFOUND", "host_not_found"],
+  ["EHOSTUNREACH", "host_unreachable"],
+  ["ENETUNREACH", "network_unreachable"],
+  ["EPIPE", "broken_pipe"],
+  ["EAI_AGAIN", "dns_temporary_failure"],
+  ["CERT_HAS_EXPIRED", "tls_certificate_expired"],
+  ["DEPTH_ZERO_SELF_SIGNED_CERT", "tls_self_signed_certificate"],
+  ["SELF_SIGNED_CERT_IN_CHAIN", "tls_self_signed_certificate"],
+  ["UNABLE_TO_VERIFY_LEAF_SIGNATURE", "tls_unverified_certificate"],
+]);
 
 const LABEL = "migration-state read";
 
@@ -150,18 +215,25 @@ const LABEL = "migration-state read";
  * tried (`password authentication failed for user "..."`, `connect ECONNREFUSED
  * 127.0.0.1:1`). This script's contract is that it prints no connection string,
  * user, host, or password, and operator logs or committed evidence would carry
- * whatever is printed here. Only a bounded code is emitted: a PostgreSQL
- * SQLSTATE or a Node system error code, matched against a strict pattern so an
- * unexpected value degrades to UNKNOWN rather than passing text through.
+ * whatever is printed here.
+ *
+ * The SQLSTATE is NOT trusted either. A pattern match on its shape is not a
+ * sanitizer: `RAISE ... USING ERRCODE = 'ZZZZZ'` lets the database choose the
+ * five characters, so any well-formed value would pass straight through into
+ * operator evidence. Only codes on the fixed list below are recognised, and
+ * each maps to a FIXED category string that is emitted in place of the code —
+ * so what reaches the log is chosen here, never by the server. Everything else,
+ * including every unrecognised or custom SQLSTATE, degrades to UNKNOWN.
  */
 const sanitizedFailure = (error) => {
   const raw = error?.code;
-  const code = typeof raw === "string" && /^[A-Za-z0-9_]{1,20}$/.test(raw) ? raw : "UNKNOWN";
+  const category =
+    (typeof raw === "string" ? KNOWN_ERROR_CATEGORIES.get(raw) : undefined) ?? "UNKNOWN";
   return (
-    `${LABEL} failed. error_code=${code}\n` +
-    "The driver's own message is deliberately withheld: it can contain the database " +
-    "user, host or port. Check the connection settings in your own shell; they are " +
-    "not echoed here."
+    `${LABEL} failed. error_category=${category}\n` +
+    "The driver's own message and code are deliberately withheld: both can be chosen " +
+    "by the database, and the message can contain the database user, host or port. " +
+    "Check the connection settings in your own shell; they are not echoed here."
   );
 };
 
@@ -189,8 +261,13 @@ const main = async () => {
   };
 
   // --- F(A), from the artifact, no database required ----------------------
-  const fFiles = filesAtArtifact(artifact);
+  const { sql: fFiles, nonSql } = filesAtArtifact(artifact);
   record["F(A)"] = fFiles;
+  if (nonSql.length > 0) {
+    // Not a decision input: the mismatch it causes is caught by comparison 1.
+    // Recorded because a name that only LOOKS canonical is the whole hazard.
+    record.non_sql_entries_excluded = nonSql;
+  }
   record.expected = {
     E_files: expected.files,
     E_applied_pre: expected.applied_pre,

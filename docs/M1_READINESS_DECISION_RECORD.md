@@ -216,7 +216,8 @@ It computes `F(A)`, `D` and `P`, and evaluates **all seven** comparisons individ
 differing filenames by name. It emits `decision: pass` or `decision: stop`, where **`stop` means the
 deployment is not triggered**.
 
-**Migration identity is the complete filename, never its numeric prefix.** `_migrations` stores the
+**Migration identity is the complete filename, byte for byte — never its numeric prefix, and never a
+trimmed form.** `_migrations` stores the
 filename, and the general migration runner applies whichever file is present. A migration renamed
 `007_anything_else.sql` shares the prefix `007` with the authorized migration while being a different
 file containing different SQL. All four expected sets are therefore written as complete canonical
@@ -230,12 +231,14 @@ run, and no reviewable or deployable identity. The tool runs `git cat-file -t` a
 to be exactly `commit` before it enumerates anything. A branch name or tag *name* is still rejected by
 the full-SHA check, per **A1**.
 
-**Failures print a bounded code, never the driver's message.** A raw driver message routinely embeds
-the database user and the host:port it tried (`role "…" does not exist`, `connect ECONNREFUSED
-127.0.0.1:1`). Both operator scripts emit only a PostgreSQL SQLSTATE or Node system error code,
-matched against a strict pattern so an unexpected value degrades to `UNKNOWN`. This holds the
-scripts' stated promise that they print no connection string, user, host, or password — which matters
-because operator logs and committed evidence carry whatever is printed.
+**Failures print a fixed category, never the driver's message and never its code.** A raw driver
+message routinely embeds the database user and the host:port it tried (`role "…" does not exist`,
+`connect ECONNREFUSED 127.0.0.1:1`). The SQLSTATE is no safer: `RAISE … USING ERRCODE = 'ZZZZZ'`
+lets the **database** choose it, so matching its shape sanitizes nothing. Both operator scripts map
+explicitly recognised PostgreSQL SQLSTATEs and Node/system codes to **fixed category strings defined
+in the script**, emit the category in place of the code, and degrade everything unrecognised to
+`UNKNOWN`. What reaches the log is therefore always chosen in the script, never by the server — which
+matters because operator logs and committed evidence carry whatever is printed.
 
 **Executed proof against the disposable database — every failure mode, each restored afterwards:**
 
@@ -249,10 +252,14 @@ because operator logs and committed evidence carry whatever is printed.
 | **F** artifact renames `007` → `007_malicious.sql`, canonical `001`–`006` applied | `001`–`006` | `007_malicious.sql` | **stop** | **1**, **3** |
 | **G** artifact renames applied baseline `006` → `006_tampered.sql` | `001`–`006` canonical | `006_tampered.sql`, `007` | **stop** | **1**, **3**, **4** |
 | **H** database holds renamed baseline `006_tampered.sql`, artifact canonical | `…005`, `006_tampered.sql` | `006`, `007` | **stop** | **2**, **3**, **4**, **5**, **6** |
+| **I** artifact's `007` carries a **trailing space** | `001`–`006` | *(007 excluded)* | **stop** | **1**, **3** |
+| **J** artifact's `007` carries a **leading space** | `001`–`006` | ` 007…`, `007` | **stop** | **1**, **3** |
+| **K** artifact's `007` contains an **embedded newline** | `001`–`006` | `007_evi⏎dence.sql`, `007` | **stop** | **1**, **3** |
 
-**Cases F, G and H were added after an independent inspection found a real bypass**, recorded in full
+**Cases F–K were each added after an independent inspection found a real bypass**, recorded in full
 below. Under the previous prefix-based comparison, case F returned **all seven comparisons `true`,
-`decision: pass`, exit 0** with an unauthorized `007_malicious.sql` pending.
+`decision: pass`, exit 0** with an unauthorized `007_malicious.sql` pending. Under the previous
+filename *trimming*, case I did the same while migration 007 would **never have been applied at all**.
 
 **Case C is the one that justifies the whole design.** The pending set reads `['007']` — *exactly
 what M1 expects* — yet the tool stops, because comparisons 4 and 6 catch the unauthorized
@@ -280,6 +287,17 @@ The prefix projection was load-bearing for the bypass, not incidental: compariso
 compared full filenames, which is why case G is caught by 4 as well as by 1 and 3, while case F —
 where the rename is on the *pending* migration and so never appears in `D` — was caught by **nothing
 at all**.
+
+### Two further defects found by a second independent inspection, and corrected
+
+| # | Defect | Reproduction, before the fix | Correction |
+|---|---|---|---|
+| 5 | Filenames were **trimmed** before comparison, so surrounding whitespace was invisible | Artifact with `007_evidence_bounds.sql` renamed to `007_evidence_bounds.sql ` (trailing space) and canonical `001`–`006` applied: `F(A)` reported the **canonical** name, **all seven comparisons `true`, `decision: pass`, exit 0**. `src/state/migrate.ts` selects `f.endsWith(".sql")` on the **real** name, so the runner would have **skipped the file entirely** — M1 would have been authorized to deploy with **migration 007 never applied** | `git ls-tree **-z**`, split on NUL, **never trimmed**; basenames compared byte for byte. `-z` also matters independently: without it git **quotes** a path containing unusual characters, so the name compared is not the name on disk. Regression cases **I**, **J**, **K** added |
+| 6 | The failure filter checked the **shape** of the error code, not its value — and a SQLSTATE is **server-chosen** | A disposable PostgreSQL function raising `ERRCODE='ZZZZZ'` with sensitive text in its message caused both scripts to emit `error_code=ZZZZZ`, **not** `UNKNOWN`. A shape check is not a sanitizer: database-controlled codes entered operator logs and committed evidence, contradicting this record's own guarantee | A fixed table maps **explicitly recognised** PostgreSQL SQLSTATEs and Node/system codes to **fixed category strings**; the category is emitted **in place of** the code, so the emitted value is always chosen in the script and never taken off the wire. Everything unrecognised — every custom SQLSTATE included — degrades to `UNKNOWN`. Custom-SQLSTATE regressions added for **both** scripts |
+
+**Scope of the whitespace fix, stated honestly:** comparing exact bytes closes the rename and
+whitespace bypasses. It does **not** detect a file edited in place under an unchanged name — that
+remains outside what `_migrations` can support, since it stores no checksum.
 
 ---
 
