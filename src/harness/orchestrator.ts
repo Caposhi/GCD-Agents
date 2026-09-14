@@ -367,7 +367,7 @@ async function resolveImage(image: any, runId?: string): Promise<any> {
         : `${basePrompt}\n\nCRITICAL FIX: the previous render failed publication QC (${lastIssues.join("; ") || "visual inspection failure"}). ` +
           `Remove every reported privacy, safety, or misleading element. Render ONLY these exact words — large, sharp, and perfectly legible — with NO other text: no body paragraphs, no second call-to-action.` +
           (plateIssue
-            ? ` The license plate keeps rendering with visible characters — do NOT try to render a "blank" plate again. Instead change the composition so no plate is in clear view at all: crop the hero shot just above the bumper/plate line, use a rear 3/4 angle, turn the plate away from camera, or place it behind strong foreground blur/reflection. If any plate-shaped area remains in frame, it must be a smooth solid-color panel — no characters, numbers, or texture of any kind, not even faint ones.`
+            ? ` The license plate keeps rendering with visible characters — stop trying to render a "blank" plate, that keeps failing. Recompose the shot so NO plate-shaped area is in frame at all: crop the hero shot just above the bumper/plate line, use a rear 3/4 angle, or frame a tight shot on the grille/headlight/front fascia that never reaches the plate.`
             : ` no license-plate text.`) +
           ` Allowed text: ${expected.length ? expected.map((t: string) => `"${t}"`).join(", ") : "the kicker, the headline, one CTA button, the wordmark, and the URL only"}.`;
     try {
