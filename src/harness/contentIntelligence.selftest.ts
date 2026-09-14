@@ -4,10 +4,21 @@
  * Run: npm run build && npm run test:content-intelligence
  */
 
+import {
+  copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync,
+} from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+  checkSqlAuthority,
+  decodeUtf8Fatal,
+  parseJsonRejectingDuplicateKeys,
+  sha256Bytes,
+  SQL_AUTHORITY_MANIFEST_SHA256,
+} from "./sqlAuthority.js";
 import {
   EVIDENCE_KINDS,
   EvidenceKind,
@@ -5308,11 +5319,11 @@ async function run(): Promise<void> {
     // natural-language understanding.
     //
     // Positive and negative forms are treated identically WITHIN the tested bounded grammar:
-    // neither is established. That grammar is not complete English. Known unsupported forms
-    // are recorded as CC5-SYNTAX-001 in docs/KNOWN_ISSUES_AND_HARDENING.md -- past
-    // remain/stay declarations ("remained unapplied", "has stayed unapplied", and their
-    // contextual-It shapes) are NOT rejected, because FINITE_AUX matches only the present
-    // `remains?`/`stays?`. That gap is accepted and deferred, not fixed.
+    // neither is established. That grammar is not complete English. Past remain/stay
+    // declarations ("remained unapplied", "has stayed unapplied", and their contextual-It
+    // shapes) are NOT rejected because FINITE_AUX matches only the present
+    // `remains?`/`stays?`. CC5-SYNTAX-001 is closed by the raw whole-file authority below,
+    // not by claiming this bounded legacy recogniser became semantically complete.
     type Tok = {
       readonly text: string; readonly lower: string;
       readonly start: number; readonly end: number;
@@ -5759,7 +5770,7 @@ async function run(): Promise<void> {
     }
     check("CC5. the rollback lives outside the forward-only runner's directory; a token-level "
       + "analysis enumerates the application predicates of the tested bounded grammar in either "
-      + "file (past remain/stay forms are NOT covered — see CC5-SYNTAX-001) and judges each on its "
+      + "file (past remain/stay forms are NOT covered; whole-file CC5F is the replacement control) and judges each on its "
       + "own subject or antecedent, tense frame, proposition boundaries and governing "
       + "construction, so neither file declares 007's application state in either direction — "
       + "positive or negative, auxiliary or bare past (ran / never ran / did run / did not "
@@ -5823,6 +5834,136 @@ async function run(): Promise<void> {
         // Separate authorization is required by both.
         && /SEPARATE, SEPARATELY AUTHORIZED/.test(migrationSql)
         && /SEPARATE, SEPARATELY AUTHORIZED/.test(rollbackSql));
+
+    // --- CC5F. both SQL artifacts are frozen as whole raw files ---------------
+    //
+    // No SQL/comment classifier and no English allowlist participates here.
+    // Every byte is pinned, including comments, whitespace, line endings,
+    // encoding markers, and bytes inside dollar-quoted function bodies. The
+    // manifest is itself pinned independently in sqlAuthority.ts and is hashed
+    // before fatal UTF-8 decoding or duplicate-aware parsing.
+    const authority = checkSqlAuthority(REPO_ROOT);
+    if (authority.violations.length) {
+      console.log(`      authority violations: ${JSON.stringify(authority.violations)}`);
+    }
+    check("CC5F. the independently pinned manifest and both authoritative SQL artifacts match "
+      + "their whole-file raw SHA-256 identities — no comment, SQL, whitespace, line-ending, "
+      + "encoding, or dollar-body byte is normalized or discarded, and this repository-content "
+      + "control establishes nothing about production state",
+      authority.violations.length === 0
+        && authority.manifest?.rawSha256 === SQL_AUTHORITY_MANIFEST_SHA256
+        && authority.manifest.expectedSha256 === SQL_AUTHORITY_MANIFEST_SHA256
+        && authority.observed.length === 2
+        && authority.observed.every((item) => item.rawSha256 === item.expectedSha256));
+
+    // All adversarial writes below target disposable fixtures only.
+    const fixtureRoots: string[] = [];
+    const makeFixture = (): string => {
+      const dir = mkdtempSync(join(tmpdir(), "cc5-authority-"));
+      fixtureRoots.push(dir);
+      mkdirSync(join(dir, "src/harness"), { recursive: true });
+      mkdirSync(join(dir, "state/migrations"), { recursive: true });
+      mkdirSync(join(dir, "state/rollback"), { recursive: true });
+      for (const rel of [
+        "src/harness/sqlAuthority.json",
+        "state/migrations/007_evidence_bounds.sql",
+        "state/rollback/007_evidence_bounds_rollback.sql",
+      ]) copyFileSync(resolve(REPO_ROOT, rel), join(dir, rel));
+      return dir;
+    };
+    const MANIFEST_REL = "src/harness/sqlAuthority.json";
+    const SQL_RELS = [
+      "state/migrations/007_evidence_bounds.sql",
+      "state/rollback/007_evidence_bounds_rollback.sql",
+    ];
+    /** Replaces a fixture file with a symlink to byte-identical content. */
+    const relinkToIdenticalContent = (dir: string, rel: string): void => {
+      const target = join(dir, `${rel.replace(/[^A-Za-z0-9]/g, "_")}.copy`);
+      const original = readFileSync(join(dir, rel));
+      writeFileSync(target, original);
+      rmSync(join(dir, rel));
+      symlinkSync(target, join(dir, rel));
+    };
+
+    try {
+      check("CC5G. unchanged regular files pass in an untouched disposable fixture",
+        checkSqlAuthority(makeFixture()).violations.length === 0);
+
+      const symlinkResults = [MANIFEST_REL, ...SQL_RELS].map((rel) => {
+        const dir = makeFixture();
+        relinkToIdenticalContent(dir, rel);
+        return checkSqlAuthority(dir).violations;
+      });
+      check("CC5H. byte-identical symlinks are rejected independently for the manifest and both SQL files",
+        symlinkResults.every((v) => v.length > 0 && v.some((m) => /symbolic link/.test(m))));
+
+      const malformedManifestRoot = makeFixture();
+      const malformedManifestPath = join(malformedManifestRoot, MANIFEST_REL);
+      const malformedManifest = Buffer.concat([
+        readFileSync(malformedManifestPath), Buffer.from([0x80]),
+      ]);
+      writeFileSync(malformedManifestPath, malformedManifest);
+      const malformedManifestResult = checkSqlAuthority(malformedManifestRoot);
+      check("CC5I. the manifest raw digest is calculated and reported before fatal UTF-8 decoding, "
+        + "so malformed bytes produce both an independent-pin mismatch and a UTF-8 violation",
+        malformedManifestResult.manifest?.rawSha256 === sha256Bytes(malformedManifest)
+          && malformedManifestResult.violations.some((item) => /independent review pin/.test(item))
+          && malformedManifestResult.violations.some((item) => /not valid UTF-8/.test(item)));
+
+      const base = Buffer.from("same valid prefix", "utf8");
+      const with80 = Buffer.concat([base, Buffer.from([0x80])]);
+      const with81 = Buffer.concat([base, Buffer.from([0x81])]);
+      const lossy = new TextDecoder("utf-8");
+      check("CC5J. raw hashing distinguishes otherwise identical files ending in 0x80 and 0x81, "
+        + "even though lossy decoding would collapse them",
+        sha256Bytes(with80) !== sha256Bytes(with81)
+          && lossy.decode(with80) === lossy.decode(with81)
+          && (() => { try { decodeUtf8Fatal(with80); return false; } catch { return true; } })()
+          && (() => { try { decodeUtf8Fatal(with81); return false; } catch { return true; } })());
+
+      const dup = (text: string): boolean => {
+        try { parseJsonRejectingDuplicateKeys(text); return false; } catch { return true; }
+      };
+      const ok = (text: string): boolean => {
+        try { parseJsonRejectingDuplicateKeys(text); return true; } catch { return false; }
+      };
+      const RAW_CONTROL = `{"a":"${String.fromCharCode(1)}"}`;
+      check("CC5K. duplicate decoded property names are rejected recursively before an authority "
+        + "object is returned, within each object "
+        + "scope separately — literal duplicates, escaped-equivalent spellings in either order, "
+        + "duplicated `path` and `sha256` fields, and \\u escapes including a surrogate pair — while "
+        + "the same names reused in SIBLING objects stay legal and malformed JSON is refused",
+        [
+          '{"a":1,"a":2}',
+          '{"path":"x","\\u0070ath":"y"}',
+          '{"\\u0070ath":"x","path":"y"}',
+          '{"sha256":"x","\\u0073ha256":"y"}',
+          '{"\\u0073\\u0068a256":"x","sha256":"y"}',
+          '{"g\\uD83D\\uDE00":1,"g\\uD83D\\uDE00":2}',
+          '{"outer":{"a":1},"a":2,"a":3}',
+        ].every(dup)
+          && ok('{"artifacts":[{"path":"a","sha256":"b"},{"path":"c","sha256":"d"}]}')
+          && ok('{"g\\uD83D\\uDE00":1,"h":2}')
+          && ['{"a":1,', '{a:1}', '{"a":1}{"b":2}', '{"a":01}', RAW_CONTROL].every(dup));
+
+      const rawBaseline = readFileSync(resolve(REPO_ROOT, SQL_RELS[0]!));
+      const rawText = rawBaseline.toString("utf8");
+      const changedBuffers = [
+        Buffer.concat([rawBaseline, Buffer.from("--\n", "utf8")]),
+        Buffer.from(rawText.replace("-- Applying this to production", "--  Applying this to production"), "utf8"),
+        Buffer.from(rawText.replace(/\n/g, "\r\n"), "utf8"),
+        Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), rawBaseline]),
+        Buffer.from(`${rawText}\n-- cafe\u0301\n`, "utf8"),
+        Buffer.from(`${rawText}\n/* comment */\n`, "utf8"),
+      ];
+      check("CC5L. representative blank-comment, spacing, CRLF, BOM, Unicode-normalization, and "
+        + "block-comment changes all move whole-file identity before any interpretation",
+        changedBuffers.every((bytes) => sha256Bytes(bytes) !== sha256Bytes(rawBaseline))
+          && sha256Bytes(Buffer.from("-- café\n", "utf8"))
+            !== sha256Bytes(Buffer.from("-- cafe\u0301\n", "utf8")));
+    } finally {
+      for (const dir of fixtureRoots) rmSync(dir, { recursive: true, force: true });
+    }
 
     // --- CC-B. the evidence bounds are real, and invalidate nothing valid ---
     check("CC6. an over-long claim, subject, attribute, tag, tag list, source ref, "

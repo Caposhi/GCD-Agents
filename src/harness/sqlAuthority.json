@@ -1,0 +1,13 @@
+{
+  "version": 2,
+  "artifacts": [
+    {
+      "path": "state/migrations/007_evidence_bounds.sql",
+      "sha256": "fb5128b4ae207e75b7c6b2798519594c72b7d91191b7055a674c22fafdf2ddca"
+    },
+    {
+      "path": "state/rollback/007_evidence_bounds_rollback.sql",
+      "sha256": "31e0ab0c1f92ccafbd30fb827b4ece9856257a997c39ad5fb031bc18cebfe122"
+    }
+  ]
+}
