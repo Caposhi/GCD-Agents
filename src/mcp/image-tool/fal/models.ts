@@ -28,7 +28,23 @@ export function modelFor(contentType: ImageContentType): string {
  * compositions (vs the default BALANCED) — worth it for hero brand graphics.
  */
 const MODEL_EXTRAS: Record<ImageContentType, Record<string, unknown>> = {
-  "text-graphic": { rendering_speed: "QUALITY" },
+  "text-graphic": {
+    rendering_speed: "QUALITY",
+    // MagicPrompt is ON by default and rewrites our prompt before generation —
+    // that can silently dilute or drop explicit composition instructions (e.g.
+    // license-plate avoidance). Disable it so the exact prompt we author is
+    // what the model actually sees. (Verified against the live fal-ai/
+    // ideogram/v3 input schema, 2026-09-14.)
+    expand_prompt: false,
+    // Verified field on fal-ai/ideogram/v3 (2026-09-14 schema check) — fal's
+    // own docs note the positive prompt still takes precedence over this, so
+    // it reinforces (not replaces) the plate-avoidance composition instruction
+    // authored in agents/image.md.
+    negative_prompt:
+      "visible license plate, readable license plate, license plate characters, license plate numbers, close-up of a license plate, legible plate text",
+  },
+  // Not extended to photoreal (Flux) — its request schema has not been
+  // verified against these exact field names; do not guess on a live API.
   photoreal: {},
   "graphic-vector": {},
 };
