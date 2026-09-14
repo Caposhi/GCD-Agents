@@ -1,12 +1,9 @@
 # Known issues and post-MVP hardening backlog
 
-This document is the durable record of **accepted, deferred** defects and the
-process for handling them. It is active documentation, not an archive.
-
-An entry here is **not** a fixed defect. It is a defect that has been
-**reproduced, scoped, and deliberately deferred** under named compensating
-controls and a mandatory completion trigger. Nothing in this file may be read as
-a claim that the underlying limitation is resolved, harmless, or
+This document is the durable record of **accepted, deferred, and closed**
+hardening defects and the process for handling them. It is active documentation,
+not an archive. Each entry's status governs whether its compensating controls or
+closing evidence apply; a closed repository control is not thereby deployed or
 production-validated.
 
 ---
@@ -75,140 +72,149 @@ Every deferred finding is recorded with all of the following fields.
 
 ---
 
-## CC5-SYNTAX-001 — Past `remain`/`stay` application-state declarations
+## CC5-SYNTAX-001 — closed by whole-file SQL authority
 
 | Field | Value |
 |---|---|
 | **Issue ID** | `CC5-SYNTAX-001` |
-| **Category** | Syntax / grammar guard hardening |
-| **Date** | 2026-09-11 |
-| **Originating PR** | PR #57 |
-| **Originating head** | `8238f37622b816e043b2f449f2b0e33da685eb58` |
-| **Affected control** | `CC5` in `src/harness/contentIntelligence.selftest.ts` |
-| **Severity** | Low — dormant, non-runtime, test-only false negative |
-| **Reachability** | Dormant. Not production-reachable. |
-| **Status** | **OPEN — accepted and deferred** |
-| **Owner / workstream** | Hardening lane (post-MVP), fresh implementer + independent inspector |
+| **Category** | Syntax / grammar guard hardening; replacement-control closure |
+| **Date found / closed** | Found 2026-09-11; replacement prototype independently accepted 2026-09-14 |
+| **Originating PR / head** | PR #57 / `8238f37622b816e043b2f449f2b0e33da685eb58` |
+| **Affected control** | Legacy `CC5` bounded grammar in `src/harness/contentIntelligence.selftest.ts` |
+| **Severity / reachability** | Low; dormant, non-runtime, repository-test false negative |
+| **Status** | **RESOLVED BY REPLACEMENT CONTROL — IMPLEMENTED on the CC5 packaging branch; not merged, deployed, enabled, or production-validated** |
+| **Owner / workstream** | Hardening lane; Implementer S packaging, independent packaging-PR inspector next |
 
-### Exact reproduction
+### Original reproduction and threat
 
-Appending any of these lines to **either** authoritative SQL comment file leaves
-the complete Content Intelligence suite **exiting 0** — `CC5` does **not**
-reject them:
+At the originating head, appending any of these lines to either authoritative SQL
+artifact left the complete Content Intelligence suite exiting 0:
 
 ```
 -- Migration 007 remained unapplied.
 -- Migration 007 has remained unapplied.
 -- Migration 007 stayed unapplied.
 -- Migration 007 has stayed unapplied.
-```
-
-The equivalent **contextual-`It`** forms are part of the **same unresolved
-class** and behave identically:
-
-```
 -- It remained unapplied.
 -- It has remained unapplied.
 -- It stayed unapplied.
 -- It has stayed unapplied.
 ```
 
-Reproduced at head `8238f37` against both
-`state/migrations/007_evidence_bounds.sql` and
-`state/rollback/007_evidence_bounds_rollback.sql`: **8 forms × 2 files = 16
-executions, all escaping.** A control form
-(`-- Migration 007 has been applied to production.`) was rejected in the same
-run, and both files restored byte-for-byte.
+The 8 forms against 2 files produced 16 escaping executions. `FINITE_AUX`
+recognised present `remain`/`stay` forms but not their past forms, so the
+classifier did not treat those predicates as assertions. The wider bypass class
+was not those eight phrases alone: any unrecognised English construction could
+place an unreviewed application-state claim in either authoritative SQL file
+while a grammar-based test continued to pass.
 
-**Mechanism.** `FINITE_AUX` matches `remains?` and `stays?` — the present-tense
-forms only. The past forms `remained` and `stayed` match neither `FINITE_AUX`
-nor `APPLICATION_VERB`, so the leftward walk collects no finite frame, the
-predicate resolves to frame `none`, and it is not classified as assertive.
+### Selected replacement design
 
-### Scope and impact
+The system no longer relies on recognising arbitrary English in
+`state/migrations/007_evidence_bounds.sql` or
+`state/rollback/007_evidence_bounds_rollback.sql`. A closed, versioned manifest
+owns exactly those two ordered paths and pins the SHA-256 of each file's **raw,
+whole-file bytes**. The manifest's own raw SHA-256 is pinned independently in
+`src/harness/sqlAuthority.ts` and checked before fatal UTF-8 decoding or JSON
+parsing.
 
-- This is a **false negative in the repository's `CC5` comment-validation
-  test**. It is a test-only recognition gap.
-- It **does not change executable SQL**. Comment-stripped SHA-256 of both 007
-  scripts is identical to base.
-- **Neither authoritative file currently contains any of those claims.**
-- **Migration 007's production application state remains `UNKNOWN in either
-  direction`**, and nothing here establishes it in either direction.
-- **All six executors remain disabled and unreachable**
-  (`executionEnabled: false`; `executionEnabled: true` appears zero times in
-  `src/`).
-- **No production route is enabled by accepting this limitation.**
-- **The risk** is that a future author could add one of these unsupported
-  categorical statements to an authoritative comment block **without `CC5`
-  rejecting it**, leaving a false application-state claim in the repository.
+No SQL parsing, comment filtering, trimming, normalization, newline conversion,
+or decode/re-encode step participates in artifact identity. SQL, comments,
+whitespace, line endings, byte-order marks, malformed encodings, and
+dollar-quoted bodies therefore all remain inside the reviewed identity. The
+manifest parser rejects duplicate decoded keys recursively, including literal
+and escaped-equivalent spellings, enforces a closed schema and exact ordered path
+ownership, and accepts only regular files opened without following symlinks.
 
-This defect is **not** fixed, **not** resolved, **not** harmless, and **not**
-production-validated. It is reproduced, bounded, and deferred.
+A legitimate SQL or comment change requires one coordinated, review-visible
+change to the artifact bytes, that artifact's manifest digest, and the
+independent manifest pin. Those coordinated changes are the only positive
+authority-update cases. The previous comment freeze is superseded by this
+stronger whole-file authority rather than removed without replacement.
 
-### Reason for deferral
+### Rejected alternatives
 
-Repeated expansion of a bespoke natural-language classifier has consumed
-disproportionate MVP time and has continued to expose new grammatical edge cases
-with each round. The accepted direction is to **stop expanding that parser inside
-PR #57** and to handle the broader control design as a separate hardening
-workstream, where the approach itself can be reconsidered rather than extended
-one construction at a time.
+- Continuing to expand the English recogniser was rejected because the recurring
+  bypass class was unrecognised language, not one missing verb conjugation.
+- Comment stripping or an executable-SQL-only digest was rejected because it
+  leaves comments, whitespace, encoding, and parser-boundary bytes outside
+  review authority.
+- A canonical insertion zone or approved-sentence allowlist was rejected because
+  placement and concatenation recreate a language/parser boundary and permit
+  unreviewed bytes outside the approved block.
+- A manifest that authenticates itself was rejected because coordinated manifest
+  tampering would redefine the authority. Its digest is pinned outside it.
+- Parsing or decoding before hashing was rejected because normalization or lossy
+  decoding can collapse distinct byte sequences.
+- Mutating the authoritative checkout and restoring it in a `finally` block was
+  rejected because `SIGKILL`, host loss, or an uncatchable crash can bypass
+  cleanup.
 
-### Compensating controls
+### Trust boundary and mutation evidence
 
-In force until this item is closed:
+This is **repository-content authority**, not proof of production database
+state. Migration 007 remains production `UNKNOWN in either direction`.
+Repository bytes establish neither application nor non-application.
 
-1. **Substantive changes to the application-state comment blocks** in migration
-   007 or its rollback **require explicit independent review.**
-2. Those comments **must continue to state `UNKNOWN in either direction`.**
-3. **No PR may claim `CC5` provides comprehensive English or semantic
-   validation.** `CC5` enforces a specifically tested bounded grammar plus
-   structural invariants — nothing wider.
-4. **The known reproduction forms above must remain listed in this backlog**, in
-   full, so a future author can check against them directly.
-5. **This limitation must be rechecked** before any production enablement, and
-   before merging any future substantive modification to those authoritative
-   comment blocks.
+The mutation harness prepares a disposable no-Git copy, links the locked
+dependencies into it, and performs every mutation, build, suite run, and
+byte-for-byte restoration there. The authoritative checkout is snapshotted and
+is never a mutation target. A bounded child-process proof kills the harness with
+`SIGKILL` while the disposable target is actively modified, then verifies the
+authoritative Git status and all captured raw bytes stayed unchanged during and
+after interruption; the stranded disposable directory is explicitly removed.
 
-No automated control is added here: any non-trivial automation would restart the
-grammar-parser work this deferral exists to stop.
+The independently accepted prototype at
+`0904c1ecbc682aa6e1b97f82051ab1deddf67419` contains 341 unique mutations:
+339 prohibited cases and 2 coordinated-authority-update cases. The prohibited
+set includes every former grammar `mustPass` case because an uncoordinated byte
+change is no longer authorized. It also covers raw comment/SQL/whitespace and
+encoding changes, path and schema tampering, literal and escaped-equivalent
+duplicate keys, malformed UTF-8, symlinks, and cross-artifact substitution. The
+two positive cases update the changed SQL digest, manifest, and external source
+pin together. The packaging branch reproduced all 341 passes under Node 22.23.2,
+including no-Git isolation and the bounded `SIGKILL` proof; an independent source
+derivation confirmed 317 legacy plus 24 raw-identity definitions, 46 former
+allowances, the 339/2 result split, and 12 captured paths. Its complete local
+validation contract passed, including PostgreSQL 16.15 and 18.6 plus bound HTTP
+integration, checksum-verified actionlint 1.7.12, independent YAML parsing, and
+AgentShield 1.4.0 with zero critical/high findings. Exact-head CI evidence must
+still be reconciled in the draft PR before independent inspection.
 
-### Must-fix trigger
+### Legacy checks and limitations
 
-This item becomes **mandatory** before the first of:
+The bounded legacy grammar checks remain as defence-in-depth and as historical
+regression coverage. They are **not semantic truth verification** and do not
+recognise arbitrary English. The past `remain`/`stay` examples above may
+still evade that classifier; they no longer evade repository-content authority
+because any added byte fails the whole-file digest.
 
-- **production enablement of the Content Intelligence execution chain**;
-- **removal of the current comment freeze**;
-- **any claim that `CC5` comprehensively rejects past/perfect application-state
-  declarations.**
+This control cannot prevent a reviewer-approved coordinated malicious change to
+the SQL artifact, manifest digest, and external pin. It does not authenticate the
+reviewer, prove that reviewed bytes were deployed, prove which migration rows
+exist, or inspect a production database. Production evidence for this
+replacement is **none**. All six executors remain disabled and unreachable.
 
-Until one of those occurs it may remain in the post-MVP hardening lane.
+### Rollback implications
 
-### Definition of done
+Application rollback is an ordinary revert of the repository control while the
+SQL artifacts remain unchanged. Reverting the control weakens repository
+authority and would reopen `CC5-SYNTAX-001`; it does not apply or roll back
+migration 007 and performs no production cleanup. If migration 007 has been
+applied, its separate SQL rollback remains a separately authorized database
+operation. Because its current production state is unknown, that state must be
+established read-only before any database rollback decision.
 
-The hardening implementer must **choose and document one defensible approach**.
-The design is deliberately **not** predetermined here. Two examples of
-defensible directions:
+### Independent inspection and follow-up ownership
 
-- a **deliberately bounded grammar** that adds the missing past/perfect forms
-  together with adversarial mutations proving the new boundary; or
-- a **simpler canonical-comment or approved-block invariant** that stops
-  pretending to understand arbitrary English — for example, requiring the
-  application-state block to match an approved canonical text exactly.
+The whole-file prototype was independently inspected at exact head
+`0904c1ecbc682aa6e1b97f82051ab1deddf67419` with verdict
+`PROTOTYPE READY FOR PR PACKAGING`. The historical prototype branch is
+inspection evidence only; it is not merged, deployed, or repurposed.
 
-Whichever is chosen, closing this item requires **all** of:
-
-- **paired migration and rollback regressions** — every new class asserted
-  against both authoritative files;
-- **mutation evidence** in the durable harness, with each target restoring
-  byte-for-byte;
-- **truthful documentation** — the guarantee stated must match the implemented
-  behaviour, with anything unclaimed stated explicitly;
-- **independent inspection** by someone other than the implementer;
-- **exact-head CI** with every job green at the closing head.
-
-### Status and closing evidence
-
-**OPEN — accepted and deferred at head `8238f37622b816e043b2f449f2b0e33da685eb58`
-(PR #57).** No grammar fix was attempted in the closeout that recorded this
-entry. Closing evidence to be recorded here when the hardening lane closes it.
+Implementer S owns packaging and exact-head validation. A fresh independent
+inspector owns the packaging-PR review, including exact file/digest comparison,
+mutation totals, isolation evidence, trust-limit wording, and all five CI jobs.
+Any future legitimate SQL change is owned by that change's author and reviewer
+as one coordinated artifact/manifest/source-pin review. Production or migration
+operations remain separately owned and separately authorized.

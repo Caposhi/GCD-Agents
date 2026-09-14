@@ -207,10 +207,12 @@ coverage, sensitive scan, dependency audit, YAML, whitespace. Exact-head CI run
 [34630277875](https://github.com/Caposhi/GCD-Agents/actions/runs/34630277875) — five of five jobs
 `success`, each `run_attempt: 1`, no re-runs.
 
-**Bounded-closeout verdict.** The PR closed out **bounded**: the reconciliation landed and the
-remaining `CC5` syntax-hardening work was **explicitly deferred**, not completed.
+**Bounded-closeout verdict at that merge.** The PR closed out **bounded**: the reconciliation landed
+and the remaining `CC5` syntax-hardening work was **explicitly deferred**, not completed. The
+subsequent whole-file authority replacement recorded immediately below resolves that follow-up in
+repository source without rewriting this historical verdict.
 
-**Accepted limitation — `CC5-SYNTAX-001`, `OPEN` and deferred.** `CC5` does **not** reject past
+**Accepted limitation at that merge — `CC5-SYNTAX-001`, then `OPEN` and deferred.** `CC5` does **not** reject past
 `remain`/`stay` application-state declarations (*"Migration 007 remained unapplied."*, *"… has
 remained unapplied."*, *"… stayed unapplied."*, *"… has stayed unapplied."*) or their contextual-*It*
 shapes, because `FINITE_AUX` matches only the present `remains?`/`stays?`. It is **not fixed, not
@@ -226,8 +228,109 @@ wiring, no enablement, no migration application, and no operator milestone.
 `docs/PRODUCTION_WIRING_DESIGN.md`, `docs/ROADMAP.md`, `docs/SECURITY_AND_CONTINUITY.md`,
 `docs/STATUS.md`, `docs/TESTING.md`, `docs/credentials-setup.md`.
 
-**Unresolved follow-ups.** `CC5-SYNTAX-001`; and the M1 readiness prerequisites below, none of which
-this merge advances.
+**Unresolved follow-ups at that merge.** `CC5-SYNTAX-001`, subsequently resolved by the replacement
+control below; and the M1 readiness prerequisites below, none of which this merge advanced.
+
+## CC5 whole-file SQL-authority hardening — `IMPLEMENTED`, draft PR packaging
+
+**State / provenance.** `IMPLEMENTED` on a new packaging branch based exactly on
+`ed17e6acb5f08e5ccf242ca4a4129f307b642809` (PR #61's merge). The source was independently
+accepted as a prototype at exact head `0904c1ecbc682aa6e1b97f82051ab1deddf67419`, based on
+`2f76679afa78721ad9751ea7ce3124c5307b090c`, with verdict
+`PROTOTYPE READY FOR PR PACKAGING`. The historical prototype branch remains unmerged,
+unrebased, and unrepurposed inspection evidence. The draft packaging PR number and packaged head
+must be recorded here before independent packaging-PR inspection.
+
+**Defect and threat.** `CC5-SYNTAX-001` demonstrated that an English recogniser could miss a
+categorical application-state claim in either authoritative SQL comment. Past
+`remain`/`stay` forms were the reproduced bypass, but the defect class was any unrecognised
+English construction or parser boundary that allowed an unreviewed byte change to survive while
+the grammar test stayed green.
+
+**Delivered scope.** A versioned, closed `src/harness/sqlAuthority.json` owns exactly, and in
+order, migration 007 and its rollback. Each entry pins the raw whole-file SHA-256; the manifest's
+own raw SHA-256 is independently pinned in `src/harness/sqlAuthority.ts`. Identity is calculated
+without SQL parsing, comment filtering, trimming, normalization, newline conversion, or
+decode/re-encode. The manifest is hashed before fatal UTF-8 decoding and recursive,
+duplicate-decoded-key-aware parsing. Literal and escaped-equivalent duplicates are rejected at
+every object depth; schema keys and ordered paths are closed; manifest and SQL inputs must be
+regular files opened without following symlinks.
+
+The two SQL artifacts are unchanged. Their raw digests remain migration
+`fb5128b4ae207e75b7c6b2798519594c72b7d91191b7055a674c22fafdf2ddca` and rollback
+`31e0ab0c1f92ccafbd30fb827b4ece9856257a997c39ad5fb031bc18cebfe122`; the raw manifest
+digest is `a420015da9d25133b6572f93eeb83e5a70109589fbafce77fbffbbce2e296121`.
+
+**Migrations/schema impact:** **none.** Neither SQL artifact changes and nothing is applied.
+Migration 007 remains production **`UNKNOWN in either direction`**. This work executes no M1
+step and contacts no production database or Render service.
+
+**Material design decisions.** Repository authority is raw whole-file identity, so there is no
+grammar insertion zone and no byte outside review. A legitimate SQL or comment change is one
+coordinated review-visible update to the artifact bytes, its manifest digest, and the external
+manifest pin. The mutation harness copies the repository to a disposable no-Git workspace and
+performs raw-buffer mutation/restoration there; the authoritative checkout is never a mutation
+target. A bounded child is killed with `SIGKILL` while its disposable target is modified, and the
+parent proves authoritative bytes and Git status remained unchanged during and after interruption.
+
+**Material rejected alternatives.** Expanding the English grammar was rejected because it
+repeats the bypass class instead of removing it. Comment-stripped or parsed-SQL identity was
+rejected because comments, whitespace, encoding, line endings, and parser boundaries would remain
+outside authority. A canonical insertion zone or sentence allowlist was rejected because
+placement, concatenation, and residual bytes recreate an interpretation boundary. A self-pinned
+manifest was rejected because it could redefine its own authority. Decode-before-hash was rejected
+because normalization or lossy replacement can collapse distinct bytes. Mutation of the
+authoritative checkout with best-effort cleanup was rejected because `SIGKILL` is uncatchable.
+
+**Automated validation and mutation evidence.** The source inventory contains **341 unique
+mutations: 339 prohibited and 2 coordinated-authority-update cases**. The 46 former grammar
+`mustPass` cases are now prohibited uncoordinated byte changes. The only positive cases change
+one SQL artifact and update its manifest digest and the independent source pin together. The run
+also proves no-Git workspace isolation, raw-buffer restoration, regular-file/symlink enforcement,
+raw manifest hashing before fatal decode, recursive literal/escaped duplicate rejection, closed
+schema/order, representative raw-byte identity changes, and bounded `SIGKILL` isolation.
+
+On the packaging branch, Node 22.23.2 passed locked install, typecheck, build, the eight offline
+suites (**1,374 checks**), simulated dry run, deployment-controller fixtures, Markdown links,
+environment coverage, sensitive-content scan, production dependency audit (**zero
+vulnerabilities**), and the complete 341-mutation suite. The independent source derivation found
+317 legacy definitions plus 24 raw-identity cases, 46 former allowances, the same 339/2 split, and
+12 captured paths. Disposable PostgreSQL 16.15 and 18.6 each passed **208** integration checks;
+after migrations 001–007 were applied to separate dedicated databases, each passed the bound HTTP
+suite (**68/68**). Both disposable containers were removed. Checksum-verified actionlint 1.7.12
+and independent checked-in-YAML parsing passed. AgentShield 1.4.0 exited successfully with grade A,
+score 93, zero critical and zero high findings; its five medium oversized-agent and six low
+unspecified-model findings pre-exist this scope. All five exact-head CI jobs remain to be recorded
+in the draft PR before it is ready for independent inspection.
+
+**Trust boundary and limitations.** This is repository-content authority, not proof of production
+database state. It cannot prevent a reviewer-approved coordinated malicious change, authenticate a
+reviewer, prove deployment, or establish the live `_migrations` set. The bounded legacy grammar
+checks remain defence-in-depth and historical regression coverage; they are **not semantic truth
+verification** and still do not recognise arbitrary English. Production evidence is **none**. All
+six executors remain disabled and unreachable.
+
+**Rollback/recovery status.** Revert the repository control while leaving the SQL artifacts
+unchanged. That reopens the repository-authority defect but applies or rolls back no migration and
+requires no Render, provider, approval, or production cleanup. Any database rollback of migration
+007 remains separately authorized and must begin by establishing its currently unknown production
+state read-only.
+
+**Security/privacy implications.** An unreviewed byte change anywhere in either SQL artifact now
+fails closed. The control reads repository files only; no credential, PII, provider, database, or
+network boundary is added. A coordinated malicious review remains inside the trust boundary and is
+an accepted limitation, not a claim this mechanism can solve.
+
+**Follow-up ownership.** Implementer S owns packaging and exact-head evidence. A fresh independent
+inspector owns packaged-file equivalence, digest/statistics review, isolation and limitation review,
+and the five exact-head CI conclusions. Future legitimate SQL changes are owned by their author and
+reviewer as one coordinated artifact/manifest/source-pin change. Production and migration
+operations remain separately owned and separately authorized.
+
+**Documents updated for packaging:** `README.md`,
+`docs/KNOWN_ISSUES_AND_HARDENING.md`, `docs/M1_READINESS_DECISION_RECORD.md`,
+`docs/ROADMAP.md`, `docs/STATUS.md`, and `docs/TESTING.md`. No other active document
+changes meaning or becomes contradictory.
 
 ## Completed — M1 readiness evidence package (PR #60)
 
@@ -284,8 +387,9 @@ functional defect in this tooling was found by independent inspection, not by th
 testing** — four across two inspections, two of which returned `decision: pass` with exit 0 on inputs
 that should have stopped.
 
-**Unresolved follow-ups.** `CC5-SYNTAX-001` remains `OPEN` and deferred. Every M1 readiness
-prerequisite below remains outstanding; this merge advanced none of them.
+**Unresolved follow-ups.** At this merge, `CC5-SYNTAX-001` remained open; the subsequent
+whole-file authority replacement above resolves it in repository source. Every M1 readiness
+prerequisite below remains outstanding; PR #60 advanced none of them.
 
 **Documents updated at completion.** `docs/M1_READINESS_DECISION_RECORD.md` (new), `docs/ROADMAP.md`,
 `docs/STATUS.md`; and post-merge, `docs/AI_HANDOFF.md`.
@@ -360,18 +464,18 @@ finding, so the design is reconsidered rather than extended by reflex.
 
 | ID | Title | Status | Origin | Reachability | Must-fix trigger |
 |---|---|---|---|---|---|
-| `CC5-SYNTAX-001` | Past `remain`/`stay` application-state declarations | **OPEN — accepted and deferred** | PR #57 (**merged** `2f76679afa78721ad9751ea7ce3124c5307b090c`), head `8238f37622b816e043b2f449f2b0e33da685eb58` | **Dormant, non-runtime.** A false negative in the repository's `CC5` comment-validation test only. No executable SQL changes; no production route enabled; all six executors remain disabled and unreachable. | Mandatory before the **first** of: production enablement of the Content Intelligence execution chain; removal of the current comment freeze; or any claim that `CC5` comprehensively rejects past/perfect application-state declarations. |
+| `CC5-SYNTAX-001` | Unrecognised English could bypass SQL-comment authority | **RESOLVED BY REPLACEMENT CONTROL — IMPLEMENTED on draft packaging branch; not merged or production-validated** | PR #57 origin; independently accepted prototype `0904c1ecbc682aa6e1b97f82051ab1deddf67419` | **Dormant, non-runtime.** Raw whole-file identity now makes every uncoordinated byte change fail, including forms the bounded grammar misses. SQL artifacts unchanged; all six executors disabled. | Independent packaging-PR inspection and exact-head CI; after merge, every legitimate SQL change must update artifact digest, manifest, and external pin together. |
 
-**`CC5-SYNTAX-001` in brief.** `CC5` does not reject
+**`CC5-SYNTAX-001` in brief.** The bounded `CC5` grammar still does not reject
 *"Migration 007 remained unapplied."*, *"… has remained unapplied."*,
 *"… stayed unapplied."*, *"… has stayed unapplied."*, or their contextual-*It*
-shapes, because `FINITE_AUX` matches only the present *remains*/*stays*. The
-defect is **reproduced and open**, not fixed. Neither authoritative file
-currently contains such a claim, and migration 007's production application
-state remains **`UNKNOWN` in either direction**. Compensating controls, the full
-reproduction, and the definition of done are recorded in the backlog document.
-The planned closure is by a **separate hardening agent with an independent
-inspector**, and the design is deliberately not predetermined.
+shapes. That recogniser was not made semantically complete. The defect is
+resolved by a replacement control: appending any such text changes the raw
+whole-file digest and fails `CC5F` unless the artifact digest, manifest, and
+external pin are updated together under review. This remains repository
+authority only; migration 007's production application state is **`UNKNOWN`
+in either direction**. Full design, evidence, limitations, and ownership are in
+[Known issues and hardening](KNOWN_ISSUES_AND_HARDENING.md).
 
 ## Phase 0B prerequisite — fact and evidence contract
 

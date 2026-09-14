@@ -279,6 +279,33 @@ The mismatch this section used to record is closed in code and present on `main`
 - **One request now means one wire request.** The Anthropic SDK defaults `maxRetries` to 2, so "exactly one model request" described one wrapper invocation and up to three provider attempts. Content Intelligence stage calls go through their own boundary, which sets `maxRetries: 0` explicitly, **streams** (the declared `max_tokens` cannot be received on a non-streaming connection), and derives its timeout from the same output budget rather than a fixed 90 seconds that could not carry it. Legacy agent and vision calls are deliberately unchanged.
 - **The bounds are derived and regression-tested, not production-validated.** Every registry entry still reports `executionEnabled: false`, nothing reaches an executor, and oversized input still fails closed before any model call.
 
+### CC5 whole-file SQL authority: `IMPLEMENTED` on the draft packaging branch
+
+`CC5-SYNTAX-001` is resolved in repository source by a replacement control, not by claiming the
+bounded English recogniser became semantically complete. Migration 007 and its rollback are each
+pinned by raw whole-file SHA-256 in a closed, exactly ordered manifest, and that manifest's raw
+digest is pinned independently in TypeScript. Hashing performs no SQL parsing, comment filtering,
+trimming, normalization, newline conversion, or decode/re-encode; the manifest is hashed before
+fatal UTF-8 decoding and recursive duplicate-key-aware parsing. Literal and escaped-equivalent
+duplicate keys fail, and manifest plus SQL inputs must be regular files rather than symlinks.
+
+Any byte change anywhere in either SQL artifact — executable SQL, a comment, whitespace, line
+ending, encoding marker, or dollar-quoted body — now requires a coordinated, review-visible
+artifact digest, manifest, and external-pin update. The bounded legacy grammar remains
+defence-in-depth only and is **not semantic truth verification**. The mutation harness performs all
+341 mutations (339 prohibited, 2 coordinated authority updates) in a disposable no-Git copy, uses
+raw-buffer restoration, and includes a bounded `SIGKILL` proof that the authoritative checkout
+remains unchanged while its disposable target is actively modified.
+
+This is repository-content authority only. It cannot prevent a reviewer-approved coordinated
+malicious change, prove deployment, or establish production database state. Neither SQL artifact
+changed: migration `fb5128b4ae207e75b7c6b2798519594c72b7d91191b7055a674c22fafdf2ddca`,
+rollback `31e0ab0c1f92ccafbd30fb827b4ece9856257a997c39ad5fb031bc18cebfe122`,
+manifest `a420015da9d25133b6572f93eeb83e5a70109589fbafce77fbffbbce2e296121`.
+Migration 007 remains production **`UNKNOWN in either direction`**; production evidence for this
+control is **none**, all six executors remain disabled and unreachable, and no M1, Render,
+deployment, migration, approval, or publication action is authorized or performed.
+
 **Production evidence: a read-only audit only.** Before any bound was chosen, an operator ran an aggregate-only, read-only audit of the production database (Render, `gcd-social-db` / `gcd_social`, PostgreSQL 18, 2026-09-02). It was **run independently by the operator, not from an agent session**; no credentials were requested or received, and no raw claim text, PII, or credential value was retrieved. It found `content_evidence` and `content_evidence_relations` both **empty** — zero rows, zero blank claims, zero blank subjects, zero rows carrying `detail`, zero relation notes. That is why migration 007 may use immediately validated constraints rather than `NOT VALID`; it is **not** the justification for any particular number, which comes from the product contracts and the derivations above.
 
 Details in [Architecture](docs/ARCHITECTURE.md), [Roadmap](docs/ROADMAP.md), and [Testing](docs/TESTING.md). **The separately reviewed production-wiring design is accepted and `MERGED` through PR #56** — base `e6f9b0275fc25f0c508708f5e421a474daeebbae`, reviewed head `42f83a122910981f6af3bc9b9024d27ac8b839ff`, merge `53e2c2bb6115e457670c1f99956d11a1a54530cd`, whose ordered parents are exactly that base then that head — and is present on `main` as [Production-wiring design](docs/PRODUCTION_WIRING_DESIGN.md). **It is `UNIMPLEMENTED`.** Accepted means the design document is on `main`; **it does not mean production wiring is implemented**, and it authorizes no implementation PR and no operator milestone. **None of the eight implementation PRs (P1–P8) exists, and none of the seven operator milestones (M1–M7) has been performed.** No production wiring, deployment, enablement, migration application, or production validation has occurred, and each named PR and milestone remains separate work whose authorization has not been granted. The payload-contract reconciliation above is the prerequisite that gated the design, and that prerequisite is **satisfied in repository state** — merged, not deployed, not enabled. Production wiring itself remains future, separately authorized work: the design being accepted satisfied the review condition that gated it, and enabling a stage now requires **P8 to be written, reviewed and merged and milestone M3 to be separately authorized and performed** — neither of which has happened. Performance ingestion, governed learning, and the proposed future Google Business Profile expansion all remain later work and are not begun by this reconciliation. Deployment-authority work remains an independent track and must not be combined with any of them.

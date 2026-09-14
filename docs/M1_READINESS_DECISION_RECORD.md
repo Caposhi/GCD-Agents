@@ -364,8 +364,12 @@ Each item is separately authorized work. None of it is granted by this record.
    anything; complete **Part 2** afterwards. A deployment without **both parts** is unauthorized by
    definition.
 
-**`CC5-SYNTAX-001` is OPEN and deferred**, and its compensating controls require it to be **rechecked
-before any production enablement**. It is not resolved, not harmless, and not production-validated.
+At this package's merge, **`CC5-SYNTAX-001` was open and deferred**; this package did not
+advance or bypass it. It has since been resolved in repository source by the independently accepted
+whole-file SQL-authority replacement recorded in
+[Known issues and hardening](KNOWN_ISSUES_AND_HARDENING.md), not by making the bounded English
+recogniser semantically complete. That later repository control changes no M1 prerequisite:
+migration 007's production state remains `UNKNOWN in either direction`.
 
 ---
 
