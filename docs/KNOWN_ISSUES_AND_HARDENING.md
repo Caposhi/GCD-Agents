@@ -82,7 +82,7 @@ Every deferred finding is recorded with all of the following fields.
 | **Originating PR / head** | PR #57 / `8238f37622b816e043b2f449f2b0e33da685eb58` |
 | **Affected control** | Legacy `CC5` bounded grammar in `src/harness/contentIntelligence.selftest.ts` |
 | **Severity / reachability** | Low; dormant, non-runtime, repository-test false negative |
-| **Status** | **RESOLVED BY REPLACEMENT CONTROL — IMPLEMENTED on the CC5 packaging branch; not merged, deployed, enabled, or production-validated** |
+| **Status** | **RESOLVED BY REPLACEMENT CONTROL — IMPLEMENTED in draft PR #63; not merged, deployed, enabled, or production-validated** |
 | **Owner / workstream** | Hardening lane; Implementer S packaging, independent packaging-PR inspector next |
 
 ### Original reproduction and threat

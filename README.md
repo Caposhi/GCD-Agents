@@ -279,7 +279,7 @@ The mismatch this section used to record is closed in code and present on `main`
 - **One request now means one wire request.** The Anthropic SDK defaults `maxRetries` to 2, so "exactly one model request" described one wrapper invocation and up to three provider attempts. Content Intelligence stage calls go through their own boundary, which sets `maxRetries: 0` explicitly, **streams** (the declared `max_tokens` cannot be received on a non-streaming connection), and derives its timeout from the same output budget rather than a fixed 90 seconds that could not carry it. Legacy agent and vision calls are deliberately unchanged.
 - **The bounds are derived and regression-tested, not production-validated.** Every registry entry still reports `executionEnabled: false`, nothing reaches an executor, and oversized input still fails closed before any model call.
 
-### CC5 whole-file SQL authority: `IMPLEMENTED` on the draft packaging branch
+### CC5 whole-file SQL authority: `IMPLEMENTED` in draft PR #63
 
 `CC5-SYNTAX-001` is resolved in repository source by a replacement control, not by claiming the
 bounded English recogniser became semantically complete. Migration 007 and its rollback are each

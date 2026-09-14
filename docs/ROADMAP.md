@@ -238,8 +238,10 @@ control below; and the M1 readiness prerequisites below, none of which this merg
 accepted as a prototype at exact head `0904c1ecbc682aa6e1b97f82051ab1deddf67419`, based on
 `2f76679afa78721ad9751ea7ce3124c5307b090c`, with verdict
 `PROTOTYPE READY FOR PR PACKAGING`. The historical prototype branch remains unmerged,
-unrebased, and unrepurposed inspection evidence. The draft packaging PR number and packaged head
-must be recorded here before independent packaging-PR inspection.
+unrebased, and unrepurposed inspection evidence. Draft packaging PR #63 was opened from the new
+branch at immutable initial package commit `71765779f11680c3253467dee56c44969f94565c`.
+The PR description records the mutable final head and its exact-head CI; putting a commit's own SHA
+inside that commit would move the SHA it claimed to identify.
 
 **Defect and threat.** `CC5-SYNTAX-001` demonstrated that an English recogniser could miss a
 categorical application-state claim in either authoritative SQL comment. Past
