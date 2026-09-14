@@ -82,8 +82,8 @@ Every deferred finding is recorded with all of the following fields.
 | **Originating PR / head** | PR #57 / `8238f37622b816e043b2f449f2b0e33da685eb58` |
 | **Affected control** | Legacy `CC5` bounded grammar in `src/harness/contentIntelligence.selftest.ts` |
 | **Severity / reachability** | Low; dormant, non-runtime, repository-test false negative |
-| **Status** | **RESOLVED BY REPLACEMENT CONTROL — IMPLEMENTED in draft PR #63; not merged, deployed, enabled, or production-validated** |
-| **Owner / workstream** | Hardening lane; Implementer S packaging, independent packaging-PR inspector next |
+| **Status** | **RESOLVED BY REPLACEMENT CONTROL — MERGED through PR #63; not deployed, enabled, or production-validated** |
+| **Owner / workstream** | Hardening lane; future legitimate SQL changes require coordinated author/reviewer authority updates |
 
 ### Original reproduction and threat
 
@@ -178,8 +178,14 @@ derivation confirmed 317 legacy plus 24 raw-identity definitions, 46 former
 allowances, the 339/2 result split, and 12 captured paths. Its complete local
 validation contract passed, including PostgreSQL 16.15 and 18.6 plus bound HTTP
 integration, checksum-verified actionlint 1.7.12, independent YAML parsing, and
-AgentShield 1.4.0 with zero critical/high findings. Exact-head CI evidence must
-still be reconciled in the draft PR before independent inspection.
+AgentShield 1.4.0 with zero critical/high findings. PR #63 subsequently merged reviewed head
+`c89f38a6f11805cb609deed89ef42cf86b95931b` as
+`9e1efc2ae47761f3e2d3d4230c84ff314e745ab4` (ordered parents
+`1c9e89ee514c7e88189ef0c385ad6403bfd9b0ab` then that reviewed head). Post-merge CI run
+`34874131925` completed five successful first-attempt jobs. Deployment workflow run
+`34875056304` accepted CI provenance and then refused at the disabled-automation gate; release
+selection and the zero-step serialized deployment job were skipped, so
+`deployment-controller.mjs` did not run.
 
 ### Legacy checks and limitations
 
@@ -210,11 +216,11 @@ established read-only before any database rollback decision.
 The whole-file prototype was independently inspected at exact head
 `0904c1ecbc682aa6e1b97f82051ab1deddf67419` with verdict
 `PROTOTYPE READY FOR PR PACKAGING`. The historical prototype branch is
-inspection evidence only; it is not merged, deployed, or repurposed.
+inspection evidence only; it remains preserved at that head and was not rebased, rewritten,
+merged, deployed, or repurposed.
 
-Implementer S owns packaging and exact-head validation. A fresh independent
-inspector owns the packaging-PR review, including exact file/digest comparison,
-mutation totals, isolation evidence, trust-limit wording, and all five CI jobs.
-Any future legitimate SQL change is owned by that change's author and reviewer
-as one coordinated artifact/manifest/source-pin review. Production or migration
+The independent prototype inspection and independent packaging-PR inspection are complete. PR #63
+merged exactly the reviewed 10-file `+1,572/−252` scope after updated-base validation; the SQL
+artifacts remained absent from its diff. Any future legitimate SQL change is owned by that change's
+author and reviewer as one coordinated artifact/manifest/source-pin review. Production or migration
 operations remain separately owned and separately authorized.

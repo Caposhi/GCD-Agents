@@ -231,17 +231,20 @@ wiring, no enablement, no migration application, and no operator milestone.
 **Unresolved follow-ups at that merge.** `CC5-SYNTAX-001`, subsequently resolved by the replacement
 control below; and the M1 readiness prerequisites below, none of which this merge advanced.
 
-## CC5 whole-file SQL-authority hardening — `IMPLEMENTED`, draft PR packaging
+## Completed — CC5 whole-file SQL-authority hardening (PR #63)
 
-**State / provenance.** `IMPLEMENTED` on a new packaging branch based exactly on
-`ed17e6acb5f08e5ccf242ca4a4129f307b642809` (PR #61's merge). The source was independently
-accepted as a prototype at exact head `0904c1ecbc682aa6e1b97f82051ab1deddf67419`, based on
-`2f76679afa78721ad9751ea7ce3124c5307b090c`, with verdict
-`PROTOTYPE READY FOR PR PACKAGING`. The historical prototype branch remains unmerged,
-unrebased, and unrepurposed inspection evidence. Draft packaging PR #63 was opened from the new
-branch at immutable initial package commit `71765779f11680c3253467dee56c44969f94565c`.
-The PR description records the mutable final head and its exact-head CI; putting a commit's own SHA
-inside that commit would move the SHA it claimed to identify.
+**State / provenance.** `MERGED` through PR #63. The independently reviewed head
+`c89f38a6f11805cb609deed89ef42cf86b95931b` merged as
+`9e1efc2ae47761f3e2d3d4230c84ff314e745ab4`, whose ordered parents are exactly
+`1c9e89ee514c7e88189ef0c385ad6403bfd9b0ab` then that reviewed head. The original package branch
+was created from `ed17e6acb5f08e5ccf242ca4a4129f307b642809` (PR #61's merge); the final merge
+used the independently validated updated `main` parent `1c9e89ee514c7e88189ef0c385ad6403bfd9b0ab`.
+The source was independently accepted as a prototype at exact head
+`0904c1ecbc682aa6e1b97f82051ab1deddf67419`, based on
+`2f76679afa78721ad9751ea7ce3124c5307b090c`, with verdict `PROTOTYPE READY FOR PR PACKAGING`.
+The historical prototype branch remains preserved at that head, unmerged, unrebased, and
+unrepurposed inspection evidence. Independent packaging-PR inspection gave the reviewed package
+its merge verdict. The merged scope is exactly 10 files, `+1,572/−252`.
 
 **Defect and threat.** `CC5-SYNTAX-001` demonstrated that an English recogniser could miss a
 categorical application-state claim in either authoritative SQL comment. Past
@@ -302,8 +305,17 @@ after migrations 001–007 were applied to separate dedicated databases, each pa
 suite (**68/68**). Both disposable containers were removed. Checksum-verified actionlint 1.7.12
 and independent checked-in-YAML parsing passed. AgentShield 1.4.0 exited successfully with grade A,
 score 93, zero critical and zero high findings; its five medium oversized-agent and six low
-unspecified-model findings pre-exist this scope. All five exact-head CI jobs remain to be recorded
-in the draft PR before it is ready for independent inspection.
+unspecified-model findings pre-exist this scope. Original exact-head CI run `34861663186` completed
+five successful first-attempt jobs. The updated-base validation was conflict-free, applied exactly
+the reviewed 10-file change, preserved the three newer-main files byte-for-byte, and passed the
+complete 341-case mutation harness against the prospective combined tree. Post-merge CI run
+[`34874131925`](https://github.com/Caposhi/GCD-Agents/actions/runs/34874131925) completed five
+successful first-attempt jobs at merge commit `9e1efc2ae47761f3e2d3d4230c84ff314e745ab4`.
+Deployment workflow run [`34875056304`](https://github.com/Caposhi/GCD-Agents/actions/runs/34875056304)
+accepted CI provenance and then refused at the disabled-automation gate. Release selection was
+skipped; the serialized API, worker, scheduler release job was skipped and executed zero steps;
+`scripts/render/deployment-controller.mjs` did not run. This observes no GitHub-driven deployment
+through that workflow; unrelated Render-side activity is `NOT ESTABLISHED`.
 
 **Trust boundary and limitations.** This is repository-content authority, not proof of production
 database state. It cannot prevent a reviewer-approved coordinated malicious change, authenticate a
@@ -323,13 +335,11 @@ fails closed. The control reads repository files only; no credential, PII, provi
 network boundary is added. A coordinated malicious review remains inside the trust boundary and is
 an accepted limitation, not a claim this mechanism can solve.
 
-**Follow-up ownership.** Implementer S owns packaging and exact-head evidence. A fresh independent
-inspector owns packaged-file equivalence, digest/statistics review, isolation and limitation review,
-and the five exact-head CI conclusions. Future legitimate SQL changes are owned by their author and
-reviewer as one coordinated artifact/manifest/source-pin change. Production and migration
-operations remain separately owned and separately authorized.
+**Follow-up ownership.** Packaging and independent inspection are complete. Future legitimate SQL
+changes are owned by their author and reviewer as one coordinated artifact/manifest/source-pin
+change. Production and migration operations remain separately owned and separately authorized.
 
-**Documents updated for packaging:** `README.md`,
+**Documents updated for packaging and post-merge reconciliation:** `README.md`,
 `docs/KNOWN_ISSUES_AND_HARDENING.md`, `docs/M1_READINESS_DECISION_RECORD.md`,
 `docs/ROADMAP.md`, `docs/STATUS.md`, and `docs/TESTING.md`. No other active document
 changes meaning or becomes contradictory.
@@ -466,7 +476,7 @@ finding, so the design is reconsidered rather than extended by reflex.
 
 | ID | Title | Status | Origin | Reachability | Must-fix trigger |
 |---|---|---|---|---|---|
-| `CC5-SYNTAX-001` | Unrecognised English could bypass SQL-comment authority | **RESOLVED BY REPLACEMENT CONTROL — IMPLEMENTED on draft packaging branch; not merged or production-validated** | PR #57 origin; independently accepted prototype `0904c1ecbc682aa6e1b97f82051ab1deddf67419` | **Dormant, non-runtime.** Raw whole-file identity now makes every uncoordinated byte change fail, including forms the bounded grammar misses. SQL artifacts unchanged; all six executors disabled. | Independent packaging-PR inspection and exact-head CI; after merge, every legitimate SQL change must update artifact digest, manifest, and external pin together. |
+| `CC5-SYNTAX-001` | Unrecognised English could bypass SQL-comment authority | **RESOLVED BY REPLACEMENT CONTROL — MERGED through PR #63; not production-validated** | PR #57 origin; preserved independently accepted prototype `0904c1ecbc682aa6e1b97f82051ab1deddf67419` | **Dormant, non-runtime.** Raw whole-file identity now makes every uncoordinated byte change fail, including forms the bounded grammar misses. SQL artifacts unchanged; all six executors disabled. | Future legitimate SQL changes must update artifact digest, manifest, and external pin together under review. |
 
 **`CC5-SYNTAX-001` in brief.** The bounded `CC5` grammar still does not reject
 *"Migration 007 remained unapplied."*, *"… has remained unapplied."*,

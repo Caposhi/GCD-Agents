@@ -279,7 +279,7 @@ The mismatch this section used to record is closed in code and present on `main`
 - **One request now means one wire request.** The Anthropic SDK defaults `maxRetries` to 2, so "exactly one model request" described one wrapper invocation and up to three provider attempts. Content Intelligence stage calls go through their own boundary, which sets `maxRetries: 0` explicitly, **streams** (the declared `max_tokens` cannot be received on a non-streaming connection), and derives its timeout from the same output budget rather than a fixed 90 seconds that could not carry it. Legacy agent and vision calls are deliberately unchanged.
 - **The bounds are derived and regression-tested, not production-validated.** Every registry entry still reports `executionEnabled: false`, nothing reaches an executor, and oversized input still fails closed before any model call.
 
-### CC5 whole-file SQL authority: `IMPLEMENTED` in draft PR #63
+### CC5 whole-file SQL authority: `MERGED` (PR #63)
 
 `CC5-SYNTAX-001` is resolved in repository source by a replacement control, not by claiming the
 bounded English recogniser became semantically complete. Migration 007 and its rollback are each
@@ -302,6 +302,16 @@ malicious change, prove deployment, or establish production database state. Neit
 changed: migration `fb5128b4ae207e75b7c6b2798519594c72b7d91191b7055a674c22fafdf2ddca`,
 rollback `31e0ab0c1f92ccafbd30fb827b4ece9856257a997c39ad5fb031bc18cebfe122`,
 manifest `a420015da9d25133b6572f93eeb83e5a70109589fbafce77fbffbbce2e296121`.
+PR #63 merged reviewed head `c89f38a6f11805cb609deed89ef42cf86b95931b` as
+`9e1efc2ae47761f3e2d3d4230c84ff314e745ab4`, with ordered parents
+`1c9e89ee514c7e88189ef0c385ad6403bfd9b0ab` then that reviewed head. The merged scope is
+exactly 10 files, `+1,572/−252`; the historical prototype branch remains preserved at
+`0904c1ecbc682aa6e1b97f82051ab1deddf67419`. Post-merge CI run
+[`34874131925`](https://github.com/Caposhi/GCD-Agents/actions/runs/34874131925) passed five
+first-attempt jobs. The downstream deployment workflow run
+[`34875056304`](https://github.com/Caposhi/GCD-Agents/actions/runs/34875056304) passed CI
+provenance, refused at the disabled-automation gate, skipped release selection, and skipped its
+zero-step serialized deployment job; `deployment-controller.mjs` did not run.
 Migration 007 remains production **`UNKNOWN in either direction`**; production evidence for this
 control is **none**, all six executors remain disabled and unreachable, and no M1, Render,
 deployment, migration, approval, or publication action is authorized or performed.
