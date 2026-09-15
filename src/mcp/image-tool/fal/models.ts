@@ -38,10 +38,13 @@ const MODEL_EXTRAS: Record<ImageContentType, Record<string, unknown>> = {
     expand_prompt: false,
     // Verified field on fal-ai/ideogram/v3 (2026-09-14 schema check) — fal's
     // own docs note the positive prompt still takes precedence over this, so
-    // it reinforces (not replaces) the plate-avoidance composition instruction
-    // authored in agents/image.md.
+    // it reinforces (not replaces) the plate/badge-avoidance composition
+    // instruction authored in agents/image.md. Extended 2026-09-15 after a
+    // vehicle brand badge rendered as garbled text ("LANDO ROVER") in
+    // production — the same incidental-text failure mode as the plate, on a
+    // different body panel.
     negative_prompt:
-      "visible license plate, readable license plate, license plate characters, license plate numbers, close-up of a license plate, legible plate text",
+      "visible license plate, readable license plate, license plate characters, license plate numbers, close-up of a license plate, legible plate text, readable brand badge, legible vehicle emblem, sharp badge lettering on car body, close-up of car badge text",
   },
   // Not extended to photoreal (Flux) — its request schema has not been
   // verified against these exact field names; do not guess on a live API.
