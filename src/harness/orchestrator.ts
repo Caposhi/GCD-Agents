@@ -357,18 +357,19 @@ async function resolveImage(image: any, runId?: string): Promise<any> {
   for (let attempt = 1; attempt <= MAX_IMAGE_ATTEMPTS; attempt++) {
     attempts = attempt;
     // On a retry, hard-constrain the prompt and remove the prior QC defect.
-    // A plate defect that survived one attempt won't be fixed by repeating the
-    // same "render it blank" ask — production data shows that instruction is
-    // unreliable on a photoreal hero car. Force a compositional change instead.
-    const plateIssue = /plate/i.test(lastIssues.join(" "));
+    // A plate OR badge/emblem defect that survived one attempt won't be fixed
+    // by repeating the same "render it correctly" ask — production data shows
+    // that's unreliable on a photoreal hero car (e.g. "LAND ROVER" rendered as
+    // "LANDO ROVER" on the vehicle's own badge). Force a compositional change.
+    const vehicleTextIssue = /plate|badge|emblem/i.test(lastIssues.join(" "));
     const prompt =
       attempt === 1
         ? basePrompt
         : `${basePrompt}\n\nCRITICAL FIX: the previous render failed publication QC (${lastIssues.join("; ") || "visual inspection failure"}). ` +
           `Remove every reported privacy, safety, or misleading element. Render ONLY these exact words — large, sharp, and perfectly legible — with NO other text: no body paragraphs, no second call-to-action.` +
-          (plateIssue
-            ? ` The license plate keeps rendering with visible characters — stop trying to render a "blank" plate, that keeps failing. Recompose the shot so NO plate-shaped area is in frame at all: crop the hero shot just above the bumper/plate line, use a rear 3/4 angle, or frame a tight shot on the grille/headlight/front fascia that never reaches the plate.`
-            : ` no license-plate text.`) +
+          (vehicleTextIssue
+            ? ` The vehicle's license plate and/or brand badge/emblem keeps rendering with visible or garbled characters — stop trying to render them correctly, that keeps failing. Recompose the shot so NO plate-shaped area and NO sharp, readable badge/emblem is in frame at all: crop the hero shot just above the bumper/plate line, use a rear 3/4 angle, or frame a tight shot on the headlight/front fascia that keeps badges soft, distant, or out of frame.`
+            : ` no license-plate or badge text.`) +
           ` Allowed text: ${expected.length ? expected.map((t: string) => `"${t}"`).join(", ") : "the kicker, the headline, one CTA button, the wordmark, and the URL only"}.`;
     try {
       console.log(`[image] generating via fal (${ct})… attempt ${attempt}/${MAX_IMAGE_ATTEMPTS}`);
