@@ -446,7 +446,7 @@ offline quality gates`, the PostgreSQL suite in the `PostgreSQL 16/18
 integration` matrix. No job was added, so the five-job CI contract the runner
 itself verifies is unchanged.
 
-The offline suite is **293 checks** across thirteen groups: macOS/Linux-independent
+The offline suite is **294 checks** across thirteen groups: macOS/Linux-independent
 operation, execution-capable Git configuration, the deadline and output lifecycle,
 helper-generation absence, exact `A` binding, dirty-tree handling, the strict data
 contract, GitHub success and every failure state, migration
