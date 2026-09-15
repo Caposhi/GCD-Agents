@@ -307,6 +307,99 @@ remains outside what `_migrations` can support, since it stores no checksum.
 
 ---
 
+## M1 operator packet — one file, and the dependency blocker it corrects
+
+`scripts/ops/m1-operator-packet.sh` is a single file an authorized operator runs from an **empty
+directory**. It generates its own tool set — `m1-env.sh` plus eighteen helpers, nineteen files in
+all — binds one isolated clone of this repository at an exact artifact commit `A`, prepares
+dependencies inside that clone, runs the two read-only operator scripts from it, runs five
+regression groups, writes a fixed-field `RETURN_FORM.txt` and an `EVIDENCE_REPORT.txt`, and removes
+the isolated clone together with its dependency tree.
+
+It deploys nothing, applies no migration, contacts no Render control plane, and requests no
+production credential. Running it authorizes nothing. The verdict it carries is fixed and preserved:
+**M1 BLOCKED / NO-GO**.
+
+### The blocker
+
+The previous revision's database-enabled path created a fresh isolated clone with no `node_modules`,
+stopped, and told the operator to run `npm ci --omit=dev` inside that clone and rerun — and the rerun
+created another fresh clone with no `node_modules`. There was no executable path by which
+`M1_DB_ENABLED=1` could reach either operator script.
+
+The defect was wider than the database path. Both operator scripts carry `import pg from "pg"` at
+module top level, so `migration-state-read.mjs --offline` — which contacts no database at all — was
+blocked by exactly the same thing.
+
+### The correction: helper 05, dependency preparation
+
+An explicit, automatic step inside the already-bound isolated clone, before either operator script
+runs. Its contract is enforced, not documented:
+
+| Property | How it is established |
+| --- | --- |
+| Manifest and lockfile are artifact `A`'s | `git cat-file blob A:<file>` compared byte for byte with the checked-out file |
+| A real Node 22 binary | `v22.*`, a reported V8 version, and an `execPath` resolving to the binary that ran |
+| A real npm binary | `npm version --json` — npm's own report of its version and its Node |
+| The repository lockfile, unmodified | sha256 before and after, plus `git status --porcelain` on the lockfile |
+| `npm ci`, never `npm install` | the only install invocation in the packet |
+| No lifecycle scripts | `--ignore-scripts` on the command line, which outranks every config file |
+| No audit or funding network call | `--no-audit --no-fund` |
+| No development dependencies | `--omit=dev` |
+| No global installation | no `-g`; npm's own resolved `global` config asserted to be `false` |
+| Isolated cache | `--cache` inside the work directory, removed at cleanup |
+| Isolated scope | cwd inside the clone; `--userconfig` and `--globalconfig` pinned to empty files |
+| Bounded capture | stdout and stderr through the corrected immutable bounded collector |
+| Safe failure | a non-zero exit records `DEP_PREP_STATUS=FAILED` and stops; no operator script runs |
+| `pg` resolves from the clone | `require.resolve` asserted to be under the clone, plus the ESM default-import form the scripts actually use |
+
+`npm ci --omit=dev --ignore-scripts --no-audit --no-fund` was verified sufficient at artifact `A`:
+101 packages, `pg` 8.22.0 resolving from the isolated clone, both operator scripts running. No
+package lifecycle script was enabled to make anything pass. It is also the smallest installation
+reachable without editing `package.json` or the lockfile, both of which are forbidden here — a
+narrower set cannot be expressed to `npm ci`, whose whole contract is to install the lockfile.
+
+### Environment sanitization
+
+Names are recorded; **no value of a sanitized or rejected variable is printed, logged or recorded.**
+
+- **Sanitized** (removed from the dependency step's environment): every `npm_config_*`,
+  `NPM_CONFIG_*`, `npm_package_*` and `npm_lifecycle_*` variable outside the transport allow-list,
+  plus `NODE_OPTIONS`, `NODE_PATH`, `NODE_REPL_*` and `NPM_TOKEN`.
+- **Allowed** (transport only): `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` and their lowercase
+  spellings, `NODE_EXTRA_CA_CERTS`, and the `npm_config_*` proxy spellings. A proxy can carry the
+  traffic; it cannot change what is installed, because `npm ci` verifies every tarball against the
+  sha512 integrity hash in the lockfile that was just proven to be artifact `A`'s.
+- **Rejected** (the packet stops): a variable requesting package lifecycle scripts.
+
+### The fixed output contract
+
+`RETURN_FORM.txt` carries approved fixed fields only. A field name outside the approved list cannot
+be recorded, and a value carrying a character outside the approved set cannot be recorded, so no text
+from npm, from a database driver, or from a CI capture can reach it. An approved field that nothing
+recorded is emitted as `NOT_RECORDED` rather than omitted, so a missing step is visible. Dependency
+preparation is reported explicitly: status, command, scope, Node version, npm version, lockfile
+sha256, whether the lockfile was modified, whether `pg` resolved and at which version, packages
+added, and the sanitized and rejected variable names.
+
+### What the paths establish, and what they do not
+
+- `END_TO_END_CLAIM=NOT A COMPLETE END-TO-END RUN`. The earlier DB-disabled execution was not one and
+  is not described as one.
+- The **DB-disabled** path establishes the artifact half of the migration-state read and the
+  exact-head CI identity. It reads no database.
+- The **database-enabled** path reads `D`, `P` and the seven comparisons and runs the aggregate audit,
+  against a **disposable** database only.
+- The combination "migration 007 present over data that exceeds the bounds" is **not reachable**:
+  007's constraints validate immediately, so applying it to such data fails and 007 is never recorded
+  as applied. Demonstrated on disposable PostgreSQL 16 and 18 rather than assumed.
+
+Migration 007's production application state remains **`UNKNOWN in either direction`**; Render remains
+**`NOT ESTABLISHED`**; the api/worker/scheduler service identities remain unknown; rollback
+compatibility remains **not executed**; all six registry executors remain `executionEnabled: false`.
+
+---
+
 ## Rollback artifact `R` and recovery
 
 **`R` is NOT DETERMINABLE in this package.** `R` is normally the pre-M1 live api artifact — which is
