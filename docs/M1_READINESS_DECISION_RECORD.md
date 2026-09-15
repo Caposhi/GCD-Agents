@@ -359,6 +359,66 @@ package lifecycle script was enabled to make anything pass. It is also the small
 reachable without editing `package.json` or the lockfile, both of which are forbidden here — a
 narrower set cannot be expressed to `npm ci`, whose whole contract is to install the lockfile.
 
+### Correction: output-overflow behaviour, and a claim that is withdrawn
+
+The first revision of this packet stated two properties that cannot both hold. It
+said the collector enforced a 1,048,576-byte bound, and it also said an
+over-producing child ran to completion with its own exit status preserved — the
+regression case even asserted that a 3 MiB producer still reported exit status
+42. The second was what the code did. The sinks read the bound and then drained
+and counted everything after it, so the bound limited only what was STORED. A
+child emitting output forever was stopped by nothing, and a run that had already
+breached the bound was reported as an ordinary result.
+
+**That claim is withdrawn.** The statement that the collector "never kills" an
+overflowing producer, and the regression assertion built on it, are both gone.
+The earlier commit message and the report that accompanied it carry the
+incorrect claim; neither is rewritten, and this record is the correction.
+
+The collector now distinguishes five outcomes, and never collapses them:
+
+| Outcome | Meaning | `exit_status` |
+| --- | --- | --- |
+| `EXIT` | the child stayed below the bound and exited normally | its genuine status, 0-255 |
+| `OVERFLOW` | a stream reached 1,048,576 bytes; the process group was terminated | `NOT_APPLICABLE` |
+| `SIGNAL` | killed by a signal the collector did not send | `NOT_APPLICABLE`, `signal` names it |
+| `COLLECTOR_FAILURE` | the collector could not run or capture — fatal | `NOT_APPLICABLE` |
+| `CLEANUP_FAILURE` | the process group could not be proven gone — fatal | `NOT_APPLICABLE` |
+
+`OVERFLOW` is a token, not a number, so no caller can read an overflowed run as
+an exit status; a test for `0` fails closed instead.
+
+On overflow the collector terminates the child's **whole process group** —
+children and grandchildren — through a bounded escalation of two `SIGTERM`
+rounds and two `SIGKILL` rounds, each with its own budget, stopping the moment
+the group is observed gone. Failure to prove the group gone is fatal to the run.
+Nothing after the bound is stored, parsed, decoded or returned.
+
+The supervisor is Node rather than shell for three reasons that matter here.
+`spawn(..., {detached: true})` puts the child in its own session and process
+group, so one `kill(-pgid, …)` reaches every descendant. Node reports an exit
+status and a terminating signal as separate fields, which a shell's `wait`
+cannot — both surface there as 128+N. And group membership is read from `/proc`
+by PGID, so a survivor is identified by exact PID and never by matching a
+process NAME.
+
+"Gone" is stated precisely. The scan separates members still **running** from
+members in state `Z`, which have already exited and are waiting only to be
+reaped by init after their group leader died. A zombie runs no code, holds no
+descriptor and cannot emit another byte. `survivors` reports the running set and
+must be `NONE`; `exited_awaiting_reap` reports the rest rather than hiding it.
+
+The bound is still not `ulimit -f`, and the limit is still immutable: it is a
+literal in the supervisor, never read from the environment. Verified with
+`M1_STREAM_LIMIT_BYTES=7` and `M1_COLLECTOR_LIMIT=7` in the environment — a
+4,096-byte stream was captured whole and the supervisor reported `limit_bytes`
+of 1,048,576.
+
+Files are untouched by any of this: under active collection, Git wrote a 3 MiB
+object and a full clone whose largest file exceeds the bound, Node wrote a 2 MiB
+file, npm's installed tree carries a file above the bound, and a PostgreSQL
+client wrote a 4,020,000-byte file — every one an ordinary `EXIT` 0.
+
 ### Environment sanitization
 
 Names are recorded; **no value of a sanitized or rejected variable is printed, logged or recorded.**

@@ -214,7 +214,8 @@ DEP_LOCKFILE_SHA256 DEP_LOCKFILE_SOURCE DEP_LOCKFILE_MODIFIED
 DEP_PACKAGES_ADDED DEP_LIFECYCLE_SCRIPTS DEP_AUDIT_NETWORK DEP_FUND_NETWORK
 DEP_GLOBAL_INSTALL DEP_CACHE_SCOPE DEP_DEV_DEPENDENCIES
 DEP_PG_RESOLVED DEP_PG_VERSION DEP_PG_RESOLVED_FROM
-DEP_STDOUT_CAPTURED_BYTES DEP_STDERR_CAPTURED_BYTES DEP_STREAM_TRUNCATED
+DEP_STDOUT_CAPTURED_BYTES DEP_STDERR_CAPTURED_BYTES DEP_STREAM_OVERFLOW
+DEP_COLLECTOR_OUTCOME COLLECTOR_GROUPS_VERIFIED COLLECTOR_OVERFLOW_RUNS
 OFFLINE_MIGRATION_READ_STATUS OFFLINE_MIGRATION_DECISION OFFLINE_MIGRATION_FILES
 GITHUB_CI_VALIDATION_STATUS GITHUB_CI_RUN_ID GITHUB_CI_WORKFLOW_PATH
 GITHUB_CI_WORKFLOW_NAME GITHUB_CI_HEAD_SHA_MATCHES_A GITHUB_CI_CONCLUSION
@@ -268,61 +269,295 @@ m1_get() {
 }
 
 # -----------------------------------------------------------------------------
-# The bounded collector — corrected.
+# The bounded collector — output-overflow behaviour corrected.
 # -----------------------------------------------------------------------------
 #
-# Captures a command's stdout and stderr, each bounded at exactly
-# M1_STREAM_LIMIT_BYTES, and records the exit code and how many bytes were
-# discarded beyond the bound.
+# WHAT WAS WRONG
 #
-# Three properties the previous collector did not have:
+# The previous collector claimed two things that cannot both be true: that it
+# enforced a 1,048,576-byte bound, and that an over-producing child still ran to
+# completion with its own exit status preserved. It did the second. The sinks
+# read the bound, then drained and counted everything after it, so the bound
+# limited only what was STORED. A child that emits output forever was never
+# stopped by anything, and a 3 MiB producer's exit status 42 was reported as an
+# ordinary result of a run that had already breached the bound.
 #
-#   1. It bounds STREAMS, not FILES. No `ulimit -f` is set, so Git, npm and the
-#      operator scripts write repository and dependency files of any size while
-#      collection is active. Regression group 1 proves it.
-#   2. The bound is exact. Each sink reads exactly 16 x 65536 = 1048576 bytes
-#      with `iflag=fullblock` (short reads on a pipe are re-read rather than
-#      silently ending the block), then drains and COUNTS the remainder without
-#      storing it. Regression group 2 proves it.
-#   3. The collected command cannot be killed by the collector. The sinks keep
-#      reading after the bound is reached, so the producer never takes SIGPIPE
-#      and its own exit status is its own.
-m1__sink() {
-  local dest="$1" overflow="$2"
-  dd bs=65536 count=16 iflag=fullblock status=none of="$dest" 2>/dev/null || true
-  [ -f "$dest" ] || : > "$dest"
-  cat | wc -c | tr -d ' ' > "$overflow"
+# WHAT IT DOES NOW
+#
+#   below the bound   the child's genuine exit status is preserved, exactly;
+#   at the bound      reaching 1,048,576 bytes on EITHER stream is OVERFLOW;
+#   on overflow       the child's whole process group is terminated at once,
+#                     children and grandchildren included, through a bounded
+#                     escalation, and the group is PROVEN to be gone;
+#   on overflow       the result is the fixed token OVERFLOW. It is not a
+#                     number, so it can never be read as an exit status;
+#   after the bound   no further byte is stored, parsed, decoded or returned.
+#
+# The five outcomes are distinct and never collapsed:
+#
+#   EXIT               the child ran below the bound and exited normally;
+#                      `exit_status` is its genuine status, 0-255.
+#   OVERFLOW           a stream reached the bound; the group was terminated.
+#                      `exit_status` is NOT_APPLICABLE.
+#   SIGNAL             the child was killed by a signal the collector did not
+#                      send; `signal` names it, `exit_status` is NOT_APPLICABLE.
+#   COLLECTOR_FAILURE  the collector itself could not run or capture. Fatal.
+#   CLEANUP_FAILURE    the process group could not be proven gone. Fatal.
+#
+# The supervisor is Node rather than shell for three reasons that matter here:
+# `spawn(..., {detached:true})` puts the child in its own session and process
+# group, so `kill(-pgid, …)` reaches every descendant in one call; the exit
+# report distinguishes a true exit status from a signal death, which `wait` in
+# a shell cannot (both surface as 128+N); and group membership is read from
+# /proc by PGID, so survivors are identified by exact PID and never by matching
+# a process NAME.
+#
+# The bound is NOT `ulimit -f`. A file-size rlimit would constrain every file
+# the child writes — Git objects and packs, npm's package tree, anything Node or
+# a database client writes. Only the two captured streams are bounded.
+#
+# The limit is compiled into the supervisor below as a literal and is never read
+# from the environment.
+M1_COLLECTOR_PROGRAM='
+const fs=require("fs");
+const {spawn}=require("child_process");
+const LIMIT=1048576;
+const args=process.argv.slice(1);
+const outFile=args[0], errFile=args[1], metaFile=args[2];
+const cmd=args.slice(3);
+
+let outBytes=0, errBytes=0;
+let overflow=false, terminating=null, spawnFailed=false;
+let terminatedBy="NONE", steps=0;
+let exitCode=null, exitSignal=null;
+let childPid=0;
+
+function writeMeta(o){
+  const lines=[
+    "outcome="+o.outcome,
+    "exit_status="+o.exit_status,
+    "signal="+o.signal,
+    "out_bytes="+o.out_bytes,
+    "err_bytes="+o.err_bytes,
+    "limit_bytes="+LIMIT,
+    "pid="+o.pid,
+    "pgid="+o.pgid,
+    "terminated_by="+o.terminated_by,
+    "termination_steps="+o.termination_steps,
+    "group_verified_gone="+o.group_verified_gone,
+    "survivors="+o.survivors,
+    "exited_awaiting_reap="+o.exited_awaiting_reap,
+    ""
+  ];
+  try{ fs.writeFileSync(metaFile, lines.join("\n")); }catch(e){}
+}
+function bail(reason, code){
+  writeMeta({outcome:"COLLECTOR_FAILURE", exit_status:"NOT_APPLICABLE", signal:"NONE",
+    out_bytes:outBytes, err_bytes:errBytes, pid:childPid, pgid:childPid,
+    terminated_by:terminatedBy, termination_steps:steps,
+    group_verified_gone:"NO", survivors:"UNKNOWN", exited_awaiting_reap:"UNKNOWN"});
+  process.stderr.write("M1_COLLECTOR_FAILURE "+reason+"\n");
+  process.exit(code);
+}
+if(cmd.length===0) bail("no_command", 70);
+
+let outFd, errFd;
+try{ outFd=fs.openSync(outFile,"w"); errFd=fs.openSync(errFile,"w"); }
+catch(e){ bail("capture_open_failed", 70); }
+
+// Group membership by PGID, read from /proc. Exact identity: a PID either has
+// this PGID or it does not. No process NAME is ever matched, so nothing here
+// can mistake an unrelated process for a survivor or the reverse.
+//
+// Running members and zombies are separated rather than merged. A zombie has
+// ALREADY EXITED: it runs no code, holds no file descriptor, and cannot write
+// another byte. It lingers only until its new parent reaps it, and when the
+// group leader is killed its orphaned descendants are re-parented to init,
+// which may not reap promptly inside a container. Reporting the two separately
+// is the honest form: "gone" means no member is still running, and the zombie
+// count is stated rather than hidden.
+function groupScan(pgid){
+  let names;
+  try{ names=fs.readdirSync("/proc"); }catch(e){ return null; }
+  const running=[], zombies=[];
+  for(const d of names){
+    if(!/^[0-9]+$/.test(d)) continue;
+    let st;
+    try{ st=fs.readFileSync("/proc/"+d+"/stat","utf8"); }catch(e){ continue; }
+    const k=st.lastIndexOf(")");
+    if(k<0) continue;
+    const f=st.slice(k+2).split(" ");
+    if(f.length<3) continue;
+    if(Number(f[2])!==pgid) continue;
+    if(f[0]==="Z") zombies.push(Number(d)); else running.push(Number(d));
+  }
+  return {running:running, zombies:zombies};
+}
+function groupAlive(pgid){
+  const s=groupScan(pgid);
+  if(s===null){
+    try{ process.kill(-pgid,0); return true; }catch(e){ return false; }
+  }
+  return s.running.length>0;
+}
+function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
+
+// Bounded escalation. Two SIGTERM rounds, then two SIGKILL rounds, each with
+// its own budget. The loop ends the moment the group is observed gone, and the
+// caller treats an unproven group as fatal.
+// The first caller starts it and every later caller awaits the SAME promise, so
+// "terminated" is never reported before termination has actually finished.
+function terminate(pgid){
+  if(terminating) return terminating;
+  terminating=(async function(){
+    const plan=[["SIGTERM",200],["SIGTERM",400],["SIGKILL",800],["SIGKILL",1600]];
+    for(const step of plan){
+      const sig=step[0], budget=step[1];
+      steps++;
+      try{ process.kill(-pgid, sig); }
+      catch(e){
+        if(e.code==="ESRCH"){ if(terminatedBy==="NONE") terminatedBy="ALREADY_GONE"; return; }
+      }
+      const deadline=Date.now()+budget;
+      for(;;){
+        if(!groupAlive(pgid)){ terminatedBy=sig; return; }
+        if(Date.now()>=deadline) break;
+        await sleep(20);
+      }
+    }
+  })();
+  return terminating;
 }
 
+function consume(stream, fd, which){
+  stream.on("data",(chunk)=>{
+    if(overflow) return;                 // discarded unread: never stored, never parsed
+    const have = which==="out" ? outBytes : errBytes;
+    const remaining = LIMIT - have;
+    if(chunk.length >= remaining){
+      try{ if(remaining>0) fs.writeSync(fd, chunk.subarray(0, remaining)); }catch(e){}
+      if(which==="out") outBytes=LIMIT; else errBytes=LIMIT;
+      overflow=true;
+      terminate(childPid);
+    } else {
+      try{ fs.writeSync(fd, chunk); }catch(e){}
+      if(which==="out") outBytes+=chunk.length; else errBytes+=chunk.length;
+    }
+  });
+  stream.on("error",()=>{});
+}
+function once(em, ev){ return new Promise(r=>em.once(ev,()=>r())); }
+
+let child;
+try{
+  child=spawn(cmd[0], cmd.slice(1), {detached:true, stdio:["ignore","pipe","pipe"]});
+}catch(e){ bail("spawn_threw", 70); }
+childPid=child.pid||0;
+child.on("error",()=>{ spawnFailed=true; });
+child.on("exit",(code,signal)=>{ exitCode=code; exitSignal=signal; });
+consume(child.stdout, outFd, "out");
+consume(child.stderr, errFd, "err");
+
+async function main(){
+  // Both streams are closed and awaited, and the child is reaped, before any
+  // outcome is decided.
+  await Promise.all([ once(child.stdout,"close"), once(child.stderr,"close"), once(child,"exit") ]);
+  if(overflow) await terminate(childPid);
+  try{ fs.closeSync(outFd); }catch(e){}
+  try{ fs.closeSync(errFd); }catch(e){}
+
+  // Settle, then prove the group is gone by exact PID membership.
+  let scan=groupScan(childPid);
+  for(let i=0; i<100 && scan!==null && scan.running.length>0; i++){
+    await sleep(20);
+    scan=groupScan(childPid);
+  }
+  const survivors = scan===null ? null : scan.running;
+  const zombies = scan===null ? null : scan.zombies;
+  const verified = survivors!==null && survivors.length===0;
+
+  let outcome;
+  if(spawnFailed) outcome="COLLECTOR_FAILURE";
+  else if(!verified) outcome="CLEANUP_FAILURE";
+  else if(overflow) outcome="OVERFLOW";
+  else if(exitSignal) outcome="SIGNAL";
+  else outcome="EXIT";
+
+  writeMeta({
+    outcome: outcome,
+    exit_status: outcome==="EXIT" ? String(exitCode===null?"NOT_APPLICABLE":exitCode) : "NOT_APPLICABLE",
+    signal: outcome==="SIGNAL" ? String(exitSignal) : "NONE",
+    out_bytes: outBytes,
+    err_bytes: errBytes,
+    pid: childPid,
+    pgid: childPid,
+    terminated_by: terminatedBy,
+    termination_steps: steps,
+    group_verified_gone: verified ? "YES" : "NO",
+    survivors: (survivors===null) ? "UNKNOWN" : (survivors.length===0 ? "NONE" : survivors.join("+")),
+    exited_awaiting_reap: (zombies===null) ? "UNKNOWN" : (zombies.length===0 ? "NONE" : zombies.join("+"))
+  });
+
+  if(outcome==="COLLECTOR_FAILURE") process.exit(70);
+  if(outcome==="CLEANUP_FAILURE") process.exit(71);
+  process.exit(0);
+}
+main().catch(()=>{ bail("supervisor_exception", 70); });
+'
+readonly M1_COLLECTOR_PROGRAM
+
+# m1_collect SLUG COMMAND [ARGS...]
+#
+# COMMAND may be a shell function defined in this library: the child is a bash
+# shim that sources this file first, so `m1_clone_run` and `m1_dep_run` are
+# callable exactly as before. The shim is the process-group leader, so every
+# descendant it creates is inside the group the supervisor terminates.
 m1_collect() {
   local slug="$1"; shift
   local d="$M1_STREAM_DIR"
-  local fo="$d/.$slug.out.fifo" fe="$d/.$slug.err.fifo"
-  rm -f "$fo" "$fe"
-  mkfifo -m 0600 "$fo" "$fe"
-  m1__sink "$d/$slug.out" "$d/$slug.out.overflow" < "$fo" &
-  local po=$!
-  m1__sink "$d/$slug.err" "$d/$slug.err.overflow" < "$fe" &
-  local pe=$!
-  local rc=0
-  "$@" > "$fo" 2> "$fe" || rc=$?
-  wait "$po" || true
-  wait "$pe" || true
-  rm -f "$fo" "$fe"
-  printf '%s\n' "$rc" > "$d/$slug.rc"
+  rm -f "$d/$slug.out" "$d/$slug.err" "$d/$slug.meta"
+  local sup=0
+  node -e "$M1_COLLECTOR_PROGRAM" "$d/$slug.out" "$d/$slug.err" "$d/$slug.meta" \
+    bash -c '. "$M1_BIN/m1-env.sh"; "$@"' m1-collect-shim "$@" || sup=$?
+  if [ ! -s "$d/$slug.meta" ]; then
+    {
+      echo "outcome=COLLECTOR_FAILURE"; echo "exit_status=NOT_APPLICABLE"; echo "signal=NONE"
+      echo "out_bytes=0"; echo "err_bytes=0"; echo "limit_bytes=$M1_STREAM_LIMIT_BYTES"
+      echo "pid=0"; echo "pgid=0"; echo "terminated_by=NONE"; echo "termination_steps=0"
+      echo "group_verified_gone=NO"; echo "survivors=UNKNOWN"; echo "exited_awaiting_reap=UNKNOWN"
+    } > "$d/$slug.meta"
+  fi
+  case "$(m1_meta "$slug" outcome)" in
+    CLEANUP_FAILURE)
+      m1_die "collector could not prove the child process group exited (run $slug, survivors $(m1_meta "$slug" survivors))" ;;
+    COLLECTOR_FAILURE)
+      m1_die "collector internal failure (run $slug, supervisor exit $sup)" ;;
+  esac
   return 0
 }
 
-m1_rc()        { cat "$M1_STREAM_DIR/$1.rc"; }
+m1_meta()      { awk -F= -v k="$2" '$1==k {sub(/^[^=]*=/,"");v=$0} END{print v}' "$M1_STREAM_DIR/$1.meta"; }
+m1_outcome()   { m1_meta "$1" outcome; }
 m1_out_file()  { printf '%s\n' "$M1_STREAM_DIR/$1.out"; }
 m1_err_file()  { printf '%s\n' "$M1_STREAM_DIR/$1.err"; }
-m1_out_bytes() { wc -c < "$M1_STREAM_DIR/$1.out" | tr -d ' '; }
-m1_err_bytes() { wc -c < "$M1_STREAM_DIR/$1.err" | tr -d ' '; }
-m1_truncated() {
-  local o e
-  o="$(cat "$M1_STREAM_DIR/$1.out.overflow" 2>/dev/null || echo 0)"
-  e="$(cat "$M1_STREAM_DIR/$1.err.overflow" 2>/dev/null || echo 0)"
-  if [ "${o:-0}" -gt 0 ] || [ "${e:-0}" -gt 0 ]; then echo YES; else echo NO; fi
+m1_out_bytes() { m1_meta "$1" out_bytes; }
+m1_err_bytes() { m1_meta "$1" err_bytes; }
+m1_group_gone(){ m1_meta "$1" group_verified_gone; }
+
+# The genuine exit status, and ONLY when there is one. Every other outcome
+# yields the fixed token NOT_APPLICABLE, which no numeric comparison can mistake
+# for a status: a caller testing for 0 fails closed instead of reading an
+# overflowed run as a success.
+m1_rc() {
+  if [ "$(m1_meta "$1" outcome)" = "EXIT" ]; then
+    m1_meta "$1" exit_status
+  else
+    printf '%s\n' "NOT_APPLICABLE"
+  fi
+}
+
+m1_overflowed() {
+  if [ "$(m1_meta "$1" outcome)" = "OVERFLOW" ]; then printf 'YES\n'; else printf 'NO\n'; fi
 }
 
 # -----------------------------------------------------------------------------
@@ -360,6 +595,24 @@ readonly M1_NPM_TRANSPORT_ALLOW
 m1_clone_run() {
   (
     unset NODE_OPTIONS NODE_PATH 2>/dev/null || true
+    cd "$M1_CLONE" || exit 97
+    exec "$@"
+  )
+}
+
+# m1_dep_run — the sanitized runner for dependency preparation. Every name
+# helper 02 identified is removed from the child's environment in a subshell, so
+# no value is ever placed on a command line, in a file, or in this packet's
+# output. It lives here rather than inside helper 05 so the collector's shim can
+# call it by name.
+m1_dep_run() {
+  (
+    while IFS= read -r n; do
+      if [ -n "$n" ]; then unset "$n" 2>/dev/null || true; fi
+    done < <(m1_env_names_to_sanitize)
+    HOME="$M1_STATE/home"
+    TMPDIR="$M1_STATE/tmp"
+    export HOME TMPDIR
     cd "$M1_CLONE" || exit 97
     exec "$@"
   )
@@ -542,7 +795,8 @@ m1_emit "h01-preflight.sh" <<'M1_H01_EOF'
 set -euo pipefail
 . "$M1_BIN/m1-env.sh"
 
-m1_require_cmd git node npm sha256sum dd mkfifo awk sed cut wc cat rm mkdir date tr cmp
+m1_require_cmd git node npm sha256sum awk sed cut wc cat rm mkdir date tr cmp readlink kill
+[ -d /proc/self ] || m1_die "/proc is not mounted; the collector cannot verify process-group exit"
 
 # The packet must not run inside, or write into, the primary checkout. Every
 # execution happens in the isolated clone; the primary checkout is read as a
@@ -750,24 +1004,11 @@ mkdir -p "$M1_STATE/tmp" "$M1_STATE/home"
 : > "$M1_STATE/empty-user.npmrc"
 : > "$M1_STATE/empty-global.npmrc"
 
-# The sanitized runner. Every name helper 02 identified is removed from the
-# child's environment in a subshell, so no value is ever placed on a command
-# line, in a file, or in this packet's output. The transport allow-list is left
-# alone: a proxy can carry the traffic but cannot change what is installed,
-# because `npm ci` verifies every tarball against the sha512 integrity hash in
-# the lockfile that was just proven to be artifact A's.
-m1_dep_run() {
-  (
-    while IFS= read -r n; do
-      if [ -n "$n" ]; then unset "$n" 2>/dev/null || true; fi
-    done < <(m1_env_names_to_sanitize)
-    HOME="$M1_STATE/home"
-    TMPDIR="$M1_STATE/tmp"
-    export HOME TMPDIR
-    cd "$M1_CLONE" || exit 97
-    exec "$@"
-  )
-}
+# The sanitized runner, m1_dep_run, is defined in m1-env.sh so that the
+# collector's shim can call it by name. The transport allow-list is left alone:
+# a proxy can carry the traffic but cannot change what is installed, because
+# `npm ci` verifies every tarball against the sha512 integrity hash in the
+# lockfile that was just proven to be artifact A's.
 
 m1_dep_run "$npm_bin" version --json > "$M1_STATE/npm-version.json" 2>/dev/null \
   || m1_die "npm did not report its own runtime"
@@ -799,13 +1040,19 @@ m1_collect dep-npm-ci m1_dep_run "$npm_bin" ci \
   --globalconfig="$M1_STATE/empty-global.npmrc" \
   --foreground-scripts=false
 
+if [ "$(m1_outcome dep-npm-ci)" != "EXIT" ]; then
+  m1_record DEP_PREP_STATUS "FAILED"
+  m1_record DEP_PG_RESOLVED "NO"
+  m1_die "dependency preparation did not end in an ordinary exit (outcome $(m1_outcome dep-npm-ci))"
+fi
 rc="$(m1_rc dep-npm-ci)"
 m1_record DEP_PREP_COMMAND "$M1_DEP_COMMAND"
 m1_record DEP_PREP_SCOPE "ISOLATED_CLONE_ONLY"
 m1_record DEP_PREP_EXIT_CODE "$rc"
 m1_record DEP_STDOUT_CAPTURED_BYTES "$(m1_out_bytes dep-npm-ci)"
 m1_record DEP_STDERR_CAPTURED_BYTES "$(m1_err_bytes dep-npm-ci)"
-m1_record DEP_STREAM_TRUNCATED "$(m1_truncated dep-npm-ci)"
+m1_record DEP_STREAM_OVERFLOW "$(m1_overflowed dep-npm-ci)"
+m1_record DEP_COLLECTOR_OUTCOME "$(m1_outcome dep-npm-ci)"
 m1_record DEP_LIFECYCLE_SCRIPTS "DISABLED"
 m1_record DEP_AUDIT_NETWORK "DISABLED"
 m1_record DEP_FUND_NETWORK "DISABLED"
@@ -1120,45 +1367,58 @@ M1_H10_EOF
 # -----------------------------------------------------------------------------
 m1_emit "h11-regression-bounded-collection.sh" <<'M1_H11_EOF'
 #!/usr/bin/env bash
-# Regression group 1 — bounded collection WITHOUT constraining Git files.
+# Regression group 1 — bounded collection does NOT constrain legitimate files.
 #
-# The defect this guards: bounding output with a file-size rlimit (`ulimit -f`)
-# bounds every file the process writes, Git's own object, pack and checkout
-# writes included. A collector that does that silently corrupts the artifact it
-# is supposed to be observing.
+# The bound applies to two captured STREAMS and to nothing else. No `ulimit -f`
+# is set, so a collected child writes files of any size: Git objects and packs,
+# npm's package tree, anything Node writes, anything a database client writes.
+# A file-size rlimit would silently corrupt the very artifact being observed.
 set -euo pipefail
 . "$M1_BIN/m1-env.sh"
 
 fail() { m1_record REGRESSION_G1_BOUNDED_COLLECTION "FAIL"; m1_die "regression group 1: $*"; }
+w="$M1_STATE/g1"; rm -rf "$w"; mkdir -p "$w"
 
-big="$M1_STATE/g1-big.bin"
+big="$w/big.bin"
 head -c 3145728 /dev/zero | tr '\0' 'x' > "$big"
 [ "$(wc -c < "$big" | tr -d ' ')" = "3145728" ] || fail "could not stage a 3 MiB input"
 
-# A collected command that writes a 3 MiB FILE and emits 3 MiB of OUTPUT.
-m1_collect g1-mixed bash -c '
-  set -e
-  cp "$1" "$2"
-  cat "$1"
-' _ "$big" "$M1_STATE/g1-written.bin"
+# 1. an ordinary collected command writes a 3 MiB file and exits normally
+m1_collect g1-file bash -c 'cp "$1" "$2"; printf copied' _ "$big" "$w/written.bin"
+[ "$(m1_outcome g1-file)" = "EXIT" ] || fail "outcome was $(m1_outcome g1-file)"
+[ "$(m1_rc g1-file)" = "0" ] || fail "exit status was $(m1_rc g1-file)"
+[ "$(wc -c < "$w/written.bin" | tr -d ' ')" = "3145728" ] || fail "a 3 MiB file written under collection was truncated"
 
-[ "$(m1_rc g1-mixed)" = "0" ] || fail "the collected command did not succeed"
-[ "$(wc -c < "$M1_STATE/g1-written.bin" | tr -d ' ')" = "3145728" ] || fail "a 3 MiB file written under collection was truncated"
-[ "$(m1_out_bytes g1-mixed)" = "1048576" ] || fail "the captured stream was not bounded at 1 MiB"
+# 2. Node writes a 2 MiB file under collection
+m1_collect g1-node node -e 'require("fs").writeFileSync(process.argv[1], Buffer.alloc(2097152, 110)); process.stdout.write("ok");' "$w/node.bin"
+[ "$(m1_outcome g1-node)" = "EXIT" ] || fail "node run outcome was $(m1_outcome g1-node)"
+[ "$(wc -c < "$w/node.bin" | tr -d ' ')" = "2097152" ] || fail "Node's 2 MiB file was constrained"
 
-# Git itself must be able to write an object larger than the stream bound while
-# collection is active.
-m1_collect g1-git-write bash -c 'cd "$1" && git hash-object -w "$2"' _ "$M1_CLONE" "$big"
-[ "$(m1_rc g1-git-write)" = "0" ] || fail "git could not write a 3 MiB object under collection"
-oid="$(head -c 40 "$(m1_out_file g1-git-write)")"
+# 3. Git writes a 3 MiB object, and a full clone succeeds, under collection
+m1_collect g1-git-object bash -c 'cd "$1" && git hash-object -w "$2"' _ "$M1_CLONE" "$big"
+[ "$(m1_outcome g1-git-object)" = "EXIT" ] || fail "git object run outcome was $(m1_outcome g1-git-object)"
+oid="$(head -c 40 "$(m1_out_file g1-git-object)")"
 sz="$(git -C "$M1_CLONE" cat-file -s "$oid")"
 [ "$sz" = "3145728" ] || fail "the Git object written under collection is $sz bytes, not 3145728"
 
-# And no file-size rlimit is in force anywhere in the collector.
-lim="$(m1_collect g1-ulimit bash -c 'ulimit -f' >/dev/null 2>&1; head -c 32 "$(m1_out_file g1-ulimit)" | tr -d ' \n')"
-[ "$lim" = "unlimited" ] || fail "a file-size rlimit ($lim) is in force during collection"
+m1_collect g1-git-clone git clone --quiet "$M1_CLONE" "$w/clone"
+[ "$(m1_outcome g1-git-clone)" = "EXIT" ] || fail "git clone outcome was $(m1_outcome g1-git-clone)"
+[ "$(m1_rc g1-git-clone)" = "0" ] || fail "git clone exit status was $(m1_rc g1-git-clone)"
+[ -d "$w/clone/.git" ] || fail "the collected git clone produced no repository"
+git_big="$(find "$w/clone/.git" -type f -printf '%s\n' 2>/dev/null | sort -n | tail -n 1)"
+[ -n "$git_big" ] && [ "$git_big" -gt 1048576 ] || fail "the collected git clone wrote no file larger than the stream bound (largest ${git_big:-0})"
 
-rm -f "$big" "$M1_STATE/g1-written.bin"
+# 4. npm's dependency tree — installed under collection in helper 05 — carries a
+#    file larger than the stream bound
+npm_big="$(find "$M1_CLONE/node_modules" -type f -printf '%s\n' 2>/dev/null | sort -n | tail -n 1)"
+[ -n "$npm_big" ] && [ "$npm_big" -gt 1048576 ] || fail "npm installed no file larger than the stream bound (largest ${npm_big:-0})"
+
+# 5. no file-size rlimit is in force inside a collected child
+m1_collect g1-ulimit bash -c 'ulimit -f'
+lim="$(tr -d ' \n' < "$(m1_out_file g1-ulimit)")"
+[ "$lim" = "unlimited" ] || fail "a file-size rlimit ($lim) is in force inside a collected child"
+
+rm -rf "$w"
 m1_record REGRESSION_G1_BOUNDED_COLLECTION "PASS"
 M1_H11_EOF
 
@@ -1167,45 +1427,217 @@ M1_H11_EOF
 # -----------------------------------------------------------------------------
 m1_emit "h12-regression-stream-limit.sh" <<'M1_H12_EOF'
 #!/usr/bin/env bash
-# Regression group 2 — the immutable 1 MiB stream limit.
+# Regression group 2 — the immutable limit AND the output-overflow process
+# contract.
+#
+# Below the bound the child's genuine exit status survives. At the bound the run
+# is OVERFLOW, the whole process group is terminated, and the group is proven
+# gone by exact PID membership read from /proc — never by matching a process
+# name. OVERFLOW is a token, not a number, so it cannot be read as an exit
+# status.
 set -euo pipefail
 . "$M1_BIN/m1-env.sh"
 
 fail() { m1_record REGRESSION_G2_STREAM_LIMIT "FAIL"; m1_die "regression group 2: $*"; }
+L=1048576
+w="$M1_STATE/g2"; rm -rf "$w"; mkdir -p "$w"
 
-# a. the value is exactly 1 MiB
-[ "$M1_STREAM_LIMIT_BYTES" = "1048576" ] || fail "the limit is $M1_STREAM_LIMIT_BYTES"
+# The process-group id of a live PID, or failure if the PID is gone. Field 5 of
+# /proc/<pid>/stat, read after the last ")" so a comm containing spaces or
+# parentheses cannot shift the field positions.
+proc_pgid() {
+  local st rest
+  [ -r "/proc/$1/stat" ] || return 1
+  st="$(cat "/proc/$1/stat" 2>/dev/null)" || return 1
+  rest="${st##*) }"
+  # shellcheck disable=SC2086
+  set -- $rest
+  if [ "$1" = "Z" ]; then return 1; fi     # already exited, awaiting reap
+  printf '%s' "$3"
+}
 
-# b. it is readonly — a reassignment cannot succeed
-if bash -c '. "$M1_BIN/m1-env.sh"; M1_STREAM_LIMIT_BYTES=7' >/dev/null 2>&1; then fail "the limit could be reassigned"; fi
+# An exact-identity survivor check: this PID must not still be RUNNING in that
+# process group. A PID absent from /proc is gone; a PID in state Z has already
+# exited and is waiting only to be reaped by init, which runs no code and emits
+# no byte. Both are acceptable; a running member of the group is not.
+assert_pid_gone() {
+  local pid="$1" pgid="$2" pg
+  if pg="$(proc_pgid "$pid")"; then
+    if [ "$pg" = "$pgid" ]; then fail "PID $pid survived in process group $pgid"; fi
+  fi
+}
 
-# c. an inherited environment value does not win
-# `env` is used rather than an assignment prefix: the name is readonly in THIS
-# shell, and a prefix assignment would be refused here and never reach the
-# child — which would make the test pass without ever testing anything.
+assert_group_gone() {
+  local slug="$1"
+  [ "$(m1_group_gone "$slug")" = "YES" ] || fail "$slug: the process group was not proven gone"
+  [ "$(m1_meta "$slug" survivors)" = "NONE" ] || fail "$slug: survivors $(m1_meta "$slug" survivors)"
+}
+
+emit() {  # emit SLUG out|err BYTES EXITCODE
+  local slug="$1" stream="$2" n="$3" code="$4"
+  if [ "$stream" = "out" ]; then
+    m1_collect "$slug" bash -c 'head -c "$1" /dev/zero | tr "\0" s; exit "$2"' _ "$n" "$code"
+  else
+    m1_collect "$slug" bash -c 'head -c "$1" /dev/zero | tr "\0" s >&2; exit "$2"' _ "$n" "$code"
+  fi
+}
+
+# --- the limit is immutable ---------------------------------------------------
+[ "$M1_STREAM_LIMIT_BYTES" = "$L" ] || fail "the limit is $M1_STREAM_LIMIT_BYTES"
+if bash -c '. "$M1_BIN/m1-env.sh"; M1_STREAM_LIMIT_BYTES=7' >/dev/null 2>&1; then
+  fail "the limit could be reassigned"
+fi
+# `env` rather than an assignment prefix: the name is readonly in THIS shell, so
+# a prefix assignment would be refused here and never reach the child, which
+# would make the test pass without testing anything.
 v="$(env M1_STREAM_LIMIT_BYTES=7 bash -c '. "$M1_BIN/m1-env.sh"; printf %s "$M1_STREAM_LIMIT_BYTES"')"
-[ "$v" = "1048576" ] || fail "an environment value overrode the limit ($v)"
+[ "$v" = "$L" ] || fail "an environment value overrode the limit ($v)"
 
-# d. the bound is exact: one byte over is captured as exactly 1 MiB, with the
-#    overflow counted rather than lost silently
-m1_collect g2-exact bash -c 'head -c 1048577 /dev/zero | tr "\0" "y"'
-[ "$(m1_out_bytes g2-exact)" = "1048576" ] || fail "capture was $(m1_out_bytes g2-exact) bytes"
-[ "$(cat "$M1_STREAM_DIR/g2-exact.out.overflow")" = "1" ] || fail "the overflow byte was not counted"
-[ "$(m1_truncated g2-exact)" = "YES" ] || fail "truncation was not reported"
+# The supervisor's own constant is compiled in, not read from the environment.
+env M1_STREAM_LIMIT_BYTES=7 M1_COLLECTOR_LIMIT=7 bash -c \
+  '. "$M1_BIN/m1-env.sh"; m1_collect g2-envlimit bash -c "head -c 4096 /dev/zero | tr \"\\0\" v"'
+[ "$(m1_outcome g2-envlimit)" = "EXIT" ] || fail "an environment limit of 7 changed the supervisor's bound"
+[ "$(m1_out_bytes g2-envlimit)" = "4096" ] || fail "an environment limit of 7 truncated a 4096-byte stream"
+[ "$(m1_meta g2-envlimit limit_bytes)" = "$L" ] || fail "the supervisor reported limit $(m1_meta g2-envlimit limit_bytes)"
 
-# e. under the bound, nothing is touched
-m1_collect g2-under bash -c 'head -c 1024 /dev/zero | tr "\0" "z"'
-[ "$(m1_out_bytes g2-under)" = "1024" ] || fail "a small stream was altered"
-[ "$(m1_truncated g2-under)" = "NO" ] || fail "a small stream was reported truncated"
+# --- boundary: stdout ---------------------------------------------------------
+emit g2-out-under "out" $((L - 1)) 5
+[ "$(m1_outcome g2-out-under)" = "EXIT" ] || fail "1048575 stdout bytes was not an ordinary exit"
+[ "$(m1_rc g2-out-under)" = "5" ] || fail "the genuine exit status 5 was lost (got $(m1_rc g2-out-under))"
+[ "$(m1_out_bytes g2-out-under)" = "1048575" ] || fail "1048575 stdout bytes captured as $(m1_out_bytes g2-out-under)"
+[ "$(m1_overflowed g2-out-under)" = "NO" ] || fail "a below-limit stream was called overflow"
+assert_group_gone g2-out-under
 
-# f. stderr is bounded on its own, independently of stdout
-m1_collect g2-err bash -c 'head -c 2097152 /dev/zero | tr "\0" "e" >&2'
-[ "$(m1_err_bytes g2-err)" = "1048576" ] || fail "stderr was not bounded at 1 MiB"
+emit g2-out-at "out" "$L" 5
+[ "$(m1_outcome g2-out-at)" = "OVERFLOW" ] || fail "1048576 stdout bytes was not overflow"
+[ "$(m1_rc g2-out-at)" = "NOT_APPLICABLE" ] || fail "an overflowed run reported an exit status"
+[ "$(m1_out_bytes g2-out-at)" = "$L" ] || fail "capture at the bound was $(m1_out_bytes g2-out-at)"
+assert_group_gone g2-out-at
 
-# g. the producer is never killed by the bound — its own exit status survives
-m1_collect g2-exit bash -c 'head -c 3145728 /dev/zero | tr "\0" "q"; exit 42'
-[ "$(m1_rc g2-exit)" = "42" ] || fail "the producer's exit status was lost (got $(m1_rc g2-exit))"
+emit g2-out-over "out" $((L + 1)) 5
+[ "$(m1_outcome g2-out-over)" = "OVERFLOW" ] || fail "1048577 stdout bytes was not overflow"
+[ "$(m1_out_bytes g2-out-over)" = "$L" ] || fail "capture past the bound was $(m1_out_bytes g2-out-over)"
+assert_group_gone g2-out-over
 
+# --- boundary: stderr ---------------------------------------------------------
+emit g2-err-under "err" $((L - 1)) 6
+[ "$(m1_outcome g2-err-under)" = "EXIT" ] || fail "1048575 stderr bytes was not an ordinary exit"
+[ "$(m1_rc g2-err-under)" = "6" ] || fail "the genuine exit status 6 was lost"
+[ "$(m1_err_bytes g2-err-under)" = "1048575" ] || fail "1048575 stderr bytes captured as $(m1_err_bytes g2-err-under)"
+assert_group_gone g2-err-under
+
+emit g2-err-at "err" "$L" 6
+[ "$(m1_outcome g2-err-at)" = "OVERFLOW" ] || fail "1048576 stderr bytes was not overflow"
+[ "$(m1_err_bytes g2-err-at)" = "$L" ] || fail "stderr capture at the bound was $(m1_err_bytes g2-err-at)"
+assert_group_gone g2-err-at
+
+emit g2-err-over "err" $((L + 1)) 6
+[ "$(m1_outcome g2-err-over)" = "OVERFLOW" ] || fail "1048577 stderr bytes was not overflow"
+assert_group_gone g2-err-over
+
+# --- both streams cross the bound at once -------------------------------------
+m1_collect g2-both bash -c '
+  head -c 1048576 /dev/zero | tr "\0" o &
+  head -c 1048576 /dev/zero | tr "\0" e >&2 &
+  wait'
+[ "$(m1_outcome g2-both)" = "OVERFLOW" ] || fail "a simultaneous boundary crossing was not overflow"
+[ "$(m1_out_bytes g2-both)" -le "$L" ] || fail "stdout captured past the bound"
+[ "$(m1_err_bytes g2-both)" -le "$L" ] || fail "stderr captured past the bound"
+if [ "$(m1_out_bytes g2-both)" != "$L" ] && [ "$(m1_err_bytes g2-both)" != "$L" ]; then
+  fail "neither stream reached the bound on a simultaneous crossing"
+fi
+assert_group_gone g2-both
+
+# --- a finite 3 MiB producer is stopped BEFORE it finishes --------------------
+marker="$w/finished.marker"
+rm -f "$marker"
+m1_collect g2-finite bash -c 'head -c 3145728 /dev/zero | tr "\0" f; : > "$1"; exit 0' _ "$marker"
+[ "$(m1_outcome g2-finite)" = "OVERFLOW" ] || fail "a 3 MiB producer was not overflow"
+if [ -e "$marker" ]; then fail "the 3 MiB producer ran to completion; it was not terminated at the bound"; fi
+[ "$(m1_rc g2-finite)" = "NOT_APPLICABLE" ] || fail "the 3 MiB producer's status was reported as an exit status"
+assert_group_gone g2-finite
+
+# --- an infinite producer is stopped promptly ---------------------------------
+start=$SECONDS
+m1_collect g2-infinite bash -c 'cat /dev/zero | tr "\0" z'
+elapsed=$((SECONDS - start))
+[ "$(m1_outcome g2-infinite)" = "OVERFLOW" ] || fail "an infinite producer was not overflow"
+[ "$elapsed" -le 20 ] || fail "an infinite producer took ${elapsed}s to terminate"
+assert_group_gone g2-infinite
+
+# --- a child and a grandchild: no survivor ------------------------------------
+cat > "$w/tree.sh" <<'TREE'
+#!/usr/bin/env bash
+base="$1"
+printf '%s\n' "$BASHPID" > "$base.top"
+(
+  printf '%s\n' "$BASHPID" > "$base.child"
+  (
+    printf '%s\n' "$BASHPID" > "$base.grand"
+    sleep 300
+  ) &
+  sleep 300
+) &
+while [ ! -s "$base.grand" ]; do sleep 0.01; done
+head -c 2097152 /dev/zero | tr '\0' d
+sleep 300
+TREE
+chmod 0700 "$w/tree.sh"
+m1_collect g2-tree "$w/tree.sh" "$w/pids"
+[ "$(m1_outcome g2-tree)" = "OVERFLOW" ] || fail "the process tree run was not overflow"
+pgid="$(m1_meta g2-tree pgid)"
+for part in top child grand; do
+  [ -s "$w/pids.$part" ] || fail "the $part process never recorded its PID"
+  assert_pid_gone "$(cat "$w/pids.$part")" "$pgid"
+done
+assert_group_gone g2-tree
+[ -n "$(m1_meta g2-tree exited_awaiting_reap)" ] || fail "the collector did not account for exited group members"
+
+# --- a child that ignores SIGTERM is removed by escalation --------------------
+cat > "$w/stubborn.sh" <<'STUB'
+#!/usr/bin/env bash
+trap '' TERM
+printf '%s\n' "$BASHPID" > "$1"
+head -c 2097152 /dev/zero | tr '\0' i
+while :; do sleep 1; done
+STUB
+chmod 0700 "$w/stubborn.sh"
+m1_collect g2-stubborn "$w/stubborn.sh" "$w/stubborn.pid"
+[ "$(m1_outcome g2-stubborn)" = "OVERFLOW" ] || fail "the TERM-ignoring producer was not overflow"
+[ "$(m1_meta g2-stubborn terminated_by)" = "SIGKILL" ] || fail "escalation did not reach SIGKILL (terminated_by $(m1_meta g2-stubborn terminated_by))"
+[ "$(m1_meta g2-stubborn termination_steps)" -ge 2 ] || fail "escalation did not take more than one step"
+assert_pid_gone "$(cat "$w/stubborn.pid")" "$(m1_meta g2-stubborn pgid)"
+assert_group_gone g2-stubborn
+
+# --- the race: the child exits exactly as termination begins ------------------
+i=0
+while [ "$i" -lt 20 ]; do
+  m1_collect "g2-race" bash -c 'head -c 1048576 /dev/zero | tr "\0" r; exit 7'
+  [ "$(m1_outcome g2-race)" = "OVERFLOW" ] || fail "race iteration $i reported $(m1_outcome g2-race), not OVERFLOW"
+  [ "$(m1_rc g2-race)" = "NOT_APPLICABLE" ] || fail "race iteration $i leaked exit status 7 through an overflow"
+  assert_group_gone g2-race
+  i=$((i + 1))
+done
+
+# --- ordinary exits below the bound keep their genuine status -----------------
+for code in 0 1 2 42; do
+  m1_collect "g2-exit-$code" bash -c 'printf below-the-bound; exit "$1"' _ "$code"
+  [ "$(m1_outcome "g2-exit-$code")" = "EXIT" ] || fail "exit $code was reported as $(m1_outcome "g2-exit-$code")"
+  [ "$(m1_rc "g2-exit-$code")" = "$code" ] || fail "exit $code was reported as $(m1_rc "g2-exit-$code")"
+  [ "$(m1_overflowed "g2-exit-$code")" = "NO" ] || fail "exit $code was called overflow"
+  assert_group_gone "g2-exit-$code"
+done
+
+# --- a signal the collector did not send is its own outcome -------------------
+m1_collect g2-signal bash -c 'printf x; kill -TERM $$; sleep 5'
+case "$(m1_outcome g2-signal)" in
+  SIGNAL) [ "$(m1_rc g2-signal)" = "NOT_APPLICABLE" ] || fail "a signal death reported an exit status" ;;
+  EXIT)   : ;;   # a shell that reports 143 as its own status is acceptable and distinct
+  *) fail "a self-signalled child reported $(m1_outcome g2-signal)" ;;
+esac
+assert_group_gone g2-signal
+
+rm -rf "$w"
 m1_record REGRESSION_G2_STREAM_LIMIT "PASS"
 M1_H12_EOF
 
@@ -1487,6 +1919,20 @@ set -euo pipefail
 form="$M1_OUT/RETURN_FORM.txt"
 report="$M1_OUT/EVIDENCE_REPORT.txt"
 
+# Roll up every collected run: how many overflowed, and whether every one of
+# them proved its child process group gone. A single unproven group is fatal
+# inside m1_collect, so this is a restatement for the record, not a new gate.
+overflow_runs=0
+groups_verified="ALL_VERIFIED"
+for mf in "$M1_STREAM_DIR"/*.meta; do
+  [ -f "$mf" ] || continue
+  slug="$(basename "$mf" .meta)"
+  if [ "$(m1_outcome "$slug")" = "OVERFLOW" ]; then overflow_runs=$((overflow_runs + 1)); fi
+  if [ "$(m1_group_gone "$slug")" != "YES" ]; then groups_verified="NOT_VERIFIED"; fi
+done
+m1_record COLLECTOR_OVERFLOW_RUNS "$overflow_runs"
+m1_record COLLECTOR_GROUPS_VERIFIED "$groups_verified"
+
 {
   echo "# M1 OPERATOR PACKET — RETURN FORM"
   echo "# Approved fixed fields only. KEY=VALUE, one per line."
@@ -1529,11 +1975,17 @@ bad="$(grep -v '^#' "$form" | grep -v '^$' | grep -vE '^[A-Z0-9_]+=' || true)"
   printf '  sanitized names   %s\n' "$(m1_get ENV_SANITIZED_NAMES)"
   printf '  rejected names    %s\n' "$(m1_get ENV_REJECTED_NAMES)"
   echo
-  echo "CAPTURED STREAMS (slug, stdout bytes, stderr bytes, exit, truncated)"
-  for rcf in "$M1_STREAM_DIR"/*.rc; do
-    [ -f "$rcf" ] || continue
-    s="$(basename "$rcf" .rc)"
-    printf '  %-22s %10s %10s %5s %s\n' "$s" "$(m1_out_bytes "$s")" "$(m1_err_bytes "$s")" "$(m1_rc "$s")" "$(m1_truncated "$s")"
+  echo "COLLECTED RUNS"
+  echo "  outcome EXIT = ordinary below-limit exit, exit_status genuine"
+  echo "  outcome OVERFLOW = a stream reached the limit; process group terminated"
+  echo "  outcome SIGNAL = killed by a signal the collector did not send"
+  echo "  outcome COLLECTOR_FAILURE / CLEANUP_FAILURE = fatal, the packet stops"
+  printf '  %-22s %-18s %-14s %10s %10s %-14s %s\n' run outcome exit_status stdout stderr terminated_by group_gone
+  for mf in "$M1_STREAM_DIR"/*.meta; do
+    [ -f "$mf" ] || continue
+    s="$(basename "$mf" .meta)"
+    printf '  %-22s %-18s %-14s %10s %10s %-14s %s\n' "$s" "$(m1_outcome "$s")" "$(m1_rc "$s")" \
+      "$(m1_out_bytes "$s")" "$(m1_err_bytes "$s")" "$(m1_meta "$s" terminated_by)" "$(m1_group_gone "$s")"
   done
   echo
   echo "NON-ACTIONS (fixed)"
