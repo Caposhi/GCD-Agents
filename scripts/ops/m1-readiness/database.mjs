@@ -33,6 +33,7 @@
  *     so no database session is left open by this runner.
  */
 
+import { once } from "node:events";
 import pg from "pg";
 import { categorizeError } from "../lib/errorCategories.mjs";
 import {
@@ -42,6 +43,7 @@ import {
   REQUIRED_TABLES,
   TABLE_EXISTENCE_SQL,
   TAG_AGGREGATES_SQL,
+  assertDistinctColumns,
   evaluateAggregateAudit,
   readEvidenceLimits,
 } from "../lib/aggregateAudit.mjs";
@@ -82,6 +84,21 @@ const newClient = (connectionString) =>
  * Open a read-only session, prove it is read-only and time-bounded, run `fn`,
  * and tear the connection down whatever happens.
  *
+ * The client is created OUTSIDE the deadline scope on purpose: when the
+ * deadline or an operator interrupt wins, `withDeadline` calls `onCancel`, and
+ * `onCancel` has to be able to reach this exact socket in order to destroy it.
+ * A deadline that could not reach the connection would leave a production
+ * backend running a query nobody is waiting for.
+ *
+ * `teardown` does not return until the socket's `close` event has fired or the
+ * socket reports itself destroyed, so "the session is closed" is confirmed
+ * rather than assumed. That confirmation is recorded on the returned record.
+ *
+ * `totalMs` is a parameter rather than a constant read here so the disposable
+ * PostgreSQL suite can drive the real timeout path against a real lock wait.
+ * Both production call sites pass the fixed constants from `deadlines.mjs`, and
+ * the offline suite asserts that from source.
+ *
  * @template T
  * @param {object} input
  * @param {string} input.connectionString
@@ -90,57 +107,107 @@ const newClient = (connectionString) =>
  * @param {number} input.totalMs
  * @param {(client: pg.Client) => Promise<T>} fn
  */
-const withReadOnlySession = async ({ connectionString, runtime, label, totalMs }, fn) =>
-  withDeadline(runtime, label, totalMs, async () => {
-    const client = newClient(connectionString);
-    let torn = false;
-    const teardown = async () => {
-      if (torn) return;
-      torn = true;
-      // `end()` is given a bounded grace period; the socket is then destroyed
-      // unconditionally, which is what actually ends the server-side session.
-      await settleWithin(Promise.resolve(client.end()), CHILD_TERMINATION_GRACE_MS);
-      try {
-        client.connection?.stream?.destroy();
-      } catch {
-        /* already closed */
-      }
-    };
-    const unregister = runtime.registerCleanup(teardown);
+export const withReadOnlySession = async ({ connectionString, runtime, label, totalMs }, fn) => {
+  const client = newClient(connectionString);
+  let torn = false;
+  let sessionClosed = false;
+
+  const teardown = async () => {
+    if (torn) return;
+    torn = true;
+    const stream = client.connection?.stream;
+    // Subscribed BEFORE anything is destroyed, so the confirmation cannot be
+    // missed by racing the close.
+    const closed =
+      stream && !stream.destroyed
+        ? once(stream, "close").then(
+            () => undefined,
+            () => undefined,
+          )
+        : Promise.resolve();
+    // `end()` is the graceful path and is given a bounded grace period; the
+    // socket is then destroyed unconditionally, which is what actually ends the
+    // server-side session when a statement is still in flight.
+    await settleWithin(
+      Promise.resolve()
+        .then(() => client.end())
+        .then(
+          () => undefined,
+          () => undefined,
+        ),
+      CHILD_TERMINATION_GRACE_MS,
+    );
     try {
-      await client.connect();
-
-      // Belt and braces: a connection pooler may refuse startup options, so the
-      // same settings are applied explicitly before any read.
-      await client.query(`SET statement_timeout = ${DATABASE_STATEMENT_MS}`);
-      await client.query(`SET lock_timeout = ${DATABASE_LOCK_MS}`);
-      await client.query(
-        `SET idle_in_transaction_session_timeout = ${DATABASE_IDLE_IN_TRANSACTION_MS}`,
-      );
-      await client.query("SET default_transaction_read_only = on");
-      await client.query("BEGIN TRANSACTION READ ONLY");
-
-      const enforced = {
-        transaction_read_only: (await client.query("SHOW transaction_read_only")).rows[0]
-          ?.transaction_read_only,
-        statement_timeout: (await client.query("SHOW statement_timeout")).rows[0]?.statement_timeout,
-        lock_timeout: (await client.query("SHOW lock_timeout")).rows[0]?.lock_timeout,
-        idle_in_transaction_session_timeout: (
-          await client.query("SHOW idle_in_transaction_session_timeout")
-        ).rows[0]?.idle_in_transaction_session_timeout,
-      };
-      if (enforced.transaction_read_only !== "on") {
-        throw new Error("the server did not enforce a read-only transaction");
-      }
-
-      const value = await fn(client);
-      await client.query("ROLLBACK");
-      return { value, enforced };
-    } finally {
-      unregister();
-      await teardown();
+      stream?.destroy();
+    } catch {
+      /* already closed */
     }
-  });
+    await settleWithin(closed, CHILD_TERMINATION_GRACE_MS);
+    sessionClosed = stream ? stream.destroyed : true;
+  };
+
+  const unregister = runtime.registerCleanup(teardown);
+  /** @type {unknown} */
+  let failure = null;
+  /** @type {any} */
+  let outcome = null;
+  try {
+    outcome = await withDeadline(
+      runtime,
+      label,
+      totalMs,
+      async () => {
+        await client.connect();
+
+        // Belt and braces: a connection pooler may refuse startup options, so the
+        // same settings are applied explicitly before any read.
+        await client.query(`SET statement_timeout = ${DATABASE_STATEMENT_MS}`);
+        await client.query(`SET lock_timeout = ${DATABASE_LOCK_MS}`);
+        await client.query(
+          `SET idle_in_transaction_session_timeout = ${DATABASE_IDLE_IN_TRANSACTION_MS}`,
+        );
+        await client.query("SET default_transaction_read_only = on");
+        await client.query("BEGIN TRANSACTION READ ONLY");
+
+        const enforced = {
+          transaction_read_only: (await client.query("SHOW transaction_read_only")).rows[0]
+            ?.transaction_read_only,
+          statement_timeout: (await client.query("SHOW statement_timeout")).rows[0]
+            ?.statement_timeout,
+          lock_timeout: (await client.query("SHOW lock_timeout")).rows[0]?.lock_timeout,
+          idle_in_transaction_session_timeout: (
+            await client.query("SHOW idle_in_transaction_session_timeout")
+          ).rows[0]?.idle_in_transaction_session_timeout,
+        };
+        if (enforced.transaction_read_only !== "on") {
+          throw new Error("the server did not enforce a read-only transaction");
+        }
+
+        const result = await fn(client);
+        await client.query("ROLLBACK");
+        return { value: result, enforced };
+      },
+      // The deadline reaches the socket, and does not return until the session
+      // is confirmed closed.
+      { onCancel: teardown },
+    );
+  } catch (error) {
+    failure = error;
+  } finally {
+    unregister();
+    await teardown();
+  }
+
+  // Teardown has completed before anything is returned or rethrown, so the
+  // caller never sees a result while a session this call opened is still open.
+  if (failure) throw failure;
+  if (!sessionClosed) {
+    // Never swallowed: the runner's claim is that it leaves no open database
+    // session, so a teardown that could not confirm closure fails the read.
+    throw new Error("the database session could not be confirmed closed");
+  }
+  return outcome;
+};
 
 /**
  * A failure record that cannot leak connection identity.
@@ -225,12 +292,19 @@ export const runAggregateAudit = async ({ connectionString, repoRoot, runtime })
         const tables = (await client.query(TABLE_EXISTENCE_SQL)).rows.map((r) => r.table_name);
         const missing = REQUIRED_TABLES.filter((t) => !tables.includes(t));
         if (missing.length > 0) return { tables, missing };
+        // `pg` collapses two columns of the same name into one row property, so
+        // a duplicate is only visible in the result's field list.
+        const read = async (sql, label) => {
+          const result = await client.query(sql);
+          assertDistinctColumns(result.fields, label);
+          return result.rows[0];
+        };
         return {
           tables,
           missing,
-          evidence: (await client.query(EVIDENCE_AGGREGATES_SQL)).rows[0],
-          tags: (await client.query(TAG_AGGREGATES_SQL)).rows[0],
-          relations: (await client.query(RELATION_AGGREGATES_SQL)).rows[0],
+          evidence: await read(EVIDENCE_AGGREGATES_SQL, "content_evidence aggregates"),
+          tags: await read(TAG_AGGREGATES_SQL, "content_evidence tag aggregates"),
+          relations: await read(RELATION_AGGREGATES_SQL, "content_evidence_relations aggregates"),
         };
       },
     );

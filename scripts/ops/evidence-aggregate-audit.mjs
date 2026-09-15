@@ -48,6 +48,7 @@ import {
   REQUIRED_TABLES,
   TABLE_EXISTENCE_SQL,
   TAG_AGGREGATES_SQL,
+  assertDistinctColumns,
   evaluateAggregateAudit,
   readEvidenceLimits,
 } from "./lib/aggregateAudit.mjs";
@@ -86,9 +87,19 @@ const main = async () => {
       process.exit(1);
     }
 
-    out.content_evidence = (await client.query(EVIDENCE_AGGREGATES_SQL)).rows[0];
-    out.content_evidence_tags = (await client.query(TAG_AGGREGATES_SQL)).rows[0];
-    out.content_evidence_relations = (await client.query(RELATION_AGGREGATES_SQL)).rows[0];
+    // `pg` collapses two columns of the same name into one row property, so a
+    // duplicate is only visible in the result's field list.
+    const read = async (sql, label) => {
+      const result = await client.query(sql);
+      assertDistinctColumns(result.fields, label);
+      return result.rows[0];
+    };
+    out.content_evidence = await read(EVIDENCE_AGGREGATES_SQL, "content_evidence aggregates");
+    out.content_evidence_tags = await read(TAG_AGGREGATES_SQL, "content_evidence tag aggregates");
+    out.content_evidence_relations = await read(
+      RELATION_AGGREGATES_SQL,
+      "content_evidence_relations aggregates",
+    );
 
     await client.query("ROLLBACK");
   } finally {

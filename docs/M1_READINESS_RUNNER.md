@@ -151,6 +151,13 @@ Verified against the repository's actual immutable workflow identity, fixed in
 and not replaceable by any environment variable:
 
 - workflow path `.github/workflows/ci.yml`, workflow id `341444424`;
+- the repository the response **itself claims** to describe is `Caposhi/GCD-Agents`
+  — the URL already names one repository, but a gate that trusts only the URL it
+  sent cannot detect a redirect, a proxy, or a cached response from elsewhere;
+- branch `main` — §4.4 defines the artifact as the reviewed head of `main`, so a
+  successful run of the same workflow on a fork branch, a release branch or an
+  attacker-named branch is not evidence about `A`;
+- the full 40-character lowercase head SHA equals `A`;
 - event `push`; status `completed`; conclusion `success`;
 - run attempt **exactly 1**;
 - exactly **five** expected jobs — `Node 22 offline quality gates`,
@@ -158,11 +165,19 @@ and not replaceable by any environment variable:
   `Workflow and YAML static validation`;
 - every job `completed` and `success` **on attempt 1**.
 
-Exactly one run may satisfy those conditions. A run whose `run_attempt` is
-greater than 1 has been re-run, so **a later successful retry can never satisfy
-the gate**. A missing, duplicated, unexpected or unsuccessful job is a refusal,
-as is a truncated run or job list — the runner refuses a partial view rather than
-paginating through one.
+Exactly one run may satisfy those conditions; two are an ambiguity, not a choice.
+A run whose `run_attempt` is greater than 1 has been re-run, so **a later
+successful retry can never satisfy the gate**. A missing, duplicated, unexpected
+or unsuccessful job is a refusal.
+
+Both list responses must be **internally consistent**: the declared `total_count`
+must equal the number of items actually returned, in either direction, and a
+total above one page is refused rather than paginated — a page whose declared
+total disagrees with its contents is a response the runner cannot reason about,
+so neither reading is used. Every job's `run_id` must equal the accepted run's
+id: the job list is *requested* by run id, but nothing about a response
+guarantees that is what came back, and a job from another run is evidence about
+that run.
 
 ### Database operations
 
@@ -201,6 +216,13 @@ means changing that file in a reviewed commit.
 | the repository phase in total | 60 000 ms |
 | total runner execution | 240 000 ms |
 | child-termination grace | 2 000 ms |
+| cancellation settle | 10 000 ms |
+
+The total deadline covers the **complete lifecycle**: preconditions, every phase,
+building and rendering the document, the atomic output, cleanup, and the return.
+Nothing the runner does sits outside it. A total that covered only the first
+phase would be a number in a report rather than a bound on the program, and the
+phases it excluded would be unbounded.
 
 `lock_timeout` is deliberately well under `statement_timeout`: a statement blocked
 behind an exclusive lock is refused by PostgreSQL's own lock timeout rather than
@@ -212,6 +234,33 @@ Deadlines are backed by timers that **keep the event loop alive**.
 `AbortSignal.timeout` is not used: its timer is unref'd, so a run whose only
 pending work was the deadline itself could let Node exit before the deadline
 fired, and the operation would appear to vanish rather than to time out.
+
+### A deadline cancels; it does not abandon
+
+A bare `Promise.race` is deliberately not used. `race` only decides which promise
+to *report*; the loser keeps running, keeps its socket open, and can still write
+its output minutes later. A deadline that abandons work rather than stopping it
+is not a deadline, it is a reporting delay.
+
+So the sequence on every stop is: observe the abort, invoke the operation's
+cancellation (destroy the database socket, signal and reap the child process),
+then **wait for the operation itself to settle**. If it does not settle within
+the cancellation-settle window the thrown error carries
+`confirmedStopped === false` and the CLI prints `(stop NOT confirmed)`, rather
+than reporting a clean timeout that did not happen.
+
+For the database that means the socket is destroyed and its `close` event
+awaited, so the server-side session is **confirmed** closed — not assumed — before
+the call returns or any later phase begins. A teardown that cannot confirm
+closure fails the read. Each phase boundary is a checkpoint, so a stop is
+observed *before* the next phase starts rather than after it has already run.
+
+### Atomic output
+
+Both files are written to a uniquely named temporary beside the target and then
+renamed, so a reader sees either no file or a complete one. A run that is stopped
+removes its temporaries and writes nothing at all: no evidence, no summary, no
+partial file.
 
 ---
 
@@ -235,6 +284,23 @@ second, laxer parser is how a boundary quietly stops being a boundary.
   are **counted, never read**, and the count is all that reaches evidence. Every
   field the gate consumes is named, typed and bounded, and the evidence schemas
   are closed with no discard at all.
+
+The aggregate rows are parsed under their own strict rule. `pg` returns every
+`count(*)` and `max(...)` here as a **string**, so exactly two forms are
+legitimate: a JavaScript number that is already a safe nonnegative integer, or a
+canonical lossless decimal string that survives a round trip. `Number()` is
+deliberately not the parser — it maps `null`, `false`, `""` and `"   "` to `0`
+and `"1e3"` to `1000`, so a column that came back NULL, or a boolean, or a blank,
+or an exponent form, would all read as a measurement comfortably within bounds,
+and a bound compared against a coerced zero is not checked at all.
+
+Each row's column inventory is **closed and exact**: a missing, renamed or
+undeclared column is refused rather than tolerated, because a divergence between
+the SQL and the evaluation is how a bound stops being checked while the report
+still says 23 checks passed. Duplicate column names collapse into one property in
+`pg`'s row object with the last silently winning, so they are caught in the
+result's field list instead. Every check, every failing-check list and the final
+verdict are recomputed from the validated integers.
 
 Migration state is **independently recomputed**: the complete artifact migration
 inventory, canonical ordering and uniqueness, applied-row and distinct counts,
@@ -320,13 +386,51 @@ each operation builds its own complete argv in source, and the private helper
 refuses any subcommand outside the fixed allowlist `rev-parse`, `cat-file`,
 `status`, `ls-tree`.
 
-Every invocation is read-only and passes `--no-optional-locks`. Hooks, templates,
-credential helpers, pagers and editors are disabled with inline `-c` overrides,
-which configure that one invocation and write nothing. The child environment is
-built from scratch, so `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_CONFIG`,
-`GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_SSH_COMMAND` and everything else
-inherited from an operator's shell cannot redirect the read. Output is capped and
-an oversized response is refused rather than buffered.
+Every invocation is read-only and passes `--no-optional-locks`. The child
+environment is built from scratch, so `GIT_DIR`, `GIT_WORK_TREE`,
+`GIT_INDEX_FILE`, `GIT_CONFIG`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`,
+`GIT_SSH_COMMAND` and everything else inherited from an operator's shell cannot
+redirect the read. Output is capped and an oversized response is refused rather
+than buffered.
+
+### Execution-capable Git configuration
+
+`.git/config` is **not part of the tracked tree**, so nothing in a repository's
+reviewed diff constrains it. A clone, a shared checkout, or anything able to
+write one line into it can make an ordinary `git status` execute an arbitrary
+command through **`core.fsmonitor`** — git runs that command to refresh the index
+during worktree reads.
+
+Every invocation therefore carries inline `-c` overrides, which configure that
+one process and write nothing anywhere:
+
+| Setting | Why it is an execution vector |
+|---|---|
+| `core.fsmonitor=false` | a command run during `status` to refresh the index |
+| `core.hooksPath=/dev/null` | hook scripts |
+| `core.pager=cat`, `core.editor=false` | spawned for output and prompts |
+| `credential.helper=` | a command run to supply credentials |
+| `core.sshCommand=`, `core.gitProxy=`, `core.askPass=` | transport and prompting commands |
+| `init.templateDir=` | template hooks |
+| `diff.external=` | a command run in place of git's own diff |
+| `uploadpack.packObjectsHook=` | a command run to serve objects |
+| `core.attributesFile=/dev/null` | a global attributes file can bind a path to a filter driver |
+
+Filter drivers need more than a fixed list: `git status` can run a driver's
+`clean` command to decide whether a worktree file differs from the index, an
+in-tree `.gitattributes` is enough to bind one, and the driver's **name** is
+chosen by whoever wrote the config. So a read-only `git config --list` (which
+evaluates no command and runs no hook, and is itself run with the fixed overrides)
+discovers every `filter.<name>.clean|smudge|process` and
+`diff.<name>.textconv|command`, and each is neutralized by name for that
+invocation. The scan is cached per checkout.
+
+The offline suite proves this by **execution**, not by reading the source: it
+builds a disposable repository whose `core.fsmonitor` and `filter.<n>.clean`
+write marker files, confirms a plain `git status` does fire them, and then
+confirms the runner's own reads do not — while still reporting the dirty file as
+modified, the clean tree as clean, and enumerating the artifact's migrations
+unchanged.
 
 ---
 
@@ -342,13 +446,16 @@ offline quality gates`, the PostgreSQL suite in the `PostgreSQL 16/18
 integration` matrix. No job was added, so the five-job CI contract the runner
 itself verifies is unchanged.
 
-The offline suite covers macOS/Linux-independent operation, helper-generation
-absence, exact `A` binding, dirty-tree handling, GitHub success and every failure
-state, invalid UTF-8 and duplicate JSON keys, migration applied/unapplied/
-inconsistent states, the exact 23-check audit, output bounds, the fixed
-deadlines, interruption during GitHub work, credential redaction, and the final
-evidence schemas. The GitHub boundary is exercised by replacing the global
-`fetch`, so the suite cannot become "usually green because GitHub was up".
+The offline suite is **293 checks** across thirteen groups: macOS/Linux-independent
+operation, execution-capable Git configuration, the deadline and output lifecycle,
+helper-generation absence, exact `A` binding, dirty-tree handling, the strict data
+contract, GitHub success and every failure state, migration
+applied/unapplied/inconsistent states, the exact 23-check audit and its strict
+parsing, the fixed deadlines, credential redaction, and the final evidence
+schemas. The GitHub boundary is exercised by replacing the global `fetch`, so the
+suite cannot become "usually green because GitHub was up", and the Git-configuration
+group is an executed probe against a disposable repository rather than a source
+assertion.
 
 The PostgreSQL suite requires an explicit gate and a loopback-only admin URL, so
 it cannot be pointed at production by exporting one variable:
@@ -360,11 +467,21 @@ npm run test:m1-readiness-postgres
 ```
 
 It creates randomly named databases, touches only those databases, and drops
-every one of them on exit. Its scenarios are migration 007 absent, migration 007
-present, an unexpected migration, a within-bound audit, an exceeded-bound audit,
-lock contention, connection failure, and an interrupted read. After **every**
-runner call it asserts that `_migrations` is unchanged and that no runner backend
-remains in `pg_stat_activity`.
+every one of them on exit. It is **58 checks per server version**, over nine
+scenarios: migration 007 absent, migration 007 present, an unexpected migration,
+a within-bound audit, an exceeded-bound audit, lock contention, connection
+failure, an interrupted read, and a **real lock wait that outlives the phase
+deadline**. After **every** runner call it asserts that `_migrations` is unchanged
+and that no runner backend remains in `pg_stat_activity`.
+
+The lock-wait deadline scenario covers the path neither of the fast paths
+reaches: a statement genuinely blocked on an `ACCESS EXCLUSIVE` lock when the
+phase deadline — not the server's `lock_timeout`, and not an operator interrupt —
+expires. It proves the work is cancelled, that it confirmed it had stopped, that
+the blocked statement never returned rows, and that no session survives. The
+deadline is passed as an argument there because a 45-second wait cannot be part
+of a test suite; both production call sites pass the fixed constants from
+`deadlines.mjs`, and the offline suite asserts that from source.
 
 ---
 

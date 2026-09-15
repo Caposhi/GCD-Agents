@@ -123,9 +123,13 @@ const main = async () => {
       process.exitCode = EXIT.PRECONDITION_FAILED;
     } else {
       // Nothing from the error's own message is repeated: it may have come from
-      // a driver or a remote response.
+      // a driver or a remote response. `confirmedStopped === false` means the
+      // cancelled work did not report that it finished, which an operator needs
+      // to know because it is the one case the runner cannot vouch for.
+      const category = categorizeError(error);
+      const unconfirmed = error?.confirmedStopped === false ? " (stop NOT confirmed)" : "";
       process.stderr.write(
-        `M1 readiness runner did not complete. error_category=${categorizeError(error)}\n`,
+        `M1 readiness runner did not complete. error_category=${category}${unconfirmed}\n`,
       );
       process.exitCode = EXIT.NOT_ESTABLISHED;
     }

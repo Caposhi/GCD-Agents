@@ -19,6 +19,7 @@
 
 import { setTimeout as delay } from "node:timers/promises";
 import { CategorizedError, LOCAL_ERROR_CATEGORIES } from "../lib/errorCategories.mjs";
+import { CANCELLATION_SETTLE_MS } from "./deadlines.mjs";
 
 /** The signals an operator uses to stop an evidence run. */
 export const HANDLED_SIGNALS = Object.freeze(["SIGINT", "SIGTERM", "SIGHUP"]);
@@ -95,35 +96,6 @@ export class Runtime {
 }
 
 /**
- * Reject when `signal` aborts, distinguishing a deadline from an interrupt.
- *
- * @param {AbortSignal} signal
- * @param {string} label the operation name, chosen in source
- * @param {number} ms the deadline, for the message
- * @param {Runtime} runtime
- */
-const rejectOnAbort = (signal, label, ms, runtime) =>
-  new Promise((_resolve, reject) => {
-    const fire = () => {
-      if (runtime.interrupted) {
-        reject(new CategorizedError(LOCAL_ERROR_CATEGORIES.INTERRUPTED, `${label} interrupted`));
-      } else {
-        reject(
-          new CategorizedError(
-            LOCAL_ERROR_CATEGORIES.DEADLINE_EXCEEDED,
-            `${label} exceeded its fixed ${ms}ms deadline`,
-          ),
-        );
-      }
-    };
-    if (signal.aborted) {
-      fire();
-      return;
-    }
-    signal.addEventListener("abort", fire, { once: true });
-  });
-
-/**
  * A deadline as an abort signal, backed by a timer that KEEPS THE EVENT LOOP
  * ALIVE.
  *
@@ -142,33 +114,109 @@ export const deadlineSignal = (ms) => {
 };
 
 /**
- * Run `fn` under a fixed deadline and the runtime's interrupt signal.
+ * Run `fn` under a fixed deadline and the runtime's interrupt signal, and —
+ * when the deadline or an interrupt wins — CANCEL the underlying work and AWAIT
+ * its confirmed stop before returning.
+ *
+ * A bare `Promise.race` is deliberately not used. `race` only decides which
+ * promise to report; the loser keeps running, keeps its socket open, and can
+ * still write its output minutes later. A deadline that abandons work rather
+ * than stopping it is not a deadline, it is a reporting delay.
+ *
+ * So the sequence on a stop is always: observe the abort, invoke
+ * `options.onCancel` (destroy the socket, signal and reap the child), then wait
+ * for the operation itself to settle. If it does not settle within
+ * {@link CANCELLATION_SETTLE_MS} the thrown error says so via
+ * `confirmedStopped === false`, rather than the caller being told a clean
+ * timeout that did not happen.
  *
  * The deadline is passed in by the caller from `deadlines.mjs`; this function
  * has no default and reads no environment, so there is no path by which a
  * deployment could acquire a longer one.
- *
- * `fn` receives the combined signal so a cancellable operation (an HTTP fetch)
- * really is cancelled. For an operation that cannot observe a signal, the race
- * bounds the WAIT, and the caller's `finally` is what destroys the resource —
- * which is why every such caller in this runner tears down in a `finally` and
- * awaits it.
  *
  * @template T
  * @param {Runtime} runtime
  * @param {string} label
  * @param {number} ms
  * @param {(signal: AbortSignal) => Promise<T>} fn
+ * @param {{ onCancel?: () => Promise<void> | void, settleMs?: number }} [options]
  * @returns {Promise<T>}
  */
-export const withDeadline = async (runtime, label, ms, fn) => {
-  if (!Number.isSafeInteger(ms) || ms <= 0) throw new Error(`${label}: deadline must be a positive integer`);
+export const withDeadline = async (runtime, label, ms, fn, options = {}) => {
+  if (!Number.isSafeInteger(ms) || ms <= 0) {
+    throw new Error(`${label}: deadline must be a positive integer`);
+  }
   const deadline = deadlineSignal(ms);
   const signal = AbortSignal.any([runtime.signal, deadline.signal]);
+  const STOPPED = Symbol("stopped");
+
+  let settled = false;
+  // Never rejects: the outcome is carried as a value so the operation can be
+  // awaited after a stop without producing an unhandled rejection.
+  const operation = (async () => fn(signal))().then(
+    (value) => {
+      settled = true;
+      return { ok: true, value };
+    },
+    (error) => {
+      settled = true;
+      return { ok: false, error };
+    },
+  );
+
+  /** @type {(() => void) | null} */
+  let removeAbortListener = null;
+  const stopped = new Promise((resolve) => {
+    if (signal.aborted) {
+      resolve(STOPPED);
+      return;
+    }
+    const onAbort = () => resolve(STOPPED);
+    signal.addEventListener("abort", onAbort, { once: true });
+    // Removed on every exit path, so a completed call leaves no listener behind.
+    removeAbortListener = () => signal.removeEventListener("abort", onAbort);
+  });
+
   try {
-    return await Promise.race([fn(signal), rejectOnAbort(signal, label, ms, runtime)]);
+    const first = await Promise.race([operation, stopped]);
+    if (first !== STOPPED) {
+      if (first.ok) return first.value;
+      throw first.error;
+    }
+
+    // Cancellation is best effort; the confirmation below is not.
+    try {
+      await options.onCancel?.();
+    } catch {
+      /* the wait for confirmed settlement is what actually reports the outcome */
+    }
+    await settleWithin(operation, options.settleMs ?? CANCELLATION_SETTLE_MS);
+
+    const error = new CategorizedError(
+      runtime.interrupted ? LOCAL_ERROR_CATEGORIES.INTERRUPTED : LOCAL_ERROR_CATEGORIES.DEADLINE_EXCEEDED,
+      settled
+        ? `${label} was stopped and confirmed finished`
+        : `${label} was stopped but did not confirm it finished`,
+    );
+    error.confirmedStopped = settled;
+    throw error;
   } finally {
     deadline.cancel();
+    removeAbortListener?.();
+  }
+};
+
+/**
+ * Throw if the runner has already been told to stop.
+ *
+ * Called at every phase boundary so an interrupt or an expired deadline is
+ * observed BEFORE the next phase starts, rather than after it has run.
+ *
+ * @param {Runtime} runtime @param {string} label
+ */
+export const checkpoint = (runtime, label) => {
+  if (runtime.interrupted) {
+    throw new CategorizedError(LOCAL_ERROR_CATEGORIES.INTERRUPTED, `${label} not started`);
   }
 };
 

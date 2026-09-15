@@ -55,8 +55,26 @@ export const GIT_COMMAND_MS = 15_000;
 /** Total for the repository-precondition phase. */
 export const REPOSITORY_PHASE_TOTAL_MS = 60_000;
 
-/** The whole runner, from entry to evidence written. */
+/**
+ * The whole runner: preconditions, every phase, rendering, the atomic output,
+ * cleanup and the final return. Nothing the runner does sits outside it.
+ *
+ * It is larger than the sum of the phases it contains
+ * (60 + 60 + 45 + 60 = 225 s) so it is a true backstop rather than the
+ * effective limit, with room for rendering and output.
+ */
 export const RUNNER_TOTAL_MS = 240_000;
+
+/**
+ * How long a cancelled operation is given to confirm it has stopped, after its
+ * cancellation has been triggered.
+ *
+ * This is not a second deadline on the work: the work has already been told to
+ * stop and its socket or process destroyed. It bounds how long the runner waits
+ * for the confirmation, so a stuck confirmation becomes a reported failure
+ * rather than a hang.
+ */
+export const CANCELLATION_SETTLE_MS = 10_000;
 
 /**
  * How long a child process is given to exit after its deadline or an operator
@@ -79,4 +97,5 @@ export const DEADLINES_MS = Object.freeze({
   repository_phase_total: REPOSITORY_PHASE_TOTAL_MS,
   runner_total: RUNNER_TOTAL_MS,
   child_termination_grace: CHILD_TERMINATION_GRACE_MS,
+  cancellation_settle: CANCELLATION_SETTLE_MS,
 });

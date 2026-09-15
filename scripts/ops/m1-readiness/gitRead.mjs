@@ -52,20 +52,68 @@ import { CHILD_TERMINATION_GRACE_MS, GIT_COMMAND_MS } from "./deadlines.mjs";
 import { deadlineSignal, settleWithin } from "./runtime.mjs";
 
 /** The complete set of git subcommands this module may ever run. */
-export const ALLOWED_SUBCOMMANDS = Object.freeze(["rev-parse", "cat-file", "status", "ls-tree"]);
+export const ALLOWED_SUBCOMMANDS = Object.freeze([
+  "rev-parse",
+  "cat-file",
+  "status",
+  "ls-tree",
+  "config",
+]);
 
 /**
  * Inline configuration applied to every invocation. `-c` affects only the
- * process it is passed to; nothing is written to any config file.
+ * process it is passed to and takes precedence over every config file, so this
+ * neutralizes repository-local settings without writing anything anywhere: the
+ * runner never modifies git configuration.
+ *
+ * Each entry below is an EXECUTION VECTOR that a repository-local `.git/config`
+ * could otherwise use to run code during an ordinary read:
+ *
+ *   core.fsmonitor          a command git runs to refresh the index during
+ *                           `status` and other worktree reads. A cloned or
+ *                           attacker-writable `.git/config` gets code execution
+ *                           from `git status` alone. Disabled explicitly.
+ *   core.hooksPath          hook scripts.
+ *   core.pager / core.editor spawned for output and prompts.
+ *   credential.helper       a command run to supply credentials.
+ *   core.sshCommand / core.gitProxy / core.askPass
+ *                           commands run for transport and prompting.
+ *   init.templateDir        template hooks copied into a new repository.
+ *   diff.external           a command run in place of git's own diff.
+ *   uploadpack.packObjectsHook
+ *                           a command run to serve objects.
+ *   core.attributesFile     not itself a command, but a global attributes file
+ *                           can bind a path to a filter driver, so it is
+ *                           silenced too. In-tree `.gitattributes` cannot be
+ *                           silenced this way, which is why the filter drivers
+ *                           themselves are neutralized dynamically below.
  */
 const SAFE_CONFIG = Object.freeze([
+  "-c", "core.fsmonitor=false",
   "-c", "core.hooksPath=/dev/null",
   "-c", "core.pager=cat",
   "-c", "core.editor=false",
   "-c", "credential.helper=",
+  "-c", "core.sshCommand=",
+  "-c", "core.gitProxy=",
+  "-c", "core.askPass=",
   "-c", "init.templateDir=",
+  "-c", "diff.external=",
+  "-c", "uploadpack.packObjectsHook=",
+  "-c", "core.attributesFile=/dev/null",
   "-c", "advice.detachedHead=false",
 ]);
+
+/**
+ * Config keys whose VALUE is a command, and whose NAME contains a
+ * user-chosen driver name that cannot be known in advance.
+ *
+ * `git status` can run a filter driver's `clean` command to decide whether a
+ * worktree file differs from the index, and an in-tree `.gitattributes` is
+ * enough to bind one — so a fixed `-c` list cannot cover them. They are
+ * discovered by a read-only config listing and neutralized per invocation.
+ */
+const DYNAMIC_COMMAND_KEY = /^(filter\.[^=]+\.(clean|smudge|process)|diff\.[^=]+\.(textconv|command))$/;
 
 /** Output ceiling for any single invocation. */
 export const MAX_GIT_OUTPUT_BYTES = 262_144;
@@ -141,7 +189,14 @@ export const terminateChild = async (child, closed) => {
  * @param {number} [input.maxBytes]
  * @returns {Promise<string>} stdout, decoded as UTF-8 with substitution refused
  */
-const runGit = async ({ operation, args, cwd, runtime, maxBytes = MAX_GIT_OUTPUT_BYTES }) => {
+const runGit = async ({
+  operation,
+  args,
+  cwd,
+  runtime,
+  maxBytes = MAX_GIT_OUTPUT_BYTES,
+  neutralizers = [],
+}) => {
   const subcommand = args.find((a) => !a.startsWith("-"));
   if (!subcommand || !ALLOWED_SUBCOMMANDS.includes(subcommand)) {
     throw new GitReadError("subcommand is not on the fixed allowlist", operation);
@@ -150,7 +205,7 @@ const runGit = async ({ operation, args, cwd, runtime, maxBytes = MAX_GIT_OUTPUT
     throw new CategorizedError(LOCAL_ERROR_CATEGORIES.INTERRUPTED, `${operation} not started`);
   }
 
-  const child = spawn("git", ["--no-optional-locks", ...SAFE_CONFIG, ...args], {
+  const child = spawn("git", ["--no-optional-locks", ...SAFE_CONFIG, ...neutralizers, ...args], {
     cwd,
     env: childEnvironment(),
     stdio: ["ignore", "pipe", "pipe"],
@@ -225,6 +280,55 @@ const runGit = async ({ operation, args, cwd, runtime, maxBytes = MAX_GIT_OUTPUT
   }
 };
 
+/**
+ * Discover every execution-capable config key whose driver name cannot be known
+ * in advance, and return `-c key=` overrides that neutralize each one.
+ *
+ * `git config --list` evaluates no command and runs no hook — it only reads and
+ * prints configuration — and it is itself invoked with the fixed safe overrides,
+ * so the scan cannot be the thing that executes repository-local code.
+ *
+ * The result is cached per checkout for the life of the process: the runner
+ * reads one tree, and re-scanning before every invocation would multiply the
+ * process count without changing the answer.
+ *
+ * @type {Map<string, readonly string[]>}
+ */
+const neutralizerCache = new Map();
+
+/**
+ * @param {string} cwd @param {import("./runtime.mjs").Runtime} runtime
+ * @returns {Promise<readonly string[]>}
+ */
+export const discoverConfigNeutralizers = async (cwd, runtime) => {
+  const cached = neutralizerCache.get(cwd);
+  if (cached) return cached;
+  const out = await runGit({
+    operation: "config --list",
+    args: ["config", "--list", "-z"],
+    cwd,
+    runtime,
+    maxBytes: 1_048_576,
+  });
+  /** @type {string[]} */
+  const overrides = [];
+  const seen = new Set();
+  for (const record of out.split("\0")) {
+    if (record.length === 0) continue;
+    // `-z` emits `key\nvalue`; a valueless key has no newline at all.
+    const key = record.split("\n", 1)[0];
+    if (!DYNAMIC_COMMAND_KEY.test(key) || seen.has(key)) continue;
+    seen.add(key);
+    overrides.push("-c", `${key}=`);
+  }
+  const frozen = Object.freeze(overrides);
+  neutralizerCache.set(cwd, frozen);
+  return frozen;
+};
+
+/** Testing seam: forget the cached scan for a checkout. */
+export const forgetConfigNeutralizers = (cwd) => neutralizerCache.delete(cwd);
+
 const FULL_SHA = /^[0-9a-f]{40}$/;
 
 /** @param {string} sha @param {string} operation */
@@ -246,6 +350,7 @@ export const readHeadSha = async (cwd, runtime) => {
     cwd,
     runtime,
     maxBytes: 4_096,
+    neutralizers: await discoverConfigNeutralizers(cwd, runtime),
   });
   const sha = out.trim();
   assertFullSha(sha, "rev-parse HEAD");
@@ -266,6 +371,7 @@ export const readObjectFormat = async (cwd, runtime) => {
     cwd,
     runtime,
     maxBytes: 1_024,
+    neutralizers: await discoverConfigNeutralizers(cwd, runtime),
   });
   return out.trim();
 };
@@ -286,6 +392,7 @@ export const readObjectType = async (cwd, sha, runtime) => {
     cwd,
     runtime,
     maxBytes: 1_024,
+    neutralizers: await discoverConfigNeutralizers(cwd, runtime),
   });
   return out.trim();
 };
@@ -307,6 +414,7 @@ export const readTrackedStatus = async (cwd, runtime) => {
     args: ["status", "--porcelain=v1", "-z", "--untracked-files=no", "--no-renames"],
     cwd,
     runtime,
+    neutralizers: await discoverConfigNeutralizers(cwd, runtime),
   });
   /** @type {Array<{ status: string, path: string }>} */
   const entries = [];
@@ -334,6 +442,7 @@ export const readMigrationEntryNames = async (cwd, sha, runtime) => {
     args: ["ls-tree", "-z", "--name-only", sha, "state/migrations/"],
     cwd,
     runtime,
+    neutralizers: await discoverConfigNeutralizers(cwd, runtime),
   });
   return out
     .split("\0")
@@ -355,6 +464,7 @@ export const readPackageBlobs = async (cwd, sha, runtime) => {
     cwd,
     runtime,
     maxBytes: 8_192,
+    neutralizers: await discoverConfigNeutralizers(cwd, runtime),
   });
   /** @type {Map<string, { mode: string, type: string, oid: string }>} */
   const found = new Map();

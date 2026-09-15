@@ -21,14 +21,20 @@
  *   evidence   final evidence schemas and output bounds
  */
 
-import { readFileSync, readdirSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, chmodSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ALL_ERROR_CATEGORIES, categorizeError } from "../lib/errorCategories.mjs";
 import {
+  EVIDENCE_AGGREGATES_SQL,
+  EVIDENCE_ROW_FIELDS,
   EXPECTED_CHECK_COUNT,
   EXPECTED_CHECK_NAMES,
+  assertDistinctColumns,
   evaluateAggregateAudit,
+  parseAggregateInteger,
   readEvidenceLimits,
 } from "../lib/aggregateAudit.mjs";
 import {
@@ -61,8 +67,20 @@ import {
   ciNotEstablished,
   verifyExactHeadCi,
 } from "./github.mjs";
-import { PreconditionError, evaluateTrackedSource, gitBlobSha1 } from "./repository.mjs";
-import { Runtime, withDeadline } from "./runtime.mjs";
+import {
+  discoverConfigNeutralizers,
+  forgetConfigNeutralizers,
+  readMigrationEntryNames,
+  readTrackedStatus,
+} from "./gitRead.mjs";
+import {
+  PreconditionError,
+  establishArtifact,
+  evaluateTrackedSource,
+  gitBlobSha1,
+} from "./repository.mjs";
+import { collectEvidence } from "./runner.mjs";
+import { Runtime, checkpoint, withDeadline } from "./runtime.mjs";
 import {
   StrictDataError,
   arr,
@@ -82,6 +100,8 @@ const REPO_ROOT = resolve(HERE, "..", "..", "..");
 
 const GROUPS = [
   "platform",
+  "gitconfig",
+  "lifecycle",
   "source",
   "artifact",
   "worktree",
@@ -193,6 +213,271 @@ const code = new Map([...sources].map(([file, text]) => [file, stripComments(tex
 }
 
 // ---------------------------------------------------------------------------
+// gitconfig: repository-local, execution-capable Git configuration
+// ---------------------------------------------------------------------------
+//
+// `.git/config` is NOT part of the tracked tree, so nothing in the reviewed diff
+// of a repository constrains it. A clone, a shared checkout, or anything able to
+// write one line into it can make an ordinary `git status` execute an arbitrary
+// command through `core.fsmonitor`. These are executed probes, not source
+// assertions: the hook writes a marker file, and the test reads for it.
+
+{
+  const workspace = mkdtempSync(join(tmpdir(), "m1-gitconfig-"));
+  const git = (...args) =>
+    execFileSync("git", args, { cwd: workspace, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+  const marker = (name) => join(workspace, name);
+
+  git("init", "--quiet", ".");
+  git("config", "user.email", "selftest@example.com");
+  git("config", "user.name", "selftest");
+  git("config", "commit.gpgsign", "false");
+
+  writeFileSync(join(workspace, "tracked.txt"), "original\n");
+  writeFileSync(
+    join(workspace, "fsmonitor-hook.sh"),
+    `#!/bin/sh\nprintf 'x' >> "${marker("fsmonitor-ran")}"\nprintf '/\\0'\n`,
+  );
+  writeFileSync(
+    join(workspace, "clean-filter.sh"),
+    `#!/bin/sh\nprintf 'x' >> "${marker("filter-ran")}"\ncat\n`,
+  );
+  chmodSync(join(workspace, "fsmonitor-hook.sh"), 0o755);
+  chmodSync(join(workspace, "clean-filter.sh"), 0o755);
+  writeFileSync(join(workspace, ".gitattributes"), "tracked.txt filter=evil\n");
+  git("add", "tracked.txt", ".gitattributes");
+  git("commit", "--quiet", "-m", "seed");
+
+  // The execution vectors, set repository-locally exactly as a hostile or merely
+  // unlucky checkout would carry them.
+  git("config", "core.fsmonitor", join(workspace, "fsmonitor-hook.sh"));
+  git("config", "filter.evil.clean", join(workspace, "clean-filter.sh"));
+  git("config", "filter.evil.smudge", "cat");
+
+  const runtime = new Runtime();
+  forgetConfigNeutralizers(workspace);
+
+  // Baseline: plain git really does execute it, so the probe is meaningful.
+  rmSync(marker("fsmonitor-ran"), { force: true });
+  execFileSync("git", ["status", "--porcelain=v1"], { cwd: workspace, stdio: "ignore" });
+  check(
+    "gitconfig",
+    "baseline: a plain `git status` DOES execute repository-local fsmonitor code",
+    existsSync(marker("fsmonitor-ran")),
+  );
+
+  const neutralizers = await discoverConfigNeutralizers(workspace, runtime);
+  check(
+    "gitconfig",
+    "the config scan discovers the filter driver and neutralizes it by name",
+    neutralizers.includes("filter.evil.clean=") && neutralizers.includes("filter.evil.smudge="),
+  );
+
+  // A dirty worktree, so status has real work to report.
+  writeFileSync(join(workspace, "tracked.txt"), "changed\n");
+
+  rmSync(marker("fsmonitor-ran"), { force: true });
+  rmSync(marker("filter-ran"), { force: true });
+  const status = await readTrackedStatus(workspace, runtime);
+
+  check(
+    "gitconfig",
+    "the runner's status read does NOT execute repository-local fsmonitor code",
+    !existsSync(marker("fsmonitor-ran")),
+  );
+  check(
+    "gitconfig",
+    "the runner's status read does NOT execute a repository-local clean filter",
+    !existsSync(marker("filter-ran")),
+  );
+  check(
+    "gitconfig",
+    "clean/dirty status stays accurate through the hardening",
+    status.length === 1 && status[0].path === "tracked.txt" && status[0].status.includes("M"),
+  );
+
+  // And a clean tree still reads as clean. The file is restored by writing its
+  // committed content back directly rather than with `git checkout`: an
+  // unhardened git command in this workspace runs the hostile fsmonitor hook,
+  // and a hook that claims everything is up to date can make checkout a no-op.
+  // That is a property of the fixture, not of the runner.
+  writeFileSync(join(workspace, "tracked.txt"), "original\n");
+  rmSync(marker("fsmonitor-ran"), { force: true });
+  rmSync(marker("filter-ran"), { force: true });
+  const clean = await readTrackedStatus(workspace, runtime);
+  check(
+    "gitconfig",
+    "a clean tree still reads as clean, and still executes nothing",
+    clean.length === 0 && !existsSync(marker("fsmonitor-ran")),
+  );
+
+  // Artifact enumeration is unaffected.
+  execFileSync("git", ["-c", "core.fsmonitor=false", "checkout", "--quiet", "-b", "probe"], {
+    cwd: workspace,
+    stdio: "ignore",
+  });
+  execFileSync("mkdir", ["-p", join(workspace, "state/migrations")]);
+  writeFileSync(join(workspace, "state/migrations/001_init.sql"), "-- x\n");
+  writeFileSync(join(workspace, "state/migrations/README.md"), "not sql\n");
+  git("add", "state/migrations");
+  git("commit", "--quiet", "-m", "migrations");
+  const head = git("rev-parse", "HEAD").trim();
+  rmSync(marker("fsmonitor-ran"), { force: true });
+  const entries = await readMigrationEntryNames(workspace, head, runtime);
+  check(
+    "gitconfig",
+    "artifact enumeration is preserved and executes nothing",
+    entries.join("|") === "001_init.sql|README.md" && !existsSync(marker("fsmonitor-ran")),
+  );
+
+  const gitRead = sources.get("scripts/ops/m1-readiness/gitRead.mjs") ?? "";
+  check(
+    "gitconfig",
+    "core.fsmonitor is disabled explicitly on every invocation",
+    gitRead.includes('"-c", "core.fsmonitor=false"'),
+  );
+  for (const key of [
+    "core.hooksPath",
+    "core.pager",
+    "core.editor",
+    "credential.helper",
+    "core.sshCommand",
+    "core.gitProxy",
+    "core.askPass",
+    "init.templateDir",
+    "diff.external",
+    "uploadpack.packObjectsHook",
+    "core.attributesFile",
+  ]) {
+    check("gitconfig", `${key} is neutralized on every invocation`, gitRead.includes(`"${key}=`) || gitRead.includes(`"-c", "${key}=`));
+  }
+  check(
+    "gitconfig",
+    "the child environment is built from scratch, so no GIT_* variable is inherited",
+    gitRead.includes("const childEnvironment = ()") && !gitRead.includes("...process.env"),
+  );
+
+  rmSync(workspace, { recursive: true, force: true });
+}
+
+// ---------------------------------------------------------------------------
+// lifecycle: one truthful total deadline, cancellation that awaits, atomic output
+// ---------------------------------------------------------------------------
+
+{
+  const runner = sources.get("scripts/ops/m1-readiness/runner.mjs") ?? "";
+  const runtimeSource = sources.get("scripts/ops/m1-readiness/runtime.mjs") ?? "";
+
+  // The total deadline must OPEN before the first phase and CLOSE after the
+  // return value is built — everything in between is inside it.
+  const total = runner.indexOf("RUNNER_TOTAL_MS");
+  check(
+    "lifecycle",
+    "the total deadline opens before the first phase",
+    total > 0 && total < runner.indexOf("establishArtifact({ repoRoot, runtime })"),
+  );
+  for (const inside of [
+    "verifyExactHeadCi(",
+    "readMigrationState(",
+    "runAggregateAudit(",
+    "buildEvidence(",
+    "renderEvidenceDocument(",
+    "renderSummary(",
+    "writeAtomic(",
+    "runtime.shutdown()",
+  ]) {
+    check(
+      "lifecycle",
+      `${inside.replace("(", "")} runs inside the total deadline`,
+      runner.indexOf(inside) > total && runner.indexOf(inside) < runner.indexOf("{ onCancel },"),
+    );
+  }
+  check(
+    "lifecycle",
+    "the total deadline can cancel the work it bounds",
+    runner.includes("{ onCancel },") && runner.includes("const onCancel = async ()"),
+  );
+
+  // A losing operation is cancelled and AWAITED, never abandoned.
+  let cancelled = false;
+  let finished = false;
+  const rt = new Runtime();
+  const err = await rejected(() =>
+    withDeadline(
+      rt,
+      "probe",
+      30,
+      () => new Promise((resolve) => setTimeout(() => { finished = true; resolve(1); }, 150)),
+      { onCancel: () => { cancelled = true; } },
+    ),
+  );
+  check("lifecycle", "a stopped operation has its onCancel invoked", cancelled);
+  check("lifecycle", "a stopped operation is awaited, not abandoned", finished === true);
+  check("lifecycle", "a confirmed stop is reported as confirmed", err.confirmedStopped === true);
+  check("lifecycle", "the stop is categorised as a deadline", categorizeError(err) === "deadline_exceeded");
+
+  // No abort listener survives a completed call.
+  const rt2 = new Runtime();
+  const before = rt2.signal.constructor.name;
+  await withDeadline(rt2, "probe", 5_000, async () => 1);
+  check("lifecycle", "a completed call leaves the runtime signal usable and unaborted", before === "AbortSignal" && !rt2.signal.aborted);
+
+  // checkpoint refuses to start a phase after a stop.
+  const rt3 = new Runtime();
+  rt3.interruptedBy = "SIGTERM";
+  check("lifecycle", "a checkpoint refuses to start a phase after a stop", threw(() => checkpoint(rt3, "next phase")) !== null);
+  check("lifecycle", "a checkpoint passes while the run is live", threw(() => checkpoint(new Runtime(), "next phase")) === null);
+
+  // A run that does not complete writes NOTHING — not the evidence, not the
+  // summary, and no temporary.
+  const outDir = mkdtempSync(join(tmpdir(), "m1-lifecycle-"));
+  const rt4 = new Runtime();
+  const savedFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(new TextEncoder().encode("{}"), { status: 404 });
+  const outcome = await rejected(() =>
+    collectEvidence({
+      repoRoot: REPO_ROOT,
+      outDir,
+      runtime: rt4,
+      // Stop the run at the moment the output stage is about to begin.
+      now: () => {
+        rt4.interruptedBy = "SIGTERM";
+        rt4.controller.abort();
+        return "2026-09-15T00:00:00.000Z";
+      },
+    }),
+  );
+  globalThis.fetch = savedFetch;
+  check("lifecycle", "a run stopped before its output stage does not complete", outcome !== null);
+  check(
+    "lifecycle",
+    "a stopped run leaves no evidence, no summary and no temporary behind",
+    readdirSync(outDir).length === 0,
+  );
+  rmSync(outDir, { recursive: true, force: true });
+
+  check(
+    "lifecycle",
+    "withDeadline never returns a value from a bare race",
+    runtimeSource.includes("await settleWithin(operation") && runtimeSource.includes("options.onCancel?.()"),
+  );
+  check(
+    "lifecycle",
+    "the database session is destroyed and its closure confirmed",
+    (sources.get("scripts/ops/m1-readiness/database.mjs") ?? "").includes('once(stream, "close")') &&
+      (sources.get("scripts/ops/m1-readiness/database.mjs") ?? "").includes(
+        "the database session could not be confirmed closed",
+      ),
+  );
+  check(
+    "lifecycle",
+    "both database phases pass the fixed deadlines from deadlines.mjs",
+    (sources.get("scripts/ops/m1-readiness/database.mjs") ?? "").includes("totalMs: MIGRATION_STATE_TOTAL_MS") &&
+      (sources.get("scripts/ops/m1-readiness/database.mjs") ?? "").includes("totalMs: AGGREGATE_AUDIT_TOTAL_MS"),
+  );
+}
+
+// ---------------------------------------------------------------------------
 // source: helper-generation absence and the environment surface
 // ---------------------------------------------------------------------------
 
@@ -231,10 +516,17 @@ const code = new Map([...sources].map(([file, text]) => [file, stripComments(tex
   const runner = sources.get("scripts/ops/m1-readiness/runner.mjs") ?? "";
   check(
     "source",
-    "runner.mjs writes exactly the two fixed output files",
-    (runner.match(/await writeFile\(/g) ?? []).length === 2 &&
+    "runner.mjs writes exactly the two fixed output files, atomically",
+    (runner.match(/await writeAtomic\(/g) ?? []).length === 2 &&
       runner.includes("EVIDENCE_FILENAME") &&
       runner.includes("SUMMARY_FILENAME"),
+  );
+  check(
+    "source",
+    "the only write is an exclusive temporary followed by a rename",
+    (runner.match(/await writeFile\(/g) ?? []).length === 1 &&
+      runner.includes('flag: "wx"') &&
+      runner.includes("await rename(tmp, target)"),
   );
 
   // The complete environment surface, as exact expressions.
@@ -452,6 +744,7 @@ const makeRun = (over = {}) => ({
   run_number: 7,
   html_url: `https://github.com/${OWNER}/${REPO}/actions/runs/1234`,
   head_branch: "main",
+  repository: { full_name: `${OWNER}/${REPO}`, id: 1_281_884_467 },
   ...over,
 });
 
@@ -529,6 +822,62 @@ const ciWith = async ({ runs, jobs, runsTotal, jobsTotal, runtime = new Runtime(
     const { result } = await ciWith({ jobs: makeJobs(), ...input });
     check("github", `${label} is NOT ESTABLISHED`, result.status === "NOT ESTABLISHED");
   }
+
+  // --- identity, branch and internal consistency ---------------------------
+  /** @type {Array<[string, object]>} */
+  const identityFailures = [
+    ["a different workflow id", { runs: [makeRun({ workflow_id: WORKFLOW_ID + 1 })] }],
+    ["a different workflow path", { runs: [makeRun({ path: ".github/workflows/deploy-production.yml" })] }],
+    ["a run from a foreign repository", { runs: [makeRun({ repository: { full_name: "attacker/GCD-Agents", id: 99 } })] }],
+    ["a run on a foreign branch", { runs: [makeRun({ head_branch: "attacker/fork" })] }],
+    ["a run on a release branch", { runs: [makeRun({ head_branch: "release/1.0" })] }],
+    ["a run with no branch at all", { runs: [makeRun({ head_branch: null })] }],
+    ["a skipped run", { runs: [makeRun({ conclusion: "skipped" })] }],
+    ["a stale run", { runs: [makeRun({ conclusion: "stale" })] }],
+    ["a startup_failure run", { runs: [makeRun({ conclusion: "startup_failure" })] }],
+    ["a run whose declared total exceeds what it returned", { runs: [makeRun()], runsTotal: 2 }],
+    ["a run list whose declared total is lower than what it returned", { runs: [makeRun()], runsTotal: 0 }],
+    ["a run list declaring more than one page", { runs: [makeRun()], runsTotal: 101 }],
+  ];
+  for (const [label, input] of identityFailures) {
+    const { result } = await ciWith({ jobs: makeJobs(), ...input });
+    check("github", `${label} is NOT ESTABLISHED`, result.status === "NOT ESTABLISHED");
+  }
+  // The repository id is not itself a gate (GitHub can renumber nothing), but the
+  // name is, and a matching name with a different id must still pass so the gate
+  // stays about identity rather than incidental metadata.
+  {
+    const { result } = await ciWith({
+      runs: [makeRun({ repository: { full_name: `${OWNER}/${REPO}`, id: 99 } })],
+      jobs: makeJobs(),
+    });
+    check("github", "a matching repository name is what the gate turns on", result.status === "ESTABLISHED");
+  }
+
+  /** @type {Array<[string, object]>} */
+  const jobConsistency = [
+    ["jobs belonging to a different run", { jobs: makeJobs(EXPECTED_JOB_NAMES, { run_id: 9_999 }) }],
+    ["one job belonging to a different run", { jobs: [...makeJobs(EXPECTED_JOB_NAMES.slice(0, 4)), { id: 977, run_id: 9_999, name: EXPECTED_JOB_NAMES[4], status: "completed", conclusion: "success", run_attempt: 1 }] }],
+    ["a job list whose declared total is lower than what it returned", { jobs: makeJobs(), jobsTotal: 0 }],
+    ["a job list whose declared total exceeds what it returned", { jobs: makeJobs(), jobsTotal: 6 }],
+    ["a job list declaring more than one page", { jobs: makeJobs(), jobsTotal: 101 }],
+    ["a skipped job", { jobs: [...makeJobs(EXPECTED_JOB_NAMES.slice(0, 4)), { id: 960, run_id: 1234, name: EXPECTED_JOB_NAMES[4], status: "completed", conclusion: "skipped", run_attempt: 1 }] }],
+    ["a cancelled job", { jobs: [...makeJobs(EXPECTED_JOB_NAMES.slice(0, 4)), { id: 961, run_id: 1234, name: EXPECTED_JOB_NAMES[4], status: "completed", conclusion: "cancelled", run_attempt: 1 }] }],
+    ["a job still in progress", { jobs: [...makeJobs(EXPECTED_JOB_NAMES.slice(0, 4)), { id: 962, run_id: 1234, name: EXPECTED_JOB_NAMES[4], status: "in_progress", conclusion: null, run_attempt: 1 }] }],
+    ["a job with no run_attempt at all", { jobs: makeJobs().map(({ run_attempt, ...rest }) => rest) }],
+  ];
+  for (const [label, input] of jobConsistency) {
+    const { result } = await ciWith({ runs: [makeRun()], ...input });
+    check("github", `${label} is NOT ESTABLISHED`, result.status === "NOT ESTABLISHED");
+  }
+
+  // Ambiguity: two runs that each satisfy every condition.
+  const ambiguous = await ciWith({ runs: [makeRun(), makeRun({ id: 5_678 })], jobs: makeJobs() });
+  check(
+    "github",
+    "two equally acceptable runs are an ambiguity, not a choice",
+    ambiguous.result.status === "NOT ESTABLISHED" && ambiguous.result.reason.includes("duplicates are refused"),
+  );
 
   const retried = await ciWith({ runs: [makeRun({ run_attempt: 3 })], jobs: makeJobs() });
   check(
@@ -746,6 +1095,98 @@ const aggregateRows = (over = {}) => ({
   const negative = threw(() => evaluateAggregateAudit(aggregateRows({ evidence: { max_id_chars: "-1" } })));
   check("audit", "a negative aggregate is refused", negative !== null);
 
+  // --- strict parsing: nothing coercible, nothing undeclared ----------------
+  //
+  // `Number()` maps null, false, "" and "   " to 0 and "1e3" to 1000. A bound
+  // compared against a coerced zero is not a bound, so none of these may parse.
+
+  /** @type {Array<[string, object]>} */
+  const coercible = [
+    ["max_id_chars: null", { evidence: { max_id_chars: null } }],
+    ["null_tag_elements: false", { tags: { null_tag_elements: false } }],
+    ["an undeclared field", { evidence: { surprise_field: "anything" } }],
+    ["max_claim_chars: undefined", { evidence: { max_claim_chars: undefined } }],
+    ["max_claim_chars: true", { evidence: { max_claim_chars: true } }],
+    ['max_claim_chars: "" (blank)', { evidence: { max_claim_chars: "" } }],
+    ['max_claim_chars: "   " (whitespace)', { evidence: { max_claim_chars: "   " } }],
+    ['max_claim_chars: "  42  " (padded)', { evidence: { max_claim_chars: "  42  " } }],
+    ['max_claim_chars: "1e3" (exponent)', { evidence: { max_claim_chars: "1e3" } }],
+    ['max_claim_chars: "1.5" (fraction)', { evidence: { max_claim_chars: "1.5" } }],
+    ['max_claim_chars: "42.0" (decimal point)', { evidence: { max_claim_chars: "42.0" } }],
+    ['max_claim_chars: "-1" (negative)', { evidence: { max_claim_chars: "-1" } }],
+    ['max_claim_chars: "+42" (signed)', { evidence: { max_claim_chars: "+42" } }],
+    ['max_claim_chars: "007" (zero padded)', { evidence: { max_claim_chars: "007" } }],
+    ['max_claim_chars: "0x2a" (hex)', { evidence: { max_claim_chars: "0x2a" } }],
+    ["max_claim_chars: 1.5 (float)", { evidence: { max_claim_chars: 1.5 } }],
+    ["max_claim_chars: -1 (negative number)", { evidence: { max_claim_chars: -1 } }],
+    ["max_claim_chars: NaN", { evidence: { max_claim_chars: Number.NaN } }],
+    ["max_claim_chars: Infinity", { evidence: { max_claim_chars: Number.POSITIVE_INFINITY } }],
+    ['max_claim_chars: "9007199254740993" (unsafe)', { evidence: { max_claim_chars: "9007199254740993" } }],
+    ["max_claim_chars: an array", { evidence: { max_claim_chars: [42] } }],
+    ["max_claim_chars: an object", { evidence: { max_claim_chars: { valueOf: () => 42 } } }],
+    ["a second undeclared field on the tag row", { tags: { extra: "1" } }],
+    ["an undeclared field on the relation row", { relations: { extra: "1" } }],
+  ];
+  for (const [label, over] of coercible) {
+    check("audit", `${label} is refused`, threw(() => evaluateAggregateAudit(aggregateRows(over))) !== null);
+  }
+
+  for (const [label, drop, row] of [
+    ["a missing declared field", "max_claim_chars", "evidence"],
+    ["a missing tag field", "null_tag_elements", "tags"],
+    ["a missing relation field", "max_note_chars", "relations"],
+  ]) {
+    const rows = aggregateRows();
+    delete rows[row][drop];
+    check("audit", `${label} is refused`, threw(() => evaluateAggregateAudit(rows)) !== null);
+  }
+
+  {
+    const renamed = aggregateRows();
+    renamed.evidence.max_claim_characters = renamed.evidence.max_claim_chars;
+    delete renamed.evidence.max_claim_chars;
+    check("audit", "a renamed field is refused", threw(() => evaluateAggregateAudit(renamed)) !== null);
+  }
+
+  check("audit", "a row that is not an object is refused", threw(() => evaluateAggregateAudit({ ...aggregateRows(), evidence: null })) !== null);
+  check("audit", "a row that is an array is refused", threw(() => evaluateAggregateAudit({ ...aggregateRows(), tags: [] })) !== null);
+
+  // Duplicate column names collapse in `pg`'s row object and are only visible
+  // in the result's field list, so that is where they are caught.
+  check(
+    "audit",
+    "duplicate column names are refused from the result field list",
+    threw(() => assertDistinctColumns([{ name: "row_count" }, { name: "row_count" }], "probe")) !== null,
+  );
+  check("audit", "distinct column names are accepted", threw(() => assertDistinctColumns([{ name: "a" }, { name: "b" }], "probe")) === null);
+  check("audit", "absent column metadata is refused", threw(() => assertDistinctColumns(undefined, "probe")) !== null);
+
+  // The two legitimate forms, and only those.
+  check("audit", "a canonical decimal string parses losslessly", parseAggregateInteger("9007199254740991", "p") === 9_007_199_254_740_991);
+  check("audit", 'the canonical zero "0" parses', parseAggregateInteger("0", "p") === 0);
+  check("audit", "a safe nonnegative number parses", parseAggregateInteger(42, "p") === 42);
+  check("audit", "a bigint within the safe range parses", parseAggregateInteger(42n, "p") === 42);
+  check("audit", "a bigint beyond the safe range is refused", threw(() => parseAggregateInteger(9007199254740993n, "p")) !== null);
+
+  // The exact row inventories are themselves part of the contract.
+  check("audit", "the content_evidence row inventory is exactly 21 columns", EVIDENCE_ROW_FIELDS.length === 21);
+  check(
+    "audit",
+    "every declared column appears in the SQL that produces it",
+    EVIDENCE_ROW_FIELDS.every((f) => EVIDENCE_AGGREGATES_SQL.includes(`AS ${f}`)),
+  );
+
+  // The verdict is recomputed from validated data, never from the raw row.
+  {
+    const validated = evaluateAggregateAudit(aggregateRows({ evidence: { max_claim_chars: String(LIMITS.claimChars + 5) } }));
+    check(
+      "audit",
+      "the verdict is recomputed from the validated measurement",
+      validated.verdict === "EXCEEDS BOUNDS" &&
+        validated.checks.find((c) => c.check === "claim chars").measured === LIMITS.claimChars + 5,
+    );
+  }
+
   check(
     "audit",
     "aggregate observations are exactly the approved counts and carry no row content",
@@ -779,6 +1220,7 @@ const aggregateRows = (over = {}) => ({
     repository_phase_total: 60_000,
     runner_total: 240_000,
     child_termination_grace: 2_000,
+    cancellation_settle: 10_000,
   };
   check("deadlines", "every documented deadline is present", Object.keys(DEADLINES_MS).sort().join() === Object.keys(expected).sort().join());
   for (const [key, value] of Object.entries(expected)) {
@@ -798,13 +1240,31 @@ const aggregateRows = (over = {}) => ({
 
   const runtime = new Runtime();
   const start = Date.now();
-  const error = await rejected(() => withDeadline(runtime, "test", 40, () => new Promise(() => {})));
-  check("deadlines", "an operation that never settles is stopped by its deadline", categorizeError(error) === "deadline_exceeded" && Date.now() - start < 2_000);
+  const error = await rejected(() =>
+    withDeadline(runtime, "test", 40, () => new Promise(() => {}), { settleMs: 60 }),
+  );
+  check(
+    "deadlines",
+    "an operation that never settles is stopped by its deadline",
+    categorizeError(error) === "deadline_exceeded" && Date.now() - start < 2_000,
+  );
+  check(
+    "deadlines",
+    "an operation that cannot confirm it stopped is reported as unconfirmed, not as a clean timeout",
+    error.confirmedStopped === false,
+  );
 
   const interruptible = new Runtime();
-  setTimeout(() => interruptible.controller.abort(), 10);
-  const interruptedError = await rejected(() => withDeadline(interruptible, "test", 60_000, () => new Promise(() => {})));
-  check("deadlines", "an interrupt is distinguished from a deadline", categorizeError(interruptedError) === "interrupted" || interruptedError !== null);
+  interruptible.interruptedBy = "SIGINT";
+  interruptible.controller.abort();
+  const interruptedError = await rejected(() =>
+    withDeadline(interruptible, "test", 60_000, async () => 1),
+  );
+  check(
+    "deadlines",
+    "an interrupt is distinguished from a deadline",
+    categorizeError(interruptedError) === "interrupted",
+  );
 
   check("deadlines", "a non-positive deadline is a programming error", (await rejected(() => withDeadline(new Runtime(), "test", 0, async () => 1))) !== null);
 }
@@ -896,6 +1356,12 @@ const sampleRepository = {
   check("evidence", "Render is NOT ESTABLISHED with three UNKNOWN identities", document.render.state === "NOT ESTABLISHED" && [document.render.api_identity, document.render.worker_identity, document.render.scheduler_identity].every((v) => v === RENDER_BOUNDARY.api_identity));
   check("evidence", "every non-action is stated", document.non_actions.length === NON_ACTIONS.length);
   check("evidence", "every deadline is recorded", Object.keys(document.deadlines_ms).length === Object.keys(DEADLINES_MS).length);
+  check(
+    "evidence",
+    "the evidence records the required repository and branch, not just the workflow",
+    document.ci.identity.expected_repository === `${OWNER}/${REPO}` &&
+      document.ci.identity.expected_branch === "main",
+  );
   check("evidence", "the artifact binds every phase", document.artifact.A === ARTIFACT && ci.artifact === ARTIFACT && document.artifact.accepts_branch_tag_abbreviation_or_override === false);
   check("evidence", "the .DS_Store allowance is recorded and the file was never inspected", document.repository.ds_store_modification_tolerated === true && document.repository.ds_store_inspected_or_altered === false);
 

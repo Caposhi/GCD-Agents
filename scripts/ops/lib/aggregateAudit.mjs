@@ -150,20 +150,163 @@ export const EXPECTED_CHECK_NAMES = Object.freeze([
 ]);
 
 /**
- * PostgreSQL returns `bigint` aggregates as strings through `pg`. Every measured
- * value is converted here and required to be a non-negative safe integer, so a
- * value that does not fit is a failure rather than a silent `NaN` comparison
- * that would read as "within bound".
+ * The exact column inventory each aggregate row must have — no more, no less.
+ *
+ * A renamed column, a dropped column or an extra column all mean the SQL and
+ * this evaluation have diverged, and a divergence that is silently tolerated is
+ * how a bound stops being checked while the report still says 23 checks passed.
+ */
+export const EVIDENCE_ROW_FIELDS = Object.freeze([
+  "row_count",
+  "distinct_ids",
+  "max_id_chars",
+  "max_id_bytes",
+  "max_claim_chars",
+  "max_claim_bytes",
+  "max_subject_chars",
+  "max_subject_bytes",
+  "max_attribute_chars",
+  "max_attribute_bytes",
+  "max_source_ref_chars",
+  "max_source_ref_bytes",
+  "max_provenance_chars",
+  "max_provenance_bytes",
+  "max_reviewed_by_chars",
+  "max_reviewed_by_bytes",
+  "max_superseded_by_id_chars",
+  "max_superseded_by_id_bytes",
+  "max_detail_jsonb_text_bytes",
+  "max_tag_cardinality",
+  "rows_with_detail",
+]);
+export const TAG_ROW_FIELDS = Object.freeze([
+  "max_tag_chars",
+  "max_tag_bytes",
+  "null_tag_elements",
+  "total_tag_elements",
+]);
+export const RELATION_ROW_FIELDS = Object.freeze([
+  "row_count",
+  "max_note_chars",
+  "max_note_bytes",
+  "rows_with_note",
+]);
+
+/** A canonical, lossless decimal integer: no sign, no padding, no separators. */
+const CANONICAL_DECIMAL = /^(0|[1-9][0-9]*)$/;
+
+export class AggregateContractError extends Error {
+  /** @param {string} reason a message written in source */
+  constructor(reason) {
+    super(reason);
+    this.name = "AggregateContractError";
+  }
+}
+
+/**
+ * Parse one aggregate value under the strict rule.
+ *
+ * `pg` returns `bigint` aggregates (every `count(*)` and `max(...)` here) as
+ * STRINGS, and `count(*)` can never be null while `max(...)` is wrapped in
+ * `coalesce(..., 0)`. So exactly two forms are legitimate: a JavaScript number
+ * that is already a safe nonnegative integer, or a canonical lossless decimal
+ * string.
+ *
+ * `Number()` is deliberately not used as the parser. It maps `null`, `false`,
+ * `""` and `"   "` to `0`, and `"1e3"` to `1000` — so a column that came back
+ * NULL, or a boolean, or a blank, or an exponent form, would all read as a
+ * measurement that is comfortably within bounds. A bound checked against a
+ * coerced zero is not checked at all.
  *
  * @param {unknown} value
  * @param {string} label
+ * @returns {number}
  */
-const measuredInteger = (value, label) => {
-  const n = typeof value === "bigint" ? Number(value) : Number(value);
-  if (!Number.isSafeInteger(n) || n < 0) {
-    throw new Error(`aggregate ${label} is not a non-negative safe integer`);
+export const parseAggregateInteger = (value, label) => {
+  if (typeof value === "number") {
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new AggregateContractError(`${label} is not a safe nonnegative integer`);
+    }
+    return value;
   }
-  return n;
+  if (typeof value === "bigint") {
+    if (value < 0n || value > BigInt(Number.MAX_SAFE_INTEGER)) {
+      throw new AggregateContractError(`${label} is outside the safe integer range`);
+    }
+    return Number(value);
+  }
+  if (typeof value === "string") {
+    if (!CANONICAL_DECIMAL.test(value)) {
+      throw new AggregateContractError(
+        `${label} is not a canonical lossless decimal integer`,
+      );
+    }
+    const parsed = Number(value);
+    if (!Number.isSafeInteger(parsed)) {
+      throw new AggregateContractError(`${label} is outside the safe integer range`);
+    }
+    // Round trip: the only proof that nothing was lost on the way in.
+    if (String(parsed) !== value) {
+      throw new AggregateContractError(`${label} does not survive a lossless round trip`);
+    }
+    return parsed;
+  }
+  // null, undefined, boolean, object, array, symbol, function.
+  throw new AggregateContractError(
+    `${label} is ${value === null ? "null" : typeof value}, not an integer`,
+  );
+};
+
+/**
+ * Validate one aggregate row against its exact column inventory and return the
+ * parsed integers. Closed at every field: nothing undeclared survives.
+ *
+ * @param {unknown} row
+ * @param {readonly string[]} fields
+ * @param {string} label
+ * @returns {Record<string, number>}
+ */
+export const validateAggregateRow = (row, fields, label) => {
+  if (typeof row !== "object" || row === null || Array.isArray(row)) {
+    throw new AggregateContractError(`${label} did not return a row object`);
+  }
+  const present = Object.keys(row);
+  const declared = new Set(fields);
+  const undeclared = present.filter((key) => !declared.has(key));
+  if (undeclared.length > 0) {
+    throw new AggregateContractError(
+      `${label} returned ${undeclared.length} undeclared column(s); the inventory is closed`,
+    );
+  }
+  const missing = fields.filter((key) => !Object.hasOwn(row, key));
+  if (missing.length > 0) {
+    throw new AggregateContractError(`${label} is missing ${missing.length} declared column(s)`);
+  }
+  /** @type {Record<string, number>} */
+  const parsed = {};
+  for (const key of fields) parsed[key] = parseAggregateInteger(row[key], `${label}.${key}`);
+  return parsed;
+};
+
+/**
+ * Reject a result whose column names repeat.
+ *
+ * `pg` builds each row object by assignment, so two columns of the same name
+ * collapse into one and the LAST one silently wins. The duplicate is only
+ * visible in the result's field list, which is why it is checked there.
+ *
+ * @param {ReadonlyArray<{ name?: unknown }> | undefined} resultFields
+ * @param {string} label
+ */
+export const assertDistinctColumns = (resultFields, label) => {
+  if (!Array.isArray(resultFields)) {
+    throw new AggregateContractError(`${label} returned no column metadata`);
+  }
+  const names = resultFields.map((f) => String(f?.name));
+  const duplicates = names.filter((n, i) => names.indexOf(n) !== i);
+  if (duplicates.length > 0) {
+    throw new AggregateContractError(`${label} returned duplicate column name(s)`);
+  }
 };
 
 /**
@@ -176,11 +319,20 @@ const measuredInteger = (value, label) => {
  * @param {Record<string, number>} input.limits     from {@link readEvidenceLimits}
  */
 export const evaluateAggregateAudit = ({ evidence, tags, relations, limits }) => {
-  const e = evidence;
-  const t = tags;
-  const r = relations;
+  // Every downstream number comes from here, and nothing reaches a comparison
+  // without having passed the closed inventory and the strict integer rule.
+  const e = validateAggregateRow(evidence, EVIDENCE_ROW_FIELDS, "content_evidence aggregates");
+  const t = validateAggregateRow(tags, TAG_ROW_FIELDS, "content_evidence tag aggregates");
+  const r = validateAggregateRow(relations, RELATION_ROW_FIELDS, "content_evidence_relations aggregates");
 
-  /** @type {Array<[string, unknown, number]>} */
+  for (const key of LIMIT_KEYS) {
+    const bound = limits?.[key];
+    if (!Number.isSafeInteger(bound) || bound <= 0) {
+      throw new AggregateContractError(`EVIDENCE_LIMITS.${key} is not a positive safe integer`);
+    }
+  }
+
+  /** @type {Array<[string, number, number]>} */
   const boundPairs = [
     ["id chars", e.max_id_chars, limits.idChars],
     ["id bytes", e.max_id_bytes, limits.idChars],
@@ -206,13 +358,15 @@ export const evaluateAggregateAudit = ({ evidence, tags, relations, limits }) =>
     ["relation note bytes", r.max_note_bytes, limits.relationNoteChars],
   ];
 
-  const checks = boundPairs.map(([check, measured, bound]) => {
-    const value = measuredInteger(measured, check);
-    return { check, measured: value, bound, within_bound: value <= bound };
-  });
+  const checks = boundPairs.map(([check, measured, bound]) => ({
+    check,
+    measured,
+    bound,
+    within_bound: measured <= bound,
+  }));
 
   // A NULL tag element is rejected by 007's helper, so it is a gate too.
-  const nullTagElements = measuredInteger(t.null_tag_elements, "tag NULL elements");
+  const nullTagElements = t.null_tag_elements;
   checks.push({
     check: "tag NULL elements",
     measured: nullTagElements,
@@ -239,12 +393,12 @@ export const evaluateAggregateAudit = ({ evidence, tags, relations, limits }) =>
     verdict: failing.length === 0 ? "WITHIN BOUNDS" : "EXCEEDS BOUNDS",
     /** Recorded for the operator record; not itself a pass/fail gate. */
     observed: {
-      content_evidence_row_count: measuredInteger(e.row_count, "content_evidence row_count"),
-      content_evidence_distinct_ids: measuredInteger(e.distinct_ids, "content_evidence distinct_ids"),
-      content_evidence_rows_with_detail: measuredInteger(e.rows_with_detail, "rows_with_detail"),
-      tag_elements_total: measuredInteger(t.total_tag_elements, "total_tag_elements"),
-      relation_row_count: measuredInteger(r.row_count, "relations row_count"),
-      relation_rows_with_note: measuredInteger(r.rows_with_note, "rows_with_note"),
+      content_evidence_row_count: e.row_count,
+      content_evidence_distinct_ids: e.distinct_ids,
+      content_evidence_rows_with_detail: e.rows_with_detail,
+      tag_elements_total: t.total_tag_elements,
+      relation_row_count: r.row_count,
+      relation_rows_with_note: r.rows_with_note,
     },
   };
 };

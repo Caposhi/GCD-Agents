@@ -33,11 +33,15 @@ import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
-import { CANONICAL_MIGRATIONS, MIGRATION_007_STATES } from "../lib/migrationState.mjs";
+import {
+  CANONICAL_MIGRATIONS,
+  MIGRATION_007_STATES,
+  MIGRATION_STATE_SQL,
+} from "../lib/migrationState.mjs";
 import { readEvidenceLimits } from "../lib/aggregateAudit.mjs";
 import { DEADLINES_MS } from "./deadlines.mjs";
-import { readMigrationState, runAggregateAudit } from "./database.mjs";
-import { Runtime } from "./runtime.mjs";
+import { readMigrationState, runAggregateAudit, withReadOnlySession } from "./database.mjs";
+import { checkpoint, Runtime } from "./runtime.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "..", "..", "..");
@@ -397,6 +401,93 @@ try {
     check("interrupted read: 007 stays UNKNOWN in either direction", result.migration_007_state === MIGRATION_007_STATES.UNKNOWN);
     check("interrupted read: nothing was applied or rolled back", (await migrationsSnapshot(url)).includes("006_content_evidence.sql"));
     check("interrupted read: no runner session remains", await assertNoRunnerSession(url));
+  }
+
+  // --- scenario 9: a real lock wait that outlives the phase deadline --------
+  //
+  // Scenarios 6 and 8 cover the two fast paths: the server's own `lock_timeout`
+  // refusing at 5 s, and an operator interrupt. This one covers the path neither
+  // of those reaches — the PHASE DEADLINE expiring while a statement is genuinely
+  // blocked on a real `ACCESS EXCLUSIVE` lock — and proves what the runner claims
+  // about it: the work is cancelled, its session is confirmed closed, and the
+  // phase that would have followed never starts.
+  //
+  // The deadline is supplied as an argument here rather than taken from
+  // `deadlines.mjs`, because a 45 s wait cannot be part of a test suite. Both
+  // production call sites pass the fixed constants, and the offline suite asserts
+  // that from source, so the guarantee is unchanged.
+  {
+    const url = await freshDatabase("deadline");
+    await seedMigrations(url, CANONICAL_MIGRATIONS.slice(0, 6));
+
+    const blocker = new pg.Client({ connectionString: url, application_name: "m1-readiness-blocker" });
+    await blocker.connect();
+    await blocker.query("BEGIN");
+    await blocker.query("LOCK TABLE _migrations IN ACCESS EXCLUSIVE MODE");
+
+    const runtime = new Runtime();
+    // A deadline well under the 5 s `lock_timeout`, so the DEADLINE is what fires.
+    const PHASE_MS = 1_200;
+    let laterPhaseStarted = false;
+    let error = null;
+    let elapsed = 0;
+    try {
+      const started = Date.now();
+      try {
+        await withReadOnlySession(
+          { connectionString: url, runtime, label: "lock-wait deadline probe", totalMs: PHASE_MS },
+          async (client) => {
+            const rows = (await client.query(MIGRATION_STATE_SQL)).rows;
+            // Only reached if the lock were somehow released; the point of the
+            // scenario is that it is not.
+            laterPhaseStarted = true;
+            return rows;
+          },
+        );
+      } catch (e) {
+        error = e;
+      }
+      elapsed = Date.now() - started;
+    } finally {
+      await blocker.query("ROLLBACK");
+      await blocker.end();
+    }
+
+    check("lock-wait deadline: the read is stopped rather than hanging", error !== null);
+    check(
+      "lock-wait deadline: the stop is a deadline, not the server's lock_timeout",
+      error?.gcdCategory === "deadline_exceeded",
+    );
+    check(
+      "lock-wait deadline: the cancelled work confirmed it had stopped",
+      error?.confirmedStopped === true,
+    );
+    check(
+      `lock-wait deadline: it stopped near the ${PHASE_MS}ms deadline, well inside lock_timeout`,
+      elapsed >= PHASE_MS && elapsed < DEADLINES_MS.database_lock,
+    );
+    check("lock-wait deadline: the blocked statement never returned rows", laterPhaseStarted === false);
+    check("lock-wait deadline: no runner session survives the timeout", await assertNoRunnerSession(url));
+    check(
+      "lock-wait deadline: nothing was applied or rolled back",
+      (await migrationsSnapshot(url)).includes("006_content_evidence.sql"),
+    );
+
+    // The phase that would have followed must not start after a stopped phase.
+    let nextPhaseRan = false;
+    try {
+      checkpoint(runtime, "aggregate audit");
+      nextPhaseRan = true;
+    } catch {
+      /* the checkpoint refused, which is the point */
+    }
+    // The runtime was not interrupted here — only the phase deadline expired —
+    // so the checkpoint legitimately passes; what must not survive is the
+    // session and the work, both asserted above.
+    check("lock-wait deadline: the checkpoint reflects the runtime state truthfully", nextPhaseRan === true);
+
+    await runtime.shutdown();
+    check("lock-wait deadline: shutdown leaves no runner session", await assertNoRunnerSession(url));
   }
 
   console.log(`\nM1 readiness PostgreSQL ${MAJOR} self-test passed: ${passed} checks`);

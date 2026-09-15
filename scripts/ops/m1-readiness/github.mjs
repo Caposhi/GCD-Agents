@@ -79,6 +79,20 @@ export const EXPECTED_STATUS = "completed";
 export const EXPECTED_CONCLUSION = "success";
 export const EXPECTED_RUN_ATTEMPT = 1;
 
+/**
+ * The branch the artifact must have been pushed to. §4.4 defines the M1
+ * artifact as the reviewed head of `main`, so a successful run of the same
+ * workflow on any other branch — a fork branch, a release branch, an
+ * attacker-named branch — is not evidence about `A`.
+ */
+export const EXPECTED_BRANCH = "main";
+
+/** The repository the response must itself claim to describe. */
+export const REPOSITORY_FULL_NAME = `${OWNER}/${REPO}`;
+
+/** `A` must be a full, lowercase, 40-character object name everywhere. */
+const FULL_SHA = /^[0-9a-f]{40}$/;
+
 /** The optional token. Read, used, and never written to evidence. */
 export const TOKEN_ENV = "GITHUB_TOKEN";
 
@@ -130,6 +144,17 @@ const RUN_CONCLUSION = nullable(
   ]),
 );
 
+/**
+ * The repository a run claims to belong to. Required, not discarded: the URL
+ * this runner builds already names one repository, but a gate that trusts only
+ * the URL it sent cannot detect a redirect, a proxy, or a cached response from
+ * elsewhere. The response must say so itself.
+ */
+const REPOSITORY = obj(
+  { full_name: str({ min: 3, max: 256 }), id: int({ min: 1 }) },
+  { unknown: "discard" },
+);
+
 const RUN = obj(
   {
     id: int({ min: 1 }),
@@ -140,12 +165,16 @@ const RUN = obj(
     status: RUN_STATUS,
     conclusion: RUN_CONCLUSION,
     workflow_id: int({ min: 1 }),
+    // Required, not optional: the gate turns on the attempt number, so a
+    // response that omits it cannot be accepted "as if" it were attempt 1.
     run_attempt: int({ min: 1, max: 100_000 }),
     run_number: int({ min: 0 }),
     html_url: str({ max: 1_024 }),
+    // Required for the same reason: an absent branch is not `main`.
     head_branch: nullable(str({ max: 512 })),
+    repository: REPOSITORY,
   },
-  { optional: ["name", "head_branch", "run_attempt"], unknown: "discard" },
+  { optional: ["name"], unknown: "discard" },
 );
 
 const RUNS_PAGE = obj(
@@ -156,13 +185,15 @@ const RUNS_PAGE = obj(
 const JOB = obj(
   {
     id: int({ min: 1 }),
+    // Required and checked against the accepted run: a job list is fetched by
+    // run id, but a response is free to return jobs from a different run.
     run_id: int({ min: 1 }),
     name: str({ max: 256 }),
     status: RUN_STATUS,
     conclusion: RUN_CONCLUSION,
     run_attempt: int({ min: 1, max: 100_000 }),
   },
-  { optional: ["run_attempt"], unknown: "discard" },
+  { unknown: "discard" },
 );
 
 const JOBS_PAGE = obj(
@@ -185,6 +216,8 @@ export const ciIdentity = (authenticated) => ({
   workflow_name: WORKFLOW_NAME,
   expected_jobs: [...EXPECTED_JOB_NAMES],
   expected_event: EXPECTED_EVENT,
+  expected_branch: EXPECTED_BRANCH,
+  expected_repository: REPOSITORY_FULL_NAME,
   expected_run_attempt: EXPECTED_RUN_ATTEMPT,
   identity_source: "fixed in scripts/ops/m1-readiness/github.mjs; no environment override",
   authenticated,
@@ -291,6 +324,9 @@ export const verifyExactHeadCi = async ({ artifact, runtime }) => {
   const identity = ciIdentity(Boolean(token));
 
   try {
+    if (!FULL_SHA.test(artifact)) {
+      throw new GithubEvidenceError("the artifact is not a full 40-character lowercase object name");
+    }
     return await withDeadline(runtime, "CI evidence", GITHUB_PHASE_TOTAL_MS, async () => {
       const runsPage = await getJson({
         path:
@@ -301,16 +337,29 @@ export const verifyExactHeadCi = async ({ artifact, runtime }) => {
         token,
       });
       const runs = runsPage.value.workflow_runs;
-      if (runsPage.value.total_count > runs.length) {
-        throw new GithubEvidenceError("the run list is truncated; this runner refuses a partial view");
+      // Internal consistency, not just "not truncated": a page whose declared
+      // total disagrees with what it actually carries is a response this runner
+      // cannot reason about in either direction, so neither reading is used.
+      if (runsPage.value.total_count !== runs.length) {
+        throw new GithubEvidenceError(
+          "the run list's declared total disagrees with the runs it returned",
+        );
+      }
+      if (runsPage.value.total_count > PER_PAGE) {
+        throw new GithubEvidenceError("the run list spans more than one page; this runner refuses a partial view");
       }
 
       const forArtifact = runs.filter(
-        (r) => r.head_sha === artifact && r.workflow_id === WORKFLOW_ID && r.path === WORKFLOW_PATH,
+        (r) =>
+          r.head_sha === artifact &&
+          r.workflow_id === WORKFLOW_ID &&
+          r.path === WORKFLOW_PATH &&
+          r.repository.full_name === REPOSITORY_FULL_NAME,
       );
       const accepted = forArtifact.filter(
         (r) =>
           r.event === EXPECTED_EVENT &&
+          r.head_branch === EXPECTED_BRANCH &&
           r.status === EXPECTED_STATUS &&
           r.conclusion === EXPECTED_CONCLUSION &&
           r.run_attempt === EXPECTED_RUN_ATTEMPT,
@@ -353,8 +402,20 @@ export const verifyExactHeadCi = async ({ artifact, runtime }) => {
         token,
       });
       const jobs = jobsPage.value.jobs;
-      if (jobsPage.value.total_count > jobs.length) {
-        throw new GithubEvidenceError("the job list is truncated; this runner refuses a partial view");
+      if (jobsPage.value.total_count !== jobs.length) {
+        throw new GithubEvidenceError(
+          "the job list's declared total disagrees with the jobs it returned",
+        );
+      }
+      if (jobsPage.value.total_count > PER_PAGE) {
+        throw new GithubEvidenceError("the job list spans more than one page; this runner refuses a partial view");
+      }
+      // Every job must belong to the run that was accepted. The list was
+      // requested by run id, but nothing about a response guarantees that is
+      // what came back, and a job from another run is evidence about that run.
+      const foreign = jobs.filter((j) => j.run_id !== run.id);
+      if (foreign.length > 0) {
+        throw new GithubEvidenceError("the job list contains a job belonging to a different run");
       }
 
       const names = jobs.map((j) => j.name);
