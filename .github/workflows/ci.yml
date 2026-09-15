@@ -40,6 +40,9 @@ jobs:
       - name: Payload-contract mutation tests
         run: npm run test:payload-mutation
 
+      - name: M1 readiness runner offline tests
+        run: npm run test:m1-readiness
+
       - name: Simulated dry run
         run: npm run dryrun
 
@@ -113,6 +116,12 @@ jobs:
         env:
           DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/gcd_social_ci
         run: npm run test:http-e2e
+
+      - name: M1 readiness runner disposable PostgreSQL suite
+        env:
+          M1_READINESS_DISPOSABLE_POSTGRES: "1"
+          M1_READINESS_POSTGRES_ADMIN_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
+        run: npm run test:m1-readiness-postgres
 
   agentshield:
     name: AgentShield 1.4.0

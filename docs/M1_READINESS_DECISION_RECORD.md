@@ -50,6 +50,25 @@ state remains **`UNKNOWN` in either direction**. The dated 2026-08-28 reading of
 | 12 | Executed compatibility evidence for `R` | **NOT EXECUTABLE** | cannot test an artifact that is not yet identified |
 | 13 | Recovery plan if M1 fails | **NOT SAFE TO CALL SAFE** | see *Recovery* below |
 
+### Tooling status — the M1 readiness runner (not merged)
+
+A repository-native evidence runner for the **repository and database** portions of
+this record's prerequisites exists on the branch `codex/m1-readiness-runner` and is
+documented in [the M1 readiness runner](M1_READINESS_RUNNER.md). It is **not merged
+and not on `main`**, and it is **tooling only**.
+
+**It changes nothing in this record.** It has never been run against production, no
+agent session holds a production credential, and its verdict is fixed in source at
+`M1 BLOCKED / NO-GO`. Every fact in the table above that is `NOT YET ESTABLISHED`
+or `NOT YET EXECUTED` remains exactly that. Migration 007's production state
+remains **`UNKNOWN` in either direction**; the runner derives that field from a
+completed read result alone and reports `UNKNOWN` otherwise, by construction.
+
+It supersedes an earlier self-extracting shell packet, preserved unchanged as
+historical evidence at `claude/m1-db-blocker-fix-gp7psx`
+(`db0c833160f12d5102cdf60eb6e125baffcc5a4d`). That branch is **not merged, not
+accepted and not production-ready**, and has no pull request.
+
 ### The four expected sets for M1 (§4.4.2)
 
 | Symbol | Value |
