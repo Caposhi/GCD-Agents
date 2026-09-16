@@ -459,8 +459,16 @@ try {
       error?.gcdCategory === "deadline_exceeded",
     );
     check(
-      "lock-wait deadline: the cancelled work confirmed it had stopped",
-      error?.confirmedStopped === true,
+      "lock-wait deadline: confirmation comes from the session actually being closed",
+      error?.stopOutcome === "external_cleanup_confirmed" && error?.externalCleanupConfirmed === true,
+    );
+    check(
+      "lock-wait deadline: a driver error is NOT mistaken for the work acknowledging cancellation",
+      error?.confirmedStopped === false,
+    );
+    check(
+      "lock-wait deadline: the stop is attributed to the deadline, not an operator",
+      error?.stoppedBy === "deadline",
     );
     check(
       `lock-wait deadline: it stopped near the ${PHASE_MS}ms deadline, well inside lock_timeout`,

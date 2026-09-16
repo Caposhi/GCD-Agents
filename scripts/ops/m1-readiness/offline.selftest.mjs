@@ -63,6 +63,7 @@ import {
   OWNER,
   REPO,
   WORKFLOW_ID,
+  WORKFLOW_NAME,
   WORKFLOW_PATH,
   ciNotEstablished,
   verifyExactHeadCi,
@@ -80,7 +81,7 @@ import {
   gitBlobSha1,
 } from "./repository.mjs";
 import { collectEvidence } from "./runner.mjs";
-import { Runtime, checkpoint, withDeadline } from "./runtime.mjs";
+import { Runtime, STOP_OUTCOME, checkpoint, withDeadline } from "./runtime.mjs";
 import {
   StrictDataError,
   arr,
@@ -389,32 +390,135 @@ const code = new Map([...sources].map(([file, text]) => [file, stripComments(tex
     check(
       "lifecycle",
       `${inside.replace("(", "")} runs inside the total deadline`,
-      runner.indexOf(inside) > total && runner.indexOf(inside) < runner.indexOf("{ onCancel },"),
+      runner.indexOf(inside) > total && runner.indexOf(inside) < runner.indexOf("{ onCancel, linkAsTotal: true },"),
     );
   }
   check(
     "lifecycle",
     "the total deadline can cancel the work it bounds",
-    runner.includes("{ onCancel },") && runner.includes("const onCancel = async ()"),
+    runner.includes("{ onCancel, linkAsTotal: true },") && runner.includes("const onCancel = async ()"),
   );
 
-  // A losing operation is cancelled and AWAITED, never abandoned.
+  // --- what a stop actually accomplished ---------------------------------
+  //
+  // These are four DIFFERENT facts and they are reported differently. The
+  // previous single case asserted `confirmedStopped === true` for an operation
+  // that never looked at its signal and simply finished late, which is the one
+  // reading an operator must not be given.
+
+  // 1. Cooperative: observes the signal and ends BECAUSE of it.
   let cancelled = false;
-  let finished = false;
-  const rt = new Runtime();
-  const err = await rejected(() =>
+  let cooperativeObservedSignal = false;
+  const rtCoop = new Runtime();
+  const coop = await rejected(() =>
     withDeadline(
-      rt,
-      "probe",
+      rtCoop,
+      "cooperative",
       30,
-      () => new Promise((resolve) => setTimeout(() => { finished = true; resolve(1); }, 150)),
+      (signal) =>
+        new Promise((resolve, reject) => {
+          const timer = setTimeout(() => resolve(1), 150);
+          signal.addEventListener(
+            "abort",
+            () => {
+              cooperativeObservedSignal = true;
+              clearTimeout(timer);
+              const abort = new Error("aborted");
+              abort.name = "AbortError";
+              reject(abort);
+            },
+            { once: true },
+          );
+        }),
       { onCancel: () => { cancelled = true; } },
     ),
   );
   check("lifecycle", "a stopped operation has its onCancel invoked", cancelled);
-  check("lifecycle", "a stopped operation is awaited, not abandoned", finished === true);
-  check("lifecycle", "a confirmed stop is reported as confirmed", err.confirmedStopped === true);
-  check("lifecycle", "the stop is categorised as a deadline", categorizeError(err) === "deadline_exceeded");
+  check("lifecycle", "a cooperative operation observes the signal", cooperativeObservedSignal === true);
+  check(
+    "lifecycle",
+    "a cooperative operation is reported as an acknowledged cancellation",
+    coop.stopOutcome === STOP_OUTCOME.CANCELLATION_ACKNOWLEDGED,
+  );
+  check("lifecycle", "an acknowledged cancellation is the only confirmed stop", coop.confirmedStopped === true);
+  check("lifecycle", "the stop is categorised as a deadline", categorizeError(coop) === "deadline_exceeded");
+  check("lifecycle", "a deadline stop records that the deadline stopped it", coop.stoppedBy === "deadline");
+
+  // 2. Signal-ignorant: completes normally AFTER the deadline. Nothing was
+  //    cancelled, and it must not be reported as though something was.
+  let ignorantFinished = false;
+  const rtIgnorant = new Runtime();
+  const ignorant = await rejected(() =>
+    withDeadline(
+      rtIgnorant,
+      "ignorant",
+      30,
+      () => new Promise((resolve) => setTimeout(() => { ignorantFinished = true; resolve(1); }, 150)),
+    ),
+  );
+  check("lifecycle", "a signal-ignorant operation is still awaited, not abandoned", ignorantFinished === true);
+  check(
+    "lifecycle",
+    "a signal-ignorant late completion is NOT reported as a cancellation",
+    ignorant.stopOutcome === STOP_OUTCOME.SETTLED_WITHOUT_CANCELLATION,
+  );
+  check(
+    "lifecycle",
+    "a signal-ignorant late completion is NOT confirmedStopped",
+    ignorant.confirmedStopped === false,
+  );
+  check(
+    "lifecycle",
+    "a late normal completion is still recorded as having settled",
+    ignorant.settledAfterStop === true,
+  );
+
+  // 3. Never settles within the cleanup allowance: survivor risk, reported.
+  const rtHung = new Runtime();
+  /** @type {(() => void) | null} */
+  let releaseHung = null;
+  const hung = await rejected(() =>
+    withDeadline(
+      rtHung,
+      "hung",
+      20,
+      () => new Promise((resolve) => { releaseHung = () => resolve(1); }),
+      { settleMs: 40 },
+    ),
+  );
+  check(
+    "lifecycle",
+    "an operation that does not settle reports stop UNCONFIRMED",
+    hung.stopOutcome === STOP_OUTCOME.STOP_UNCONFIRMED,
+  );
+  check("lifecycle", "an unconfirmed stop is not confirmedStopped", hung.confirmedStopped === false);
+  check("lifecycle", "an unconfirmed stop records that it never settled", hung.settledAfterStop === false);
+  // The suite must not leave the probe running.
+  releaseHung?.();
+
+  // 4. External cleanup independently confirmed, without the work acknowledging.
+  const rtCleanup = new Runtime();
+  const cleanup = await rejected(() =>
+    withDeadline(
+      rtCleanup,
+      "cleanup-confirmed",
+      20,
+      () => new Promise((resolve) => setTimeout(() => resolve(1), 120)),
+      { onCancel: () => true },
+    ),
+  );
+  check(
+    "lifecycle",
+    "an independently confirmed cleanup is distinguished from an acknowledged cancellation",
+    cleanup.stopOutcome === STOP_OUTCOME.EXTERNAL_CLEANUP_CONFIRMED &&
+      cleanup.externalCleanupConfirmed === true &&
+      cleanup.confirmedStopped === false,
+  );
+  check(
+    "lifecycle",
+    "the four stop outcomes are mutually distinct",
+    new Set([coop.stopOutcome, ignorant.stopOutcome, hung.stopOutcome, cleanup.stopOutcome]).size === 4,
+  );
 
   // No abort listener survives a completed call.
   const rt2 = new Runtime();
@@ -427,6 +531,33 @@ const code = new Map([...sources].map(([file, text]) => [file, stripComments(tex
   rt3.interruptedBy = "SIGTERM";
   check("lifecycle", "a checkpoint refuses to start a phase after a stop", threw(() => checkpoint(rt3, "next phase")) !== null);
   check("lifecycle", "a checkpoint passes while the run is live", threw(() => checkpoint(new Runtime(), "next phase")) === null);
+
+  // A total deadline is NOT an operator interrupt, and the checkpoint says so.
+  const rtDeadline = new Runtime();
+  const expiry = new AbortController();
+  rtDeadline.linkTotalDeadline(expiry.signal, "total");
+  expiry.abort();
+  const deadlineStop = threw(() => checkpoint(rtDeadline, "next phase"));
+  check(
+    "lifecycle",
+    "a checkpoint refuses to start a phase after the TOTAL deadline expires",
+    deadlineStop !== null,
+  );
+  check(
+    "lifecycle",
+    "a total-deadline stop is categorised as a deadline, not an interruption",
+    categorizeError(deadlineStop) === "deadline_exceeded" && rtDeadline.interrupted === false,
+  );
+  check(
+    "lifecycle",
+    "the runtime reports deadline expiry separately from interruption",
+    rtDeadline.deadlineExpired === true && rtDeadline.stopping === true,
+  );
+  check(
+    "lifecycle",
+    "the total deadline reaches the signal every nested operation observes",
+    rtDeadline.signal.aborted === true,
+  );
 
   // A run that does not complete writes NOTHING — not the evidence, not the
   // summary, and no temporary.
@@ -455,6 +586,168 @@ const code = new Map([...sources].map(([file, text]) => [file, stripComments(tex
     readdirSync(outDir).length === 0,
   );
   rmSync(outDir, { recursive: true, force: true });
+
+  // --- D1: the TOTAL deadline stops the whole lifecycle -------------------
+  //
+  // End to end, against the real checkout, with a safely reduced test-only
+  // total deadline (four minutes cannot be waited out in a suite) and a CI
+  // phase deliberately slower than it.
+  {
+    // The runner refuses to read a dirty checkout, which is correct and is
+    // itself tested elsewhere. CI always runs this on a clean tree, so the
+    // deadline assertions below are authoritative there; on a developer's tree
+    // mid-edit the run is refused earlier and the same checks assert THAT
+    // instead, so the suite's check count never depends on local state.
+    const cleanTree =
+      execFileSync("git", ["status", "--porcelain=v1"], {
+        cwd: REPO_ROOT,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim() === "";
+    const slowOutDir = mkdtempSync(join(tmpdir(), "m1-total-"));
+    const rtTotal = new Runtime();
+    let ciRequests = 0;
+    let renderStarted = false;
+    const savedSlowFetch = globalThis.fetch;
+    globalThis.fetch = async (_url, init) => {
+      ciRequests += 1;
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(resolve, 5_000);
+        init?.signal?.addEventListener(
+          "abort",
+          () => {
+            clearTimeout(timer);
+            const abort = new Error("aborted");
+            abort.name = "AbortError";
+            reject(abort);
+          },
+          { once: true },
+        );
+      });
+      return new Response(new TextEncoder().encode(JSON.stringify({ total_count: 0, workflow_runs: [] })), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    };
+    const started = Date.now();
+    const totalErr = await rejected(() =>
+      collectEvidence({
+        repoRoot: REPO_ROOT,
+        outDir: slowOutDir,
+        runtime: rtTotal,
+        // A closed port: had the database phase begun, the failure would be a
+        // connection error rather than a deadline.
+        connectionString: "postgresql://127.0.0.1:1/none",
+        now: () => {
+          renderStarted = true;
+          return "2026-09-16T00:00:00.000Z";
+        },
+        totalMs: 300,
+      }),
+    );
+    const elapsed = Date.now() - started;
+    globalThis.fetch = savedSlowFetch;
+
+    check("lifecycle", "a slow CI phase makes the TOTAL deadline fail the run", totalErr !== null);
+    check(
+      "lifecycle",
+      "the total-deadline failure is categorised as a deadline, not an interruption",
+      cleanTree
+        ? categorizeError(totalErr) === "deadline_exceeded" && rtTotal.interrupted === false
+        : totalErr instanceof PreconditionError,
+    );
+    check(
+      "lifecycle",
+      "the total-deadline failure records that the deadline stopped it",
+      cleanTree ? totalErr.stoppedBy === "deadline" : totalErr instanceof PreconditionError,
+    );
+    check(
+      "lifecycle",
+      "the total deadline actually bounds the run rather than reporting it late",
+      elapsed < 3_000,
+    );
+    check(
+      "lifecycle",
+      "the total deadline reached the in-flight CI request",
+      cleanTree ? ciRequests === 1 : ciRequests === 0,
+    );
+    check("lifecycle", "no later render or output phase starts after expiry", renderStarted === false);
+    check(
+      "lifecycle",
+      "no database phase starts after expiry",
+      categorizeError(totalErr) !== "connection_refused",
+    );
+    const leftovers = readdirSync(slowOutDir);
+    check("lifecycle", "a total-deadline run writes ZERO authoritative evidence files", leftovers.filter((f) => !f.includes(".tmp-")).length === 0);
+    check("lifecycle", "a total-deadline run leaves no temporary output", leftovers.filter((f) => f.includes(".tmp-")).length === 0);
+    check(
+      "lifecycle",
+      "the total-deadline run has settled",
+      cleanTree ? totalErr.settledAfterStop === true : totalErr instanceof PreconditionError,
+    );
+    check("lifecycle", "the total-deadline run drained every registered cleanup", rtTotal.cleanups.size === 0);
+    check(
+      "lifecycle",
+      "the phase that refused to start is preserved for the operator",
+      cleanTree ? typeof totalErr.cause?.message === "string" : totalErr instanceof PreconditionError,
+    );
+    rmSync(slowOutDir, { recursive: true, force: true });
+  }
+
+  // D1, second case: expiry DURING output, immediately before the authoritative
+  // rename. The temporary must not be promoted and must not survive.
+  {
+    const cleanTree =
+      execFileSync("git", ["status", "--porcelain=v1"], {
+        cwd: REPO_ROOT,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim() === "";
+    const renameOutDir = mkdtempSync(join(tmpdir(), "m1-rename-"));
+    const rtRename = new Runtime();
+    const savedRenameFetch = globalThis.fetch;
+    globalThis.fetch = async () =>
+      new Response(new TextEncoder().encode("{}"), { status: 404 });
+    const renameErr = await rejected(() =>
+      collectEvidence({
+        repoRoot: REPO_ROOT,
+        outDir: renameOutDir,
+        runtime: rtRename,
+        // `now()` is called as the document is built, i.e. after the last phase
+        // and immediately before the write stage. Expiring here is the narrowest
+        // window in which a file could still be renamed into place.
+        now: () => {
+          rtRename.totalController.abort();
+          rtRename.deadlineExpiredLabel = "M1 readiness runner";
+          return "2026-09-16T00:00:00.000Z";
+        },
+        totalMs: 30_000,
+      }),
+    );
+    globalThis.fetch = savedRenameFetch;
+    check("lifecycle", "expiry immediately before the rename fails the run", renameErr !== null);
+    check(
+      "lifecycle",
+      "expiry immediately before the rename is reported as a deadline",
+      cleanTree
+        ? categorizeError(renameErr) === "deadline_exceeded"
+        : renameErr instanceof PreconditionError,
+    );
+    check(
+      "lifecycle",
+      "expiry immediately before the rename promotes NOTHING into place",
+      readdirSync(renameOutDir).length === 0,
+    );
+    rmSync(renameOutDir, { recursive: true, force: true });
+  }
+
+  // The reduced deadline is a test seam only: neither production call site uses it.
+  check(
+    "lifecycle",
+    "the reduced total deadline is never used by a production call site",
+    !(sources.get("scripts/ops/m1-readiness/cli.mjs") ?? "").includes("totalMs") &&
+      (sources.get("scripts/ops/m1-readiness/runner.mjs") ?? "").includes("totalMs = RUNNER_TOTAL_MS"),
+  );
 
   check(
     "lifecycle",
@@ -800,6 +1093,37 @@ const ciWith = async ({ runs, jobs, runsTotal, jobsTotal, runtime = new Runtime(
   check("github", "a first-attempt successful push run with five jobs is ESTABLISHED", ok.status === "ESTABLISHED");
   check("github", "the accepted run and its five jobs are recorded", ok.run.id === 1234 && ok.jobs.length === 5);
   check("github", "the workflow identity comes from source", ok.identity.workflow_id === WORKFLOW_ID && ok.identity.workflow_path === WORKFLOW_PATH);
+
+  // --- D3: the emitted workflow NAME is actually verified -------------------
+  //
+  // `workflow_name` is published as established identity, so it must be checked
+  // against the response rather than merely restated from a constant. The id
+  // and path remain the stronger checks; this closes the gap between what the
+  // gate verifies and what the evidence claims.
+  check(
+    "github",
+    "the canonical response reaches ESTABLISHED with the expected workflow name",
+    ok.status === "ESTABLISHED" && ok.identity.workflow_name === WORKFLOW_NAME && ok.run.name === WORKFLOW_NAME,
+  );
+  for (const [label, name] of [
+    ["a differently named workflow", "Not CI"],
+    ["a null workflow name", null],
+    ["a lower-case workflow name", "ci"],
+    ["a trailing-space workflow name", "CI "],
+    ["a leading-space workflow name", " CI"],
+    ["a non-breaking-space workflow name", "CI\u00a0"],
+    ["an inner-space workflow name", "C I"],
+    ["an empty workflow name", ""],
+  ]) {
+    const { result } = await ciWith({ runs: [makeRun({ name })], jobs: makeJobs() });
+    check("github", `${label} is refused`, result.status === "NOT ESTABLISHED");
+  }
+  {
+    const withoutName = makeRun();
+    delete withoutName.name;
+    const { result } = await ciWith({ runs: [withoutName], jobs: makeJobs() });
+    check("github", "a run with no workflow name at all is refused", result.status === "NOT ESTABLISHED");
+  }
   check("github", "the run URL is requested against the fixed workflow id", seen[0].url.includes(`/workflows/${WORKFLOW_ID}/runs`));
   check("github", "the jobs URL requests attempt 1 explicitly", seen[1].url.includes("/attempts/1/jobs"));
   check("github", "no token means no authorization header", !("authorization" in seen[0].headers));

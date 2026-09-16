@@ -74,12 +74,18 @@ const aggregateAuditNotAttempted = () => ({
  * @param {string} text
  * @param {Set<string>} temporaries
  */
-const writeAtomic = async (target, text, temporaries) => {
+const writeAtomic = async (target, text, temporaries, guard) => {
+  // Checked BEFORE the temporary exists, so an already-expired run creates
+  // nothing at all.
+  guard?.("evidence temporary");
   const tmp = `${target}.tmp-${randomBytes(6).toString("hex")}`;
   temporaries.add(tmp);
   try {
     // `wx` so a collision is an error rather than an overwrite.
     await writeFile(tmp, text, { encoding: "utf8", flag: "wx" });
+    // The last gate before the file becomes authoritative. Expiry during the
+    // write must not be promoted by a rename; the temporary is removed below.
+    guard?.("evidence rename");
     await rename(tmp, target);
     temporaries.delete(tmp);
   } catch (error) {
@@ -116,6 +122,10 @@ const writeAtomic = async (target, text, temporaries) => {
  * @param {string} [input.connectionString] a READ-ONLY production connection
  * @param {string} [input.token] an optional GitHub API token
  * @param {() => string} [input.now] injected only so tests are deterministic
+ * @param {number} [input.totalMs] the total deadline. Defaults to the fixed
+ *   {@link RUNNER_TOTAL_MS}; overridden ONLY by the test suite, which cannot
+ *   wait four minutes to prove a four-minute bound works. Both production call
+ *   sites omit it, and the offline suite asserts that from source.
  * @param {string} [input.entrypoint]
  */
 export const collectEvidence = async ({
@@ -126,34 +136,45 @@ export const collectEvidence = async ({
   token,
   now = () => new Date().toISOString(),
   entrypoint = "scripts/ops/m1-readiness/cli.mjs",
+  totalMs = RUNNER_TOTAL_MS,
 }) => {
   /** Temporary output paths in flight, so a cancellation can remove them. */
   const temporaries = new Set();
 
   const onCancel = async () => {
     // Database sockets and child processes first, then any partial output.
-    await runtime.shutdown();
+    const failedCleanups = await runtime.shutdown();
     await Promise.all([...temporaries].map((tmp) => rm(tmp, { force: true })));
     temporaries.clear();
+    // Returning `true` is an assertion that external resources were released
+    // and no partial output survives — it is read as independent confirmation,
+    // so it is only claimed when every cleanup actually succeeded.
+    return failedCleanups === 0 && temporaries.size === 0;
   };
 
   return withDeadline(
     runtime,
     "M1 readiness runner",
-    RUNNER_TOTAL_MS,
-    async () => {
-      checkpoint(runtime, "repository preconditions");
+    totalMs,
+    // The total deadline's signal is a PARAMETER, not something discarded. It
+    // is also linked into the runtime below, so every nested operation — every
+    // git read, GitHub request and database statement — observes it too.
+    async (totalSignal) => {
+      /** Throws the moment the total deadline (or an operator) has stopped us. */
+      const guard = (label) => checkpoint(runtime, label, totalSignal);
+
+      guard("repository preconditions");
       const repository = await establishArtifact({ repoRoot, runtime });
       const artifactEntries = repository.migration_entries;
 
-      checkpoint(runtime, "CI evidence");
+      guard("CI evidence");
       const ci = await verifyExactHeadCi({ artifact: repository.artifact, runtime });
 
       let migrationState = migrationStateNotAttempted(artifactEntries);
       let aggregateAudit = aggregateAuditNotAttempted();
 
       if (connectionString) {
-        checkpoint(runtime, "migration-state read");
+        guard("migration-state read");
         migrationState = await readMigrationState({
           connectionString,
           milestone: MILESTONE,
@@ -161,12 +182,12 @@ export const collectEvidence = async ({
           runtime,
         });
 
-        checkpoint(runtime, "aggregate audit");
+        guard("aggregate audit");
         aggregateAudit = await runAggregateAudit({ connectionString, repoRoot, runtime });
       }
 
       // --- rendering and output, inside the same deadline -------------------
-      checkpoint(runtime, "evidence output");
+      guard("evidence output");
       const document = buildEvidence({
         generatedAt: now(),
         entrypoint,
@@ -183,14 +204,18 @@ export const collectEvidence = async ({
 
       // Re-checked after rendering: an interrupt that arrived while the document
       // was being built must not produce a file.
-      checkpoint(runtime, "evidence write");
+      guard("evidence write");
       await mkdir(outDir, { recursive: true });
+      // Directory creation is itself inside the deadline, so an expiry during
+      // mkdir stops here rather than proceeding to write.
+      guard("evidence directory");
       const evidencePath = resolve(outDir, EVIDENCE_FILENAME);
       const summaryPath = resolve(outDir, SUMMARY_FILENAME);
-      await writeAtomic(evidencePath, evidenceText, temporaries);
-      await writeAtomic(summaryPath, summaryText, temporaries);
+      await writeAtomic(evidencePath, evidenceText, temporaries, guard);
+      await writeAtomic(summaryPath, summaryText, temporaries, guard);
 
       // --- cleanup, also inside the same deadline ---------------------------
+      guard("cleanup");
       await runtime.shutdown();
 
       const established =
@@ -208,7 +233,9 @@ export const collectEvidence = async ({
         exitCode: established ? EXIT.COMPLETE : EXIT.NOT_ESTABLISHED,
       };
     },
-    { onCancel },
+    // `linkAsTotal` publishes this deadline to the runtime, which is what makes
+    // it reach the phases instead of only wrapping them.
+    { onCancel, linkAsTotal: true },
   );
 };
 

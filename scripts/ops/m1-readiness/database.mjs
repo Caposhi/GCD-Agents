@@ -144,6 +144,12 @@ export const withReadOnlySession = async ({ connectionString, runtime, label, to
     }
     await settleWithin(closed, CHILD_TERMINATION_GRACE_MS);
     sessionClosed = stream ? stream.destroyed : true;
+    // Reported to `withDeadline` as INDEPENDENT confirmation: the session was
+    // observed closed, not merely asked to close. A driver error raised because
+    // we destroyed the socket is not the operation acknowledging cancellation,
+    // so this is the only honest confirmation available on this path — and it
+    // is only claimed when the socket really is gone.
+    return sessionClosed;
   };
 
   const unregister = runtime.registerCleanup(teardown);

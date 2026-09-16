@@ -38,6 +38,7 @@ import { dirname } from "node:path";
 import { categorizeError } from "../lib/errorCategories.mjs";
 import { PreconditionError } from "./repository.mjs";
 import { EXIT, collectEvidence, readConnectionString, readToken } from "./runner.mjs";
+import { STOP_OUTCOME } from "./runtime.mjs";
 import { Runtime } from "./runtime.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -123,13 +124,23 @@ const main = async () => {
       process.exitCode = EXIT.PRECONDITION_FAILED;
     } else {
       // Nothing from the error's own message is repeated: it may have come from
-      // a driver or a remote response. `confirmedStopped === false` means the
-      // cancelled work did not report that it finished, which an operator needs
-      // to know because it is the one case the runner cannot vouch for.
+      // a driver or a remote response. What IS reported is the categorized stop
+      // outcome, because "the promise settled" and "the work was cancelled" are
+      // different facts and an operator acts on them differently.
       const category = categorizeError(error);
-      const unconfirmed = error?.confirmedStopped === false ? " (stop NOT confirmed)" : "";
+      const phrasing = {
+        [STOP_OUTCOME.CANCELLATION_ACKNOWLEDGED]: "stop_confirmed=cancellation acknowledged",
+        [STOP_OUTCOME.EXTERNAL_CLEANUP_CONFIRMED]:
+          "stop_confirmed=no (external resources released, but the work never acknowledged cancellation)",
+        [STOP_OUTCOME.SETTLED_WITHOUT_CANCELLATION]:
+          "stop_confirmed=no (the work IGNORED cancellation and then completed normally — nothing was cancelled)",
+        [STOP_OUTCOME.STOP_UNCONFIRMED]:
+          "stop_confirmed=NO (the work never confirmed it finished — it may still be running)",
+      };
+      const outcome = error?.stopOutcome ? ` ${phrasing[error.stopOutcome] ?? ""}` : "";
+      const by = error?.stoppedBy ? ` stopped_by=${error.stoppedBy}` : "";
       process.stderr.write(
-        `M1 readiness runner did not complete. error_category=${category}${unconfirmed}\n`,
+        `M1 readiness runner did not complete. error_category=${category}${by}${outcome}\n`,
       );
       process.exitCode = EXIT.NOT_ESTABLISHED;
     }

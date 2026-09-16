@@ -158,7 +158,11 @@ const REPOSITORY = obj(
 const RUN = obj(
   {
     id: int({ min: 1 }),
-    name: nullable(str({ max: 256 })),
+    // Required and non-nullable: the runner EMITS `workflow_name` as verified
+    // identity, so it must actually be checked. A response that omits the name,
+    // or nulls it, cannot satisfy an equality test and must not be accepted
+    // "as if" it had matched.
+    name: str({ min: 1, max: 256 }),
     head_sha: str({ min: 40, max: 40 }),
     path: str({ max: 512 }),
     event: str({ max: 64 }),
@@ -174,7 +178,7 @@ const RUN = obj(
     head_branch: nullable(str({ max: 512 })),
     repository: REPOSITORY,
   },
-  { optional: ["name"], unknown: "discard" },
+  { unknown: "discard" },
 );
 
 const RUNS_PAGE = obj(
@@ -354,6 +358,10 @@ export const verifyExactHeadCi = async ({ artifact, runtime }) => {
           r.head_sha === artifact &&
           r.workflow_id === WORKFLOW_ID &&
           r.path === WORKFLOW_PATH &&
+          // Exact equality, so "Not CI", "ci", "CI " and "C I" are all refused.
+          // The id and path remain the stronger checks; this one closes the gap
+          // between what the gate verifies and what the evidence claims.
+          r.name === WORKFLOW_NAME &&
           r.repository.full_name === REPOSITORY_FULL_NAME,
       );
       const accepted = forArtifact.filter(
@@ -446,6 +454,9 @@ export const verifyExactHeadCi = async ({ artifact, runtime }) => {
         artifact,
         run: {
           id: run.id,
+          // The name that was actually compared, recorded alongside the rest of
+          // the accepted run so the check is visible and not merely asserted.
+          name: run.name,
           run_number: run.run_number,
           run_attempt: run.run_attempt,
           event: run.event,

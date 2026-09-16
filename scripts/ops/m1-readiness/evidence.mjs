@@ -38,7 +38,7 @@ import { ALL_ERROR_CATEGORIES } from "../lib/errorCategories.mjs";
 import { EXPECTED_CHECK_NAMES } from "../lib/aggregateAudit.mjs";
 import { COMPARISON_KEYS, MIGRATION_007_STATES } from "../lib/migrationState.mjs";
 import { DEADLINES_MS } from "./deadlines.mjs";
-import { EXPECTED_JOB_NAMES, OWNER, REPO } from "./github.mjs";
+import { EXPECTED_JOB_NAMES, OWNER, REPO, WORKFLOW_NAME } from "./github.mjs";
 import { HANDLED_SIGNALS } from "./runtime.mjs";
 import {
   StrictDataError,
@@ -160,7 +160,10 @@ export const EVIDENCE_SCHEMA = obj({
       repo: enumOf([REPO]),
       workflow_id: int({ min: 1 }),
       workflow_path: str({ max: 256 }),
-      workflow_name: str({ max: 128 }),
+      // enumOf, not a free string: the document may only ever carry the ONE
+      // name the gate compares the response against, so an emitted identity
+      // cannot drift from the verified one.
+      workflow_name: enumOf([WORKFLOW_NAME]),
       expected_event: str({ max: 32 }),
       expected_branch: str({ max: 64 }),
       expected_repository: str({ max: 256 }),
