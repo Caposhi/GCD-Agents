@@ -40,7 +40,14 @@ export const STOP_OUTCOME = Object.freeze({
   STOP_REQUESTED: "stop_requested",
   /** The operation observed the signal and ended BECAUSE of it. */
   CANCELLATION_ACKNOWLEDGED: "cancellation_acknowledged",
-  /** An external resource (socket, session, child) was independently confirmed closed. */
+  /**
+   * An external CLIENT-SIDE resource (socket, connection, child process) was
+   * independently confirmed released. This is not cooperative cancellation —
+   * the operation never acknowledged the stop — and for a database connection
+   * it is not proof that the server-side backend terminated at that instant;
+   * that remains bounded by the session's configured `lock_timeout`,
+   * `statement_timeout` and `idle_in_transaction_session_timeout`.
+   */
   EXTERNAL_CLEANUP_CONFIRMED: "external_cleanup_confirmed",
   /** It ignored cancellation and then completed normally. Nothing was cancelled. */
   SETTLED_WITHOUT_CANCELLATION: "settled_without_cancellation",
@@ -237,8 +244,11 @@ export const deadlineSignal = (ms) => {
  * `options.onCancel` (destroy the socket, signal and reap the child), then wait
  * for the operation itself to settle. If it does not settle within
  * {@link CANCELLATION_SETTLE_MS} the thrown error says so via
- * `confirmedStopped === false`, rather than the caller being told a clean
- * timeout that did not happen.
+ * `stopOutcome === STOP_OUTCOME.STOP_UNCONFIRMED` (and `confirmedStopped ===
+ * false`), rather than the caller being told a clean timeout that did not
+ * happen. `confirmedStopped` is true for exactly one outcome,
+ * `cancellation_acknowledged`; the full vocabulary and the CLI wording emitted
+ * for each state are documented in `docs/M1_READINESS_RUNNER.md`.
  *
  * The deadline is passed in by the caller from `deadlines.mjs`; this function
  * has no default and reads no environment, so there is no path by which a

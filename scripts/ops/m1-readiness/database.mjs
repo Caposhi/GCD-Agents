@@ -29,8 +29,17 @@
  *   - a statement blocked behind an exclusive lock is refused by the server's own
  *     `lock_timeout` well inside the phase deadline, and surfaces as the fixed
  *     category `lock_not_available`.
- *   - on an operator interrupt or a deadline, the socket is destroyed and awaited,
- *     so no database session is left open by this runner.
+ *   - on an operator interrupt or a deadline, the CLIENT socket is destroyed and its
+ *     `close` event awaited, so this runner holds no open client resource when it
+ *     returns. That is a CLIENT-SIDE fact. It does not prove the PostgreSQL backend
+ *     has disappeared at that instant: the backend may remain visible in
+ *     `pg_stat_activity` until it notices the disconnect, or until one of the
+ *     server-enforced bounds above (`lock_timeout`, `statement_timeout`,
+ *     `idle_in_transaction_session_timeout`) fires. Those configured timeouts are
+ *     what bound the backend's lifetime; destroying the socket is not itself a
+ *     bound. The disposable PostgreSQL integration suite establishes EVENTUAL
+ *     backend absence within its polling window, not absence at the exact instant
+ *     this function returns.
  */
 
 import { once } from "node:events";
@@ -90,9 +99,13 @@ const newClient = (connectionString) =>
  * A deadline that could not reach the connection would leave a production
  * backend running a query nobody is waiting for.
  *
- * `teardown` does not return until the socket's `close` event has fired or the
- * socket reports itself destroyed, so "the session is closed" is confirmed
- * rather than assumed. That confirmation is recorded on the returned record.
+ * `teardown` does not return until the CLIENT socket's `close` event has fired or
+ * the socket reports itself destroyed, so "this runner's client resource is
+ * released" is confirmed rather than assumed, and that confirmation is recorded on
+ * the returned record. It is not a statement about the server: the PostgreSQL
+ * backend may still be visible until it notices the disconnect or a server-enforced
+ * timeout (`lock_timeout`, `statement_timeout`,
+ * `idle_in_transaction_session_timeout`) fires.
  *
  * `totalMs` is a parameter rather than a constant read here so the disposable
  * PostgreSQL suite can drive the real timeout path against a real lock wait.
@@ -125,9 +138,13 @@ export const withReadOnlySession = async ({ connectionString, runtime, label, to
             () => undefined,
           )
         : Promise.resolve();
-    // `end()` is the graceful path and is given a bounded grace period; the
-    // socket is then destroyed unconditionally, which is what actually ends the
-    // server-side session when a statement is still in flight.
+    // `end()` is the graceful path and is given a bounded grace period; the client
+    // socket is then destroyed unconditionally. Destroying the socket releases THIS
+    // process's resource and signals the disconnect; it does not by itself end the
+    // server-side session at that instant. When a statement is still in flight the
+    // backend keeps running until it notices the disconnect or until the configured
+    // `statement_timeout` / `lock_timeout` / `idle_in_transaction_session_timeout`
+    // fires — those server-enforced bounds, not this destroy, are what bound it.
     await settleWithin(
       Promise.resolve()
         .then(() => client.end())
@@ -144,11 +161,14 @@ export const withReadOnlySession = async ({ connectionString, runtime, label, to
     }
     await settleWithin(closed, CHILD_TERMINATION_GRACE_MS);
     sessionClosed = stream ? stream.destroyed : true;
-    // Reported to `withDeadline` as INDEPENDENT confirmation: the session was
-    // observed closed, not merely asked to close. A driver error raised because
-    // we destroyed the socket is not the operation acknowledging cancellation,
-    // so this is the only honest confirmation available on this path — and it
-    // is only claimed when the socket really is gone.
+    // Reported to `withDeadline` as INDEPENDENT confirmation of CLIENT-SIDE
+    // cleanup: the client socket was observed closed, not merely asked to close.
+    // `withDeadline` records this as `external_cleanup_confirmed`, which means
+    // exactly that — confirmed client-side resource cleanup. It is NOT cooperative
+    // cancellation (a driver error raised because we destroyed the socket is not
+    // the operation acknowledging a stop) and it is NOT proof that the PostgreSQL
+    // backend terminated immediately. It is only claimed when the client socket
+    // really is gone.
     return sessionClosed;
   };
 
@@ -193,8 +213,10 @@ export const withReadOnlySession = async ({ connectionString, runtime, label, to
         await client.query("ROLLBACK");
         return { value: result, enforced };
       },
-      // The deadline reaches the socket, and does not return until the session
-      // is confirmed closed.
+      // The deadline reaches the client socket, and does not return until that
+      // socket is confirmed closed. Server-side backend termination is bounded by
+      // the configured `lock_timeout` / `statement_timeout` /
+      // `idle_in_transaction_session_timeout`, not by this call.
       { onCancel: teardown },
     );
   } catch (error) {
@@ -204,12 +226,13 @@ export const withReadOnlySession = async ({ connectionString, runtime, label, to
     await teardown();
   }
 
-  // Teardown has completed before anything is returned or rethrown, so the
-  // caller never sees a result while a session this call opened is still open.
+  // Teardown has completed before anything is returned or rethrown, so the caller
+  // never sees a result while a CLIENT connection this call opened is still open.
   if (failure) throw failure;
   if (!sessionClosed) {
-    // Never swallowed: the runner's claim is that it leaves no open database
-    // session, so a teardown that could not confirm closure fails the read.
+    // Never swallowed: the runner's claim is that it leaves no open CLIENT
+    // connection, so a teardown that could not confirm the client socket closed
+    // fails the read. (The claim is deliberately client-side; see the note above.)
     throw new Error("the database session could not be confirmed closed");
   }
   return outcome;

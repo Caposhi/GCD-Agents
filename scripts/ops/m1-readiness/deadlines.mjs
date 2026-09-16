@@ -56,12 +56,18 @@ export const GIT_COMMAND_MS = 15_000;
 export const REPOSITORY_PHASE_TOTAL_MS = 60_000;
 
 /**
- * The whole runner: preconditions, every phase, rendering, the atomic output,
- * cleanup and the final return. Nothing the runner does sits outside it.
+ * The whole runner: preconditions, every phase, rendering and the authoritative
+ * output. Nothing the runner collects or publishes sits outside it.
  *
  * It is larger than the sum of the phases it contains
  * (60 + 60 + 45 + 60 = 225 s) so it is a true backstop rather than the
  * effective limit, with room for rendering and output.
+ *
+ * It bounds WORK, not the return time: when it expires the runner initiates
+ * cancellation and refuses every later phase and every authoritative output, and
+ * may then return after this instant while bounded settlement and cleanup
+ * complete. The additional wait is bounded by {@link CANCELLATION_SETTLE_MS}
+ * plus the bounded cleanup inside it.
  */
 export const RUNNER_TOTAL_MS = 240_000;
 

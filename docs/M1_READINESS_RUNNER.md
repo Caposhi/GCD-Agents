@@ -219,10 +219,33 @@ means changing that file in a reviewed commit.
 | cancellation settle | 10 000 ms |
 
 The total deadline covers the **complete lifecycle**: preconditions, every phase,
-building and rendering the document, the atomic output, cleanup, and the return.
-Nothing the runner does sits outside it. A total that covered only the first
+building and rendering the document, and the authoritative output. Nothing the
+runner collects or publishes sits outside it. A total that covered only the first
 phase would be a number in a report rather than a bound on the program, and the
 phases it excluded would be unbounded.
+
+It is a bound on *work*, not a promise to return at that instant. **The runner
+does not guarantee that it returns by 240 000 ms.** When the total deadline
+expires it initiates cancellation and prevents every later phase and every
+authoritative output; the call may then return *after* that deadline while
+bounded cancellation settlement and cleanup complete. The maximum additional wait
+is the configured cancellation-settle allowance plus the bounded cleanup that
+follows it — both are constants in
+[`deadlines.mjs`](../scripts/ops/m1-readiness/deadlines.mjs)
+(`CANCELLATION_SETTLE_MS`, `CHILD_TERMINATION_GRACE_MS`), and the values in the
+table above come from that file. Read the worst case off those constants rather
+than off a derived number quoted in prose, which goes stale the moment one of
+them changes.
+
+Returning after the deadline is **not** permission to collect anything further or
+to promote authoritative output: both are already refused by the checkpoint that
+guards each boundary, and anything already promoted is rolled back.
+
+Per-phase deadlines, the total deadline and operator interruption remain three
+distinct things. A per-phase deadline bounds one phase. The total deadline ends
+the whole run and is reported as `deadline_exceeded`. An operator interrupt also
+ends the whole run, but is reported as `interrupted` and as `stopped_by=operator`
+— the runner never relabels one as the other.
 
 `lock_timeout` is deliberately well under `statement_timeout`: a statement blocked
 behind an exclusive lock is refused by PostgreSQL's own lock timeout rather than
@@ -243,24 +266,84 @@ its output minutes later. A deadline that abandons work rather than stopping it
 is not a deadline, it is a reporting delay.
 
 So the sequence on every stop is: observe the abort, invoke the operation's
-cancellation (destroy the database socket, signal and reap the child process),
-then **wait for the operation itself to settle**. If it does not settle within
-the cancellation-settle window the thrown error carries
-`confirmedStopped === false` and the CLI prints `(stop NOT confirmed)`, rather
-than reporting a clean timeout that did not happen.
+cancellation (destroy the database client socket, signal and reap the child
+process), then **wait for the operation itself to settle**.
 
-For the database that means the socket is destroyed and its `close` event
-awaited, so the server-side session is **confirmed** closed — not assumed — before
-the call returns or any later phase begins. A teardown that cannot confirm
-closure fails the read. Each phase boundary is a checkpoint, so a stop is
-observed *before* the next phase starts rather than after it has already run.
+### Stop outcomes
 
-### Atomic output
+"The promise settled" and "the work was cancelled" are different facts, so a stop
+is never reported as a boolean. `STOP_OUTCOME` in
+[`runtime.mjs`](../scripts/ops/m1-readiness/runtime.mjs) names four terminal
+states for a stop that was requested, and
+[`cli.mjs`](../scripts/ops/m1-readiness/cli.mjs) prints exactly the wording in
+the last column.
 
-Both files are written to a uniquely named temporary beside the target and then
-renamed, so a reader sees either no file or a complete one. A run that is stopped
-removes its temporaries and writes nothing at all: no evidence, no summary, no
-partial file.
+| Outcome | `confirmedStopped` | Cooperatively acknowledged cancellation? | Only external/client cleanup confirmed? | Ignored cancellation and completed normally? | Survivor risk | CLI wording |
+|---|---|---|---|---|---|---|
+| `cancellation_acknowledged` | `true` | yes | no | no | none — the work ended *because* of the stop | `stop_confirmed=cancellation acknowledged` |
+| `external_cleanup_confirmed` | `false` | no | yes — client-side resources were confirmed released | no | residual — the client resource is gone, but the work never acknowledged the stop, and a server-side backend may persist until it notices the disconnect or a configured timeout fires | `stop_confirmed=no (external resources released, but the work never acknowledged cancellation)` |
+| `settled_without_cancellation` | `false` | no | no | yes | nothing is still running, but nothing was cancelled either: the work ran to normal completion after the stop was requested, so its effects happened | `stop_confirmed=no (the work IGNORED cancellation and then completed normally — nothing was cancelled)` |
+| `stop_unconfirmed` | `false` | no | no | unknown | highest — the work never settled inside the cancellation-settle allowance and may still be running | `stop_confirmed=NO (the work never confirmed it finished — it may still be running)` |
+
+Two further values exist for runs that were not in a stopped state:
+`completed_before_deadline` (the operation finished on its own, before any
+deadline or interrupt) and `stop_requested` (a stop has been asked for; one of
+the four rows above then says what came of it).
+
+Only `cancellation_acknowledged` sets `confirmedStopped` to `true`. A late normal
+completion is not a cancellation, however tidy it looked.
+
+The offline suite asserts every quoted CLI string above against the phrasing map
+in `cli.mjs`, so changing the wording in either place fails the suite rather than
+leaving this table stale.
+
+### What database teardown confirms
+
+For the database, teardown destroys the **client** socket and awaits its `close`
+event, so client-side resource cleanup is **confirmed** — not assumed — before the
+call returns or any later phase begins. A teardown that cannot confirm the client
+socket closed fails the read.
+
+That is a client-side fact only. **It does not prove that the PostgreSQL backend
+has disappeared at that instant.** The backend may remain visible until it
+notices the disconnect, or until a server-enforced timeout fires. The bounds that
+do exist are the ones this session configures and verifies — `lock_timeout`,
+`statement_timeout` and `idle_in_transaction_session_timeout` — not the socket
+destroy itself. Accordingly `external_cleanup_confirmed` means *confirmed
+client-side resource cleanup*: it is not cooperative cancellation by the
+operation, and it is not proof of immediate server-backend termination.
+
+The PostgreSQL integration suite establishes **eventual** backend absence within
+its bounded polling window — it polls `pg_stat_activity` for this runner's
+`application_name` until the count reads zero, and fails if it never does — rather
+than absence at the exact instant the runner returned.
+
+Each phase boundary is a checkpoint, so a stop is observed *before* the next phase
+starts rather than after it has already run.
+
+### All-or-nothing output
+
+The evidence document and the summary are the two authoritative files, and they
+are published as a single transaction.
+
+Before anything is staged, **both target paths must be absent**. A pre-existing
+target is refused with the `output_target_exists` precondition rather than
+overwritten, backed up or restored, so this runner never reads, moves or destroys
+a file it did not create.
+
+Both files are then written to uniquely named temporaries beside their targets
+and read back for validation; only once **both** are staged is either promoted by
+rename. The run records every target it promotes. Any failure, operator
+interrupt, phase deadline, total deadline or cleanup path reached before both
+promotions have succeeded removes every target this run promoted and every
+temporary it created, and the boundary is guarded immediately before and after
+each rename. The output set is marked complete only after the second promotion
+succeeds; once it is complete, later cleanup never removes it. Rollback and
+cleanup are themselves bounded and awaited.
+
+A reader therefore sees either both complete files or neither. In particular, no
+failed run can leave a complete-looking `m1-readiness-evidence.json` behind
+without its completed companion summary.
 
 ---
 
@@ -351,14 +434,18 @@ constructed wrong.
 `SIGINT`, `SIGTERM` and `SIGHUP` stop new work, abort in-flight GitHub and
 database operations, await every registered cleanup, and exit nonzero (`130`).
 Each git child process is signalled and then **awaited to its `close` event**;
-each database socket is destroyed and awaited, which is what ends the server-side
-session.
+each database **client** socket is destroyed and its `close` event awaited, which
+confirms this process released the connection. It does not by itself end the
+server-side session at that instant — see
+[What database teardown confirms](#what-database-teardown-confirms).
 
 The runner claims exactly that much and no more. It does **not** read `/proc`, it
 does **not** match process names, and it makes no assertion about descendants of
-a process it did not create. The PostgreSQL suite proves the database half from
-the server's own catalogue: after every runner call it asserts that no backend
-named `gcd-m1-readiness-runner` remains in `pg_stat_activity`.
+a process it did not create. The PostgreSQL suite checks the database half
+against the server's own catalogue: after every runner call it polls
+`pg_stat_activity` within a bounded window until no backend named
+`gcd-m1-readiness-runner` remains. That establishes eventual absence within that
+window, not absence at the instant the runner returned.
 
 ---
 
@@ -446,8 +533,9 @@ offline quality gates`, the PostgreSQL suite in the `PostgreSQL 16/18
 integration` matrix. No job was added, so the five-job CI contract the runner
 itself verifies is unchanged.
 
-The offline suite is **335 checks** across thirteen groups: macOS/Linux-independent
-operation, execution-capable Git configuration, the deadline and output lifecycle,
+The offline suite is **389 checks** across thirteen groups: macOS/Linux-independent
+operation, execution-capable Git configuration, the deadline and all-or-nothing
+output lifecycle,
 helper-generation absence, exact `A` binding, dirty-tree handling, the strict data
 contract, GitHub success and every failure state, migration
 applied/unapplied/inconsistent states, the exact 23-check audit and its strict
@@ -472,13 +560,15 @@ scenarios: migration 007 absent, migration 007 present, an unexpected migration,
 a within-bound audit, an exceeded-bound audit, lock contention, connection
 failure, an interrupted read, and a **real lock wait that outlives the phase
 deadline**. After **every** runner call it asserts that `_migrations` is unchanged
-and that no runner backend remains in `pg_stat_activity`.
+and polls `pg_stat_activity` within a bounded window until no runner backend
+remains — eventual absence, not absence at the return instant.
 
 The lock-wait deadline scenario covers the path neither of the fast paths
 reaches: a statement genuinely blocked on an `ACCESS EXCLUSIVE` lock when the
 phase deadline — not the server's `lock_timeout`, and not an operator interrupt —
-expires. It proves the work is cancelled, that it confirmed it had stopped, that
-the blocked statement never returned rows, and that no session survives. The
+expires. It proves the work is cancelled, that the client socket was confirmed
+closed, that the blocked statement never returned rows, and that no runner
+backend remains once the bounded poll completes. The
 deadline is passed as an argument there because a 45-second wait cannot be part
 of a test suite; both production call sites pass the fixed constants from
 `deadlines.mjs`, and the offline suite asserts that from source.

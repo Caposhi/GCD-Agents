@@ -22,7 +22,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, chmodSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -362,7 +362,8 @@ const code = new Map([...sources].map(([file, text]) => [file, stripComments(tex
 }
 
 // ---------------------------------------------------------------------------
-// lifecycle: one truthful total deadline, cancellation that awaits, atomic output
+// lifecycle: one truthful total deadline, cancellation that awaits,
+// all-or-nothing output
 // ---------------------------------------------------------------------------
 
 {
@@ -384,7 +385,8 @@ const code = new Map([...sources].map(([file, text]) => [file, stripComments(tex
     "buildEvidence(",
     "renderEvidenceDocument(",
     "renderSummary(",
-    "writeAtomic(",
+    "assertTargetsAbsent(",
+    "stageOutput(",
     "runtime.shutdown()",
   ]) {
     check(
@@ -742,6 +744,328 @@ const code = new Map([...sources].map(([file, text]) => [file, stripComments(tex
   }
 
   // The reduced deadline is a test seam only: neither production call site uses it.
+  // --- F1: the authoritative output set is all-or-nothing -----------------
+  //
+  // Promoting the evidence file and then failing before the summary used to
+  // leave a complete, valid evidence file behind for a run that had FAILED,
+  // which is worse than leaving nothing because it looks like a result. Each
+  // case stops the run at an exact boundary through an explicit seam rather
+  // than by racing a timer, and asserts the same invariants.
+  {
+    const EV = "m1-readiness-evidence.json";
+    const SU = "m1-readiness-summary.txt";
+    // Same tree-awareness as the D1 blocks: a dirty developer checkout is
+    // refused by the `clean_tracked_source` precondition before any output is
+    // staged, so the invariants below still hold (nothing is ever published)
+    // while the outcome-classification assertions switch to asserting THAT.
+    // The check count therefore never depends on local state.
+    const cleanTree =
+      execFileSync("git", ["status", "--porcelain=v1"], {
+        cwd: REPO_ROOT,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim() === "";
+
+    /**
+     * Run collectEvidence with the GitHub phase stubbed. `hooks` receives the
+     * runtime, so a case can stop the run from inside a promotion boundary.
+     */
+    const outputRun = async (hooks = () => ({}), prepare = null) => {
+      const outDir = mkdtempSync(join(tmpdir(), "m1-output-"));
+      if (prepare) prepare(outDir);
+      const runtime = new Runtime();
+      const savedFetch = globalThis.fetch;
+      globalThis.fetch = async () => new Response(new TextEncoder().encode("{}"), { status: 404 });
+      let error = null;
+      let result = null;
+      try {
+        result = await collectEvidence({
+          repoRoot: REPO_ROOT,
+          outDir,
+          runtime,
+          ...hooks(runtime, outDir),
+        });
+      } catch (thrown) {
+        error = thrown;
+      }
+      globalThis.fetch = savedFetch;
+      const entries = readdirSync(outDir);
+      return {
+        outDir,
+        runtime,
+        error,
+        result,
+        entries,
+        authoritative: entries.filter((e) => e === EV || e === SU).length,
+        temporaries: entries.filter((e) => e.includes(".tmp-")).length,
+      };
+    };
+
+    /** The invariants every failing case must satisfy. */
+    const assertNothingPublished = (label, run) => {
+      check("lifecycle", `${label}: the run fails`, run.error !== null);
+      check("lifecycle", `${label}: zero newly promoted authoritative files`, run.authoritative === 0);
+      check("lifecycle", `${label}: zero temporary files`, run.temporaries === 0);
+      check("lifecycle", `${label}: no outstanding cleanup`, run.runtime.cleanups.size === 0);
+    };
+
+    // 1. Operator interruption immediately after the FIRST rename.
+    const interrupted = await outputRun((runtime) => ({
+      onPromotion: (index) => {
+        if (index !== 0) return;
+        runtime.interruptedBy = "SIGINT";
+        runtime.controller.abort();
+      },
+    }));
+    assertNothingPublished("interrupt after the first rename", interrupted);
+    check(
+      "lifecycle",
+      "interrupt after the first rename: reported as an interruption, not a deadline",
+      cleanTree
+        ? categorizeError(interrupted.error) === "interrupted" &&
+            interrupted.error.stopOutcome === STOP_OUTCOME.CANCELLATION_ACKNOWLEDGED
+        : interrupted.error instanceof PreconditionError,
+    );
+    rmSync(interrupted.outDir, { recursive: true, force: true });
+
+    // 2. Total-deadline expiry immediately after the FIRST rename.
+    const expired = await outputRun((runtime) => ({
+      onPromotion: (index) => {
+        if (index !== 0) return;
+        runtime.totalController.abort();
+        runtime.deadlineExpiredLabel = "M1 readiness runner";
+      },
+    }));
+    assertNothingPublished("deadline after the first rename", expired);
+    check(
+      "lifecycle",
+      "deadline after the first rename: reported as a deadline, not an interruption",
+      cleanTree
+        ? categorizeError(expired.error) === "deadline_exceeded" && expired.runtime.interrupted === false
+        : expired.error instanceof PreconditionError,
+    );
+    rmSync(expired.outDir, { recursive: true, force: true });
+
+    // 3. Failure while preparing the SECOND temporary file.
+    const stageFailure = await outputRun(() => ({
+      onStage: (index) => {
+        if (index === 1) throw new Error("injected: cannot prepare the second temporary");
+      },
+    }));
+    assertNothingPublished("failure preparing the second temporary", stageFailure);
+    rmSync(stageFailure.outDir, { recursive: true, force: true });
+
+    // 4. Failure during the SECOND promotion — the exact defect. The summary
+    //    target becomes a directory AFTER the absence precondition ran, so the
+    //    second rename fails with the evidence file already promoted.
+    const promoteFailure = await outputRun((_runtime, outDir) => ({
+      onPromotion: (index) => {
+        if (index === 0) mkdirSync(join(outDir, SU));
+      },
+    }));
+    check("lifecycle", "failure during the second promotion: the run fails", promoteFailure.error !== null);
+    check(
+      "lifecycle",
+      "failure during the second promotion: the already-promoted evidence file is rolled back",
+      !existsSync(join(promoteFailure.outDir, EV)),
+    );
+    check(
+      "lifecycle",
+      "failure during the second promotion: zero temporary files",
+      promoteFailure.temporaries === 0,
+    );
+    check(
+      "lifecycle",
+      "failure during the second promotion: no outstanding cleanup",
+      promoteFailure.runtime.cleanups.size === 0,
+    );
+    rmSync(promoteFailure.outDir, { recursive: true, force: true });
+
+    // 5 & 6. A pre-existing target is refused, and is never read, moved or altered.
+    for (const [label, name] of [
+      ["pre-existing evidence target", EV],
+      ["pre-existing summary target", SU],
+    ]) {
+      const marker = `USER DATA — ${name} — must survive untouched\n`;
+      const run = await outputRun(() => ({}), (outDir) => writeFileSync(join(outDir, name), marker));
+      check("lifecycle", `${label}: the run is refused`, run.error instanceof PreconditionError);
+      check(
+        "lifecycle",
+        `${label}: the pre-existing user file is byte-for-byte unchanged`,
+        readFileSync(join(run.outDir, name), "utf8") === marker,
+      );
+      check(
+        "lifecycle",
+        `${label}: nothing else was written beside it`,
+        run.entries.filter((e) => e !== name).length === 0,
+      );
+      rmSync(run.outDir, { recursive: true, force: true });
+    }
+
+    // 7. Success publishes exactly the two authoritative files and nothing else.
+    const success = await outputRun();
+    check(
+      "lifecycle",
+      "a successful run publishes exactly the two authoritative files",
+      cleanTree
+        ? success.error === null &&
+            success.entries.length === 2 &&
+            success.entries.includes(EV) &&
+            success.entries.includes(SU)
+        : success.error instanceof PreconditionError,
+    );
+    check(
+      "lifecycle",
+      "a successful run marks the output set complete after both promotions",
+      cleanTree
+        ? success.result?.outputComplete === true && success.result?.promotedCount === 2
+        : success.error instanceof PreconditionError,
+    );
+
+    // 8. Cleanup after a committed success must NOT remove the valid results,
+    //    and repeating it is idempotent.
+    const beforeCleanup = readdirSync(success.outDir).length;
+    const shutdowns = [await success.runtime.shutdown(), await success.runtime.shutdown(), await success.runtime.shutdown()];
+    check(
+      "lifecycle",
+      "repeated cleanup after success is idempotent and preserves the committed results",
+      readdirSync(success.outDir).length === beforeCleanup && shutdowns.every((n) => n === 0),
+    );
+    rmSync(success.outDir, { recursive: true, force: true });
+
+    // 8b. Repeated cleanup after a FAILED run is also idempotent.
+    const failedThenCleaned = await outputRun((runtime) => ({
+      onPromotion: (index) => {
+        if (index !== 0) return;
+        runtime.totalController.abort();
+        runtime.deadlineExpiredLabel = "M1 readiness runner";
+      },
+    }));
+    const afterFail = readdirSync(failedThenCleaned.outDir).length;
+    const repeats = [
+      await failedThenCleaned.runtime.shutdown(),
+      await failedThenCleaned.runtime.shutdown(),
+    ];
+    check(
+      "lifecycle",
+      "repeated cleanup after a failed run is idempotent and publishes nothing",
+      afterFail === 0 && readdirSync(failedThenCleaned.outDir).length === 0 && repeats.every((n) => n === 0),
+    );
+    rmSync(failedThenCleaned.outDir, { recursive: true, force: true });
+
+    // The seams are test-only.
+    check(
+      "lifecycle",
+      "the output test seams are never used by a production call site",
+      !(sources.get("scripts/ops/m1-readiness/cli.mjs") ?? "").includes("onPromotion") &&
+        !(sources.get("scripts/ops/m1-readiness/cli.mjs") ?? "").includes("onStage"),
+    );
+  }
+
+  // --- F3: the documented stop vocabulary is derived from the implementation --
+  //
+  // The runner doc used to quote a CLI string (`(stop NOT confirmed)`) that the
+  // CLI never emitted. Quoting is now checked rather than trusted: every
+  // `stop_confirmed=` string is read out of `cli.mjs` and must appear verbatim
+  // in the doc, and the doc may not contain one the CLI does not emit.
+  {
+    const cliSource = sources.get("scripts/ops/m1-readiness/cli.mjs") ?? "";
+    const runnerDoc = readFileSync(join(REPO_ROOT, "docs/M1_READINESS_RUNNER.md"), "utf8");
+    const quoted = (text) => [...text.matchAll(/"(stop_confirmed=[^"]*)"/g)].map((m) => m[1]);
+    const cliStrings = quoted(cliSource);
+
+    check(
+      "lifecycle",
+      "the CLI emits exactly one wording per stopped outcome",
+      cliStrings.length === 4,
+    );
+
+    // Each outcome's wording is taken from the phrasing map entry that names it,
+    // so the doc is checked against the string that outcome really produces.
+    for (const key of [
+      "CANCELLATION_ACKNOWLEDGED",
+      "EXTERNAL_CLEANUP_CONFIRMED",
+      "SETTLED_WITHOUT_CANCELLATION",
+      "STOP_UNCONFIRMED",
+    ]) {
+      const at = cliSource.indexOf(`[STOP_OUTCOME.${key}]:`);
+      const wording = at >= 0 ? quoted(cliSource.slice(at))[0] : undefined;
+      check(
+        "lifecycle",
+        `the CLI defines a wording for ${STOP_OUTCOME[key]}`,
+        typeof wording === "string" && wording.length > 0,
+      );
+      check(
+        "lifecycle",
+        `the runner doc names the stop outcome ${STOP_OUTCOME[key]}`,
+        runnerDoc.includes(`\`${STOP_OUTCOME[key]}\``),
+      );
+      check(
+        "lifecycle",
+        `the runner doc quotes the CLI wording for ${STOP_OUTCOME[key]} verbatim`,
+        typeof wording === "string" && runnerDoc.includes(wording),
+      );
+    }
+
+    // The two non-stopped values are documented too, so the vocabulary is complete.
+    for (const key of ["COMPLETED_BEFORE_DEADLINE", "STOP_REQUESTED"]) {
+      check(
+        "lifecycle",
+        `the runner doc names the stop outcome ${STOP_OUTCOME[key]}`,
+        runnerDoc.includes(`\`${STOP_OUTCOME[key]}\``),
+      );
+    }
+
+    check(
+      "lifecycle",
+      "the runner doc quotes no stop_confirmed wording the CLI does not emit",
+      quoted(runnerDoc).every((q) => cliStrings.includes(q)),
+    );
+    check(
+      "lifecycle",
+      "the stale `stop NOT confirmed` quotation is gone from the docs",
+      !runnerDoc.includes("stop NOT confirmed") &&
+        !(readFileSync(join(REPO_ROOT, "docs/TESTING.md"), "utf8").includes("stop NOT confirmed")),
+    );
+    check(
+      "lifecycle",
+      "the runner doc states that confirmedStopped is true only for an acknowledged cancellation",
+      runnerDoc.includes("Only `cancellation_acknowledged` sets `confirmedStopped` to `true`"),
+    );
+
+    // --- F4: the total deadline is described as a bound on work, not a return time.
+    check(
+      "lifecycle",
+      "the runner doc denies that the total deadline is a promise to return by 240 000 ms",
+      runnerDoc.includes("does not guarantee that it returns by 240 000 ms") &&
+        runnerDoc.includes("CANCELLATION_SETTLE_MS"),
+    );
+    check(
+      "lifecycle",
+      "the runner doc keeps per-phase, total and operator stops distinct",
+      runnerDoc.includes("remain three\ndistinct things"),
+    );
+
+    // --- F2: database teardown is documented as a client-side confirmation.
+    check(
+      "lifecycle",
+      "the runner doc denies that destroying the socket proves the backend is gone",
+      runnerDoc.includes("It does not prove that the PostgreSQL backend\nhas disappeared at that instant") &&
+        runnerDoc.includes("`idle_in_transaction_session_timeout`"),
+    );
+    check(
+      "lifecycle",
+      "the runner doc describes the PostgreSQL suite as establishing EVENTUAL absence",
+      runnerDoc.includes("establishes **eventual** backend absence within"),
+    );
+    check(
+      "lifecycle",
+      "no module still claims the socket destroy ends the server-side session",
+      [...sources].every(([, text]) => !/what actually ends the\s+\/\/?\s*server-side session/.test(text)) &&
+        !runnerDoc.includes("which is what ends the server-side"),
+    );
+  }
+
   check(
     "lifecycle",
     "the reduced total deadline is never used by a production call site",
@@ -809,10 +1133,20 @@ const code = new Map([...sources].map(([file, text]) => [file, stripComments(tex
   const runner = sources.get("scripts/ops/m1-readiness/runner.mjs") ?? "";
   check(
     "source",
-    "runner.mjs writes exactly the two fixed output files, atomically",
-    (runner.match(/await writeAtomic\(/g) ?? []).length === 2 &&
+    "runner.mjs stages exactly the two fixed output files before promoting either",
+    (runner.match(/await stageOutput\(/g) ?? []).length === 1 &&
+      runner.includes("[evidencePath, evidenceText]") &&
+      runner.includes("[summaryPath, summaryText]") &&
       runner.includes("EVIDENCE_FILENAME") &&
-      runner.includes("SUMMARY_FILENAME"),
+      runner.includes("SUMMARY_FILENAME") &&
+      runner.indexOf("await stageOutput(") < runner.indexOf("await rename(tmp, target)"),
+  );
+  check(
+    "source",
+    "the output set is marked complete only after every promotion has succeeded",
+    runner.indexOf("await rename(tmp, target)") < runner.indexOf("outputComplete = true") &&
+      runner.includes("if (outputComplete) return 0;") &&
+      (runner.match(/await rollbackPromoted\(\)/g) ?? []).length === 2,
   );
   check(
     "source",

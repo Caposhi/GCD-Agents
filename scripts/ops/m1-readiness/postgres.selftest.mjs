@@ -23,9 +23,12 @@
  *
  *   - `_migrations` is byte-for-byte unchanged: no migration is applied and
  *     none is rolled back;
- *   - no backend named `gcd-m1-readiness-runner` remains in `pg_stat_activity`:
- *     the runner leaves no open database session. This is read from the server's
- *     own catalogue, not from `/proc` and not by matching a process name.
+ *   - no backend named `gcd-m1-readiness-runner` remains in `pg_stat_activity`,
+ *     read from the server's own catalogue rather than from `/proc` or by matching
+ *     a process name. This is polled within a bounded window, so what it
+ *     establishes is EVENTUAL backend absence inside that window — not absence at
+ *     the exact instant the runner returned. The runner's own claim on return is
+ *     the client-side one: its connection was destroyed and confirmed closed.
  */
 
 import { randomBytes } from "node:crypto";

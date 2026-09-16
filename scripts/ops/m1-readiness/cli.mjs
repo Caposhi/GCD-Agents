@@ -146,7 +146,9 @@ const main = async () => {
     }
   } finally {
     // Every registered cleanup is awaited before the process is allowed to end,
-    // so no child process and no database session outlives this call.
+    // so no child process and no database CLIENT connection this process opened
+    // outlives this call. Server-side backend termination is bounded by the
+    // session's configured timeouts, not by this shutdown.
     await runtime.shutdown();
     runtime.removeSignalHandlers();
   }
