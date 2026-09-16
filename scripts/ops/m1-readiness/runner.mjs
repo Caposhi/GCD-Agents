@@ -17,7 +17,7 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { link, lstat, mkdir, readFile, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { BOUNDS_SOURCE } from "../lib/aggregateAudit.mjs";
 import { computeMigrationState } from "../lib/migrationState.mjs";
@@ -61,15 +61,25 @@ const aggregateAuditNotAttempted = () => ({
   session: null,
 });
 
+/** The one message an occupied output target produces, wherever it is detected. */
+const targetExists = (target) =>
+  new PreconditionError(
+    "output_target_exists",
+    `${target} already exists; this runner never overwrites an existing evidence file. ` +
+      "Move or remove it, or choose another output directory.",
+  );
+
 /**
- * Refuse to run if either authoritative target already exists.
+ * An EARLY, FRIENDLY refusal when either authoritative target already exists.
  *
- * The alternative — back the file up and restore it on rollback — adds a second
- * failure mode (a rollback that itself fails, leaving neither the old file nor
- * the new one) to protect a case no documented behaviour asks for: nothing in
- * this runner is specified to overwrite an operator's existing evidence. So the
- * precondition is absence, and because the run then only ever removes paths IT
- * promoted, no pre-existing file can be deleted or modified by a rollback.
+ * This check is deliberately NOT the no-overwrite guarantee. It is a `stat`, and
+ * between it and the promotion below there is a window in which a concurrent
+ * process can create the target; `rename()` would then silently replace that
+ * file, because POSIX rename has no no-clobber mode. The authoritative guarantee
+ * is the `link()` in {@link promoteOutput}, which either creates the name or
+ * fails with `EEXIST` atomically. This function exists only so the common case —
+ * the operator reruns into a directory that already holds evidence — fails
+ * immediately with a clear message instead of after a full run.
  *
  * @param {string[]} targets
  */
@@ -81,10 +91,7 @@ const assertTargetsAbsent = async (targets) => {
       if (/** @type {{ code?: string }} */ (error)?.code === "ENOENT") continue;
       throw error;
     }
-    throw new PreconditionError(
-      `output_target_exists: ${target} already exists; this runner never overwrites an ` +
-        "existing evidence file. Move or remove it, or choose another output directory.",
-    );
+    throw targetExists(target);
   }
 };
 
@@ -99,6 +106,8 @@ const assertTargetsAbsent = async (targets) => {
  * @param {string} target @param {string} text @param {Set<string>} temporaries
  */
 const stageOutput = async (target, text, temporaries) => {
+  // Beside its target, so the hard link that promotes it cannot cross a
+  // filesystem boundary — `link()` is EXDEV across devices.
   const tmp = `${target}.tmp-${randomBytes(6).toString("hex")}`;
   temporaries.add(tmp);
   // `wx` so a collision is an error rather than an overwrite.
@@ -108,6 +117,45 @@ const stageOutput = async (target, text, temporaries) => {
     throw new Error(`staged output ${target} did not match what was rendered`);
   }
   return tmp;
+};
+
+/**
+ * Promote one staged temporary to its authoritative name, atomically and
+ * without ever overwriting anything.
+ *
+ * `rename()` cannot be used here: POSIX rename REPLACES an existing destination,
+ * so a file created between the absence check and the promotion is destroyed
+ * silently — and, because the target then joins the promoted set, deleted again
+ * by rollback. `link()` is the atomic no-overwrite primitive: it either creates
+ * the name or fails with `EEXIST`, leaving whatever is there untouched, and it
+ * does so for a regular file, a directory and a symlink alike.
+ *
+ * The run-owned identity is read from the TEMPORARY, not from the target after
+ * linking. The temporary was created `wx` in this directory by this run, so its
+ * device and inode are ours by construction; the hard link shares them. Reading
+ * the identity off the target instead would reintroduce a race, because a target
+ * unlinked and recreated by someone else between `link` and `lstat` would then be
+ * recorded as ours and deleted by rollback.
+ *
+ * The promotion is recorded BEFORE the temporary name is removed, so a failure in
+ * that `unlink` still leaves a tracked authoritative target that rollback will
+ * remove: it can never leave an unreported published file behind.
+ *
+ * @param {string} tmp @param {string} target
+ * @param {Set<string>} temporaries @param {Map<string, {dev: number, ino: number}>} promoted
+ */
+const promoteOutput = async (tmp, target, temporaries, promoted) => {
+  const staged = await lstat(tmp);
+  try {
+    await link(tmp, target);
+  } catch (error) {
+    // The authoritative no-overwrite answer. Whatever occupies the name — a file
+    // that appeared after the early check, a directory, a symlink — is left
+    // exactly as it is, and this run publishes nothing over it.
+    if (/** @type {{ code?: string }} */ (error)?.code === "EEXIST") throw targetExists(target);
+    throw error;
+  }
+  promoted.set(target, { dev: staged.dev, ino: staged.ino });
 };
 
 /**
@@ -140,8 +188,8 @@ const stageOutput = async (target, text, temporaries) => {
  * ## The output set is all-or-nothing
  *
  * Both authoritative targets must be ABSENT before the run stages anything, both
- * are staged and validated before either is promoted, the boundary is guarded
- * immediately before and after each rename, and the set is marked complete only
+ * are staged and validated before either is promoted, each promotion is an atomic
+ * no-overwrite `link()` guarded on both sides, and the set is marked complete only
  * once the second promotion has succeeded. Until then any failure path removes
  * every target this run promoted; after then, later cleanup never does. A failed
  * run can therefore never leave a complete-looking evidence document without its
@@ -161,10 +209,11 @@ const stageOutput = async (target, text, temporaries) => {
  *   a TEST-ONLY seam invoked immediately BEFORE each output is staged, so a
  *   regression can fail the preparation of the second temporary deterministically.
  * @param {(index: number, target: string) => void | Promise<void>} [input.onPromotion]
- *   a TEST-ONLY seam invoked immediately after each authoritative rename, so a
- *   regression can stop the run at the exact promotion boundary instead of
- *   racing a timer. Neither production call site passes it, and the offline
- *   suite asserts that from source.
+ *   a TEST-ONLY seam invoked between the authoritative `link()` and the removal
+ *   of the temporary name, so a regression can stop the run at the exact
+ *   promotion boundary — or fail that removal — instead of racing a timer.
+ *   Neither production call site passes it, and the offline suite asserts that
+ *   from source.
  * @param {number} [input.totalMs] the total deadline. Defaults to the fixed
  *   {@link RUNNER_TOTAL_MS}; overridden ONLY by the test suite, which cannot
  *   wait four minutes to prove a four-minute bound works. Both production call
@@ -194,21 +243,51 @@ export const collectEvidence = async ({
    * summary used to leave a complete, valid evidence file behind for a run that
    * had failed, which is worse than leaving nothing: it looks like a result.
    */
-  const promoted = new Set();
+  /** @type {Map<string, {dev: number, ino: number}>} */
+  const promoted = new Map();
+  /** Paths this run could not clean up, and so must warn the operator about. */
+  const residual = new Set();
   let outputComplete = false;
 
   /**
    * Remove every target this run promoted, unless the complete set was
-   * committed. Only paths in `promoted` are touched, and the precondition above
-   * guarantees each of those was absent before the run, so no pre-existing file
-   * can be removed or modified here.
+   * committed — and remove ONLY those, identified by filesystem identity rather
+   * than by path.
+   *
+   * A path is not an identity. Between promotion and rollback the operator (or
+   * any other process) may have replaced the file at that path with their own,
+   * and deleting it because the name matches would destroy their data. So each
+   * candidate is `lstat`-ed — never `stat`, so a symlink planted at the name is
+   * inspected rather than followed — and unlinked only while its device and
+   * inode still equal the ones this run published there.
+   *
+   * Three outcomes, all of them safe:
+   *   - gone already: nothing to do, and not a failure;
+   *   - still ours: unlinked;
+   *   - someone else's now: left ALONE, counted as a failure, and recorded as
+   *     residual so the operator is told the directory needs inspecting.
    */
   const rollbackPromoted = async () => {
     if (outputComplete) return 0;
-    const targets = [...promoted];
-    const results = await Promise.allSettled(targets.map((t) => rm(t, { force: true })));
+    let failures = 0;
+    for (const [target, identity] of promoted) {
+      try {
+        const current = await lstat(target);
+        if (current.dev !== identity.dev || current.ino !== identity.ino) {
+          // Not what we published. Never delete another writer's file.
+          failures += 1;
+          residual.add(target);
+          continue;
+        }
+        await unlink(target);
+      } catch (error) {
+        if (/** @type {{ code?: string }} */ (error)?.code === "ENOENT") continue;
+        failures += 1;
+        residual.add(target);
+      }
+    }
     promoted.clear();
-    return results.filter((r) => r.status === "rejected").length;
+    return failures;
   };
 
   /** Remove staged temporaries. Idempotent: a second call finds nothing to do. */
@@ -236,9 +315,10 @@ export const collectEvidence = async ({
     );
     // Returning `true` is an assertion that external resources were released and
     // no partial output survives — read as independent confirmation, so it is
-    // only claimed when every cleanup actually succeeded.
+    // only claimed when every cleanup actually succeeded AND nothing was left
+    // behind that this run could not remove.
     return failedCleanups === 0 && failedRemovals === 0 && temporaries.size === 0 &&
-      (outputComplete || promoted.size === 0);
+      residual.size === 0 && (outputComplete || promoted.size === 0);
   };
 
   return withDeadline(
@@ -320,18 +400,24 @@ export const collectEvidence = async ({
           stageIndex += 1;
         }
 
-        // --- phase 2: promote, guarding on both sides of every rename ---------
+        // --- phase 2: promote, guarding on both sides of every link -----------
         //
-        // A stop observed after a rename still rolls the whole set back: the run
+        // A stop observed after a promotion still rolls the whole set back: the run
         // failed, so it publishes nothing. The set is marked complete only once
         // BOTH targets are in place and the final guard has passed.
         let index = 0;
         for (const [tmp, target] of staged) {
           guard("evidence promotion");
-          await rename(tmp, target);
+          await promoteOutput(tmp, target, temporaries, promoted);
+          // The seam fires between the link and the removal of the temporary
+          // name, which is the only window in which requirement 12 — a failed
+          // unlink after a successful link — can be injected deterministically.
+          if (onPromotion) await onPromotion(index, target, tmp);
+          // Only now is the temporary name removed. If this throws, the promotion
+          // is already tracked, so the catch below rolls the target back rather
+          // than leaving an unreported authoritative file.
+          await unlink(tmp);
           temporaries.delete(tmp);
-          promoted.add(target);
-          if (onPromotion) await onPromotion(index, target);
           guard("evidence promotion");
           index += 1;
         }
@@ -361,16 +447,29 @@ export const collectEvidence = async ({
         };
       } catch (error) {
         // Any failure before the set was committed — a precondition, a phase
-        // error, a rename failure, an expired guard — removes whatever this run
+        // error, an occupied target, an expired guard — removes whatever this run
         // staged or promoted. `withDeadline`'s `onCancel` covers the stop paths;
         // this covers the ordinary-throw paths it never sees.
+        let failedRemovals = 0;
         await settleWithin(
           (async () => {
-            await rollbackTemporaries();
-            await rollbackPromoted();
+            failedRemovals = (await rollbackTemporaries()) + (await rollbackPromoted());
           })(),
           CANCELLATION_SETTLE_MS,
         );
+        // The PRIMARY error is preserved and rethrown — a cleanup failure must
+        // not mask the reason the run failed. The cleanup result is recorded ON
+        // it instead, so the CLI can warn about residual output without losing
+        // the original cause. A stop-path error already carries a value computed
+        // by `onCancel`; that one is authoritative and is never overwritten here.
+        if (error && typeof error === "object") {
+          const annotated = /** @type {{ externalCleanupConfirmed?: boolean, residualOutputs?: string[] }} */ (error);
+          if (annotated.externalCleanupConfirmed === undefined) {
+            annotated.externalCleanupConfirmed =
+              failedRemovals === 0 && residual.size === 0 && temporaries.size === 0;
+          }
+          if (residual.size > 0) annotated.residualOutputs = [...residual];
+        }
         throw error;
       }
     },

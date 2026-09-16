@@ -21,8 +21,8 @@
  *   evidence   final evidence schemas and output bounds
  */
 
-import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, chmodSync } from "node:fs";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -80,7 +80,8 @@ import {
   evaluateTrackedSource,
   gitBlobSha1,
 } from "./repository.mjs";
-import { collectEvidence } from "./runner.mjs";
+import { describeFailure } from "./cli.mjs";
+import { EVIDENCE_FILENAME, EXIT, SUMMARY_FILENAME, collectEvidence } from "./runner.mjs";
 import { Runtime, STOP_OUTCOME, checkpoint, withDeadline } from "./runtime.mjs";
 import {
   StrictDataError,
@@ -962,6 +963,428 @@ const code = new Map([...sources].map(([file, text]) => [file, stripComments(tex
     );
   }
 
+  // --- F-A: promotion is ATOMIC and NO-OVERWRITE; rollback is identity-safe --
+  //
+  // The previous revision checked that the targets were absent and then called
+  // `rename(tmp, target)`. That is a time-of-check/time-of-use race: POSIX rename
+  // REPLACES an existing destination, so a file created in between was destroyed
+  // silently — and, because the target then joined the promoted set, deleted
+  // again by rollback. Promotion is now `link()`, which either creates the name
+  // or fails with EEXIST, and rollback removes a target only while its device and
+  // inode still match what this run published there.
+  {
+    const EV = EVIDENCE_FILENAME;
+    const SU = SUMMARY_FILENAME;
+    const USER = "USER DATA — must survive untouched\n";
+    // Same tree-awareness as the blocks above: a dirty developer checkout is
+    // refused by `clean_tracked_source` before anything is staged, so the
+    // preservation invariants still hold while the classification assertions
+    // assert THAT instead. The check count never depends on local state.
+    const cleanTree =
+      execFileSync("git", ["status", "--porcelain=v1"], {
+        cwd: REPO_ROOT,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim() === "";
+
+    const identity = (p) => {
+      const st = lstatSync(p);
+      return { dev: st.dev, ino: st.ino, mode: st.mode, uid: st.uid, gid: st.gid };
+    };
+    const same = (a, b) =>
+      a.dev === b.dev && a.ino === b.ino && a.mode === b.mode && a.uid === b.uid && a.gid === b.gid;
+
+    const outputRun = async (hooks = () => ({}), prepare = null) => {
+      const outDir = mkdtempSync(join(tmpdir(), "m1-race-"));
+      const before = prepare ? prepare(outDir) : null;
+      const runtime = new Runtime();
+      const savedFetch = globalThis.fetch;
+      globalThis.fetch = async () => new Response(new TextEncoder().encode("{}"), { status: 404 });
+      let error = null;
+      let result = null;
+      try {
+        result = await collectEvidence({ repoRoot: REPO_ROOT, outDir, runtime, ...hooks(runtime, outDir) });
+      } catch (thrown) {
+        error = thrown;
+      }
+      globalThis.fetch = savedFetch;
+      const entries = readdirSync(outDir);
+      return {
+        outDir,
+        runtime,
+        error,
+        result,
+        before,
+        entries,
+        temporaries: entries.filter((e) => e.includes(".tmp-")).length,
+      };
+    };
+
+    /** A refusal to overwrite is always the same precondition, wherever detected. */
+    const refusedAsOccupied = (run) =>
+      run.error instanceof PreconditionError && run.error.check === "output_target_exists";
+
+    // 1-3. A user's file appears AFTER the early absence check and BEFORE the
+    //      promotion that would have replaced it.
+    const raced = [
+      [
+        "a user evidence file created after preflight, before evidence promotion",
+        EV,
+        (outDir) => ({ onStage: (i) => { if (i === 1) writeFileSync(join(outDir, EV), USER, { flag: "wx" }); } }),
+      ],
+      [
+        "a user summary file created after preflight, before summary promotion",
+        SU,
+        (outDir) => ({ onStage: (i) => { if (i === 1) writeFileSync(join(outDir, SU), USER, { flag: "wx" }); } }),
+      ],
+      [
+        "a user target created between the first and second promotions",
+        SU,
+        (outDir) => ({ onPromotion: (i) => { if (i === 0) writeFileSync(join(outDir, SU), USER, { flag: "wx" }); } }),
+      ],
+    ];
+    for (const [label, name, hooks] of raced) {
+      const run = await outputRun((_runtime, outDir) => hooks(outDir));
+      const path = join(run.outDir, name);
+      check("lifecycle", `${label}: the run does not complete`, run.error !== null);
+      check(
+        "lifecycle",
+        `${label}: it is refused as an occupied output target`,
+        cleanTree ? refusedAsOccupied(run) : run.error instanceof PreconditionError,
+      );
+      check(
+        "lifecycle",
+        `${label}: the user's bytes are preserved exactly`,
+        cleanTree ? readFileSync(path, "utf8") === USER : !existsSync(path),
+      );
+      check(
+        "lifecycle",
+        `${label}: nothing this run promoted is left behind`,
+        run.entries.filter((e) => (e === EV || e === SU) && e !== name).length === 0,
+      );
+      check("lifecycle", `${label}: no temporary survives`, run.temporaries === 0);
+      check("lifecycle", `${label}: no outstanding cleanup`, run.runtime.cleanups.size === 0);
+      rmSync(run.outDir, { recursive: true, force: true });
+    }
+
+    // 4. A regular file, a DIRECTORY and a dangling SYMLINK already at each
+    //    target. The dangling symlink matters most: `stat` on it raises ENOENT,
+    //    so the early check passes and only the atomic `link()` can refuse it.
+    for (const name of [EV, SU]) {
+      for (const kind of ["regular file", "directory", "dangling symlink"]) {
+        const run = await outputRun(() => ({}), (outDir) => {
+          const p = join(outDir, name);
+          if (kind === "regular file") writeFileSync(p, USER);
+          else if (kind === "directory") mkdirSync(p);
+          else symlinkSync(join(outDir, "nowhere-at-all"), p);
+          return identity(p);
+        });
+        const p = join(run.outDir, name);
+        const label = `a pre-existing ${kind} at ${name}`;
+        check(
+          "lifecycle",
+          `${label}: the run is refused`,
+          cleanTree ? refusedAsOccupied(run) : run.error instanceof PreconditionError,
+        );
+        check(
+          "lifecycle",
+          `${label}: it is left with the same inode, mode and ownership`,
+          same(identity(p), run.before),
+        );
+        check(
+          "lifecycle",
+          `${label}: nothing at all is published beside it`,
+          run.entries.filter((e) => e !== name).length === 0,
+        );
+        rmSync(run.outDir, { recursive: true, force: true });
+      }
+    }
+
+    // 5. A genuinely CONCURRENT external OS process, with no in-process seam.
+    //    It waits for an observable filesystem event — this run's staging
+    //    temporary — and then creates the target, which lands its creation
+    //    inside the window the old `rename()` destroyed silently.
+    //
+    //    Who wins the race is timing, so the assertion is the INVARIANT that
+    //    holds under every interleaving: if the external process created the
+    //    file, its bytes survive and this run refuses; it is never replaced.
+    for (const name of [EV, SU]) {
+      const outDir = mkdtempSync(join(tmpdir(), "m1-concurrent-"));
+      const writer = join(outDir, "writer.mjs");
+      writeFileSync(
+        writer,
+        'import { readdirSync, writeFileSync } from "node:fs";\n' +
+          'import { join } from "node:path";\n' +
+          "const [dir, name, marker] = process.argv.slice(2);\n" +
+          "const deadline = Date.now() + 20000;\n" +
+          "while (Date.now() < deadline) {\n" +
+          "  let staged = false;\n" +
+          "  try { staged = readdirSync(dir).some((e) => e.includes('.tmp-')); } catch { continue; }\n" +
+          "  if (!staged) continue;\n" +
+          '  try { writeFileSync(join(dir, name), marker, { flag: "wx" }); process.exit(0); }\n' +
+          "  catch { process.exit(4); }\n" +
+          "}\n" +
+          "process.exit(3);\n",
+      );
+      const child = spawn(process.execPath, [writer, outDir, name, USER], { stdio: "ignore" });
+      const exited = new Promise((r) => child.on("exit", (code) => r(code)));
+      const runtime = new Runtime();
+      const savedFetch = globalThis.fetch;
+      globalThis.fetch = async () => new Response(new TextEncoder().encode("{}"), { status: 404 });
+      let error = null;
+      try {
+        await collectEvidence({ repoRoot: REPO_ROOT, outDir, runtime });
+      } catch (thrown) {
+        error = thrown;
+      }
+      globalThis.fetch = savedFetch;
+      const created = (await exited) === 0;
+      const p = join(outDir, name);
+      const label = `a concurrent external process creating ${name}`;
+      check(
+        "lifecycle",
+        `${label}: its file is never silently replaced`,
+        !created || readFileSync(p, "utf8") === USER,
+      );
+      check(
+        "lifecycle",
+        `${label}: this run refuses rather than overwriting it`,
+        !created || error instanceof PreconditionError,
+      );
+      check(
+        "lifecycle",
+        `${label}: no temporary survives either outcome`,
+        readdirSync(outDir).filter((e) => e.includes(".tmp-")).length === 0,
+      );
+      rmSync(outDir, { recursive: true, force: true });
+    }
+
+    // 6. A failure to remove the temporary AFTER a successful link must enter
+    //    rollback: it can never leave an unreported authoritative file.
+    {
+      const run = await outputRun(() => ({
+        onPromotion: (index, _target, tmp) => {
+          if (index === 0) rmSync(tmp, { force: true });
+        },
+      }));
+      check("lifecycle", "a failed unlink after a successful link fails the run", run.error !== null);
+      check(
+        "lifecycle",
+        "a failed unlink after a successful link rolls the promoted target back",
+        !existsSync(join(run.outDir, EV)),
+      );
+      check(
+        "lifecycle",
+        "a failed unlink after a successful link publishes nothing at all",
+        run.entries.length === 0,
+      );
+      rmSync(run.outDir, { recursive: true, force: true });
+    }
+
+    // 7. The operator replaces a promoted target before rollback runs. Rollback
+    //    identifies by device and inode, so it must leave their file ALONE and
+    //    report that cleanup could not be confirmed.
+    for (const kind of ["a different file", "a directory"]) {
+      /** @type {{ dev: number, ino: number, mode: number, uid: number, gid: number } | null} */
+      let replaced = null;
+      const run = await outputRun((runtime) => ({
+        onPromotion: (index, target) => {
+          if (index !== 0) return;
+          rmSync(target, { force: true });
+          if (kind === "a directory") mkdirSync(target);
+          else writeFileSync(target, USER);
+          replaced = identity(target);
+          runtime.interruptedBy = "SIGINT";
+          runtime.controller.abort();
+        },
+      }));
+      const p = join(run.outDir, EV);
+      const label = `the operator replaces a promoted target with ${kind} before rollback`;
+      check("lifecycle", `${label}: the run does not complete`, run.error !== null);
+      check(
+        "lifecycle",
+        `${label}: their replacement is NOT deleted`,
+        cleanTree ? existsSync(p) : !existsSync(p),
+      );
+      check(
+        "lifecycle",
+        `${label}: it keeps the same inode, mode and ownership`,
+        cleanTree ? replaced !== null && same(identity(p), replaced) : replaced === null,
+      );
+      check(
+        "lifecycle",
+        `${label}: cleanup is reported as NOT confirmed`,
+        cleanTree
+          ? run.error?.externalCleanupConfirmed === false
+          : run.error instanceof PreconditionError,
+      );
+      check("lifecycle", `${label}: no temporary survives`, run.temporaries === 0);
+      // Repeating the rollback changes nothing and still never touches their file.
+      const beforeRepeat = readdirSync(run.outDir).sort().join(",");
+      const repeats = [await run.runtime.shutdown(), await run.runtime.shutdown()];
+      check(
+        "lifecycle",
+        `${label}: repeated cleanup is idempotent and still spares their file`,
+        readdirSync(run.outDir).sort().join(",") === beforeRepeat && repeats.every((n) => n === 0),
+      );
+      rmSync(run.outDir, { recursive: true, force: true });
+    }
+
+    // 8. The committed success case is unchanged: exactly two files, nothing else.
+    {
+      const run = await outputRun();
+      check(
+        "lifecycle",
+        "an unobstructed run still publishes exactly the two authoritative files",
+        cleanTree
+          ? run.error === null && run.entries.length === 2 && run.entries.includes(EV) && run.entries.includes(SU)
+          : run.error instanceof PreconditionError,
+      );
+      check(
+        "lifecycle",
+        "an unobstructed run leaves no temporary name behind after promotion",
+        run.temporaries === 0,
+      );
+      rmSync(run.outDir, { recursive: true, force: true });
+    }
+
+    // The promotion primitive itself: `rename` would overwrite, so it must be gone.
+    const runnerSource = stripComments(sources.get("scripts/ops/m1-readiness/runner.mjs") ?? "");
+    check(
+      "lifecycle",
+      "the runner no longer promotes output with rename()",
+      !/\brename\s*\(/.test(runnerSource),
+    );
+    check(
+      "lifecycle",
+      "the runner promotes with link() and identifies targets with lstat()",
+      /\blink\s*\(/.test(runnerSource) && /\blstat\s*\(/.test(runnerSource),
+    );
+  }
+
+  // --- F-B: a stop is never reported as leaving nothing behind when it did ----
+  //
+  // The runtime can correctly report `cancellation_acknowledged` while output
+  // cleanup did NOT succeed. The CLI used to print "interrupted before evidence
+  // could be written" in that state, which is false. The exact operator-facing
+  // text is asserted here, not a paraphrase of it.
+  {
+    const OUT = "/tmp/an-output-directory";
+    const NEVER_WRITTEN = "before evidence could be written";
+    const cleanupFailed = (extra = {}) => ({ externalCleanupConfirmed: false, ...extra });
+
+    // Cooperative cancellation whose cleanup SUCCEEDED: the old wording is
+    // correct here, and is kept.
+    const okInterrupt = describeFailure({
+      error: { stopOutcome: STOP_OUTCOME.CANCELLATION_ACKNOWLEDGED, externalCleanupConfirmed: true },
+      interrupted: true,
+      outDir: OUT,
+    });
+    check(
+      "lifecycle",
+      "cooperative cancellation with confirmed cleanup still reports that nothing was written",
+      okInterrupt.text === "interrupted before evidence could be written\n",
+    );
+
+    // Cooperative cancellation whose cleanup FAILED: the defect.
+    const badInterrupt = describeFailure({
+      error: cleanupFailed({ stopOutcome: STOP_OUTCOME.CANCELLATION_ACKNOWLEDGED, confirmedStopped: true }),
+      interrupted: true,
+      outDir: OUT,
+    });
+    check(
+      "lifecycle",
+      "cooperative cancellation with FAILED cleanup never claims nothing was written",
+      !badInterrupt.text.includes(NEVER_WRITTEN),
+    );
+    check(
+      "lifecycle",
+      "cooperative cancellation with FAILED cleanup says the output was not confirmed removed",
+      badInterrupt.text.startsWith("interrupted; this run's output was NOT confirmed removed\n"),
+    );
+    check(
+      "lifecycle",
+      "the residual warning names the output directory and nothing else",
+      badInterrupt.text.includes(`Files may remain in: ${OUT}\n`),
+    );
+    check(
+      "lifecycle",
+      "the residual warning tells the operator not to trust what is there",
+      badInterrupt.text.includes("Do NOT trust or use any evidence file in that directory"),
+    );
+    check(
+      "lifecycle",
+      "a failed cleanup does not change the interrupted exit code",
+      badInterrupt.exitCode === okInterrupt.exitCode && badInterrupt.exitCode === EXIT.INTERRUPTED,
+    );
+
+    // The two remaining outcomes, reported exactly.
+    const external = describeFailure({
+      error: {
+        stopOutcome: STOP_OUTCOME.EXTERNAL_CLEANUP_CONFIRMED,
+        externalCleanupConfirmed: true,
+        stoppedBy: "deadline",
+      },
+      interrupted: false,
+      outDir: OUT,
+    });
+    check(
+      "lifecycle",
+      "external cleanup confirmation is reported as such and raises no residual warning",
+      external.text.includes(
+        "stop_confirmed=no (external resources released, but the work never acknowledged cancellation)",
+      ) && !external.text.includes("Files may remain in:"),
+    );
+    const unconfirmed = describeFailure({
+      error: cleanupFailed({ stopOutcome: STOP_OUTCOME.STOP_UNCONFIRMED, stoppedBy: "deadline" }),
+      interrupted: false,
+      outDir: OUT,
+    });
+    check(
+      "lifecycle",
+      "an unconfirmed stop reports both the stop AND the residual output",
+      unconfirmed.text.includes(
+        "stop_confirmed=NO (the work never confirmed it finished — it may still be running)",
+      ) && unconfirmed.text.includes(`Files may remain in: ${OUT}\n`),
+    );
+
+    // A precondition failure carries the warning too when cleanup failed, and the
+    // primary reason is still reported rather than masked by it.
+    const precondition = describeFailure({
+      error: Object.assign(new PreconditionError("output_target_exists", "/tmp/x is occupied"), {
+        externalCleanupConfirmed: false,
+      }),
+      interrupted: false,
+      outDir: OUT,
+    });
+    check(
+      "lifecycle",
+      "a precondition failure reports its own reason AND the residual warning",
+      precondition.text.startsWith("repository precondition failed — output_target_exists: /tmp/x is occupied\n") &&
+        precondition.text.includes("Files may remain in:"),
+    );
+
+    // The invariant, over every branch: unconfirmed cleanup never coexists with a
+    // claim that evidence was never written.
+    const everyBranch = [badInterrupt, unconfirmed, precondition];
+    check(
+      "lifecycle",
+      "no branch claims evidence was never written while output may remain",
+      everyBranch.every((r) => !r.text.includes(NEVER_WRITTEN) && r.text.includes("Files may remain in:")),
+    );
+
+    // Importing the CLI for the assertions above must not have run a readiness
+    // run, and invoking the file as a program must still work.
+    const help = spawnSync(process.execPath, [join(REPO_ROOT, "scripts/ops/m1-readiness/cli.mjs"), "--help"], {
+      encoding: "utf8",
+    });
+    check(
+      "lifecycle",
+      "the CLI still runs as a program despite being importable",
+      help.status === 0 && help.stdout.includes("M1 readiness evidence runner"),
+    );
+  }
+
   // --- F3: the documented stop vocabulary is derived from the implementation --
   //
   // The runner doc used to quote a CLI string (`(stop NOT confirmed)`) that the
@@ -1139,21 +1562,24 @@ const code = new Map([...sources].map(([file, text]) => [file, stripComments(tex
       runner.includes("[summaryPath, summaryText]") &&
       runner.includes("EVIDENCE_FILENAME") &&
       runner.includes("SUMMARY_FILENAME") &&
-      runner.indexOf("await stageOutput(") < runner.indexOf("await rename(tmp, target)"),
+      runner.indexOf("await stageOutput(") <
+        runner.indexOf("await promoteOutput(tmp, target, temporaries, promoted)"),
   );
   check(
     "source",
     "the output set is marked complete only after every promotion has succeeded",
-    runner.indexOf("await rename(tmp, target)") < runner.indexOf("outputComplete = true") &&
+    runner.indexOf("await promoteOutput(tmp, target, temporaries, promoted)") <
+      runner.indexOf("outputComplete = true") &&
       runner.includes("if (outputComplete) return 0;") &&
       (runner.match(/await rollbackPromoted\(\)/g) ?? []).length === 2,
   );
   check(
     "source",
-    "the only write is an exclusive temporary followed by a rename",
+    "the only write is an exclusive temporary promoted by an atomic no-overwrite link",
     (runner.match(/await writeFile\(/g) ?? []).length === 1 &&
       runner.includes('flag: "wx"') &&
-      runner.includes("await rename(tmp, target)"),
+      runner.includes("await link(tmp, target)") &&
+      !/\brename\b/.test(stripComments(runner)),
   );
 
   // The complete environment surface, as exact expressions.

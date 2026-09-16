@@ -280,7 +280,7 @@ the last column.
 
 | Outcome | `confirmedStopped` | Cooperatively acknowledged cancellation? | Only external/client cleanup confirmed? | Ignored cancellation and completed normally? | Survivor risk | CLI wording |
 |---|---|---|---|---|---|---|
-| `cancellation_acknowledged` | `true` | yes | no | no | none — the work ended *because* of the stop | `stop_confirmed=cancellation acknowledged` |
+| `cancellation_acknowledged` | `true` | yes | no | no | none *from the work itself* — it ended *because* of the stop. This says nothing about output cleanup, which is reported separately: see below | `stop_confirmed=cancellation acknowledged` |
 | `external_cleanup_confirmed` | `false` | no | yes — client-side resources were confirmed released | no | residual — the client resource is gone, but the work never acknowledged the stop, and a server-side backend may persist until it notices the disconnect or a configured timeout fires | `stop_confirmed=no (external resources released, but the work never acknowledged cancellation)` |
 | `settled_without_cancellation` | `false` | no | no | yes | nothing is still running, but nothing was cancelled either: the work ran to normal completion after the stop was requested, so its effects happened | `stop_confirmed=no (the work IGNORED cancellation and then completed normally — nothing was cancelled)` |
 | `stop_unconfirmed` | `false` | no | no | unknown | highest — the work never settled inside the cancellation-settle allowance and may still be running | `stop_confirmed=NO (the work never confirmed it finished — it may still be running)` |
@@ -292,6 +292,36 @@ the four rows above then says what came of it).
 
 Only `cancellation_acknowledged` sets `confirmedStopped` to `true`. A late normal
 completion is not a cancellation, however tidy it looked.
+
+#### Cleanup confirmation is a separate fact from cancellation
+
+A run can stop perfectly cooperatively — `cancellation_acknowledged`,
+`confirmedStopped === true` — and *still* have failed to remove a file it had
+already promoted, because the operator replaced it (the third row of the rollback
+table above). The stop was clean; the cleanup was not.
+
+`error.externalCleanupConfirmed` carries that second fact, and the CLI reports it
+independently of the stop outcome. Whenever it is `false`, the CLI **never**
+prints that the run was "interrupted before evidence could be written", and
+instead emits a residual-output warning that names the output directory and tells
+the operator not to trust or use anything in it until it has been inspected or
+removed:
+
+```
+interrupted; this run's output was NOT confirmed removed
+WARNING: this run could not confirm that it removed its own output.
+Files may remain in: <output directory>
+Do NOT trust or use any evidence file in that directory. This run did not complete, so
+anything left there is either incomplete or not this run's output. Inspect the directory
+and remove its contents manually before relying on any evidence or rerunning.
+```
+
+Only the output directory is named. No connection string, token, or path this run
+was merely reading appears. The warning is appended to whichever primary reason
+applies — an interrupt, a precondition failure, or a categorized stop — so a
+cleanup failure never masks the reason the run failed, and the reason never hides
+the cleanup failure. `confirmedStopped` keeps its narrow meaning: it is about
+cancellation, not about cleanup.
 
 The offline suite asserts every quoted CLI string above against the phrasing map
 in `cli.mjs`, so changing the wording in either place fails the suite rather than
@@ -326,24 +356,66 @@ starts rather than after it has already run.
 The evidence document and the summary are the two authoritative files, and they
 are published as a single transaction.
 
-Before anything is staged, **both target paths must be absent**. A pre-existing
-target is refused with the `output_target_exists` precondition rather than
-overwritten, backed up or restored, so this runner never reads, moves or destroys
-a file it did not create.
+Before anything is staged, both target paths are checked for absence, and a
+pre-existing target is refused with the `output_target_exists` precondition
+rather than overwritten, backed up or restored. That check is an **early
+convenience, not the guarantee** — see below.
 
-Both files are then written to uniquely named temporaries beside their targets
-and read back for validation; only once **both** are staged is either promoted by
-rename. The run records every target it promotes. Any failure, operator
-interrupt, phase deadline, total deadline or cleanup path reached before both
-promotions have succeeded removes every target this run promoted and every
-temporary it created, and the boundary is guarded immediately before and after
-each rename. The output set is marked complete only after the second promotion
-succeeds; once it is complete, later cleanup never removes it. Rollback and
-cleanup are themselves bounded and awaited.
+Both files are then written to uniquely named temporaries **beside their
+targets**, in the same directory, and read back for validation; only once
+**both** are staged is either promoted. The output set is marked complete only
+after the second promotion succeeds; once it is complete, later cleanup never
+removes it. Rollback and cleanup are themselves bounded and awaited.
 
 A reader therefore sees either both complete files or neither. In particular, no
 failed run can leave a complete-looking `m1-readiness-evidence.json` behind
 without its completed companion summary.
+
+#### Promotion is atomic and never overwrites
+
+Promotion is `link(tmp, target)`, **not** `rename(tmp, target)`.
+
+POSIX `rename()` silently **replaces** an existing destination. Pairing it with a
+prior absence check is a time-of-check/time-of-use race: a file created in the
+window between the check and the rename is destroyed without any error — and,
+because the target then joins the set of paths this run believes it published, it
+would be deleted a second time by rollback. That window is real, not theoretical:
+it spans staging the second temporary and promoting the first file.
+
+`link()` has no such mode. It either creates the name or fails with `EEXIST`,
+leaving whatever occupies the path exactly as it is — a regular file, a
+directory, or a symlink (which is never followed). `EEXIST` is reported as the
+same `output_target_exists` precondition, so the refusal an operator sees is
+identical whether the collision was noticed early or at the last instant. The
+early check remains only so the common case — rerunning into a directory that
+already holds evidence — fails immediately instead of after a full run. **The
+`link()` result is the authoritative answer.**
+
+Because the temporary and its target are in the same directory, the hard link can
+never cross a filesystem boundary. The temporary name is removed only *after* the
+link succeeds, and the promotion is recorded *before* that removal, so a failure
+to unlink the temporary still leaves a tracked target that rollback removes: it
+cannot leave an unreported authoritative file behind.
+
+#### Rollback removes only what this run published
+
+A path is not an identity. Between promoting a file and rolling it back, the
+operator — or any other process — may have replaced it with their own.
+
+So the run records the **device and inode** of every target it promotes, taken
+from the staged temporary it created exclusively, and rollback `lstat`s each
+candidate (never `stat`, so a symlink planted at the name is inspected rather
+than followed) and unlinks it **only while that device and inode still match**.
+There are three outcomes, all safe:
+
+| State at rollback | Action |
+|---|---|
+| already gone | nothing to do; not a failure |
+| still the inode this run published | unlinked |
+| a different inode — someone else's file, or a directory | **left alone**, counted as a cleanup failure, and reported as residual output |
+
+The third case is why cleanup can fail without anything being wrong with the
+stop itself, which is exactly what the reporting below distinguishes.
 
 ---
 
@@ -533,8 +605,9 @@ offline quality gates`, the PostgreSQL suite in the `PostgreSQL 16/18
 integration` matrix. No job was added, so the five-job CI contract the runner
 itself verifies is unchanged.
 
-The offline suite is **389 checks** across thirteen groups: macOS/Linux-independent
-operation, execution-capable Git configuration, the deadline and all-or-nothing
+The offline suite is **461 checks** across thirteen groups: macOS/Linux-independent
+operation, execution-capable Git configuration, the deadline, atomic no-overwrite
+promotion and all-or-nothing
 output lifecycle,
 helper-generation absence, exact `A` binding, dirty-tree handling, the strict data
 contract, GitHub success and every failure state, migration
