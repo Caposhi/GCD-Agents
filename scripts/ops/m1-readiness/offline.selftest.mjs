@@ -1563,12 +1563,12 @@ const code = new Map([...sources].map(([file, text]) => [file, stripComments(tex
       runner.includes("EVIDENCE_FILENAME") &&
       runner.includes("SUMMARY_FILENAME") &&
       runner.indexOf("await stageOutput(") <
-        runner.indexOf("await promoteOutput(tmp, target, temporaries, promoted)"),
+        runner.indexOf("await promoteOutput(tmp, target, promoted)"),
   );
   check(
     "source",
     "the output set is marked complete only after every promotion has succeeded",
-    runner.indexOf("await promoteOutput(tmp, target, temporaries, promoted)") <
+    runner.indexOf("await promoteOutput(tmp, target, promoted)") <
       runner.indexOf("outputComplete = true") &&
       runner.includes("if (outputComplete) return 0;") &&
       (runner.match(/await rollbackPromoted\(\)/g) ?? []).length === 2,

@@ -142,9 +142,9 @@ const stageOutput = async (target, text, temporaries) => {
  * remove: it can never leave an unreported published file behind.
  *
  * @param {string} tmp @param {string} target
- * @param {Set<string>} temporaries @param {Map<string, {dev: number, ino: number}>} promoted
+ * @param {Map<string, {dev: number, ino: number}>} promoted
  */
-const promoteOutput = async (tmp, target, temporaries, promoted) => {
+const promoteOutput = async (tmp, target, promoted) => {
   const staged = await lstat(tmp);
   try {
     await link(tmp, target);
@@ -408,7 +408,7 @@ export const collectEvidence = async ({
         let index = 0;
         for (const [tmp, target] of staged) {
           guard("evidence promotion");
-          await promoteOutput(tmp, target, temporaries, promoted);
+          await promoteOutput(tmp, target, promoted);
           // The seam fires between the link and the removal of the temporary
           // name, which is the only window in which requirement 12 — a failed
           // unlink after a successful link — can be injected deterministically.
