@@ -446,7 +446,7 @@ offline quality gates`, the PostgreSQL suite in the `PostgreSQL 16/18
 integration` matrix. No job was added, so the five-job CI contract the runner
 itself verifies is unchanged.
 
-The offline suite is **294 checks** across thirteen groups: macOS/Linux-independent
+The offline suite is **335 checks** across thirteen groups: macOS/Linux-independent
 operation, execution-capable Git configuration, the deadline and output lifecycle,
 helper-generation absence, exact `A` binding, dirty-tree handling, the strict data
 contract, GitHub success and every failure state, migration
@@ -467,7 +467,7 @@ npm run test:m1-readiness-postgres
 ```
 
 It creates randomly named databases, touches only those databases, and drops
-every one of them on exit. It is **58 checks per server version**, over nine
+every one of them on exit. It is **60 checks per server version**, over nine
 scenarios: migration 007 absent, migration 007 present, an unexpected migration,
 a within-bound audit, an exceeded-bound audit, lock contention, connection
 failure, an interrupted read, and a **real lock wait that outlives the phase
