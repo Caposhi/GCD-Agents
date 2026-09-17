@@ -40,6 +40,8 @@ Do NOT fail the image for purely cosmetic differences when the letters are corre
 Judge on legibility and correctness of the WORDS, not exact casing/punctuation. If the letters are all correct and every word is a real, readable word, set garbled=false even if casing or punctuation differs from the expected strings.
 Brand/wordmark text ("German Car Depot") and the URL ("GermanCarDepot.com") are allowed even if not in the expected list; they only fail if the LETTERS are wrong/garbled, not if the casing differs.
 
+The issues array holds ONLY the specific reasons behind a true garbled or unsafe verdict — one entry per reason, and nothing else. If you set BOTH garbled=false AND unsafe=false, issues MUST be an empty array []. A benign observation you have already concluded is fine — e.g. "a plate is visible but it is clearly a generic/fictional design, not a real one" — is not an issue and does not belong anywhere in your response; it is evidence FOR garbled=false/unsafe=false, not a third thing to report. Only write to issues when it is the reason you set garbled=true or unsafe=true.
+
 Respond with ONLY this JSON, no prose:
 {"readText": ["...each distinct text element..."], "garbled": true|false, "unsafe": true|false, "issues": ["short reason", "..."]}`;
 
@@ -77,7 +79,8 @@ export async function inspectImageText(
     `${JSON.stringify(expected)}\n\n` +
     `Transcribe ALL visible text. Check for garbled/scrambled letters, misspellings, nonsensical words, placeholder gibberish, broken/duplicate CTAs, and changed meaning. ` +
     `Also inspect for faces/identifying features, readable plates/VINs/contact details/customer documents, unsafe repair practices, and materially misleading imagery. ` +
-    `Do NOT flag differences that are only capitalization or minor punctuation when the letters are correct. Return JSON only.`;
+    `Do NOT flag differences that are only capitalization or minor punctuation when the letters are correct. ` +
+    `If garbled=false and unsafe=false, issues MUST be []. Return JSON only.`;
   try {
     const res = await visionRunner({ systemPrompt: QC_SYSTEM, prompt, jpegBase64, model: "claude-sonnet-4-6", maxTokens: 900 });
     const json = parseAgentJson(res.text);
