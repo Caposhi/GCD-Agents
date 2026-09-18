@@ -1,0 +1,39 @@
+{
+  "_note": "Template for scripts/local/content-run.mjs. Copy this file to automotive-facts.local.json (gitignored, never committed) in this same directory and REPLACE every placeholder entry with a real automotive fact you can point at: manufacturer documentation, a service bulletin, a regulatory/standards source, or a dated GCD shop record. Do NOT invent a fact to fill this file — the evidence contract exists specifically so a fabricated claim can never reach a citable fact. Every entry becomes a `verified_automotive_fact` evidence record; the CLI sets `kind` for you.",
+  "facts": [
+    {
+      "id": "REPLACE-ME-oil-interval-example",
+      "claim": "REPLACE ME — placeholder, not a real fact. Example shape: \"BMW N20/N26 engines specify a 10,000-mile / 12-month oil change interval under normal service, per BMW maintenance schedule CBS.\"",
+      "subject": "REPLACE ME — e.g. a make/model/system this fact is about",
+      "attribute": "REPLACE ME — e.g. maintenance-interval",
+      "tags": ["REPLACE-ME"],
+      "sourceType": "manufacturer_documentation",
+      "sourceRef": "REPLACE ME — a checkable reference: a manufacturer document title/number, a URL, or a shop record id",
+      "provenance": "REPLACE ME — how this was obtained, e.g. \"BMW Center-by-Condition maintenance schedule, pulled from ISTA on <date>\"",
+      "confidence": 0.9,
+      "reviewedAt": "REPLACE-ME-2026-01-01T00:00:00Z",
+      "reviewedBy": "REPLACE ME — the GCD staff member who checked this against the source"
+    },
+    {
+      "id": "REPLACE-ME-diagnostic-code-example",
+      "claim": "REPLACE ME — placeholder, not a real fact. Example shape: \"Mercedes fault code P0300 indicates a random/multiple cylinder misfire and requires coil, injector, or compression testing to isolate.\"",
+      "subject": "REPLACE ME",
+      "attribute": "REPLACE ME",
+      "tags": ["REPLACE-ME"],
+      "sourceType": "manufacturer_documentation",
+      "sourceRef": "REPLACE ME",
+      "provenance": "REPLACE ME",
+      "reviewedAt": "REPLACE-ME-2026-01-01T00:00:00Z"
+    },
+    {
+      "id": "REPLACE-ME-warranty-scope-example",
+      "claim": "REPLACE ME — placeholder, not a real fact. Example shape: \"Audi extended timing-chain-tensioner service campaigns apply only to specific VIN ranges; verify per-VIN before citing coverage.\"",
+      "subject": "REPLACE ME",
+      "tags": ["REPLACE-ME"],
+      "sourceType": "regulatory_or_standards_body",
+      "sourceRef": "REPLACE ME",
+      "provenance": "REPLACE ME",
+      "reviewedAt": "REPLACE-ME-2026-01-01T00:00:00Z"
+    }
+  ]
+}
