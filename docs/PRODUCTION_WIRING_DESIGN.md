@@ -1310,6 +1310,12 @@ and never before `L` is in hand.
   Neither implies the other, and **restoring service identity does not restore the prior schema.** If
   the entry gate did not establish `R`'s compatibility, step 1 is unavailable and the recovery plan
   named in the entry gate replaces this ladder.
+- **This interval's explicit bound, named owner, and monitoring definition are recorded in
+  [`docs/STATUS.md`](STATUS.md) (current cursor) and [`docs/ROADMAP.md`](ROADMAP.md) (M1→M2 interval
+  section), as of 2026-09-18.** Recording those facts there satisfies this requirement; it is a
+  record of accountability and a bound, not an authorization of M2, of re-authorization, or of the
+  recovery path — each of those still requires its own explicit authorization from the named owner,
+  exactly as stated above.
 - **Prohibited:** combining with any code change beyond the artifact itself, any new behavior, or any
   enablement; deploying the worker or scheduler; running `npm run migrate` or `psql -f` by hand;
   **merging P1 before this milestone is verified.**
