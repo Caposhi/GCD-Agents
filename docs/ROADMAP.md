@@ -1548,3 +1548,95 @@ from manufacturer documentation or another checkable source first.
 the operator-supplied automotive facts file and the tool's local output directory). `README.md` was
 not updated because the production handoff it describes is unchanged by a tool that touches no
 production system.
+
+## Out-of-band tooling — local Tekmetric oil-service-interval feasibility probe
+
+**This entry is deliberately outside the P1–P8 / M2–M7 sequence above and does not move the
+active product cursor.** It authorizes nothing, deploys nothing, touches no production system,
+reads no database, and does not represent a decision to build any Tekmetric-backed feature — it
+exists only to answer whether Tekmetric repair-order data can support computing an actual observed
+oil-service interval (miles and months) for GCD's BMW and Mercedes-Benz customers.
+
+**State:** `IMPLEMENTED` (repository-local script only; not phase-scoped, so not `MERGED` to any
+tracked roadmap phase). Not `DEPLOYED`. Not `PRODUCTION-VALIDATED`. Touches no production system,
+no database, no scheduler, no worker, and no publishing path in this repository.
+
+**What it is.** `scripts/local/tekmetric-probe.mjs`, a read-only CLI that, given operator-supplied
+Tekmetric OAuth2 client-credentials and a shop id, lists that shop's vehicles, filters client-side
+to BMW and Mercedes-Benz (the Tekmetric vehicles list endpoint has no `make` filter, and Tekmetric's
+actual make spellings are not assumed — the script reports every distinct spelling it observes so
+the match can be verified), then lists each matched vehicle's repair orders with `postedDate` in a
+lookback window (default 24 months). It implements the exponential-backoff algorithm the
+`tekmetric-api` skill specifies for HTTP 429, and bounds its total request count (default cap 400,
+printed alongside every run). No data-mutating request is ever issued. The only non-GET request is
+the OAuth2 client-credentials token POST to `/api/v1/oauth/token` required to authenticate; every
+data request is a GET. It runs against sandbox by default; a `--live-shop-data` flag is required to
+target any non-sandbox (e.g. production) `TEKMETRIC_BASE_URL` — without it, a non-sandbox base URL
+is refused before the token request is ever made.
+
+**What it does not do.** It never prints or persists a VIN, customer name, address, phone, email,
+an RO number tied to an identifiable customer, a free-text note or job-concern body, or any
+monetary figure. Where it needs to check whether a job is an oil service, it inspects only the
+structured `job.name` field and reports a match count — it never reads or prints free-text note
+bodies, and says explicitly in its output that resolving oil-service identifiability further would
+require reading free text, which is out of this script's scope and would need its own PII review.
+It emits aggregate counts and fill rates only: total ROs, distinct vehicles, `milesIn`/`milesOut`
+fill rates broken out both by make and the year the RO's own `postedDate` falls in (whether mileage
+capture improved over time — a vehicle model year cannot answer that; a separate model-year
+breakdown is reported alongside it, clearly labeled, for a different purpose), the count of vehicles
+with two or more usable ROs (the gating number for any future interval computation) with the
+ROs-per-vehicle distribution, and a structural count of consecutive-RO mileage deltas
+(positive/plausible, zero, negative-or-absurd) — deliberately without computing a median or any
+other interval statistic, since that was out of scope for this feasibility check.
+
+**Credential handling.** The client id, client secret, and shop id are read from the environment
+variables `TEKMETRIC_CLIENT_ID`, `TEKMETRIC_CLIENT_SECRET`, and `TEKMETRIC_SHOP_ID` — never
+hardcoded, never logged, never echoed, never written to disk, and never committed. These variables
+are intentionally **not** added to any `.env.example` file: `scripts/ci/check-environment-coverage.mjs`
+scans only `src/**/*.ts`, so omitting them there does not weaken that check, and adding them would
+falsely imply a deployed API, worker, or scheduler reads them, when none does. The credential
+requirement is documented only in the script's own `--help`/usage text.
+
+**Material design decisions.** Filter to target makes client-side rather than assuming a `make`
+list-filter exists on the Tekmetric vehicles endpoint (it does not, per the `tekmetric-api` skill),
+and report the raw distinct make spellings observed so a reviewer can verify the match logic rather
+than trust it blind. Bound total HTTP requests with a hard cap rather than an unbounded per-vehicle
+repair-order fetch, since request volume scales with matched-vehicle count and Tekmetric enforces a
+per-minute rate limit. Treat mileage deltas above 60,000 miles between consecutive ROs as "absurd"
+for the structural-usability count, without asserting this threshold is the right cutover for any
+later statistical treatment.
+
+**Rejected alternative.** Reading job or RO free-text note bodies to identify oil-service jobs more
+completely. Rejected for this feasibility probe because note bodies routinely contain PII
+(customer-stated concerns, sometimes names or contact details pasted into free text), and this
+script's entire purpose is to answer a feasibility question without ever handling identifiable
+customer data; if free-text classification turns out to be necessary, that is a separate,
+separately authorized piece of work with its own PII-handling review.
+
+**Automated validation:** the script was syntax-checked (`node --check`) and exercised for its
+`--help` output and its fail-closed behavior with the required Tekmetric environment variables
+unset (exits non-zero before making any HTTP call). No existing source file under `src/` was
+modified, so build, typecheck, the offline suites, the simulated dry run, deployment-controller
+fixtures, dependency audit, Markdown-link validation, environment-coverage comparison, and the
+sensitive-content scan all pass unchanged.
+
+**Accepted limitations.** The live Tekmetric run itself (PHASE 2 of the task that produced this
+script) has not been executed as of this entry: it requires both an operator-supplied Tekmetric API
+credential and Michael Capote's explicit statement, in his own words, that the read-only probe may
+run against live Tekmetric data. Neither was present in the session that authored this script, so
+no live HTTP request has been made and no data-feasibility conclusion has been reached yet. Running
+it live and reporting the resulting aggregate numbers is a separate, explicitly gated follow-up.
+Separately, the default request cap of 400 will likely bind before all matched vehicles' repair
+orders are fetched on a real shop's data volume; when it does, the GATING NUMBER (result section 4)
+is a **floor**, not the true count, and the vehicle whose pagination was interrupted when the cap
+was hit has a truncated repair-order list for that run. `--max-requests` should be raised for a real
+run once the shop's true vehicle/RO volume is known; the default itself was left unchanged.
+
+**Follow-ups.** Blocking (for reaching a feasibility conclusion, not for this documentation entry):
+obtain a Tekmetric API credential and Michael Capote's explicit authorization to run the probe
+against live data, then run `scripts/local/tekmetric-probe.mjs` and record its aggregate output.
+
+**Documents updated with this entry:** `docs/ROADMAP.md` (this section) only. `docs/STATUS.md` was
+not updated because no production state was verified or changed. `README.md` was not updated
+because the production handoff it describes is unchanged by a tool that touches no production
+system.
