@@ -1,6 +1,6 @@
 # GCD Content Intelligence roadmap
 
-Last reviewed: 2026-09-04.
+Last reviewed: 2026-09-18.
 
 This roadmap is the canonical unfinished-work sequence and the current-phase cursor. It orders work; it does not grant authority to deploy, migrate, call providers, change external configuration, or begin a phase. [Status](STATUS.md) records what is verified true now. Where this file and verified production evidence disagree, resolve the discrepancy rather than following this text. Roadmap continuity is binding — see [`AGENTS.md`](../AGENTS.md).
 
@@ -266,9 +266,10 @@ The two SQL artifacts are unchanged. Their raw digests remain migration
 `31e0ab0c1f92ccafbd30fb827b4ece9856257a997c39ad5fb031bc18cebfe122`; the raw manifest
 digest is `a420015da9d25133b6572f93eeb83e5a70109589fbafce77fbffbbce2e296121`.
 
-**Migrations/schema impact:** **none.** Neither SQL artifact changes and nothing is applied.
-Migration 007 remains production **`UNKNOWN in either direction`**. This work executes no M1
-step and contacts no production database or Render service.
+**Migrations/schema impact:** **none.** Neither SQL artifact changes and this work applies
+nothing. Migration 007 is now production **`APPLIED`**, independently verified via M1
+(2026-09-18) — see [Status](STATUS.md). This work executes no M1 step and contacts no
+production database or Render service.
 
 **Material design decisions.** Repository authority is raw whole-file identity, so there is no
 grammar insertion zone and no byte outside review. A legitimate SQL or comment change is one
@@ -326,9 +327,10 @@ six executors remain disabled and unreachable.
 
 **Rollback/recovery status.** Revert the repository control while leaving the SQL artifacts
 unchanged. That reopens the repository-authority defect but applies or rolls back no migration and
-requires no Render, provider, approval, or production cleanup. Any database rollback of migration
-007 remains separately authorized and must begin by establishing its currently unknown production
-state read-only.
+requires no Render, provider, approval, or production cleanup. Migration 007's production state is
+now established `APPLIED`, independently verified via M1 (2026-09-18, see [Status](STATUS.md)). Any
+database rollback of migration 007 remains separately authorized and must begin by confirming that
+applied state read-only.
 
 **Security/privacy implications.** An unreviewed byte change anywhere in either SQL artifact now
 fails closed. The control reads repository files only; no credential, PII, provider, database, or
@@ -406,40 +408,86 @@ prerequisite below remains outstanding; PR #60 advanced none of them.
 **Documents updated at completion.** `docs/M1_READINESS_DECISION_RECORD.md` (new), `docs/ROADMAP.md`,
 `docs/STATUS.md`; and post-merge, `docs/AI_HANDOFF.md`.
 
-## Active product cursor — M1 readiness completion, still evidence only
+## Active product cursor — M1 complete and independently verified; M2 not authorized
 
-**M1 has not begun, is not authorized, and is not complete.** Merging PR #60 delivered the *evidence
-package*; it did **not** complete M1 readiness and it authorized nothing. The cursor is unchanged in
-kind: **completing** the accepted design's first prerequisite — the read-only production facts the
-package could not obtain — recorded in the
-[M1 readiness decision record](M1_READINESS_DECISION_RECORD.md). **The next operational step is M1
-readiness completion, not M1 execution**, and it is blocked pending separately authorized read-only
-production access.
+**M1 is complete and has been independently verified against live provider state (2026-09-18).**
+The prior verdict recorded immediately below in this section — `M1 BLOCKED / NO-GO` — was accurate
+at the time it was written, when no read-only production access existed. That access was
+subsequently obtained and the milestone was performed. **M1 did not authorize and did not begin
+M2.** Nothing below grants authority for migration `008`, executor enablement, or any other M2
+step; **P1–P8, migration `008`, production wiring, executor enablement, and the proposed Google
+Business Profile expansion remain not begun and not authorized.**
 
-**Not begun and not authorized by this merge:** P1–P8, migration `008`, production wiring, executor
-enablement, and the proposed Google Business Profile expansion.
+**Tier 1 — verified directly against live GitHub/Render/Postgres state.**
 
-**Current verdict: `M1 BLOCKED / NO-GO`.** `L` (the commit the live api serves), the three service
+- API service `gcd-social-api` (`srv-d8u0qtpo3t8c73c5o44g`) is live at exact artifact `A` =
+  `d5015236672a02bf8f58d342625c32a4f5acc8a1`, via deploy `dep-dam3dfv40ujc73fgidhg`
+  (status `live`, `trigger: "manual"`, started `2026-09-17T18:51:43.364952Z`, finished
+  `2026-09-17T18:52:47.893627Z`). The previously live deploy at exact artifact `R` =
+  `44d7336f2c75ff880cff0d8205d2fafe13eb91b5`, `dep-da8sbq0n74is73e0hgcg`, was deactivated at
+  `2026-09-17T18:52:47.892086Z`.
+- **Migration 007 is production `APPLIED`.** `_migrations` records `007_evidence_bounds.sql` with
+  `applied_at 2026-09-17T18:52:22.268131Z` — inside the deploy window, consistent with the API's
+  `preDeployCommand: npm run migrate`. The applied set is exactly `001`–`007`, each appearing
+  exactly once; no migration `008` exists. No database rollback occurred, and deploy history shows
+  no redeploy of `R` after `A`.
+- Worker `gcd-social-worker` (`srv-d8u0qtpo3t8c73c5o440`) and scheduler `gcd-social-scheduler`
+  (`crn-d8ulb4rtqb8s73bdjctg`) remain live at exact artifact `R`, via `dep-da8sjmp42hec73dvhk30` and
+  `dep-da8siupsrm7s73afv6u0` respectively; no deploy on either since 2026-08-28. **This was
+  deliberate: M1 deployed the API only**, so migration 007 applied while worker and scheduler stayed
+  at `R`.
+- All three services report `autoDeploy: "no"` / `autoDeployTrigger: "off"` — native Render
+  auto-deploy is disabled. The API's `preDeployCommand` is exactly `npm run migrate`.
+- CI run `35235152957` (attempt 1, `head_sha` = `A`) passed all five required jobs, completing
+  `2026-09-17T14:50:12Z`.
+- **The M1 deploy was not produced by GitHub deployment automation.** The service's own deploy
+  history distinguishes `new_commit` (auto-deploy), `api` (Render API call), and `manual`
+  (dashboard); the M1 deploy record is `manual`.
+- The scheduler's cron continues to run on its normal daily schedule (`0 13 * * *`), most recently
+  `2026-09-18T13:01:23Z`. **Correction:** this is expected behavior at `R` with all six executors
+  disabled; any statement elsewhere asserting no scheduler runs occur is wrong and has been
+  corrected wherever found in this sweep.
+
+**Tier 2 — established by the prior independent inspection, not re-verified here.** All 11
+migration-007 constraints validated; all 23 canonical aggregate checks within bounds; all six
+executors remain disabled and unreachable; no provider call, approval, or publication occurred.
+
+**Tier 3 — open limitations, recorded rather than resolved.**
+
+- Render exposes no field recording whether the operator selected an immutable specific commit or
+  "latest commit" when triggering the manual deploy. This is permanently unanswerable from provider
+  evidence. It has no effect on the deployed artifact: the deploy record immutably names commit `A`,
+  `main` was at `A` at deploy time and remains at `A` with zero commits after, and auto-deploy is
+  off, so the service cannot drift.
+- Render exposes no deploy-level actor-identity field. Who performed the deploy cannot be
+  established from provider evidence.
+- The repository-scoped GitHub Actions variable `RENDER_DEPLOY_AUTOMATION_ENABLED` was read in the
+  authenticated GitHub UI on 2026-09-18 as exact lowercase `false`. Its last-updated timestamp
+  predates M1 (2026-09-17), so the variable was not changed by or during M1. This document does
+  not claim GitHub deployment automation is currently disabled as a system; the evidenced claims
+  are the gate variable's value and the narrower Tier 1 one above, that the M1 deploy specifically
+  was not produced by automation.
+
+**The authorized recovery path is unchanged should it ever be needed: redeploy exact `R` to the API
+only, leaving migration 007 applied.**
+
+### Prior verdict, superseded above — recorded for history
+
+The following was the accurate verdict between PR #60's merge and the read-only production access
+obtained for M1. It is preserved as the historical record of that interval and is superseded by the
+verified state recorded above.
+
+**M1 had not begun, was not authorized, and was not complete.** Merging PR #60 delivered the *evidence
+package*; it did **not** complete M1 readiness and it authorized nothing. **Current verdict at that
+time: `M1 BLOCKED / NO-GO`.** `L` (the commit the live api serves), the three service
 commits, `D` (the production `_migrations` identifier set), `P`, comparisons 2–7 of §4.4.2, the A/L
 ancestry decision, same-commit `preDeployCommand` behaviour, the §4.1 aggregate audit, and the
-rollback artifact `R` with its executed compatibility evidence are all **`NOT YET EXECUTED`** —
-there is no read-only production access.
-
-**`A` itself is `NOT YET ESTABLISHED`.** The candidate artifact observed while the package was
-prepared — `2f76679afa78721ad9751ea7ce3124c5307b090c` — held migrations `001`–`007` with no later
-migration, and comparison 1 passed **against that candidate**. The readiness package has merged and
-`main` has advanced, so that SHA **is** historical. Per §4.4, `A` is the **reviewed head of `main` at M1 time**
-and must be **re-established by full SHA** then; `F(A)`, the A/L predicate, the complete
-migration-state reading and all seven comparisons are **recomputed against that new `A`**. No result
-derived from the candidate may be reused merely because the migration file set appears unchanged.
-**PR #60 has now merged**, so that candidate SHA is historical in fact and not merely in prospect: it
-is the first parent of merge `2a9edb7f86a07ddb7c27bc91e3c214052d0a2dc4`. The merge SHA is **not** `A`
-either — `A` is read from `main` at M1 time and at no other moment.
+rollback artifact `R` with its executed compatibility evidence were all **`NOT YET EXECUTED`** —
+there was no read-only production access.
 
 The checked-in operator tooling for the two readings is delivered and exercised against a disposable
 database: `scripts/ops/evidence-aggregate-audit.mjs` (§4.1, read-only, aggregate-only) and
-`scripts/ops/migration-state-read.mjs` (§4.4.2, all seven comparisons). **Neither has been run
-against production**, and neither authorizes anything.
+`scripts/ops/migration-state-read.mjs` (§4.4.2, all seven comparisons).
 
 **Successive independent inspections found four functional defects in the operator tooling, all now
 corrected and all covered by regression cases.** Migration identity was compared by numeric prefix,
@@ -453,9 +501,6 @@ real name, would have skipped it and **never applied migration 007**; filenames 
 NUL-delimited and compared byte for byte. And the failure path echoed a **server-chosen** SQLSTATE,
 so a custom `ERRCODE` reached operator logs; both scripts now emit only fixed categories defined in
 the script, and `UNKNOWN` for anything unrecognised.
-
-**Migration 007's applied state remains `UNKNOWN` in either direction.** M1's api deployment requires
-its own explicit authorization after independent inspection, and is not granted here.
 
 ## Post-MVP hardening backlog
 
@@ -485,8 +530,9 @@ shapes. That recogniser was not made semantically complete. The defect is
 resolved by a replacement control: appending any such text changes the raw
 whole-file digest and fails `CC5F` unless the artifact digest, manifest, and
 external pin are updated together under review. This remains repository
-authority only; migration 007's production application state is **`UNKNOWN`
-in either direction**. Full design, evidence, limitations, and ownership are in
+authority only, and says nothing by itself about production; separately,
+**migration 007 is now production `APPLIED`** — see the M1 cursor above.
+Full design, evidence, limitations, and ownership are in
 [Known issues and hardening](KNOWN_ISSUES_AND_HARDENING.md).
 
 ## Phase 0B prerequisite — fact and evidence contract
@@ -828,7 +874,7 @@ Documents reconciled after merge: `README.md`, `docs/AI_HANDOFF.md`, `docs/ARCHI
 
 **Every guard equals its producer's ceiling.** Nine adjacent producer/consumer pairs (Stage 1 → 2 and 3, Stage 2 → 3, Stage 3 → 4, 5 and 6, Stage 4 → 5 and 6, Stage 5 → 6). Regressions assert **equality**, not sufficiency: a guard above its producer's ceiling would hide a later contract change instead of failing on it, and a guard below it would refuse a structurally valid handoff.
 
-**Evidence bounds, cardinalities, and the migration pair.** `EVIDENCE_LIMITS` retains the documented text numbers and applies them as both characters/code units and UTF-8 bytes. Every record is revalidated at the real pack builder, durable-row reconstruction, pack projection, and shared pre-model boundaries, so a hand-built pack or malformed database row cannot bypass the owning record contract. `maxProjectedRecords` is an executed 64-record builder contract, not only a derivation input. Exhaustive conflicts have an independent 64-entry consumer contract: 64 valid same-subject/same-attribute facts still produce all 2,016 pairs, after which the real renderer and shared pre-model boundary refuse the intact pack. No conflict is discarded. `detail` is one compatible 4,000-byte PostgreSQL-canonical `jsonb::text` contract; TypeScript conservatively accounts for JSONB formatting and numeric expansion, including the 327-byte canonical representation of the signed finite value `-5e-324`. Relation notes use the 500 bound at TypeScript relation consumption/read boundaries. Migration 007 rejects NULL tag elements and uses the uniquely versioned `gcd_content_evidence_tags_within_v007` helper with plain `CREATE`, so an exact-name collision fails without overwriting an unrelated function. Disposable PostgreSQL 16 and 18 each pass apply, enforcement, documented rollback, compiled reapply, and collision-refusal coverage. **Whether migration 007 or its rollback has been applied to production is `UNKNOWN` in either direction.** Repository state is not production evidence; the only dated observation is the 2026-08-28 read-only reading of `_migrations` at `001–006`, and the current state requires fresh read-only verification. Applying either remains separately authorized.
+**Evidence bounds, cardinalities, and the migration pair.** `EVIDENCE_LIMITS` retains the documented text numbers and applies them as both characters/code units and UTF-8 bytes. Every record is revalidated at the real pack builder, durable-row reconstruction, pack projection, and shared pre-model boundaries, so a hand-built pack or malformed database row cannot bypass the owning record contract. `maxProjectedRecords` is an executed 64-record builder contract, not only a derivation input. Exhaustive conflicts have an independent 64-entry consumer contract: 64 valid same-subject/same-attribute facts still produce all 2,016 pairs, after which the real renderer and shared pre-model boundary refuse the intact pack. No conflict is discarded. `detail` is one compatible 4,000-byte PostgreSQL-canonical `jsonb::text` contract; TypeScript conservatively accounts for JSONB formatting and numeric expansion, including the 327-byte canonical representation of the signed finite value `-5e-324`. Relation notes use the 500 bound at TypeScript relation consumption/read boundaries. Migration 007 rejects NULL tag elements and uses the uniquely versioned `gcd_content_evidence_tags_within_v007` helper with plain `CREATE`, so an exact-name collision fails without overwriting an unrelated function. Disposable PostgreSQL 16 and 18 each pass apply, enforcement, documented rollback, compiled reapply, and collision-refusal coverage. **Migration 007 has since been applied to production — independently verified via M1 (2026-09-18), see [Status](STATUS.md); whether its rollback has been applied remains `UNKNOWN` in either direction.** Repository state alone was not production evidence at this merge; the only dated observation then was the 2026-08-28 read-only reading of `_migrations` at `001–006`. Applying the rollback remains separately authorized.
 
 **Output contracts reconciled with token budgets.** The ordinary-prose estimate is gone. Every bounded output string must fit both its code-unit allowance and the same numeric UTF-8 byte allowance. The escaping-aware transport ceiling is therefore also a serialized UTF-8 byte ceiling, and a lossless worst case of one token per byte covers every contract-valid output, including adversarial non-ordinary text. The derived policy budgets are `reasoning-heavy` 40,000, `reasoning-standard` 79,000, and `critic` 73,000, replacing 4,000 / 3,000 / 2,000. Anthropic Opus 5 adaptive thinking shares the request's `max_tokens`; the centralized typed stage policy therefore sends `thinking: { type: "disabled" }` explicitly so the full derived ceiling is available to visible JSON. Model selection, budgets, thinking, and the documented 128,000-token caps stay centralized in `modelPolicy.ts`; legacy `runAgent` callers and `runVision` retain their prior behavior. No tokenizer or provider is contacted and no stage names a model.
 
@@ -866,7 +912,7 @@ The two bounds are now separate values with separate names, and the second is en
 
 **Testing.** At the corrected head, `test:content-intelligence` reports **969** passing checks and the routine eight-suite offline sequence reports **1,367 assertions**. The combined output contains **1,254** `PASS`-prefixed lines from posting (52), image (18), orchestrator (108), gate (56), API (51), and content-intelligence (969). Render-identity reports one invariant-suite pass and ownership/recovery reports 112 checks in summary form, bringing the eight-suite total to **1,367**. Counting `PASS`-prefixed lines alone therefore omits those two suites and understates the total. The PostgreSQL suite reports **208 checks per server** (fresh 59, upgrade 80, durable 69) and passed locally on PostgreSQL 16.15 and 18.6. Every model call uses an injected fake runner. The complete validation contract, exact-head GitHub matrix, and final empirical statistics are recorded in PR #54; no provider, production database, or Render service is involved.
 
-**Limitations, stated rather than implied.** One token per serialized UTF-8 byte is a deliberately loose worst-case ceiling, not a measured tokenizer distribution. The `EVIDENCE` ceiling deliberately over-approximates 64 maximum records plus 64 maximum conflict entries; packs with more conflicts fail closed intact. Stage 5 still over-approximates caption and hashtag content separately although the provider-visible rule makes them share one allowance. The JSONB detail upper bound may reject a TypeScript value PostgreSQL would fit, but never accepts one PostgreSQL rejects. Database coverage is disposable only and is not production evidence: whether migration 007 has run in production is **`UNKNOWN` in either direction** and requires fresh read-only verification. No bound has been validated against a real model, real workload, or populated production table.
+**Limitations, stated rather than implied.** One token per serialized UTF-8 byte is a deliberately loose worst-case ceiling, not a measured tokenizer distribution. The `EVIDENCE` ceiling deliberately over-approximates 64 maximum records plus 64 maximum conflict entries; packs with more conflicts fail closed intact. Stage 5 still over-approximates caption and hashtag content separately although the provider-visible rule makes them share one allowance. The JSONB detail upper bound may reject a TypeScript value PostgreSQL would fit, but never accepts one PostgreSQL rejects. Database coverage here is disposable only, not production evidence in itself: migration 007 has since been applied to production, independently verified via M1 (2026-09-18) — see [Status](STATUS.md). No bound has been validated against a real model, real workload, or populated production table.
 
 **The count corrections that followed the last review round.** A review found the mutation harness described as spanning **ten** files in four active documents — `docs/ROADMAP.md`, `docs/TESTING.md`, `docs/STATUS.md` and `docs/AI_HANDOFF.md` — when it spans **nine** distinct physical paths. The figure is enumerated from the `MUTATIONS` array rather than recalled: 33 entries naming nine file constants, each resolving to one of `payloadContract.ts`, `modelPolicy.ts`, `finalCritic.ts`, `packagingAdaptation.ts`, `stageExecution.ts`, `evidence/pack.ts`, `evidence/contract.ts`, `sdk.ts`, and `007_evidence_bounds.sql`. All four were corrected, and a sweep for equivalent stale counts also found the harness's own header calling them *"the two files that must agree with it"* — true when the script covered three files, and eight since the semantic and request-policy mutations were added; it was corrected in the same change. No historical count describing an earlier harness version existed, so none was preserved or rewritten. That correction changed no implementation, test, migration, limit, or mutation definition: five single-line edits, four in Markdown and one in a comment.
 
@@ -874,15 +920,15 @@ The two bounds are now separate values with separate names, and the second is en
 
 **Security and privacy implications.** Every control this reconciliation adds fails **closed** and before any model boundary. Record and conflict cardinalities are independently enforced; evidence records are revalidated at pack construction, durable-row reconstruction, pack projection, and the shared pre-model boundary, so neither a hand-built pack nor a malformed direct-database row can bypass the owning contract. A conflict's `aClaim`, `bClaim` and `subject` must be exact snapshots of records the pack holds, which closes a path by which text no record ever made could have reached a model through the exclusion list rather than through a citation. Output text is byte-bounded, so the worst-case token proof covers adversarial non-ordinary text, and the centralized policy disables adaptive thinking because it shares `max_tokens`. Nothing became reachable: no `executionEnabled` changed, and no route, worker wiring, scheduler, retry, repair call, model tool, approval authority, publishing authority, or provider contact was added. A nonempty `ANTHROPIC_API_KEY` still causes no provider call — an injected runner or injected stream remains the only path to a model, asserted by regression. No credential, prompt, evidence text, model prose, or unpublished content is logged by any boundary this change touches, and no database credential was requested or received at any point in the work.
 
-**Unresolved follow-ups.** Migration 007's application to production — its live application state is **`UNKNOWN` in either direction**, so unless fresh read-only verification establishes that it has already been applied, application requires the separate authorization, audit, rollout, and verification recorded below. The separately reviewed production-wiring design, which is the next cursor and which, *as of PR #54*, was not begun. (It was written afterwards, in PR #56, and has since been accepted and merged as design while remaining unimplemented — see its own record below. It did not exist at this merge, and neither its writing nor its acceptance authorizes anything.) Everything already open elsewhere in this roadmap is unchanged by this merge: the provider operation ledger and reconciliation, PostgreSQL network restriction, token lifecycle, control/reviewer identity, retention and backup/restore, the external readiness register, and the deployment-authority cutover proof.
+**Unresolved follow-ups.** Migration 007's application to production — its live application state is now established **`APPLIED`**, independently verified via M1 (2026-09-18, see [Status](STATUS.md)); at this merge that application still required the separate authorization, audit, rollout, and verification recorded below. The separately reviewed production-wiring design, which is the next cursor and which, *as of PR #54*, was not begun. (It was written afterwards, in PR #56, and has since been accepted and merged as design while remaining unimplemented — see its own record below. It did not exist at this merge, and neither its writing nor its acceptance authorizes anything.) Everything already open elsewhere in this roadmap is unchanged by this merge: the provider operation ledger and reconciliation, PostgreSQL network restriction, token lifecycle, control/reviewer identity, retention and backup/restore, the external readiness register, and the deployment-authority cutover proof.
 
 **Exact-head CI and independent reinspection.** The final reviewed head `0362e354bc942416c640e93d403c537421a184e3` passed all five GitHub CI jobs — Node 22 offline quality gates, PostgreSQL 16 integration, PostgreSQL 18 integration, AgentShield 1.4.0, and Workflow and YAML static validation — in run `33776745879`, whose recorded `head_sha` is that exact head. The two preceding reviewed heads were each independently reinspected and each returned blocking findings that were corrected rather than argued: `54e409e…` was found to carry a semantic validator that rejected the conflict packs the builder actually produces and a derived deadline that did not bound the stream it was named for; `3cfff64…` was found to overstate the harness file count. Both rounds are recorded above. That is repository validation for a dormant change — **not** deployment or production evidence.
 
 **Explicit non-actions.** Nothing was enabled, deployed, approved, scheduled, or published. No production SQL was applied, no migration was run, no `evidence:sync` was run, no Render or GitHub variable or settings change was made, no brief was created, no automation was enabled, no content was approved, and no provider or model call was made — every test used an injected runner. No production route, worker wiring, scheduler, retry, repair call, model tool, approval authority, or publishing authority was added. PR #39 was left untouched.
 
-**Rollback / recovery status.** Rollback is to revert merge commit `0c13ab1af9c7ca796a1d48ed37207715a47166e4`, which removes the reconciliation in one step. No database, Render, provider, approval, publication, or production cleanup is required, because none was introduced: the merge applied no migration, and added no route, environment variable, credential, dependency, lockfile change, workflow change or `render.yaml` change, and changed no `executionEnabled` field. Migration 007 is **in source**, and **whether it is applied in production is `UNKNOWN` — not established in either direction**. If it is unapplied, reverting the merge removes a file rather than unwinding a schema; if it has been applied, reverting the merge removes the file while leaving the schema changed, which is a database question and not a revert. **Establish which case holds, read-only, before reverting.** If 007 is ever applied and must be reversed, `state/rollback/007_evidence_bounds_rollback.sql` is the documented operation, applied by hand under its own authorization — note that it relaxes the database only: the TypeScript contract still refuses an oversized record, so the system continues to fail closed.
+**Rollback / recovery status.** Rollback is to revert merge commit `0c13ab1af9c7ca796a1d48ed37207715a47166e4`, which removes the reconciliation in one step. No database, Render, provider, approval, publication, or production cleanup is required, because none was introduced: the merge applied no migration, and added no route, environment variable, credential, dependency, lockfile change, workflow change or `render.yaml` change, and changed no `executionEnabled` field. Migration 007 is **in source**, and **it has since been applied in production**, independently verified via M1 (2026-09-18) — see [Status](STATUS.md). Reverting this merge would remove the file while leaving the schema changed, which is a database question and not a revert. **Confirm the then-current applied state, read-only, before reverting.** If 007 is ever applied and must be reversed, `state/rollback/007_evidence_bounds_rollback.sql` is the documented operation, applied by hand under its own authorization — note that it relaxes the database only: the TypeScript contract still refuses an oversized record, so the system continues to fail closed.
 
-**Migration 007's applied state in production is `UNKNOWN` — not established in either direction — and merging it granted no authority to apply it.** Before `state/migrations/007_evidence_bounds.sql` may reach production it needs, separately and in order: its own explicit authorization; a fresh read-only production audit establishing that the immediately validated constraints can pass against the data actually stored (the 2026-09-02 audit is a **dated** fact, not a standing one); the separately authorized migration-bearing rollout procedure rather than the ordinary controller path, with exactly one migration runner and no schema-dependent consumer racing it; and post-application verification. None of that is performed or authorized by this merge.
+**Migration 007's applied state in production is now established `APPLIED`, independently verified via M1 (2026-09-18, see [Status](STATUS.md)) — merging this reconciliation itself granted no authority to apply it and did not perform the apply.** Reaching that state from `state/migrations/007_evidence_bounds.sql` needed, separately and in order: its own explicit authorization; a fresh read-only production audit establishing that the immediately validated constraints could pass against the data actually stored (the 2026-09-02 audit is a **dated** fact, not a standing one); the separately authorized migration-bearing rollout procedure rather than the ordinary controller path, with exactly one migration runner and no schema-dependent consumer racing it; and post-application verification. None of that was performed or authorized by this merge.
 
 **Documents updated at completion.** In the implementing pull request — `README.md`, `docs/ARCHITECTURE.md`, `docs/ROADMAP.md`, `docs/STATUS.md`, `docs/TESTING.md`, and `docs/AI_HANDOFF.md`. In the post-merge reconciliation that added this durable record — all of the above plus `docs/DATA_MODEL.md` and `docs/SECURITY_AND_CONTINUITY.md`.
 
@@ -894,8 +940,10 @@ The two bounds are now separate values with separate names, and the second is en
 number. **Accepted means exactly one thing: [`docs/PRODUCTION_WIRING_DESIGN.md`](PRODUCTION_WIRING_DESIGN.md)
 is present on `main` as this repository's accepted production-wiring design.** It does **not** mean
 production wiring is implemented, and it authorizes **no** implementation PR and **no** operator
-milestone. **None of the eight implementation PRs (P1–P8) exists; none of the seven operator
-milestones (M1–M7) has been performed**, M4's five acts included. The merge establishes **no**
+milestone. At the time of this merge, none of the eight implementation PRs (P1–P8) existed and none
+of the seven operator milestones (M1–M7) had been performed. **M1 has since been performed and
+independently verified — see the active product cursor above.** None of P1–P8, and none of
+M2–M7, has been performed. The merge itself establishes **no**
 deployment, production validation, database readiness, migration application, executor enablement,
 model execution, approval, or publication. No stage's `executionEnabled` changed; all six remain
 `false`, and no production path reaches any of them. **Production evidence: none.**
@@ -1087,11 +1135,12 @@ not run. The only production evidence anywhere near this work remains the operat
 2026-09-02 aggregate read-only audit recorded under PR #54, which is a dated observation and not a
 statement about now.
 
-**Unresolved questions carried forward by the accepted design.** Live Render service versions, health,
+**Unresolved questions carried forward by the accepted design, as of this merge.** Live Render service versions, health,
 and control settings; **`L`, the commit each service currently runs**; whether a same-commit api
 deployment re-invokes `preDeployCommand`; whether the rollback artifact `R` tolerates the post-007
-schema; the contents of `_migrations` and of the production evidence tables; **whether migration 007
-has been applied — not established in either direction**; whether any executor has ever been invoked
+schema; the contents of `_migrations` and of the production evidence tables; whether migration 007
+had been applied — not established in either direction at that time (**since resolved: migration 007
+is now production `APPLIED`, per M1 in the active product cursor above**); whether any executor has ever been invoked
 against a real model historically; whether a shadow run should build its evidence pack from
 `config/approved-facts.json` via the adapter or require `evidence:sync` to have populated
 `content_evidence` first; per-run and per-day cost ceilings and the behaviour on breach; whether one
@@ -1327,12 +1376,13 @@ range containing this change therefore requires the separately authorized migrat
 **No executable SQL changed:** stripping full-line `--` comments and blank lines leaves both scripts
 byte-identical to the base — migration `6e39722…`, rollback `21a8ac8…`, 40 and 19 executable lines
 respectively — and the disposable PostgreSQL 16/18 suites still apply, enforce, roll back and reapply
-007 at 208 checks each. **None of this implies migration 007 was applied, authorized, or deployed;
-its live application state remains `UNKNOWN` in either direction.**
+007 at 208 checks each. **None of this implies migration 007 was applied, authorized, or deployed by this change; its
+live application state is now established `APPLIED`, independently verified via M1
+(2026-09-18) — see [Status](STATUS.md).**
 
 ## Phase 0B — Content Intelligence runtime
 
-**State:** foundation `MERGED` and `DEPLOYED`; all six executors — `strategy-concept`, `automotive-truth`, `hook-story-script`, `production-direction`, `packaging-adaptation`, and `final-critic` — **`MERGED`** and dormant, the sixth through PR #52; the payload-contract reconciliation **`MERGED`** through PR #54. **None is `ENABLED`, established as `DEPLOYED`, or `PRODUCTION-VALIDATED`**, and none has production evidence. **All six target stages now have a merged executor on `main`**, and every registry entry reports `executionEnabled: false`.
+**State:** foundation `MERGED` and `DEPLOYED`; all six executors — `strategy-concept`, `automotive-truth`, `hook-story-script`, `production-direction`, `packaging-adaptation`, and `final-critic` — **`MERGED`** and dormant, the sixth through PR #52; the payload-contract reconciliation **`MERGED`** through PR #54. **None is `ENABLED`, established as `DEPLOYED`, or `PRODUCTION-VALIDATED`**, and none has production evidence. **All six target stages now have a merged executor on `main`**, and every registry entry reports `executionEnabled: false`. Separately, on the deployment-authority track, **M1 (migration 007's rollout as an API-only deployment) is now complete and independently verified** — see the active product cursor above; this did not enable any stage and did not authorize M2.
 
 **Last merged slice: the payload-contract reconciliation, `MERGED` through PR #54** (merge `0c13ab1af9c7ca796a1d48ed37207715a47166e4`), recorded in its own section above. Before it, Phase 0B.6 — the dormant `final-critic` stage executor — was `MERGED` through PR #52; see its dedicated section for the full record and durable identifiers. The reconciliation that gates production wiring is therefore **satisfied in repository state**: it is present on `main`, and it is not established as deployed, not enabled, and not production-validated. Deployment-authority work remains an independent track and must not be combined with any of this. **The separately reviewed production-wiring design is accepted and `MERGED` through PR #56** (merge `53e2c2bb6115e457670c1f99956d11a1a54530cd`), recorded in its own section above, and is **`UNIMPLEMENTED`** — authorizing neither implementation nor operations. **No implementation PR (P1–P8) exists and no operator milestone (M1–M7) has been performed.** Not a new phase number, and no production wiring, deployment, enablement, migration application, or production validation has occurred.
 
