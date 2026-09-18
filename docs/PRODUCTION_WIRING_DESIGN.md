@@ -1784,4 +1784,4 @@ expansion. It changes no source, test, migration, configuration, agent, skill, o
 **It grants no authorization.** It is accepted and merged **as a design** (see the Status section at
 the top of this document), and acceptance authorizes nothing: every layer in §3, every gate in §4, and
 every PR and milestone in §6 still requires its own review, its own explicit authorization, and its
-own evidence. **No milestone M1–M7 has been performed, and no implementation PR P1–P8 exists.**
+own evidence. **M1 has been performed and independently verified — see [STATUS.md's current cursor](STATUS.md#current-cursor--the-single-next-safe-operation) for the record; no other milestone M2–M7 has been performed, and no implementation PR P1–P8 exists.**
