@@ -526,12 +526,11 @@ As of 2026-09-18, the scheduler had completed one full daily cycle after migrati
 "ordinary automated deployment is prohibited" and the controller "must not be forced past it"; and
 "no unrelated release may occur, of any service, for any reason."
 
-**`main`/production divergence, newly recorded.** `main` is now
-`af513b5bbe89b7a60c7fb4929db325a566db7d41` (merge of PR #68), while the deployed API artifact
-remains exact `A` = `d5015236672a02bf8f58d342625c32a4f5acc8a1`. The delta between them is
-documentation-only, so runtime behavior is identical, but the SHAs differ. **"Deploy `main`" and
-"deploy `A`" are no longer the same instruction**, and any future preflight must name which one it
-means. `main` must not be described as deployed.
+**`main`/production divergence.** The deployed API artifact is exact `A` =
+`d5015236672a02bf8f58d342625c32a4f5acc8a1`. `main` is ahead of `A` by documentation-only commits —
+the exact current `main` is a Git/GitHub lookup, not a field this file maintains: run
+`git rev-parse origin/main`. **"Deploy `main`" and "deploy `A`" are not the same instruction**, and
+any preflight must name which one it means. `main` must not be described as deployed.
 
 ### Prior verdict, superseded above — recorded for history
 
