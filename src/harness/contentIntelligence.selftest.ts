@@ -1712,7 +1712,7 @@ async function run(): Promise<void> {
     check("AR2. exactly one model request is made",
       scriptCalls.length === 1 && scriptResult.metadata.modelRequests === 1);
     check("AR3. bounded model identity and usage metadata are returned",
-      scriptResult.metadata.model === "claude-sonnet-4-6"
+      scriptResult.metadata.model === "claude-sonnet-5"
         && scriptResult.metadata.modelPolicy === "reasoning-standard"
         && scriptResult.metadata.usage?.output_tokens === 80
         && typeof scriptResult.metadata.totalCostUsd === "number");
@@ -2508,7 +2508,7 @@ async function run(): Promise<void> {
     check("BA2. exactly one model request is made",
       dirCalls.length === 1 && dirResult.metadata.modelRequests === 1);
     check("BA3. bounded model identity and usage metadata are returned",
-      dirResult.metadata.model === "claude-sonnet-4-6"
+      dirResult.metadata.model === "claude-sonnet-5"
         && dirResult.metadata.modelPolicy === "reasoning-standard"
         && dirResult.metadata.usage?.output_tokens === 80
         && typeof dirResult.metadata.totalCostUsd === "number");
@@ -3343,7 +3343,7 @@ async function run(): Promise<void> {
     check("BJ2. exactly one model request is made",
       packCalls.length === 1 && packResult.metadata.modelRequests === 1);
     check("BJ3. bounded model identity and usage metadata are returned",
-      packResult.metadata.model === "claude-sonnet-4-6"
+      packResult.metadata.model === "claude-sonnet-5"
         && packResult.metadata.modelPolicy === "reasoning-standard"
         && packResult.metadata.usage?.output_tokens === 80
         && typeof packResult.metadata.totalCostUsd === "number");
@@ -4261,7 +4261,7 @@ async function run(): Promise<void> {
     check("BT2. exactly one model request is made",
       criticCalls.length === 1 && criticResult.metadata.modelRequests === 1);
     check("BT3. bounded model identity and usage metadata are returned",
-      criticResult.metadata.model === "claude-sonnet-4-6"
+      criticResult.metadata.model === "claude-sonnet-5"
         && criticResult.metadata.modelPolicy === "critic"
         && criticResult.metadata.usage?.output_tokens === 80
         && typeof criticResult.metadata.totalCostUsd === "number");

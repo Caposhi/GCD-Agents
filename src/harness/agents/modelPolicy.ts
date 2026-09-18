@@ -32,8 +32,8 @@ export class ModelPolicyError extends Error {
  */
 const POLICY_MODELS: Record<Exclude<ModelPolicy, "deterministic-only">, string> = {
   "reasoning-heavy": "claude-opus-5",
-  "reasoning-standard": "claude-sonnet-4-6",
-  critic: "claude-sonnet-4-6",
+  "reasoning-standard": "claude-sonnet-5",
+  critic: "claude-sonnet-5",
 };
 
 /**

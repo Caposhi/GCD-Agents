@@ -372,7 +372,7 @@ async function main() {
     // ~4-chars-per-token estimate of the largest input this pipeline would
     // assemble. Mirrors src/harness/sdk.ts's own "not billing-accurate" price
     // table; kept local here because that table is not exported.
-    const PRICE = { "claude-opus-5": { in: 5, out: 25 }, "claude-sonnet-4-6": { in: 3, out: 15 } };
+    const PRICE = { "claude-opus-5": { in: 5, out: 25 }, "claude-sonnet-5": { in: 2, out: 10 }, "claude-sonnet-4-6": { in: 3, out: 15 } };
     const STAGE_POLICIES = [
       ["strategy-concept", "reasoning-heavy"], ["automotive-truth", "reasoning-heavy"],
       ["hook-story-script", "reasoning-standard"], ["production-direction", "reasoning-standard"],
