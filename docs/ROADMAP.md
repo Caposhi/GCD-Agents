@@ -471,6 +471,67 @@ executors remain disabled and unreachable; no provider call, approval, or public
 **The authorized recovery path is unchanged should it ever be needed: redeploy exact `R` to the API
 only, leaving migration 007 applied.**
 
+### M1→M2 interval — owner, bound, and monitoring (recorded 2026-09-18)
+
+[PRODUCTION_WIRING_DESIGN.md's M1 exit conditions](PRODUCTION_WIRING_DESIGN.md) state that for the
+whole M1→M2 interval, the interval must be **explicitly time-bounded**, actively **monitored**, and
+**owned by the named operator** who performed M1. None of those three had been recorded until now.
+This section records them; it does not begin, schedule, or imply M2.
+
+**Owner.** Michael Capote, CTO, Alan Gelfand Inc. DBA German Car Depot, attests accountability for
+this interval as the operator who performed M1. This is recorded as the operator's own attestation
+of accountability, made to satisfy the design's named-owner requirement. **It does not make the M1
+deploy attributable in provider logs.** Render exposes no deploy-level actor-identity field (Tier 3,
+above), so provider evidence does not and cannot independently establish who performed the M1
+deploy; the attestation and that evidentiary gap are separate facts, and this attestation does not
+close it.
+
+**Interval bound.**
+- Start: `2026-09-17T18:52:47.893627Z` — the finish time of the M1 API deploy
+  `dep-dam3dfv40ujc73fgidhg`.
+- Expiry: `2026-09-24T18:52Z`.
+
+Expiry is a decision point, not a cliff. On or before expiry, exactly one of the following three
+outcomes must occur, and **none of them is automatic**:
+
+  (a) M2 is complete; or
+  (b) the interval is explicitly re-authorized by the named owner, with a new stated bound and a
+      stated reason; or
+  (c) the recovery path (below) is taken.
+
+Each of (a), (b), and (c) requires its own explicit authorization from the owner. **Reaching the
+expiry date does not, by itself, authorize M2, and does not, by itself, authorize the recovery
+path — it obliges a decision, nothing more.**
+
+**Recovery path.** Exact-`R` post-007 compatibility was established in the 2026-09-16
+rollback-compatibility review, so the available recovery path is to redeploy the API to exact
+artifact `R` = `44d7336f2c75ff880cff0d8205d2fafe13eb91b5`, returning all three services to
+agreement. **This does not unapply migration 007** — the database stays ahead of the code until
+007's rollback file (`state/rollback/007_evidence_bounds_rollback.sql`) is separately authorized
+and applied.
+
+**Monitoring.** A daily read-only check of:
+
+  1. no new deploy on `gcd-social-api`, `gcd-social-worker`, or `gcd-social-scheduler`;
+  2. the applied migration set is still exactly `001`–`007`, with no `008`;
+  3. the API is still live at exact artifact `A` = `d5015236672a02bf8f58d342625c32a4f5acc8a1` and
+     reporting healthy;
+  4. the scheduler cron is still completing successfully on its `0 13 * * *` schedule.
+
+As of 2026-09-18, the scheduler had completed one full daily cycle after migration 007 was applied
+(last success `2026-09-18T13:01:23Z`), so the split has survived at least one cycle.
+
+**Standing prohibition, in force for the whole interval** — quoted from the design's own terms:
+"ordinary automated deployment is prohibited" and the controller "must not be forced past it"; and
+"no unrelated release may occur, of any service, for any reason."
+
+**`main`/production divergence, newly recorded.** `main` is now
+`af513b5bbe89b7a60c7fb4929db325a566db7d41` (merge of PR #68), while the deployed API artifact
+remains exact `A` = `d5015236672a02bf8f58d342625c32a4f5acc8a1`. The delta between them is
+documentation-only, so runtime behavior is identical, but the SHAs differ. **"Deploy `main`" and
+"deploy `A`" are no longer the same instruction**, and any future preflight must name which one it
+means. `main` must not be described as deployed.
+
 ### Prior verdict, superseded above — recorded for history
 
 The following was the accurate verdict between PR #60's merge and the read-only production access
