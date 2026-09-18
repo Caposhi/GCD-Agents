@@ -91,10 +91,18 @@ and `src/harness/evidence/pack.ts` carries `conflictedEvidence` and `assertUsabl
 
 **VERIFIED (repository)** — the six executors and the payload contract are on `main`.
 
-**UNKNOWN (production)** — whether any release carrying them is live. Nothing in this session
-inspected Render. [`docs/STATUS.md`](STATUS.md) records a **dated** production verification, and a
-dated observation is not a statement about now. The correct reading is **not established as
-deployed**, which is different from "not deployed" — neither is proven here.
+**ESTABLISHED (repository, by path inspection of both live artifacts)** — a release carrying all six
+executors and the payload contract **is** live, on the API service only. Artifact `A` =
+`d5015236672a02bf8f58d342625c32a4f5acc8a1` — the currently deployed API artifact — contains all six
+stage executor modules, including `src/harness/agents/finalCritic.ts` (PR #52, the sixth). Artifact
+`R` = `44d7336f2c75ff880cff0d8205d2fafe13eb91b5` — currently live on **both** the worker and the
+scheduler — contains **none** of the six: zero matching executor paths, no `finalCritic.ts`. Per the
+prior independent inspection (Tier 2, not re-verified here), all six registry entries remain
+`executionEnabled: false` and are reached by no production path.
+
+This establishes only the file-presence facts above. It does **not** establish, and this document
+does not assert, which service would execute an executor if one were enabled, or that enablement is
+therefore impossible — that is an inference about runtime wiring, not a fact established here.
 
 ### 1.3 What is dormant, and *why* it is dormant
 
