@@ -1,5 +1,15 @@
 # M1 readiness — decision record
 
+> **Superseded — M1 has since been performed and independently verified (2026-09-18).** This
+> record captures the evidence assembled and the verdict reached at PR #60's merge, when this
+> session had no read-only production access. That access was subsequently obtained and M1 was
+> performed: the API redeployed to exact artifact `A` = `d5015236672a02bf8f58d342625c32a4f5acc8a1`,
+> and its `preDeployCommand` applied migration `007_evidence_bounds.sql` to production. See
+> [Status](STATUS.md) and [Roadmap](ROADMAP.md) for the current, verified record, including its
+> Tier 3 open limitations. **M1's completion did not authorize M2.** The verdict and evidence table
+> below are preserved unmodified as the historical record of this document's own assembly; they are
+> not a statement about the current state of migration 007 or M1.
+
 **Milestone:** M1, the api deployment that invokes the sanctioned `preDeployCommand`
 migration runner and thereby applies `007_evidence_bounds.sql`.
 

@@ -15,30 +15,43 @@ publishes content. It is the separately reviewed production-wiring design that
 review as a proposal. **Accepted means exactly one thing: this design document is present on `main`
 as the repository's accepted production-wiring design.**
 
-**It is `UNIMPLEMENTED`, and acceptance changed nothing operational.** Specifically, merging it did
-**not**:
+**It is `UNIMPLEMENTED`, and acceptance changed nothing operational by itself.** Merging this
+document did **not**:
 
 - implement any production wiring, or create any of the eight implementation PRs (P1–P8) it proposes;
-- execute, authorize, or schedule **any** operator milestone — **no milestone M1–M7 has been
-  performed**, and M4's five single-control acts are likewise unperformed;
-- deploy anything, apply migration 007 or 008, or grant authority to apply either;
+- execute, authorize, or schedule any milestone. (**Separately, M1 has since been performed and
+  independently verified — see the note below.** M2–M7 remain unperformed, and M4's five
+  single-control acts are likewise unperformed.)
+- deploy anything beyond M1's own scope, apply migration 008, or grant authority to apply it;
 - enable an executor, change any `executionEnabled` value, raise any dispatch ceiling, issue any
   manual-dispatch grant, or move the runtime authority gate off `OFF`;
 - contact a provider or model, approve content, or publish anything;
-- establish deployment, production validation, or database readiness.
+- establish production validation or database readiness beyond migration 007's own application.
 
-**Every live fact remains `UNKNOWN` unless separately verified.** Nothing in this document — before
-or after merge — establishes live Render service identity, health or control settings; the commit
-each service runs; the contents of `_migrations`; whether migration 007 is applied; or any other
-production state. **A merged document is repository evidence, never production evidence**, and no
-live fact may be inferred from the fact that this design is accepted. Each such fact must be
-established by its own read-only verification, dated as the observation it is.
+> **Update — M1 complete, independently verified 2026-09-18.** M1 (the migration-007 rollout as an
+> API-only deployment) has been performed and independently verified against live GitHub/Render/
+> Postgres state: the API redeployed to exact artifact `A` = `d5015236672a02bf8f58d342625c32a4f5acc8a1`
+> (deploy `dep-dam3dfv40ujc73fgidhg`, `trigger: "manual"`), its `preDeployCommand` applied migration
+> `007_evidence_bounds.sql` (`_migrations` `applied_at 2026-09-17T18:52:22.268131Z`; `001`–`007`, each
+> exactly once, no `008`), and the worker and scheduler were deliberately left at exact artifact
+> `R` = `44d7336…`. See [Status](STATUS.md) for the full Tier 1/Tier 2/Tier 3 record, including the
+> open limitation that `RENDER_DEPLOY_AUTOMATION_ENABLED` was not re-read in this cycle. **M1 did not
+> authorize and did not begin M2**; this section's statements about P1–P8 and M2–M7 below remain
+> accurate.
+
+**Every live fact not stated above remains `UNKNOWN` unless separately verified.** Beyond the M1
+facts now established, nothing in this document establishes live Render service identity, health or
+control settings for the worker/scheduler beyond what is recorded above; or any other production
+state. **A merged document is repository evidence, never production evidence**, and no live fact may
+be inferred from the fact that this design is accepted. Each such fact must be established by its
+own read-only verification, dated as the observation it is.
 
 **Operational execution requires separate authorization, per named unit.** Acceptance of this design
-is not authorization to execute it. **Each implementation PR (P1–P8) and each operator milestone
-(M1–M7), including each of M4's five acts, still requires its own review, its own explicit
-authorization, and its own evidence** — no single approval covers more than the one unit it names,
-and none of them is implied by this merge.
+is not authorization to execute it, and neither is M1's completion authorization for anything beyond
+M1 itself. **Each implementation PR (P1–P8) and each remaining operator milestone (M2–M7), including
+each of M4's five acts, still requires its own review, its own explicit authorization, and its own
+evidence** — no single approval covers more than the one unit it names, and none of them is implied
+by this merge or by M1.
 
 **Evidence labels used throughout.** Every claim carries one:
 

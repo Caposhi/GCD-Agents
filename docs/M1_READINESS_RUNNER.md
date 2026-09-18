@@ -1,5 +1,12 @@
 # M1 readiness runner — repository and database evidence
 
+> **Update — M1 has since been performed and independently verified (2026-09-18).** This document
+> describes the read-only evidence-collection tooling and the verdict this document recorded before
+> that access was obtained. See [Status](STATUS.md) and [Roadmap](ROADMAP.md) for the current,
+> verified record. M1's completion did not authorize M2; the tool description below, including its
+> references to a fixed `M1 BLOCKED / NO-GO` verdict, is preserved as the historical record of this
+> document's own scope and is not a statement about the current state of migration 007 or M1.
+
 A small, repository-native Node 22 command that collects the **repository and
 database portions** of M1 readiness evidence from a normal clean checkout.
 

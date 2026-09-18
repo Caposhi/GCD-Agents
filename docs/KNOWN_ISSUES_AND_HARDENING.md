@@ -153,8 +153,10 @@ stronger whole-file authority rather than removed without replacement.
 ### Trust boundary and mutation evidence
 
 This is **repository-content authority**, not proof of production database
-state. Migration 007 remains production `UNKNOWN in either direction`.
-Repository bytes establish neither application nor non-application.
+state. Repository bytes establish neither application nor non-application by
+themselves. Separately, **migration 007 is now production `APPLIED`**: M1 (an
+API-only deployment of exact artifact `A` = `d5015236672a02bf8f58d342625c32a4f5acc8a1`)
+was independently verified 2026-09-18 — see [Status](STATUS.md).
 
 The mutation harness prepares a disposable no-Git copy, links the locked
 dependencies into it, and performs every mutation, build, suite run, and
@@ -206,10 +208,13 @@ replacement is **none**. All six executors remain disabled and unreachable.
 Application rollback is an ordinary revert of the repository control while the
 SQL artifacts remain unchanged. Reverting the control weakens repository
 authority and would reopen `CC5-SYNTAX-001`; it does not apply or roll back
-migration 007 and performs no production cleanup. If migration 007 has been
-applied, its separate SQL rollback remains a separately authorized database
-operation. Because its current production state is unknown, that state must be
-established read-only before any database rollback decision.
+migration 007 and performs no production cleanup. **Migration 007 is now
+production `APPLIED`, via M1** (independently verified 2026-09-18; see
+[Status](STATUS.md)); its separate SQL rollback, `state/rollback/007_evidence_bounds_rollback.sql`,
+remains a separately authorized database operation should it ever be needed.
+The authorized recovery path if M1 must be undone is to redeploy exact
+artifact `R` = `44d7336f2c75ff880cff0d8205d2fafe13eb91b5` to the API only,
+leaving migration 007 applied.
 
 ### Independent inspection and follow-up ownership
 

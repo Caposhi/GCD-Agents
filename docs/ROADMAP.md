@@ -1,6 +1,6 @@
 # GCD Content Intelligence roadmap
 
-Last reviewed: 2026-09-04.
+Last reviewed: 2026-09-18.
 
 This roadmap is the canonical unfinished-work sequence and the current-phase cursor. It orders work; it does not grant authority to deploy, migrate, call providers, change external configuration, or begin a phase. [Status](STATUS.md) records what is verified true now. Where this file and verified production evidence disagree, resolve the discrepancy rather than following this text. Roadmap continuity is binding — see [`AGENTS.md`](../AGENTS.md).
 
@@ -406,40 +406,86 @@ prerequisite below remains outstanding; PR #60 advanced none of them.
 **Documents updated at completion.** `docs/M1_READINESS_DECISION_RECORD.md` (new), `docs/ROADMAP.md`,
 `docs/STATUS.md`; and post-merge, `docs/AI_HANDOFF.md`.
 
-## Active product cursor — M1 readiness completion, still evidence only
+## Active product cursor — M1 complete and independently verified; M2 not authorized
 
-**M1 has not begun, is not authorized, and is not complete.** Merging PR #60 delivered the *evidence
-package*; it did **not** complete M1 readiness and it authorized nothing. The cursor is unchanged in
-kind: **completing** the accepted design's first prerequisite — the read-only production facts the
-package could not obtain — recorded in the
-[M1 readiness decision record](M1_READINESS_DECISION_RECORD.md). **The next operational step is M1
-readiness completion, not M1 execution**, and it is blocked pending separately authorized read-only
-production access.
+**M1 is complete and has been independently verified against live provider state (2026-09-18).**
+The prior verdict recorded immediately below in this section — `M1 BLOCKED / NO-GO` — was accurate
+at the time it was written, when no read-only production access existed. That access was
+subsequently obtained and the milestone was performed. **M1 did not authorize and did not begin
+M2.** Nothing below grants authority for migration `008`, executor enablement, or any other M2
+step; **P1–P8, migration `008`, production wiring, executor enablement, and the proposed Google
+Business Profile expansion remain not begun and not authorized.**
 
-**Not begun and not authorized by this merge:** P1–P8, migration `008`, production wiring, executor
-enablement, and the proposed Google Business Profile expansion.
+**Tier 1 — verified directly against live GitHub/Render/Postgres state.**
 
-**Current verdict: `M1 BLOCKED / NO-GO`.** `L` (the commit the live api serves), the three service
+- API service `gcd-social-api` (`srv-d8u0qtpo3t8c73c5o44g`) is live at exact artifact `A` =
+  `d5015236672a02bf8f58d342625c32a4f5acc8a1`, via deploy `dep-dam3dfv40ujc73fgidhg`
+  (status `live`, `trigger: "manual"`, started `2026-09-17T18:51:43.364952Z`, finished
+  `2026-09-17T18:52:47.893627Z`). The previously live deploy at exact artifact `R` =
+  `44d7336f2c75ff880cff0d8205d2fafe13eb91b5`, `dep-da8sbq0n74is73e0hgcg`, was deactivated at
+  `2026-09-17T18:52:47.892086Z`.
+- **Migration 007 is production `APPLIED`.** `_migrations` records `007_evidence_bounds.sql` with
+  `applied_at 2026-09-17T18:52:22.268131Z` — inside the deploy window, consistent with the API's
+  `preDeployCommand: npm run migrate`. The applied set is exactly `001`–`007`, each appearing
+  exactly once; no migration `008` exists. No database rollback occurred, and deploy history shows
+  no redeploy of `R` after `A`.
+- Worker `gcd-social-worker` (`srv-d8u0qtpo3t8c73c5o440`) and scheduler `gcd-social-scheduler`
+  (`crn-d8ulb4rtqb8s73bdjctg`) remain live at exact artifact `R`, via `dep-da8sjmp42hec73dvhk30` and
+  `dep-da8siupsrm7s73afv6u0` respectively; no deploy on either since 2026-08-28. **This was
+  deliberate: M1 deployed the API only**, so migration 007 applied while worker and scheduler stayed
+  at `R`.
+- All three services report `autoDeploy: "no"` / `autoDeployTrigger: "off"` — native Render
+  auto-deploy is disabled. The API's `preDeployCommand` is exactly `npm run migrate`.
+- CI run `35235152957` (attempt 1, `head_sha` = `A`) passed all five required jobs, completing
+  `2026-09-17T14:50:12Z`.
+- **The M1 deploy was not produced by GitHub deployment automation.** The service's own deploy
+  history distinguishes `new_commit` (auto-deploy), `api` (Render API call), and `manual`
+  (dashboard); the M1 deploy record is `manual`.
+- The scheduler's cron continues to run on its normal daily schedule (`0 13 * * *`), most recently
+  `2026-09-18T13:01:23Z`. **Correction:** this is expected behavior at `R` with all six executors
+  disabled; any statement elsewhere asserting no scheduler runs occur is wrong and has been
+  corrected wherever found in this sweep.
+
+**Tier 2 — established by the prior independent inspection, not re-verified here.** All 11
+migration-007 constraints validated; all 23 canonical aggregate checks within bounds; all six
+executors remain disabled and unreachable; no provider call, approval, or publication occurred.
+
+**Tier 3 — open limitations, recorded rather than resolved.**
+
+- Render exposes no field recording whether the operator selected an immutable specific commit or
+  "latest commit" when triggering the manual deploy. This is permanently unanswerable from provider
+  evidence. It has no effect on the deployed artifact: the deploy record immutably names commit `A`,
+  `main` was at `A` at deploy time and remains at `A` with zero commits after, and auto-deploy is
+  off, so the service cannot drift.
+- Render exposes no deploy-level actor-identity field. Who performed the deploy cannot be
+  established from provider evidence.
+- The repository-scoped GitHub Actions variable `RENDER_DEPLOY_AUTOMATION_ENABLED` has **not been
+  re-read in this verification cycle**. Its last recorded reading, from before M1, was exact
+  lowercase `false`. This is recorded as "not re-read since M1" — its current value is not
+  asserted, and this document does not claim GitHub deployment automation is currently disabled.
+  The evidenced claim is the narrower Tier 1 one above: the M1 deploy specifically was not produced
+  by automation.
+
+**The authorized recovery path is unchanged should it ever be needed: redeploy exact `R` to the API
+only, leaving migration 007 applied.**
+
+### Prior verdict, superseded above — recorded for history
+
+The following was the accurate verdict between PR #60's merge and the read-only production access
+obtained for M1. It is preserved as the historical record of that interval and is superseded by the
+verified state recorded above.
+
+**M1 had not begun, was not authorized, and was not complete.** Merging PR #60 delivered the *evidence
+package*; it did **not** complete M1 readiness and it authorized nothing. **Current verdict at that
+time: `M1 BLOCKED / NO-GO`.** `L` (the commit the live api serves), the three service
 commits, `D` (the production `_migrations` identifier set), `P`, comparisons 2–7 of §4.4.2, the A/L
 ancestry decision, same-commit `preDeployCommand` behaviour, the §4.1 aggregate audit, and the
-rollback artifact `R` with its executed compatibility evidence are all **`NOT YET EXECUTED`** —
-there is no read-only production access.
-
-**`A` itself is `NOT YET ESTABLISHED`.** The candidate artifact observed while the package was
-prepared — `2f76679afa78721ad9751ea7ce3124c5307b090c` — held migrations `001`–`007` with no later
-migration, and comparison 1 passed **against that candidate**. The readiness package has merged and
-`main` has advanced, so that SHA **is** historical. Per §4.4, `A` is the **reviewed head of `main` at M1 time**
-and must be **re-established by full SHA** then; `F(A)`, the A/L predicate, the complete
-migration-state reading and all seven comparisons are **recomputed against that new `A`**. No result
-derived from the candidate may be reused merely because the migration file set appears unchanged.
-**PR #60 has now merged**, so that candidate SHA is historical in fact and not merely in prospect: it
-is the first parent of merge `2a9edb7f86a07ddb7c27bc91e3c214052d0a2dc4`. The merge SHA is **not** `A`
-either — `A` is read from `main` at M1 time and at no other moment.
+rollback artifact `R` with its executed compatibility evidence were all **`NOT YET EXECUTED`** —
+there was no read-only production access.
 
 The checked-in operator tooling for the two readings is delivered and exercised against a disposable
 database: `scripts/ops/evidence-aggregate-audit.mjs` (§4.1, read-only, aggregate-only) and
-`scripts/ops/migration-state-read.mjs` (§4.4.2, all seven comparisons). **Neither has been run
-against production**, and neither authorizes anything.
+`scripts/ops/migration-state-read.mjs` (§4.4.2, all seven comparisons).
 
 **Successive independent inspections found four functional defects in the operator tooling, all now
 corrected and all covered by regression cases.** Migration identity was compared by numeric prefix,
@@ -453,9 +499,6 @@ real name, would have skipped it and **never applied migration 007**; filenames 
 NUL-delimited and compared byte for byte. And the failure path echoed a **server-chosen** SQLSTATE,
 so a custom `ERRCODE` reached operator logs; both scripts now emit only fixed categories defined in
 the script, and `UNKNOWN` for anything unrecognised.
-
-**Migration 007's applied state remains `UNKNOWN` in either direction.** M1's api deployment requires
-its own explicit authorization after independent inspection, and is not granted here.
 
 ## Post-MVP hardening backlog
 
@@ -485,8 +528,9 @@ shapes. That recogniser was not made semantically complete. The defect is
 resolved by a replacement control: appending any such text changes the raw
 whole-file digest and fails `CC5F` unless the artifact digest, manifest, and
 external pin are updated together under review. This remains repository
-authority only; migration 007's production application state is **`UNKNOWN`
-in either direction**. Full design, evidence, limitations, and ownership are in
+authority only, and says nothing by itself about production; separately,
+**migration 007 is now production `APPLIED`** — see the M1 cursor above.
+Full design, evidence, limitations, and ownership are in
 [Known issues and hardening](KNOWN_ISSUES_AND_HARDENING.md).
 
 ## Phase 0B prerequisite — fact and evidence contract
@@ -894,8 +938,10 @@ The two bounds are now separate values with separate names, and the second is en
 number. **Accepted means exactly one thing: [`docs/PRODUCTION_WIRING_DESIGN.md`](PRODUCTION_WIRING_DESIGN.md)
 is present on `main` as this repository's accepted production-wiring design.** It does **not** mean
 production wiring is implemented, and it authorizes **no** implementation PR and **no** operator
-milestone. **None of the eight implementation PRs (P1–P8) exists; none of the seven operator
-milestones (M1–M7) has been performed**, M4's five acts included. The merge establishes **no**
+milestone. At the time of this merge, none of the eight implementation PRs (P1–P8) existed and none
+of the seven operator milestones (M1–M7) had been performed. **M1 has since been performed and
+independently verified — see the active product cursor above.** None of P1–P8, and none of
+M2–M7, has been performed. The merge itself establishes **no**
 deployment, production validation, database readiness, migration application, executor enablement,
 model execution, approval, or publication. No stage's `executionEnabled` changed; all six remain
 `false`, and no production path reaches any of them. **Production evidence: none.**
@@ -1087,11 +1133,12 @@ not run. The only production evidence anywhere near this work remains the operat
 2026-09-02 aggregate read-only audit recorded under PR #54, which is a dated observation and not a
 statement about now.
 
-**Unresolved questions carried forward by the accepted design.** Live Render service versions, health,
+**Unresolved questions carried forward by the accepted design, as of this merge.** Live Render service versions, health,
 and control settings; **`L`, the commit each service currently runs**; whether a same-commit api
 deployment re-invokes `preDeployCommand`; whether the rollback artifact `R` tolerates the post-007
-schema; the contents of `_migrations` and of the production evidence tables; **whether migration 007
-has been applied — not established in either direction**; whether any executor has ever been invoked
+schema; the contents of `_migrations` and of the production evidence tables; whether migration 007
+had been applied — not established in either direction at that time (**since resolved: migration 007
+is now production `APPLIED`, per M1 in the active product cursor above**); whether any executor has ever been invoked
 against a real model historically; whether a shadow run should build its evidence pack from
 `config/approved-facts.json` via the adapter or require `evidence:sync` to have populated
 `content_evidence` first; per-run and per-day cost ceilings and the behaviour on breach; whether one
@@ -1332,7 +1379,7 @@ its live application state remains `UNKNOWN` in either direction.**
 
 ## Phase 0B — Content Intelligence runtime
 
-**State:** foundation `MERGED` and `DEPLOYED`; all six executors — `strategy-concept`, `automotive-truth`, `hook-story-script`, `production-direction`, `packaging-adaptation`, and `final-critic` — **`MERGED`** and dormant, the sixth through PR #52; the payload-contract reconciliation **`MERGED`** through PR #54. **None is `ENABLED`, established as `DEPLOYED`, or `PRODUCTION-VALIDATED`**, and none has production evidence. **All six target stages now have a merged executor on `main`**, and every registry entry reports `executionEnabled: false`.
+**State:** foundation `MERGED` and `DEPLOYED`; all six executors — `strategy-concept`, `automotive-truth`, `hook-story-script`, `production-direction`, `packaging-adaptation`, and `final-critic` — **`MERGED`** and dormant, the sixth through PR #52; the payload-contract reconciliation **`MERGED`** through PR #54. **None is `ENABLED`, established as `DEPLOYED`, or `PRODUCTION-VALIDATED`**, and none has production evidence. **All six target stages now have a merged executor on `main`**, and every registry entry reports `executionEnabled: false`. Separately, on the deployment-authority track, **M1 (migration 007's rollout as an API-only deployment) is now complete and independently verified** — see the active product cursor above; this did not enable any stage and did not authorize M2.
 
 **Last merged slice: the payload-contract reconciliation, `MERGED` through PR #54** (merge `0c13ab1af9c7ca796a1d48ed37207715a47166e4`), recorded in its own section above. Before it, Phase 0B.6 — the dormant `final-critic` stage executor — was `MERGED` through PR #52; see its dedicated section for the full record and durable identifiers. The reconciliation that gates production wiring is therefore **satisfied in repository state**: it is present on `main`, and it is not established as deployed, not enabled, and not production-validated. Deployment-authority work remains an independent track and must not be combined with any of this. **The separately reviewed production-wiring design is accepted and `MERGED` through PR #56** (merge `53e2c2bb6115e457670c1f99956d11a1a54530cd`), recorded in its own section above, and is **`UNIMPLEMENTED`** — authorizing neither implementation nor operations. **No implementation PR (P1–P8) exists and no operator milestone (M1–M7) has been performed.** Not a new phase number, and no production wiring, deployment, enablement, migration application, or production validation has occurred.
 
