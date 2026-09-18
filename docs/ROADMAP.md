@@ -1479,3 +1479,72 @@ Keep human filming and external editing in the loop. Do not add an in-browser vi
 - connect attribution, leads, and revenue after attention and audience quality are measurable.
 
 **`DEFERRED` — browser-based video editing.** Humans film and CapCut or another external editor remains the V1 path. Re-entry condition: an explicit later phase that requires in-browser editing.
+
+## Out-of-band tooling — local Content Intelligence evaluation CLI
+
+**This entry is deliberately outside the P1–P8 / M2–M7 sequence above and does not move the
+active product cursor.** It exists so German Car Depot can see real agent output from the six
+merged-but-dormant reasoning stages before any production-wiring PR is authorized, not as a step
+toward authorizing one.
+
+**State:** `IMPLEMENTED` (repository-local only; nothing here is `MERGED` to a tracked roadmap
+phase because it is not phase-scoped work). Not `DEPLOYED`. Not `PRODUCTION-VALIDATED`. Touches no
+production system, no database, no scheduler, no worker, and no publishing path.
+
+**What it is.** `scripts/local/content-run.mjs`, a CLI that drives the six merged stage executors
+(`strategy-concept` → `automotive-truth` → `hook-story-script` → `production-direction` →
+`packaging-adaptation` → `final-critic`) directly and in sequence, exactly as
+`src/harness/contentIntelligence.selftest.ts` already proves the wiring works, threading each
+stage's validated output into the next. It loads the 23 real business facts from
+`config/approved-facts.json` through the existing pure `adaptApprovedFactsFile` adapter (not
+reimplemented), and loads automotive facts from an operator-supplied, gitignored
+`config/automotive-facts.local.json` — never invented, never committed; a placeholder-marked
+`config/automotive-facts.local.example.json` template is committed in its place. It builds and
+validates an evidence pack with the existing `buildEvidencePack` / `assertUsableEvidencePack`
+functions and fails loudly, with the actual violation list, if the pack is unusable.
+
+**What it does not do.** It does not flip any stage's `executionEnabled` (still `false` on every
+stage, as merged). It authorizes nothing: no approval, no brief, no worker, no scheduler, no
+publishing path is reachable from it. Its default `--runner fake` mode makes no network call and
+costs nothing, using canned responses that only ever cite real evidence ids already present in the
+caller's own evidence pack or in the immediately preceding stage's own validated output. A
+`--runner live` mode exists for later, deliberately gated: it refuses to run without an explicit
+`--i-understand-this-costs-money` flag and prints the estimated ceiling cost first. No live model
+call has been made from this tool as part of implementing it — that is a separate, separately
+authorized step, owned by whoever the business decides should spend real budget on it, and gated on
+the same read-only production-identity verification prerequisite the production-wiring design (PR
+#56) already requires before any of P1–P8 begins.
+
+**Material design decisions.** Reuse the exact merged executors and validators rather than a
+parallel implementation, so this tool can never drift from what P1–P8 will actually wire up. Fail
+closed on missing automotive facts (`automotive-truth` refuses with a clear message naming the
+missing evidence class) rather than degrading to a strategy-only run, so the tool can never be used
+to produce automotive claims with no real source behind them.
+
+**Rejected alternative.** Fabricating placeholder automotive facts so every demo run reaches all
+six stages. Rejected because the evidence contract's entire purpose is refusing an automotive claim
+that lacks a checkable `sourceRef`, real `provenance`, and a `reviewedAt` — inventing one here would
+poison the exact guarantee the contract exists to provide, even in a throwaway local tool.
+
+**Automated validation:** build, typecheck, the eight offline suites (`npm run test:offline`),
+simulated dry run, deployment-controller fixtures, dependency audit, Markdown-link validation,
+environment-coverage comparison, and the sensitive-content scan all pass unchanged, because no
+existing source file was modified. The new CLI itself was run end-to-end with `--runner fake`
+against a locally-supplied (non-committed) automotive fact and produced six validated stage JSON
+files plus a human-readable Markdown summary; it was also exercised against a missing automotive
+facts file, which correctly refused at `automotive-truth` rather than fabricating a claim.
+
+**Accepted limitations.** The `--runner live` path is implemented but has never been exercised
+end-to-end (doing so costs real money and requires a real `ANTHROPIC_API_KEY`, neither authorized
+here). The fake-runner canned responses are wiring fixtures, not creative or factual review — they
+prove the pipeline is connected correctly, not that any particular piece of copy is good or true.
+
+**Follow-ups.** None blocking. Running this tool with `--runner live` for the first time is a
+separate, explicitly authorized decision the business makes when it wants to spend real budget
+evaluating output quality; it requires its own real `config/automotive-facts.local.json` populated
+from manufacturer documentation or another checkable source first.
+
+**Documents updated with this entry:** `docs/ROADMAP.md` (this section) and `.gitignore` (excludes
+the operator-supplied automotive facts file and the tool's local output directory). `README.md` was
+not updated because the production handoff it describes is unchanged by a tool that touches no
+production system.
