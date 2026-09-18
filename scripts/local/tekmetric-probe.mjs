@@ -8,10 +8,13 @@
  * This is deliberately OUTSIDE the P1-P8 / M2-M7 production-wiring sequence
  * (see docs/ROADMAP.md). It authorizes nothing and deploys nothing: it calls
  * no HTTP route, no worker, no scheduler, no approval path, and no
- * publishing path in this repository. It makes GET requests only, against
- * whichever Tekmetric base URL its credential targets (sandbox by default
- * per the tekmetric-api skill; pass --live-shop-data to acknowledge a
- * production base URL).
+ * publishing path in this repository. No data-mutating request is ever
+ * issued. The only non-GET request is the OAuth2 client-credentials token
+ * POST to /api/v1/oauth/token required to authenticate; every data request
+ * is a GET. It runs against sandbox by default per the tekmetric-api skill;
+ * pass --live-shop-data to acknowledge a non-sandbox (e.g. production) base
+ * URL — without that flag, a non-sandbox TEKMETRIC_BASE_URL is refused
+ * before the token request is ever made.
  *
  * PII / confidentiality: this script never prints or persists a VIN,
  * customer name, address, phone, email, RO number tied to an identifiable
@@ -40,10 +43,24 @@
  * Options:
  *   --months <n>          Lookback window in months for postedDate. Default 24.
  *   --max-requests <n>    Hard cap on total HTTP requests made. Default 400.
+ *                         A real shop will likely exceed this default cap
+ *                         before all matched vehicles' repair orders are
+ *                         fetched, in which case the GATING NUMBER (result
+ *                         section 4) is a FLOOR, not the true count, and the
+ *                         vehicle whose pagination was interrupted has a
+ *                         truncated repair-order list. Raise this for a real
+ *                         run once the true vehicle/RO volume is known.
  *   --page-size <n>       Page size for list endpoints (max 100). Default 100.
+ *   --live-shop-data      Required to target any non-sandbox base URL (i.e.
+ *                         TEKMETRIC_BASE_URL other than the sandbox default).
+ *                         Without it, a non-sandbox base URL is refused
+ *                         before any request is made, including the token
+ *                         request.
  *   -h, --help
  *
- * GET requests only. No POST, PUT, PATCH, DELETE under any circumstance.
+ * No data-mutating request is ever issued. The only non-GET request is the
+ * OAuth2 client-credentials token POST to /api/v1/oauth/token required to
+ * authenticate; every data request is a GET.
  */
 
 function usage() {
@@ -64,13 +81,29 @@ Optional environment variables:
 Options:
   --months <n>          Lookback window in months for postedDate. Default 24.
   --max-requests <n>    Hard cap on total HTTP requests made. Default 400.
+                        A real shop will likely exceed this default cap before
+                        all matched vehicles' repair orders are fetched. When
+                        it binds, the GATING NUMBER (result section 4) is a
+                        FLOOR, not the true count, and the vehicle whose
+                        pagination was interrupted has a truncated repair-order
+                        list. Raise this for a real run once the true
+                        vehicle/RO volume is known.
   --page-size <n>       Page size for list endpoints (max 100). Default 100.
+  --live-shop-data      Required to target any non-sandbox base URL (i.e. a
+                        TEKMETRIC_BASE_URL other than the sandbox default).
+                        Without it, a non-sandbox base URL is refused before
+                        any request is made, including the OAuth2 token
+                        request.
   -h, --help
+
+No data-mutating request is ever issued. The only non-GET request is the
+OAuth2 client-credentials token POST to /api/v1/oauth/token required to
+authenticate; every data request is a GET.
 `);
 }
 
 function parseArgs(argv) {
-  const args = { months: 24, maxRequests: 400, pageSize: 100, help: false };
+  const args = { months: 24, maxRequests: 400, pageSize: 100, liveShopData: false, help: false };
   const rest = [...argv];
   while (rest.length) {
     const token = rest.shift();
@@ -78,10 +111,13 @@ function parseArgs(argv) {
     if (token === "--months") { args.months = Number(rest.shift()); continue; }
     if (token === "--max-requests") { args.maxRequests = Number(rest.shift()); continue; }
     if (token === "--page-size") { args.pageSize = Math.min(100, Number(rest.shift())); continue; }
+    if (token === "--live-shop-data") { args.liveShopData = true; continue; }
     throw new Error(`Unknown argument: ${token}`);
   }
   return args;
 }
+
+const SANDBOX_BASE_URL = "https://sandbox.tekmetric.com";
 
 let requestCount = 0;
 
@@ -196,7 +232,13 @@ async function main() {
   const clientId = process.env.TEKMETRIC_CLIENT_ID;
   const clientSecret = process.env.TEKMETRIC_CLIENT_SECRET;
   const shopId = process.env.TEKMETRIC_SHOP_ID;
-  const baseUrl = process.env.TEKMETRIC_BASE_URL || "https://sandbox.tekmetric.com";
+  const baseUrl = process.env.TEKMETRIC_BASE_URL || SANDBOX_BASE_URL;
+
+  if (baseUrl !== SANDBOX_BASE_URL && !args.liveShopData) {
+    console.error(`Refusing: TEKMETRIC_BASE_URL is set to a non-sandbox base URL (${baseUrl}). Pass --live-shop-data to acknowledge querying a non-sandbox (e.g. production customer) target. No request has been made.`);
+    process.exitCode = 1;
+    return;
+  }
 
   if (!clientId || !clientSecret || !shopId) {
     console.error("Missing required environment variables. Run with --help for details.");
@@ -250,7 +292,8 @@ async function main() {
   let totalRos = 0;
   let milesInNonNull = 0, milesInNull = 0;
   let milesOutNonNull = 0, milesOutNull = 0;
-  const fillByMakeYear = new Map(); // "MAKE|YEAR" -> {total, milesInFilled}
+  const fillByMakePostedYear = new Map(); // "MAKE|POSTED_YEAR" -> {total, milesInFilled, milesOutFilled}
+  const fillByMakeModelYear = new Map(); // "MAKE|MODEL_YEAR" -> {total, milesInFilled, milesOutFilled}
   const rosPerVehicleHist = new Map(); // count -> numVehicles
   let vehiclesQueried = 0;
   let vehiclesWithAnyRo = 0;
@@ -269,19 +312,29 @@ async function main() {
     const bucket = rosPerVehicleHist.get(ros.length) ?? 0;
     rosPerVehicleHist.set(ros.length, bucket + 1);
 
-    const fyKey = `${make}|${year ?? "unknown"}`;
-    const fy = fillByMakeYear.get(fyKey) ?? { total: 0, milesInFilled: 0, milesOutFilled: 0 };
-    fy.total += ros.length;
+    const modelYearKey = `${make}|${year ?? "unknown"}`;
+    const fyModel = fillByMakeModelYear.get(modelYearKey) ?? { total: 0, milesInFilled: 0, milesOutFilled: 0 };
 
     const usable = [];
     for (const ro of ros) {
       const hasMilesIn = ro.milesIn !== null && ro.milesIn !== undefined;
       const hasMilesOut = ro.milesOut !== null && ro.milesOut !== undefined;
-      if (hasMilesIn) { milesInNonNull++; fy.milesInFilled++; } else { milesInNull++; }
-      if (hasMilesOut) { milesOutNonNull++; fy.milesOutFilled++; } else { milesOutNull++; }
+
+      const parsedPostedDate = ro.postedDate ? new Date(ro.postedDate) : null;
+      const postedYear = parsedPostedDate && !Number.isNaN(parsedPostedDate.getTime())
+        ? String(parsedPostedDate.getUTCFullYear())
+        : "unknown/unparseable postedDate";
+      const postedYearKey = `${make}|${postedYear}`;
+      const fyPosted = fillByMakePostedYear.get(postedYearKey) ?? { total: 0, milesInFilled: 0, milesOutFilled: 0 };
+
+      fyModel.total++;
+      fyPosted.total++;
+      if (hasMilesIn) { milesInNonNull++; fyModel.milesInFilled++; fyPosted.milesInFilled++; } else { milesInNull++; }
+      if (hasMilesOut) { milesOutNonNull++; fyModel.milesOutFilled++; fyPosted.milesOutFilled++; } else { milesOutNull++; }
       if (hasMilesIn && ro.postedDate) {
         usable.push({ milesIn: ro.milesIn, postedDate: ro.postedDate });
       }
+      fillByMakePostedYear.set(postedYearKey, fyPosted);
 
       // Structured-field oil-service identification: sample job names, do
       // not read free-text note bodies, count matches only.
@@ -294,7 +347,7 @@ async function main() {
         }
       }
     }
-    fillByMakeYear.set(fyKey, fy);
+    fillByMakeModelYear.set(modelYearKey, fyModel);
 
     if (usable.length >= 2) {
       vehiclesWithTwoPlusUsable++;
@@ -348,12 +401,20 @@ async function main() {
   console.log(`  milesIn:  non-null=${milesInNonNull}, null=${milesInNull}, fill rate=${totalRos ? (milesInNonNull / totalRos * 100).toFixed(1) : "n/a"}%`);
   console.log(`  milesOut: non-null=${milesOutNonNull}, null=${milesOutNull}, fill rate=${totalRos ? (milesOutNonNull / totalRos * 100).toFixed(1) : "n/a"}%`);
 
-  console.log(`\n--- 3. Fill rate by make and RO year (denominator: ROs in that make+year cell) ---`);
-  for (const [key, fy] of [...fillByMakeYear.entries()].sort()) {
-    const [make, year] = key.split("|");
+  console.log(`\n--- 3. Fill rate by make and RO POSTED year (year the RO's own postedDate falls in; denominator: ROs in that make+posted-year cell) ---`);
+  for (const [key, fy] of [...fillByMakePostedYear.entries()].sort()) {
+    const [make, postedYear] = key.split("|");
     const miPct = fy.total ? (fy.milesInFilled / fy.total * 100).toFixed(1) : "n/a";
     const moPct = fy.total ? (fy.milesOutFilled / fy.total * 100).toFixed(1) : "n/a";
-    console.log(`  ${make} ${year}: n=${fy.total}, milesIn fill=${miPct}%, milesOut fill=${moPct}%`);
+    console.log(`  ${make} posted ${postedYear}: n=${fy.total}, milesIn fill=${miPct}%, milesOut fill=${moPct}%`);
+  }
+
+  console.log(`\n--- 3b. Fill rate by make and vehicle MODEL year (the vehicle's own model year, NOT when the RO was posted; denominator: ROs against vehicles of that make+model-year) ---`);
+  for (const [key, fy] of [...fillByMakeModelYear.entries()].sort()) {
+    const [make, modelYear] = key.split("|");
+    const miPct = fy.total ? (fy.milesInFilled / fy.total * 100).toFixed(1) : "n/a";
+    const moPct = fy.total ? (fy.milesOutFilled / fy.total * 100).toFixed(1) : "n/a";
+    console.log(`  ${make} model-year ${modelYear}: n=${fy.total}, milesIn fill=${miPct}%, milesOut fill=${moPct}%`);
   }
 
   console.log(`\n--- 4. GATING NUMBER: vehicles with >=2 usable ROs (milesIn AND postedDate present) ---`);

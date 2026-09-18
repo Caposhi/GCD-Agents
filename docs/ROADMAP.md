@@ -1567,8 +1567,12 @@ to BMW and Mercedes-Benz (the Tekmetric vehicles list endpoint has no `make` fil
 actual make spellings are not assumed — the script reports every distinct spelling it observes so
 the match can be verified), then lists each matched vehicle's repair orders with `postedDate` in a
 lookback window (default 24 months). It implements the exponential-backoff algorithm the
-`tekmetric-api` skill specifies for HTTP 429, bounds its total request count (default cap 400,
-printed alongside every run), and issues GET requests only — no POST, PUT, PATCH, or DELETE.
+`tekmetric-api` skill specifies for HTTP 429, and bounds its total request count (default cap 400,
+printed alongside every run). No data-mutating request is ever issued. The only non-GET request is
+the OAuth2 client-credentials token POST to `/api/v1/oauth/token` required to authenticate; every
+data request is a GET. It runs against sandbox by default; a `--live-shop-data` flag is required to
+target any non-sandbox (e.g. production) `TEKMETRIC_BASE_URL` — without it, a non-sandbox base URL
+is refused before the token request is ever made.
 
 **What it does not do.** It never prints or persists a VIN, customer name, address, phone, email,
 an RO number tied to an identifiable customer, a free-text note or job-concern body, or any
@@ -1577,11 +1581,13 @@ structured `job.name` field and reports a match count — it never reads or prin
 bodies, and says explicitly in its output that resolving oil-service identifiability further would
 require reading free text, which is out of this script's scope and would need its own PII review.
 It emits aggregate counts and fill rates only: total ROs, distinct vehicles, `milesIn`/`milesOut`
-fill rates (overall and broken out by make and RO year), the count of vehicles with two or more
-usable ROs (the gating number for any future interval computation) with the ROs-per-vehicle
-distribution, and a structural count of consecutive-RO mileage deltas (positive/plausible, zero,
-negative-or-absurd) — deliberately without computing a median or any other interval statistic, since
-that was out of scope for this feasibility check.
+fill rates broken out both by make and the year the RO's own `postedDate` falls in (whether mileage
+capture improved over time — a vehicle model year cannot answer that; a separate model-year
+breakdown is reported alongside it, clearly labeled, for a different purpose), the count of vehicles
+with two or more usable ROs (the gating number for any future interval computation) with the
+ROs-per-vehicle distribution, and a structural count of consecutive-RO mileage deltas
+(positive/plausible, zero, negative-or-absurd) — deliberately without computing a median or any
+other interval statistic, since that was out of scope for this feasibility check.
 
 **Credential handling.** The client id, client secret, and shop id are read from the environment
 variables `TEKMETRIC_CLIENT_ID`, `TEKMETRIC_CLIENT_SECRET`, and `TEKMETRIC_SHOP_ID` — never
@@ -1620,6 +1626,11 @@ credential and Michael Capote's explicit statement, in his own words, that the r
 run against live Tekmetric data. Neither was present in the session that authored this script, so
 no live HTTP request has been made and no data-feasibility conclusion has been reached yet. Running
 it live and reporting the resulting aggregate numbers is a separate, explicitly gated follow-up.
+Separately, the default request cap of 400 will likely bind before all matched vehicles' repair
+orders are fetched on a real shop's data volume; when it does, the GATING NUMBER (result section 4)
+is a **floor**, not the true count, and the vehicle whose pagination was interrupted when the cap
+was hit has a truncated repair-order list for that run. `--max-requests` should be raised for a real
+run once the shop's true vehicle/RO volume is known; the default itself was left unchanged.
 
 **Follow-ups.** Blocking (for reaching a feasibility conclusion, not for this documentation entry):
 obtain a Tekmetric API credential and Michael Capote's explicit authorization to run the probe
