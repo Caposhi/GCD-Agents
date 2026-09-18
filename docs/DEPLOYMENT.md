@@ -19,7 +19,7 @@ Phase 0D is merged and production-deployed; it does not begin Phase 0B. **API cu
 | Scheduler | **`R` = `44d7336…`** — live, cron `0 13 * * *`, unchanged by M1; most recently ran `2026-09-18T13:01:23Z` | independently verified 2026-08-28 that the scheduler is live at this target with its cron configuration unchanged; that it was not manually triggered is operator-reported; live at `R` and cron activity reconfirmed 2026-09-18 |
 | GitHub `production` environment | **Configured** with secret name, five non-secret variables, and `main` restriction | last verified 2026-08-24; not reverified |
 | Render native auto-deploy | **Off** for API, worker, and scheduler (`autoDeploy: no`, `autoDeployTrigger: off`) | independently verified 2026-08-28 and again 2026-09-18 |
-| GitHub repository enable gate | Last recorded reading (before M1): `RENDER_DEPLOY_AUTOMATION_ENABLED=false` | independently verified 2026-08-28; **not re-read 2026-09-18** — current value not asserted |
+| GitHub repository enable gate | `RENDER_DEPLOY_AUTOMATION_ENABLED=false` | read in the authenticated GitHub UI 2026-09-18; last-updated timestamp predates M1 (2026-09-17), so not changed by or during M1 |
 | M1 — migration 007 rollout as an API-only deployment | **Complete.** Deploy `dep-dam3dfv40ujc73fgidhg`, `trigger: "manual"` (Render dashboard, not GitHub automation); `_migrations` now `001`–`007` | independently verified 2026-09-18; did not authorize or begin M2 |
 | GitHub controller as production authority | **Not enabled; not proven in production; not the path M1 used** | follows from the rows above |
 | Current unattended deployment authorities | **Zero, intentionally** | follows from the rows above |

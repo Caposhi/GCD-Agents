@@ -34,8 +34,9 @@ document did **not**:
 > (deploy `dep-dam3dfv40ujc73fgidhg`, `trigger: "manual"`), its `preDeployCommand` applied migration
 > `007_evidence_bounds.sql` (`_migrations` `applied_at 2026-09-17T18:52:22.268131Z`; `001`–`007`, each
 > exactly once, no `008`), and the worker and scheduler were deliberately left at exact artifact
-> `R` = `44d7336…`. See [Status](STATUS.md) for the full Tier 1/Tier 2/Tier 3 record, including the
-> open limitation that `RENDER_DEPLOY_AUTOMATION_ENABLED` was not re-read in this cycle. **M1 did not
+> `R` = `44d7336…`. See [Status](STATUS.md) for the full Tier 1/Tier 2/Tier 3 record. `RENDER_DEPLOY_AUTOMATION_ENABLED`
+> was read in the authenticated GitHub UI on 2026-09-18 as exact lowercase `false`; its last-updated
+> timestamp predates M1 (2026-09-17), so the variable was not changed by or during M1. **M1 did not
 > authorize and did not begin M2**; this section's statements about P1–P8 and M2–M7 below remain
 > accurate.
 

@@ -461,12 +461,12 @@ executors remain disabled and unreachable; no provider call, approval, or public
   off, so the service cannot drift.
 - Render exposes no deploy-level actor-identity field. Who performed the deploy cannot be
   established from provider evidence.
-- The repository-scoped GitHub Actions variable `RENDER_DEPLOY_AUTOMATION_ENABLED` has **not been
-  re-read in this verification cycle**. Its last recorded reading, from before M1, was exact
-  lowercase `false`. This is recorded as "not re-read since M1" — its current value is not
-  asserted, and this document does not claim GitHub deployment automation is currently disabled.
-  The evidenced claim is the narrower Tier 1 one above: the M1 deploy specifically was not produced
-  by automation.
+- The repository-scoped GitHub Actions variable `RENDER_DEPLOY_AUTOMATION_ENABLED` was read in the
+  authenticated GitHub UI on 2026-09-18 as exact lowercase `false`. Its last-updated timestamp
+  predates M1 (2026-09-17), so the variable was not changed by or during M1. This document does
+  not claim GitHub deployment automation is currently disabled as a system; the evidenced claims
+  are the gate variable's value and the narrower Tier 1 one above, that the M1 deploy specifically
+  was not produced by automation.
 
 **The authorized recovery path is unchanged should it ever be needed: redeploy exact `R` to the API
 only, leaving migration 007 applied.**
