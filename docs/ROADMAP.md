@@ -476,7 +476,8 @@ only, leaving migration 007 applied.**
 [PRODUCTION_WIRING_DESIGN.md's M1 exit conditions](PRODUCTION_WIRING_DESIGN.md) state that for the
 whole M1→M2 interval, the interval must be **explicitly time-bounded**, actively **monitored**, and
 **owned by the named operator** who performed M1. None of those three had been recorded until now.
-This section records them; it does not begin, schedule, or imply M2.
+This section records them; it does not begin, schedule, or imply M2, and it does not authorize
+P1–P8, migration `008`, or executor enablement.
 
 **Owner.** Michael Capote, CTO, Alan Gelfand Inc. DBA German Car Depot, attests accountability for
 this interval as the operator who performed M1. This is recorded as the operator's own attestation
