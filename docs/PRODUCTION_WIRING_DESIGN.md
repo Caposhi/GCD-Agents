@@ -91,14 +91,27 @@ and `src/harness/evidence/pack.ts` carries `conflictedEvidence` and `assertUsabl
 
 **VERIFIED (repository)** — the six executors and the payload contract are on `main`.
 
-**ESTABLISHED (repository, by path inspection of both live artifacts)** — a release carrying all six
-executors and the payload contract **is** live, on the API service only. Artifact `A` =
-`d5015236672a02bf8f58d342625c32a4f5acc8a1` — the currently deployed API artifact — contains all six
-stage executor modules, including `src/harness/agents/finalCritic.ts` (PR #52, the sixth). Artifact
-`R` = `44d7336f2c75ff880cff0d8205d2fafe13eb91b5` — currently live on **both** the worker and the
-scheduler — contains **none** of the six: zero matching executor paths, no `finalCritic.ts`. Per the
-prior independent inspection (Tier 2, not re-verified here), all six registry entries remain
-`executionEnabled: false` and are reached by no production path.
+**VERIFIED** — `git ls-tree -r <sha> --name-only` on both live artifacts shows artifact `A` =
+`d5015236672a02bf8f58d342625c32a4f5acc8a1` containing all six stage executor modules, including
+`src/harness/agents/finalCritic.ts` (PR #52, the sixth), and artifact `R` =
+`44d7336f2c75ff880cff0d8205d2fafe13eb91b5` containing **none** of the six: zero matching executor
+paths, no `finalCritic.ts`. A reader can reproduce both with:
+
+```
+git ls-tree -r d5015236672a02bf8f58d342625c32a4f5acc8a1 --name-only | grep -E "strategyConcept.ts|automotiveTruth.ts|hookStoryScript.ts|productionDirection.ts|packagingAdaptation.ts|finalCritic.ts"
+git ls-tree -r 44d7336f2c75ff880cff0d8205d2fafe13eb91b5 --name-only | grep -E "strategyConcept.ts|automotiveTruth.ts|hookStoryScript.ts|productionDirection.ts|packagingAdaptation.ts|finalCritic.ts"
+```
+
+As an explicitly dated observation, independently verified 2026-09-18 and recorded in
+[Status](STATUS.md): the API runs artifact `A`, and the worker and scheduler both run artifact `R`.
+
+Per AGENTS.md's phase-state vocabulary, code merged to `main` is not `DEPLOYED` until a release
+carrying it is live. A release carrying all six executors and the payload contract **is** live on
+the API service, so the six stage executors and the payload contract are **`DEPLOYED`** on the API
+as of that dated snapshot. They are **not `ENABLED`**: per the prior independent inspection (Tier 2,
+not re-verified here), all six registry entries remain `executionEnabled: false` and are reached by
+no production path. They are **not `PRODUCTION-VALIDATED`**. The worker and scheduler run artifact
+`R` and carry none of the six.
 
 This establishes only the file-presence facts above. It does **not** establish, and this document
 does not assert, which service would execute an executor if one were enabled, or that enablement is
