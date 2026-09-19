@@ -1331,9 +1331,12 @@ and never before `L` is in hand.
   Neither implies the other, and **restoring service identity does not restore the prior schema.** If
   the entry gate did not establish `R`'s compatibility, step 1 is unavailable and the recovery plan
   named in the entry gate replaces this ladder.
-- **This interval's explicit bound, named owner, and monitoring definition are recorded in
-  [`docs/STATUS.md`](STATUS.md) (current cursor) and [`docs/ROADMAP.md`](ROADMAP.md) (M1→M2 interval
-  section), as of 2026-09-18.** Recording those facts there satisfies this requirement; it is a
+- **This interval's explicit bound and named owner are recorded in [`docs/STATUS.md`](STATUS.md)
+  (current cursor) and [`docs/ROADMAP.md`](ROADMAP.md) (M1→M2 interval section), as of 2026-09-18.**
+  Recording those two facts there satisfies this requirement's bound and ownership terms. **The
+  monitoring term is not satisfied by that recording** — the interval's daily read-only check was
+  never established and has not run; see the linked sections for the compensating controls that
+  have held in its place and the single verification scheduled before expiry. This recording is a
   record of accountability and a bound, not an authorization of M2, of re-authorization, or of the
   recovery path — each of those still requires its own explicit authorization from the named owner,
   exactly as stated above.

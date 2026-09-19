@@ -511,7 +511,14 @@ agreement. **This does not unapply migration 007** — the database stays ahead 
 007's rollback file (`state/rollback/007_evidence_bounds_rollback.sql`) is separately authorized
 and applied.
 
-**Monitoring.** A daily read-only check of:
+**Monitoring.** The M1 exit conditions require this interval be actively monitored. **That condition is unmet.** No daily automated check was ever established, and none has run on any day of the interval. A Routine was created self-bound to the originating session, fired once as a test whose result was never seen, and does not exist now — a current listing of this account's Routines, including completed ones, returns zero.
+
+In its place, two preventive controls have held, with evidence:
+
+  - Render native auto-deploy off on all three services (`gcd-social-api`, `gcd-social-worker`, `gcd-social-scheduler`) and `RENDER_DEPLOY_AUTOMATION_ENABLED` exactly `false`, both as of the 2026-09-18 verification — a dated observation, not current truth.
+  - The `deploy-production` workflow has refused at its "Refuse while production automation is disabled" step on every `main` merge since the interval began: eight runs, run `35368071350` (run #33, 2026-09-18T16:22Z) through run `35448454979` (run #40, 2026-09-19T14:21Z), each failing at exactly that step.
+
+These are compensating controls, not the promised monitoring, and neither one checks the migration set or the API's live artifact/health on any cadence. A single read-only verification of the four checks below is scheduled before the 2026-09-24T18:52Z decision point, and the expiry decision requires it. The four checks that verification must cover:
 
   1. no new deploy on `gcd-social-api`, `gcd-social-worker`, or `gcd-social-scheduler`;
   2. the applied migration set is still exactly `001`–`007`, with no `008`;
