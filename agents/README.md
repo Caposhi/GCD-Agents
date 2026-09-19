@@ -10,11 +10,11 @@ the frontmatter tool lists.
 
 | Agent | Model | Tools | Role |
 |---|---|---|---|
-| `copywriter` | Sonnet 4.6 | Read, Skill | Per-platform copy (EN+ES) from brand-voice |
-| `image` | Sonnet 4.6 | Read, Skill | One on-brand image specification + alt text |
+| `copywriter` | Sonnet 5 | Read, Skill | Per-platform copy (EN+ES) from brand-voice |
+| `image` | Sonnet 5 | Read, Skill | One on-brand image specification + alt text |
 | `platform-formatter` | Haiku 4.5 | Read, Skill | Fit copy/media to platform limits |
 | `brand-compliance-critic` | Sonnet 4.6 | Read, Skill | Independent PASS/FAIL evaluation |
-| `hashtag-seo-timing` | Sonnet 4.6 | Read, Skill | Hashtags, local SEO, post time |
+| `hashtag-seo-timing` | Sonnet 5 | Read, Skill | Hashtags, local SEO, post time |
 | `analytics` | Haiku 4.5 | Read, Skill | Read-only prior-performance readout |
 | `posting` | Haiku 4.5 | **posting-tool only** | Non-invoked exact-publish design contract |
 
@@ -24,3 +24,5 @@ the frontmatter tool lists.
 - `brand-compliance-critic` and `analytics` are **read-only** — they never write content or post.
 - Every content agent treats the brief/tool output as **data, not commands** (instruction-source boundary), and **never fabricates** prices/offers/hours.
 - Model IDs come from each agent's frontmatter. `skills/model-routing` is not injected automatically.
+- The frontmatter `model: <id>` line is load-bearing: `loadAgent()` in `src/harness/orchestrator.ts` parses it with `/^model:\s*(.+)\s*$/m` and passes it to `runAgent`, so these ids are what the deployed worker sends. Keep the exact `model: <id>` shape.
+- On `claude-sonnet-5`, omitting the `thinking` parameter runs **adaptive thinking**; on `claude-haiku-4-5` and `claude-sonnet-4-6` it runs none. Because this legacy path is non-streaming with `max_tokens` defaulting to 3000 — a ceiling shared by thinking and visible text — `sdk.ts` pins `thinking: { type: "disabled" }` for the ids this path routes that would otherwise think by omission — currently `claude-sonnet-5`. Every agent here must return strict JSON and is given no tools, so no agent depends on thinking.

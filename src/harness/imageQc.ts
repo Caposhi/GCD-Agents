@@ -82,7 +82,19 @@ export async function inspectImageText(
     `Do NOT flag differences that are only capitalization or minor punctuation when the letters are correct. ` +
     `If garbled=false and unsafe=false, issues MUST be []. Return JSON only.`;
   try {
-    const res = await visionRunner({ systemPrompt: QC_SYSTEM, prompt, jpegBase64, model: "claude-sonnet-4-6", maxTokens: 900 });
+    // Thinking is pinned off explicitly. `maxTokens: 900` is a hard ceiling on
+    // total output, and thinking tokens would come out of it before a single
+    // character of the required JSON — on a gate whose parse failure fails
+    // closed and blocks the run. The inspector is also tool-free and returns a
+    // fixed four-key object, so there is nothing here for thinking to improve.
+    const res = await visionRunner({
+      systemPrompt: QC_SYSTEM,
+      prompt,
+      jpegBase64,
+      model: "claude-sonnet-5",
+      maxTokens: 900,
+      thinking: { type: "disabled" },
+    });
     const json = parseAgentJson(res.text);
     if (
       typeof json?.garbled !== "boolean" ||

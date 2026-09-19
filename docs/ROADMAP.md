@@ -1,6 +1,6 @@
 # GCD Content Intelligence roadmap
 
-Last reviewed: 2026-09-18.
+Last reviewed: 2026-09-19.
 
 This roadmap is the canonical unfinished-work sequence and the current-phase cursor. It orders work; it does not grant authority to deploy, migrate, call providers, change external configuration, or begin a phase. [Status](STATUS.md) records what is verified true now. Where this file and verified production evidence disagree, resolve the discrepancy rather than following this text. Roadmap continuity is binding — see [`AGENTS.md`](../AGENTS.md).
 
@@ -180,6 +180,127 @@ Keep these changes separable unless a reviewed design shows they must be atomic.
 7. **External readiness register.** Verify provider account ownership, scopes, app review, versions, quotas, billing, test assets, recovery contacts, and the accuracy and freshness of approved business facts.
 
 The former worker lease/reaper item is `SUPERSEDED` and is no longer active work. Its rationale and re-entry condition are preserved in the PR #36 record above.
+
+## Legacy agent model migration — current-generation ids and explicit thinking — `MERGED`
+
+**State:** `MERGED` on merge. **Not `DEPLOYED` and not `PRODUCTION-VALIDATED`.** The running worker
+stays at artifact **R** (`44d7336f2c75ff880cff0d8205d2fafe13eb91b5`) until a separately authorized
+release. This change is repository state only; it authorizes no release, and a time-bounded
+partial-release interval prohibits any release of any service until **2026-09-24T18:52Z**. No
+production state was verified or changed, and [Status](STATUS.md)'s production tables are untouched.
+
+**PR / merge:** base `c1c004e5d5524cb5b0dfe0407fd9694bd35244a8` (PR #75 merge). **PR number and merge
+SHA are not knowable before merging** — recorded here as a **blocking follow-up** under the mutable-
+identifier exception in [`AGENTS.md`](../AGENTS.md), to be reconciled in the first change after merge.
+
+**Why this is roadmap state.** `src/worker/index.ts` imports `runBrief` from
+`src/harness/orchestrator.ts`, whose `loadAgent()` parses `model:` out of each agent's frontmatter
+with `/^model:\s*(.+)\s*$/m` and passes it to `runAgent`. These ids are therefore what the deployed
+worker sends, not documentation.
+
+**Delivered scope.**
+
+- Six legacy agent pins moved to current-generation ids: `analytics`, `platform-formatter`, and
+  `posting` from `claude-haiku-4-5-20251001` to the canonical **`claude-haiku-4-5`**; `copywriter`,
+  `hashtag-seo-timing`, and `image` from `claude-sonnet-4-6` to **`claude-sonnet-5`**. The
+  `model: <id>` frontmatter shape is preserved exactly, because that regex is load-bearing.
+- The image QC vision inspector in `src/harness/imageQc.ts` moved to `claude-sonnet-5`, with
+  `thinking: { type: "disabled" }` passed explicitly at the call site.
+- `resolveLegacyThinking()` added to `src/harness/sdk.ts` and applied in **both** legacy request
+  builders — `buildRequest()` (text) and `runVision()` (image QC), which builds its own request and
+  would otherwise have had no way to be pinned at all.
+- `PRICE` gained a `claude-haiku-4-5` row; `legacyModelPriceUsdPerMTok()` exported so a regression
+  can prove every id this module can send is metered.
+
+**Migrations/schema impact:** **none.** No SQL, no migration, no database read or write.
+
+**Material design decisions.**
+
+1. **Thinking is pinned, not inherited.** Omitting the `thinking` parameter runs **adaptive
+   thinking** on `claude-sonnet-5`, where `claude-sonnet-4-6` ran none. The legacy path is
+   non-streaming, defaults to `max_tokens: 3000`, and times out at 90 seconds; `max_tokens` bounds
+   thinking tokens and visible text together, and `collect()` accumulates only `text` blocks. A
+   silently thinking legacy request would therefore spend part of a small ceiling on tokens no
+   caller reads, and `parseAgentJson()` degrades a truncated reply to `{_raw: ...}` rather than
+   throwing — a quiet, downstream failure on a live path. Every moved agent returns strict JSON and
+   is given no tools, so none depends on thinking.
+2. **The rule lives in `sdk.ts`, not at each call site.** A model-id change alone can no longer
+   change request semantics, and any future legacy caller inherits the protection. An explicit
+   caller value always wins, so Content Intelligence stages — which set their own disabled policy
+   through `modelPolicy.ts` — are byte-for-byte unaffected.
+3. **Models that do not think by omission still send no `thinking` key.** The Haiku move is
+   therefore behaviour-neutral: same model, canonical unsuffixed id, identical published rate,
+   identical wire request.
+4. **`claude-opus-5` is deliberately excluded from the omission set**, though it also thinks by
+   omission. Only the dormant `agentLoop.ts` manager sends it through this path, and that path is
+   owned separately (PR #75) with the consequence recorded as deliberately open under
+   `MANAGER_MODEL` in [Environment](ENVIRONMENT.md). Including it would have closed that open
+   decision from outside its scope.
+5. **Both `opts.model || ...` fallbacks stay at `claude-sonnet-4-6`.** See rejected alternatives.
+
+**Material rejected alternatives.**
+
+- **Letting adaptive thinking run and raising `max_tokens`/the timeout.** Rejected because no
+  evidence supports a new ceiling. Choosing one would have been a guess on a live path, and this
+  change makes no live model call by which to measure one. Recorded as an open follow-up below.
+- **Moving the `sdk.ts` fallbacks to `claude-sonnet-5`.** Rejected for this change. The fallback is
+  the "no model pinned" path, and `agents/brand-compliance-critic.md` still pins
+  `claude-sonnet-4-6`, so the fallback continues to match a live pin rather than naming a model
+  nothing uses. Moving it would also have made the least-controlled path — an undeclared model
+  under a 3000-token ceiling — the one newly running adaptive thinking. It belongs to the change
+  that routes that agent.
+- **Routing `agents/brand-compliance-critic.md` in this change.** Rejected deliberately. It is the
+  independent evaluator feeding the Phase-A approval path, and [`AGENTS.md`](../AGENTS.md) forbids
+  weakening that gate as an incidental change. It stays on `claude-sonnet-4-6` and is routed
+  separately; a regression pins its request as byte-identical.
+- **Adding an injectable message-creator seam to `runVision`.** Rejected as incidental surface on a
+  safety-critical path that already carries an explicit anti-injection guard. See the accepted
+  limitation below.
+
+**Automated validation.** `typecheck`, `build`, `test:offline` (eight suites), `dryrun` (simulated,
+never `dryrun:live`), `test:deployment-controller`, `check:markdown-links`, `check:env-coverage`,
+`scan:sensitive`, `npm audit`, and `git diff --check` all pass. Eleven new offline assertions
+(`MR1`–`MR7` in `src/harness/orchestrator.selftest.ts`) inspect the exact SDK request through the
+`runAgentWithMessageCreator` seam — no credential, no provider call — and pin, per moved surface,
+the exact model id and the exact thinking configuration on the wire, plus the critic's unchanged
+request, the absence of any dated or previous-generation pin, and a price row for every introduced
+id. Orchestrator suite checks rise 108 → 119; combined `PASS` lines 1,261 → 1,272; eight-suite
+total 1,374 → 1,385. **No live model call was made.**
+
+**Production evidence:** **none, and none was sought.** Nothing here has executed against a
+provider.
+
+**Rollback/recovery:** revert the commit. There is no schema, configuration, external identifier, or
+durable state to unwind, and the running worker is unaffected until a separately authorized release.
+
+**Security and privacy implications:** none identified. No credential, token, endpoint, prompt text,
+or data-flow boundary changed. The image QC gate keeps its fail-closed contract and its production
+rejection of injected inspector runners; pinning thinking off protects the visible-output budget
+that gate's strict-JSON contract depends on.
+
+**Accepted limitations.**
+
+- `runVision` has no injectable message-creator seam, so its wire request cannot be inspected
+  offline the way the text path's can. The vision assertions instead pin the options `imageQc`
+  passes (`MR5`) and `resolveLegacyThinking` itself (`MR6`), which is the exact value `runVision`
+  spreads — three lines a reviewer can check by reading. This is weaker than byte inspection.
+- Model behaviour under the new ids is not measured. `claude-sonnet-5` uses a new tokenizer
+  (~30% more tokens for the same text than `claude-sonnet-4-6`) and follows instructions more
+  literally; neither effect is observable without a live run.
+
+**Unresolved follow-ups.**
+
+1. **Blocking:** reconcile this entry's PR number and merge SHA after merge.
+2. Route `agents/brand-compliance-critic.md`, and decide the two `sdk.ts` fallbacks with it.
+3. Re-baseline `max_tokens: 3000` against the `claude-sonnet-5` tokenizer before any change that
+   would enable thinking on this path, and measure before choosing a ceiling.
+4. Re-validate copy quality on `claude-sonnet-5` when a live run is authorized — literal
+   instruction-following may land holdover style directives in `agents/copywriter.md` differently.
+
+**Documents updated at completion:** [`agents/README.md`](../agents/README.md),
+[`skills/model-routing/SKILL.md`](../skills/model-routing/SKILL.md),
+[Architecture](ARCHITECTURE.md), [Environment](ENVIRONMENT.md), [Testing](TESTING.md), and this
+file. [Status](STATUS.md) is deliberately untouched — this change verifies no production state.
 
 ## PR #57 — CC5 proposition-bound reconciliation and bounded closeout — `MERGED`
 

@@ -1,7 +1,7 @@
 ---
 name: copywriter
 description: Writes per-platform post copy (English + Spanish) for German Car Depot from a brief, strictly following the brand-voice skill. Returns copy only — no images, hashtags, or posting.
-model: claude-sonnet-4-6
+model: claude-sonnet-5
 tools: Read, Skill
 ---
 

@@ -1,7 +1,7 @@
 ---
 name: analytics
 description: Read-only. Summarizes prior post performance to inform a brief. Never posts or edits. Degrades gracefully if metrics access is unavailable.
-model: claude-haiku-4-5-20251001
+model: claude-haiku-4-5
 tools: Read, Skill
 ---
 
