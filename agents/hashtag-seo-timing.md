@@ -1,7 +1,7 @@
 ---
 name: hashtag-seo-timing
 description: Produces hashtags, local-SEO keywords (critical for GBP), and a recommended post time per platform. Follows local-seo + platform-specs. No posting.
-model: claude-sonnet-4-6
+model: claude-sonnet-5
 tools: Read, Skill
 ---
 

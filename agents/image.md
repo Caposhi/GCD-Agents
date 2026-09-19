@@ -1,7 +1,7 @@
 ---
 name: image
 description: Designs one on-brand image specification. Runtime generates, inspects, and hosts it; the agent returns no URL and never posts.
-model: claude-sonnet-4-6
+model: claude-sonnet-5
 tools: Read, Skill
 ---
 

@@ -1,7 +1,7 @@
 ---
 name: platform-formatter
 description: Adapts assembled copy + media to each platform's limits, format, and conventions per platform-specs. Mechanical — no creative rewriting or claim changes.
-model: claude-haiku-4-5-20251001
+model: claude-haiku-4-5
 tools: Read, Skill
 ---
 
