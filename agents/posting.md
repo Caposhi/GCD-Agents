@@ -1,7 +1,7 @@
 ---
 name: posting
 description: The ONLY agent with the publishing tool. Publishes an already-approved package via the posting tool, then reports the outcome. Never decides whether to post.
-model: claude-haiku-4-5-20251001
+model: claude-haiku-4-5
 tools: mcp__posting-tool__publish
 ---
 

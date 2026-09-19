@@ -29,6 +29,7 @@ import {
   ImageResolver,
   isTrustedGeneratedImageUrl,
   imageAttemptFailurePolicy,
+  loadAgent,
   MediaContractError,
   normalizeToPublicationJpeg,
   parseAgentJson,
@@ -37,6 +38,12 @@ import {
   runBrief,
   validateGeneratedImageHeader,
 } from "./orchestrator.js";
+import {
+  AgentMessageCreator,
+  legacyModelPriceUsdPerMTok,
+  resolveLegacyThinking,
+  runAgentWithMessageCreator,
+} from "./sdk.js";
 import { mediaUrlMatchesContentSha256 } from "../mcp/posting-tool/validation.js";
 import { createHash, randomUUID } from "node:crypto";
 
@@ -410,6 +417,129 @@ async function run(): Promise<void> {
     } finally {
       config.nodeEnv = originalNodeEnv;
     }
+
+    // --- MR. Legacy agent routing: the exact bytes the deployed worker sends --
+    //
+    // `src/worker/index.ts` imports `runBrief` from the orchestrator, whose
+    // `loadAgent()` parses `model:` out of each agent's frontmatter and hands it
+    // to `runAgent`. These assertions therefore describe production routing, not
+    // a fixture. Two things are pinned for every moved surface: the exact model
+    // id, and the exact `thinking` value on the request — because the legacy
+    // path is non-streaming with a 3000-token default ceiling and a 90-second
+    // timeout, and `max_tokens` bounds thinking and visible text together.
+    const cannedReply = {
+      content: [{ type: "text", text: "{}" }],
+      usage: { input_tokens: 1, output_tokens: 1 },
+    } as unknown as Awaited<ReturnType<AgentMessageCreator>>;
+
+    /** Capture the request a pinned agent would actually put on the wire. */
+    const wireRequestFor = async (agentName: string): Promise<Record<string, unknown>> => {
+      const def = await loadAgent(agentName);
+      let captured: Record<string, unknown> | undefined;
+      await runAgentWithMessageCreator(
+        { systemPrompt: def.systemPrompt, prompt: "offline-prompt", model: def.model },
+        async (request) => {
+          captured = request as unknown as Record<string, unknown>;
+          return cannedReply;
+        },
+      );
+      return captured!;
+    };
+
+    const HAIKU_AGENTS = ["analytics", "platform-formatter", "posting"];
+    const SONNET_AGENTS = ["copywriter", "hashtag-seo-timing", "image"];
+
+    for (const name of HAIKU_AGENTS) {
+      const req = await wireRequestFor(name);
+      // Haiku 4.5's canonical id carries no date suffix, and omitting `thinking`
+      // on it runs no thinking — same as the dated id it replaces. So this move
+      // is behaviour-neutral and the request carries no `thinking` key at all.
+      check(
+        `MR1. ${name} sends model=claude-haiku-4-5 and omits thinking (no thinking by omission)`,
+        req.model === "claude-haiku-4-5" && !("thinking" in req) && req.max_tokens === 3000,
+      );
+    }
+
+    for (const name of SONNET_AGENTS) {
+      const req = await wireRequestFor(name);
+      // Sonnet 5 runs ADAPTIVE thinking when `thinking` is omitted, where
+      // Sonnet 4.6 ran none. Left implicit, this live path would start spending
+      // an unbounded share of a 3000-token ceiling on tokens `collect()` never
+      // reads, and `parseAgentJson` degrades a truncated JSON reply to
+      // `{_raw: ...}` rather than throwing. It is pinned off explicitly.
+      check(
+        `MR2. ${name} sends model=claude-sonnet-5 with thinking explicitly disabled`,
+        req.model === "claude-sonnet-5"
+          && (req.thinking as { type?: string } | undefined)?.type === "disabled"
+          && req.max_tokens === 3000,
+      );
+    }
+
+    // The independent evaluator is deliberately NOT moved in this change, and
+    // its request must stay byte-identical: same id, and still no `thinking`
+    // key, since Sonnet 4.6 does not think by omission.
+    const criticReq = await wireRequestFor("brand-compliance-critic");
+    check(
+      "MR3. brand-compliance-critic is unmoved: claude-sonnet-4-6, request unchanged",
+      criticReq.model === "claude-sonnet-4-6" && !("thinking" in criticReq),
+    );
+
+    // No agent may carry a date-suffixed or previous-generation pin by accident.
+    const allPins = await Promise.all(
+      [...HAIKU_AGENTS, ...SONNET_AGENTS].map(async (n) => (await loadAgent(n)).model),
+    );
+    check(
+      "MR4. no moved agent retains a dated snapshot id or a Sonnet 4.6 pin",
+      allPins.every((m) => m === "claude-haiku-4-5" || m === "claude-sonnet-5"),
+    );
+
+    // The vision QC call. `runVision` builds its own request rather than going
+    // through `buildRequest`, so its wire `thinking` value is exactly
+    // `resolveLegacyThinking(model, opts.thinking)` — asserted here directly,
+    // alongside the options `imageQc` actually passes.
+    let visionOpts: Record<string, unknown> | undefined;
+    await inspectImageText("offline-bytes", [], async (opts) => {
+      visionOpts = opts as unknown as Record<string, unknown>;
+      return {
+        text: JSON.stringify({ readText: [], garbled: false, unsafe: false, issues: [] }),
+        totalCostUsd: 0,
+        usage: undefined,
+      };
+    });
+    check(
+      "MR5. image QC inspects on claude-sonnet-5 with thinking explicitly disabled",
+      visionOpts?.model === "claude-sonnet-5"
+        && (visionOpts?.thinking as { type?: string } | undefined)?.type === "disabled"
+        && visionOpts?.maxTokens === 900,
+    );
+    check(
+      "MR6. resolveLegacyThinking pins thinking off for the vision model, and an "
+        + "explicit caller value always wins",
+      resolveLegacyThinking("claude-sonnet-5", undefined)?.type === "disabled"
+        && resolveLegacyThinking("claude-sonnet-5", { type: "disabled" })?.type === "disabled"
+        // Models that do not think by omission keep sending no key at all.
+        && resolveLegacyThinking("claude-haiku-4-5", undefined) === undefined
+        && resolveLegacyThinking("claude-sonnet-4-6", undefined) === undefined
+        // `claude-opus-5` also thinks by omission, but only the dormant
+        // agentLoop.ts manager sends it through this path and that path's
+        // thinking behaviour is owned separately (PR #75, and the recorded
+        // open consequence under MANAGER_MODEL in docs/ENVIRONMENT.md). This
+        // change must not close that decision from outside its scope.
+        && resolveLegacyThinking("claude-opus-5", undefined) === undefined,
+    );
+
+    // Every id this change introduces needs a price row, or the cost meter
+    // reports `undefined` and a run's spend silently stops being counted.
+    check(
+      "MR7. both introduced ids are priced (cost meter never reports undefined)",
+      legacyModelPriceUsdPerMTok("claude-sonnet-5")?.in === 2
+        && legacyModelPriceUsdPerMTok("claude-sonnet-5")?.out === 10
+        && legacyModelPriceUsdPerMTok("claude-haiku-4-5")?.in === 1
+        && legacyModelPriceUsdPerMTok("claude-haiku-4-5")?.out === 5
+        // Still-referenced and still-valid ids keep their rows.
+        && legacyModelPriceUsdPerMTok("claude-sonnet-4-6")?.in === 3
+        && legacyModelPriceUsdPerMTok("claude-haiku-4-5-20251001")?.in === 1,
+    );
   }
 
   // A critic-requested image revision is subject to the same fail-closed gate,

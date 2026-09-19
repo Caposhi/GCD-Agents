@@ -33,8 +33,25 @@ const PRICE: Record<string, { in: number; out: number }> = {
   "claude-opus-4-8": { in: 5, out: 25 },
   "claude-sonnet-5": { in: 2, out: 10 },
   "claude-sonnet-4-6": { in: 3, out: 15 },
+  // The canonical Haiku 4.5 id carries no date suffix. The dated snapshot id
+  // stays priced because it remains a valid, still-served pin an operator could
+  // restore; both name the same model at the same published rate.
+  "claude-haiku-4-5": { in: 1, out: 5 },
   "claude-haiku-4-5-20251001": { in: 1, out: 5 },
 };
+/**
+ * The published rate a model id is metered at, or `undefined` if it has none.
+ *
+ * Exported so an offline regression can prove every id this module can send
+ * carries a price row. Without one, `costUsd` returns `undefined` and a run's
+ * spend stops being counted silently rather than failing.
+ */
+export function legacyModelPriceUsdPerMTok(
+  model: string,
+): { in: number; out: number } | undefined {
+  return PRICE[model];
+}
+
 function costUsd(model: string, usage: any): number | undefined {
   const p = PRICE[model];
   if (!p || !usage) return undefined;
@@ -85,11 +102,70 @@ export type AgentMessageCreator = (
  */
 const LEGACY_REQUEST_OPTIONS: LegacyRequestOptions = { timeout: 90_000, maxRetries: undefined };
 
+/**
+ * The model id a legacy caller gets when it declares none.
+ *
+ * Still `claude-sonnet-4-6` on purpose. This is the "no model pinned" path, not
+ * an agent's routing decision, and `agents/brand-compliance-critic.md` still
+ * pins this id — so the fallback continues to match a live pin rather than
+ * naming a model nothing uses. Moving it is deliberately left to the change
+ * that routes that agent.
+ */
+const LEGACY_DEFAULT_MODEL = "claude-sonnet-4-6";
+
+/**
+ * The ids **this legacy path routes** on which omitting `thinking` runs
+ * adaptive thinking, and which are therefore pinned thinking-off here.
+ *
+ * Whether an omitted `thinking` means adaptive thinking or none at all is a
+ * property of the model id — `claude-sonnet-5` thinks, `claude-haiku-4-5` and
+ * `claude-sonnet-4-6` do not — so the distinction is recorded once here rather
+ * than rediscovered at each call site. This set is not a complete catalogue of
+ * every model with that property; see the exclusion below.
+ *
+ * Why it matters on the legacy path specifically: these requests are
+ * non-streaming, default to `max_tokens: 3000`, and run under a 90-second
+ * timeout. `max_tokens` is a hard ceiling on *total* output — thinking tokens
+ * and visible text share it — and `collect()` accumulates only `text` blocks.
+ * So a silently thinking legacy request spends part of a small budget on
+ * tokens the caller never sees, and `parseAgentJson` degrades a truncated
+ * reply to `{_raw: ...}` instead of throwing. Every legacy agent must return
+ * strict JSON, so that failure would be quiet and downstream.
+ *
+ * **`claude-opus-5` is deliberately absent**, though it also thinks by
+ * omission. The only caller that sends it through this path is the dormant
+ * manager in `agentLoop.ts`, whose thinking behaviour is owned separately
+ * (PR #75) and recorded as a deliberately open consequence in
+ * `docs/ENVIRONMENT.md` under `MANAGER_MODEL`. Adding it here would silently
+ * close that open decision from outside its scope, so the id a reviver of that
+ * path must handle stays that path's to handle.
+ */
+const THINKING_ON_OMISSION = new Set<string>(["claude-sonnet-5"]);
+
+/**
+ * The thinking configuration a legacy request actually sends.
+ *
+ * An explicit caller value always wins — Content Intelligence stages set
+ * `{type: "disabled"}` themselves and are unaffected by this rule. Otherwise a
+ * model that would think by omission is pinned thinking-off, which preserves
+ * the behaviour every legacy caller has today, and a model that would not think
+ * by omission still sends no `thinking` key at all, which keeps those requests
+ * byte-identical to what they send today.
+ */
+export function resolveLegacyThinking(
+  model: string,
+  explicit: StageThinkingPolicy | undefined,
+): StageThinkingPolicy | undefined {
+  if (explicit) return explicit;
+  return THINKING_ON_OMISSION.has(model) ? { type: "disabled" } : undefined;
+}
+
 function buildRequest(opts: AgentRunOptions): {
   model: string;
   request: Anthropic.MessageCreateParamsNonStreaming;
 } {
-  const model = opts.model || "claude-sonnet-4-6";
+  const model = opts.model || LEGACY_DEFAULT_MODEL;
+  const thinking = resolveLegacyThinking(model, opts.thinking);
   return {
     model,
     request: {
@@ -97,7 +173,7 @@ function buildRequest(opts: AgentRunOptions): {
       max_tokens: opts.maxTokens ?? 3000,
       system: opts.systemPrompt,
       messages: [{ role: "user", content: opts.prompt }],
-      ...(opts.thinking ? { thinking: opts.thinking } : {}),
+      ...(thinking ? { thinking } : {}),
     },
   };
 }
@@ -288,15 +364,25 @@ export interface VisionRunOptions {
   jpegBase64: string;
   model?: string;
   maxTokens?: number;
+  /**
+   * Omitted keeps whatever the model does by default. `runVision` builds its
+   * own request rather than going through `buildRequest`, so without this field
+   * a vision model that thinks by omission could not be pinned thinking-off at
+   * all — and this path's `max_tokens` budget is smaller than the legacy text
+   * path's, not larger.
+   */
+  thinking?: StageThinkingPolicy;
 }
 
 /** Single-shot vision call: inspect a JPEG and return the model's text. */
 export async function runVision(opts: VisionRunOptions): Promise<AgentRunResult> {
-  const model = opts.model || "claude-sonnet-4-6";
+  const model = opts.model || LEGACY_DEFAULT_MODEL;
+  const thinking = resolveLegacyThinking(model, opts.thinking);
   const res = await getClient().messages.create(
     {
       model,
       max_tokens: opts.maxTokens ?? 1000,
+      ...(thinking ? { thinking } : {}),
       system: opts.systemPrompt,
       messages: [
         {

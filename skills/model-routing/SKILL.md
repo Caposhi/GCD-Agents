@@ -12,16 +12,23 @@ Match model power to the job. Judgment runs on Opus; mechanical work runs on Son
 ## Default routing
 | Role | Model | ID | Why |
 |---|---|---|---|
-| **Manager** (orchestration, critique, approval decision) | Opus 4.8 | `claude-opus-4-8` | Hardest judgment in the system; the one place quality compounds. |
-| **copywriter** | Sonnet 4.6 | `claude-sonnet-4-6` | Strong writing at lower cost; escalate to Opus only if it fails critique twice. |
-| **brand-compliance-critic** | Sonnet 4.6 | `claude-sonnet-4-6` | Independent second opinion; bump to Opus for high-stakes/legal-adjacent claims. |
-| **image** (prompt authoring) | Sonnet 4.6 | `claude-sonnet-4-6` | Image generation itself is routed separately (below). |
-| **platform-formatter** | Haiku 4.5 | `claude-haiku-4-5-20251001` | Mechanical reformatting to platform limits. |
-| **hashtag-seo-timing** | Sonnet 4.6 | `claude-sonnet-4-6` | Local-SEO judgment matters for GBP. |
-| **analytics** | Haiku 4.5 | `claude-haiku-4-5-20251001` | Read/summarize metrics. |
-| **posting** | Haiku 4.5 | `claude-haiku-4-5-20251001` | Executes an approved package; no creative judgment. |
+| **Manager** (orchestration, critique, approval decision) | Opus 5 | `claude-opus-5` | Hardest judgment in the system; the one place quality compounds. Dormant path — the default in `agentLoop.ts`, which no worker calls. |
+| **copywriter** | Sonnet 5 | `claude-sonnet-5` | Strong writing at lower cost; escalate to Opus only if it fails critique twice. |
+| **brand-compliance-critic** | Sonnet 4.6 | `claude-sonnet-4-6` | Independent second opinion; bump to Opus for high-stakes/legal-adjacent claims. **Not moved with the others** — it is the independent evaluator feeding the Phase-A approval gate and is routed separately. |
+| **image** (prompt authoring) | Sonnet 5 | `claude-sonnet-5` | Image generation itself is routed separately (below). |
+| **image QC inspector** (vision) | Sonnet 5 | `claude-sonnet-5` | Reads rendered pixels in `imageQc.ts`; not an agent contract, but the same routing decision. |
+| **platform-formatter** | Haiku 4.5 | `claude-haiku-4-5` | Mechanical reformatting to platform limits. |
+| **hashtag-seo-timing** | Sonnet 5 | `claude-sonnet-5` | Local-SEO judgment matters for GBP. |
+| **analytics** | Haiku 4.5 | `claude-haiku-4-5` | Read/summarize metrics. |
+| **posting** | Haiku 4.5 | `claude-haiku-4-5` | Executes an approved package; no creative judgment. |
+
+> **Canonical ids carry no date suffix.** `claude-haiku-4-5` and `claude-haiku-4-5-20251001` name the same model at the same published rate ($1/$5 per MTok); the unsuffixed alias is canonical and is what these agents pin.
+
+> **Thinking on this path is explicit, not inherited.** Omitting the `thinking` parameter runs **adaptive thinking** on `claude-sonnet-5` and `claude-opus-5`, and **no thinking** on `claude-haiku-4-5` and `claude-sonnet-4-6`. The legacy agent path is non-streaming, defaults to `max_tokens: 3000`, and times out at 90 seconds, and `max_tokens` bounds thinking and visible text together — so `sdk.ts` pins `thinking: { type: "disabled" }` for the ids this path routes that would otherwise think by omission (currently `claude-sonnet-5`; `claude-opus-5` is excluded because only the dormant `agentLoop.ts` manager sends it here). Changing a row above to such a model therefore changes request semantics, not just a string.
 
 > Open question #9: the manager defaults to Opus. If cost requires, switch to a Sonnet manager that escalates to Opus only on critique/approval decisions — change here, not in individual agents.
+
+> **Rates** (published, per million tokens, input/output): Opus 5 $5/$25 · Sonnet 5 $2/$10 · Sonnet 4.6 $3/$15 · Haiku 4.5 $1/$5. The cost meter's table in `src/harness/sdk.ts` must carry a row for every id named above, or a run's spend silently stops being counted.
 
 ## Escalation triggers (worker → stronger model)
 - A worker fails the critique rubric **twice** on the same package → re-run that worker one tier up.
