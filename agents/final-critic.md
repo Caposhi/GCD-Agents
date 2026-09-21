@@ -60,8 +60,8 @@ Return **exactly one JSON object** and nothing else. No prose before or after it
 ```
 {
   "verdict": "provisional_pass" | "needs_revision" | "needs_human_review",
-  "summary": string,                     // no recognizable URL syntax
-  "findings": [
+  "summary": string,                     // no recognizable URL syntax; at most 1,500 characters
+  "findings": [                          // at most 20 entries
     {
       "severity": "blocking" | "advisory",
       "category": "claim_fidelity" | "uncited_implication" | "platform_semantics"
@@ -69,16 +69,17 @@ Return **exactly one JSON object** and nothing else. No prose before or after it
                  | "production_coherence" | "human_decision",
       "platform": "instagram" | "facebook" | "google_business_profile" | "cross_platform",
       "owner": "hook-story-script" | "production-direction" | "packaging-adaptation" | "human_review",
-      "issue": string,                    // no recognizable URL syntax
-      "suggestedAction": string           // no recognizable URL syntax
+      "issue": string,                    // no recognizable URL syntax; at most 400 characters
+      "suggestedAction": string           // no recognizable URL syntax; at most 300 characters
     }
   ],
-  "claimFindingUse": [                    // which stage-5-bound claim a finding discusses, if any
+  "claimFindingUse": [                    // which stage-5-bound claim a finding discusses,
+                                          // if any; at most 24 entries
     {
       "findingIndex": number,
       "platform": "instagram" | "facebook" | "google_business_profile",  // never "cross_platform"
       "factId": string,
-      "summary": string                  // no recognizable URL syntax
+      "summary": string                  // no recognizable URL syntax; at most 400 characters
     }
   ]
 }
@@ -94,7 +95,14 @@ Rules the validator enforces, so satisfying them is not optional:
 - **`claimFindingUse[].factId` must appear in `PLATFORM_CLAIMS` for that exact platform.** An id from `SCRIPT_CLAIMS` that stage 5 never bound on that platform fails, as does a fabricated id.
 - **No exact `(findingIndex, platform, factId)` triple may repeat.** The same claim on the same platform may back two different findings — that is two separate entries with two different `findingIndex` values, not a repeat.
 - **Recognizable URL syntax fails in every prose channel** — `summary`, every finding's `issue` and `suggestedAction`, and every `claimFindingUse[].summary`. This is a syntax check for explicit schemes and `www.` tokens, not a claim that obfuscated or semantic destination references are detectable.
-- Every string is non-empty and reasonably bounded. Do not pad.
+- **Size ceilings the validator enforces.** Every string is non-empty, and each bound below is checked *after* you answer. One entry or one character over and the whole response is discarded — there is no retry, no repair pass, and no partial credit.
+  - `summary` — at most 1,500 characters
+  - `findings` — at most 20 entries
+  - `findings[].issue` — at most 400 characters
+  - `findings[].suggestedAction` — at most 300 characters
+  - `claimFindingUse` — at most 24 entries
+  - `claimFindingUse[].summary` — at most 400 characters
+- **A ceiling is not a quota.** The findings ceiling is the most a review may carry, not a standard to meet. A review that reports the three things a person actually needs to see is more useful than one padded to its limit, and an empty `findings` array remains a complete, correct answer. Report what you genuinely found, and never more than the ceiling; if you have more real findings than the ceiling allows, report the ones that matter most and say in `summary` that you ran out of room.
 
 **What happens to each part of your answer.** Your verdict, your summary, and every finding are recorded as **provisional, non-authoritative, non-approving, non-publishable, non-executable, and never proof of production readiness** — structurally, regardless of how confident you are. Only the bound `(findingIndex, platform, factId)` list is treated as a claim-finding record downstream, and what those claims say is read back from the evidence records, not from your prose.
 

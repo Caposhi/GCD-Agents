@@ -44,9 +44,11 @@ If a channel's shape cannot carry a claim honestly, drop the claim and say so in
 
 ## Per-platform shape
 
-- **`instagram`** — hook in the first line or two. **8–15 hashtags**, each unique. The caption plus the two-newline separator and canonical hashtag list must fit within the 2,200-character provider-visible limit.
-- **`facebook`** — tighter caption. **At most 2 hashtags**; lean on plain language instead.
-- **`google_business_profile`** — caption at most 1,500 characters. **No hashtags at all.** Local keyword phrases belong in `localKeywords`, and only where `SCRIPT_CLAIMS` supports the place and the service named.
+- **`instagram`** — hook in the first line or two. **8–15 hashtags**, each unique. Caption, plus the two-newline separator and the canonical hashtag list, at most 2,200 characters.
+- **`facebook`** — tighter caption. **At most 2 hashtags**; lean on plain language instead. Caption, separator and tags together at most 2,200 characters — this pipeline's own ceiling, far below Facebook's provider limit, and the one actually enforced here.
+- **`google_business_profile`** — caption, separator and tags together at most 1,500 characters. **No hashtags at all.**
+
+Local keyword phrases belong in `localKeywords`, and only where `SCRIPT_CLAIMS` supports the place and the service named.
 
 The caption itself must contain **no hashtag token on any platform**. Every canonical hashtag belongs only in the dedicated `hashtags` array, where it can be counted and checked. Hashtags must be single tokens beginning with `#`, containing only letters, digits, or underscores. Uniqueness is case-insensitive.
 
@@ -63,15 +65,19 @@ Return **exactly one JSON object** and nothing else. No prose before or after it
   "packages": [                          // exactly one per requested platform, in the requested order
     {
       "platform": "instagram" | "facebook" | "google_business_profile",
-      "caption": string,                 // no hashtag tokens; no recognizable URL syntax
+      "caption": string,                 // no hashtag tokens; no recognizable URL syntax;
+                                         // per-platform ceiling as set out above
       "hashtags": string[],              // "#token" form; [] where the platform allows none
-      "localKeywords": string[],         // plain phrases; no hashtags or recognizable URL syntax
+      "localKeywords": string[],         // plain phrases; no hashtags or recognizable URL syntax;
+                                         // at most 6 entries, each at most 120 characters
       "recommendedTime": string,         // "HH:MM ET", review metadata only
-      "openQuestions": string[]          // what a human must decide; no recognizable URL syntax
+      "openQuestions": string[]          // what a human must decide; no recognizable URL syntax;
+                                         // at most 6 entries, each at most 300 characters
     }
   ],
-  "claimUse": [                          // which used claim each caption relies on
-    { "platform": ..., "factId": string, "summary": string } // summary has no recognizable URL syntax
+  "claimUse": [                          // which used claim each caption relies on; at most 24 entries
+    { "platform": ..., "factId": string,
+      "summary": string }                // no recognizable URL syntax; at most 400 characters
   ]
 }
 ```
@@ -85,7 +91,15 @@ Rules the validator enforces, so satisfying them is not optional:
 - **Every `factId` must appear in `SCRIPT_CLAIMS`.** An id you did not receive is a fabrication and fails. An id the evidence system holds, or that an earlier stage permitted but stage 3 did not use, **also fails**.
 - **No `factId` may repeat within one platform.** The same claim may appear on more than one platform, because each caption is a separate use.
 - **`recommendedTime` must be `HH:MM ET`.** It is review metadata. It is not a date, not a timestamp, and cannot become a scheduler instruction.
-- Every string is non-empty and reasonably bounded. Do not pad.
+- **Size ceilings the validator enforces.** Every string is non-empty, and each bound below is checked *after* you answer. One entry or one character over and the whole response is discarded — there is no retry, no repair pass, and no partial credit.
+  - `packages[].caption` — the per-platform ceiling in "Per-platform shape" above, measured on the caption plus the separator plus the canonical tags
+  - `packages[].localKeywords` — at most 6 entries
+  - `packages[].localKeywords[]` — at most 120 characters
+  - `packages[].openQuestions` — at most 6 entries
+  - `packages[].openQuestions[]` — at most 300 characters
+  - `claimUse` — at most 24 entries
+  - `claimUse[].summary` — at most 400 characters
+- **A ceiling is not a quota.** Instagram's hashtag range is the only minimum in this contract; every other number is a maximum. Do not stretch a caption toward its ceiling, invent another local keyword, or bind a claim on a platform whose caption does not rely on it merely because the binding allowance has room. Bind what each caption genuinely uses, and never more than the ceiling. A shorter, thinner caption that stays inside `SCRIPT_CLAIMS` is a correct answer.
 
 **What happens to each part of your answer.** Every caption, hashtag, keyword, timing note, open question and summary is recorded as **provisional, unverified, non-publishable, and non-executable**. Caption wording, hashtag and keyword selection, and the timing recommendation are each separately marked unverified, and the timing is marked non-schedulable. Only the bound `factId` list is treated as a claim-use record downstream, and what those claims say is read back from the evidence records, not from your captions.
 
