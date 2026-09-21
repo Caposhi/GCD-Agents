@@ -732,7 +732,8 @@ this file. [Status](STATUS.md) is deliberately untouched — this change verifie
 `PRODUCTION-VALIDATED`.** All six stages remain `executionEnabled: false` and no production path
 reaches any of them. It authorizes no release, and the time-bounded partial-release interval
 prohibits any release of any service until **2026-09-24T18:52Z**. [Status](STATUS.md)'s production
-tables and the M1→M2 interval record are untouched.
+tables, live SHAs, M1→M2 interval record and cursor are untouched; the single clause it does change
+is a derived repository constant inside the PR #54 merge record, and verifies no production state.
 
 **PR / merge:** base `45e2e614fbf09ce2a0576d7ac490dbacf732df2c` (PR #80 merge). **PR number and
 merge SHA are not knowable before merging** — recorded here as a **blocking follow-up** under the
@@ -866,13 +867,19 @@ capability, approval rule, autonomy boundary, or publishing instruction was touc
 **Unresolved follow-ups.**
 
 - The PR number and merge SHA above (blocking follow-up, mutable-identifier exception).
-- **[`docs/STATUS.md`](STATUS.md) line 116 still states the shared payload boundary as `370,000`,
-  which this change makes stale at `380,000`.** It was left untouched under an explicit instruction
-  not to modify that file, its M1→M2 interval record, or anything production-facing. This is
-  recorded here as a **blocking documentation follow-up** rather than presented as done: the
-  statement is now wrong, it is wrong in the document that records verified current reality, and
-  the correction is a one-number edit that needs the authority to touch that file. Nothing about
-  production state is affected — the number describes a repository-side derived constant.
+- ~~[`docs/STATUS.md`](STATUS.md) states the shared payload boundary as `370,000`, which this
+  change makes stale at `380,000`.~~ **Closed inside this change.** It was opened as a **blocking
+  documentation follow-up** because the instruction under which this change was made forbade
+  touching that file; on being shown the consequence, its author confirmed the instruction was
+  meant to protect the production tables and the M1→M2 interval record, not a derived repository
+  constant, and authorized the edit here. The clause now reads as what that authority derives
+  **now** — `380,000` — with `370,000` labelled as the value **at PR #54's merge** and a pointer
+  to this file for why it moved, because the sentence sits inside a PR #54 merge record but was
+  written in the present tense. Nothing else in [Status](STATUS.md) changed: the production
+  tables, the M1→M2 interval record, and the current cursor are untouched, and the `120,000`
+  recorded one paragraph earlier stays as the historical pre-reconciliation value it describes.
+  **This is the only sanctioned way that follow-up could close** — by making the edit, not by
+  restating the constraint.
 - Whether the provider accepts and honours the five schemas for stages 2 through 6 — carried
   forward from the PR #80 record above, still open, still needing a live run that reaches them.
 - Whether the other bounded output ceilings are sized for real model output. Unmeasured, and
@@ -880,8 +887,10 @@ capability, approval rule, autonomy boundary, or publishing instruction was touc
 
 **Documents updated at completion:** [README](../README.md), [Architecture](ARCHITECTURE.md),
 [AI handoff](AI_HANDOFF.md), [Security and continuity](SECURITY_AND_CONTINUITY.md),
-[Testing](TESTING.md), and this file. [Status](STATUS.md) is deliberately untouched under explicit
-instruction, which leaves the stale number recorded as a blocking follow-up immediately above.
+[Testing](TESTING.md), [Status](STATUS.md), and this file. The [Status](STATUS.md) edit is one
+clause on one line, correcting and re-tensing a derived repository constant inside the PR #54
+record; **no production table, no live SHA, no M1→M2 interval record and no cursor was touched**,
+and this change still verifies no production state.
 
 ## PR #57 — CC5 proposition-bound reconciliation and bounded closeout — `MERGED`
 
