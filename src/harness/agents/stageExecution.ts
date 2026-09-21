@@ -80,6 +80,8 @@ export interface StageRunnerRequest {
   maxTokens: number;
   /** Explicit: hidden thinking must not consume the visible JSON allowance. */
   thinking: StageThinkingPolicy;
+  /** JSON Schema the provider constrains the response to, when the stage declares one. */
+  responseFormatSchema?: Record<string, unknown>;
 }
 
 export interface StageRunnerResult {
@@ -111,6 +113,7 @@ export function createAnthropicStageRunner(run: AgentRunner = runStageAgent): St
     model: request.model,
     maxTokens: request.maxTokens,
     thinking: request.thinking,
+    ...(request.responseFormatSchema ? { responseFormatSchema: request.responseFormatSchema } : {}),
   });
 }
 
@@ -159,6 +162,16 @@ export interface StageInvocation {
    * evidence contract exists to replace.
    */
   referenceChannel?: "omit" | "untrusted_data";
+  /**
+   * The stage's output schema, declared beside the validator that enforces it.
+   *
+   * Kept on the invocation rather than in a central schema module on purpose:
+   * a shared module would have to import all six stage modules, which import
+   * this one, and the schema would drift from the `requireExactKeys` list it
+   * is supposed to mirror. Beside the validator it is built from the same
+   * constant.
+   */
+  responseFormatSchema?: Record<string, unknown>;
 }
 
 export interface StageInvocationResult {
@@ -303,6 +316,9 @@ export async function invokeStage(invocation: StageInvocation): Promise<StageInv
       model: resolved.model,
       maxTokens: resolved.maxTokens,
       thinking: resolved.thinking,
+      ...(invocation.responseFormatSchema
+        ? { responseFormatSchema: invocation.responseFormatSchema }
+        : {}),
     });
   } catch (err) {
     // The message may carry provider text; it is surfaced to the caller as an

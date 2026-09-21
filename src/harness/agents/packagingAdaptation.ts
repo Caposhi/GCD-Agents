@@ -124,6 +124,10 @@ export const PACKAGING_ADAPTATION_STAGE = "packaging-adaptation" as const;
  * must never be mistaken for something publishable. Exhaustive maps in both
  * directions plus runtime round trips pin the correspondence below.
  */
+import {
+  schemaArray, schemaEnum, schemaInteger, schemaObject, schemaString,
+} from "./responseFormatKit.js";
+
 export const PACKAGING_PLATFORMS = ["instagram", "facebook", "google_business_profile"] as const;
 export type PackagingPlatform = (typeof PACKAGING_PLATFORMS)[number];
 
@@ -228,11 +232,46 @@ export const RECOMMENDED_TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d ET$/;
 export const URL_SHAPED_TEXT_PATTERN = /(?:\b[a-z][a-z0-9+.-]*:(?:\/\/)?[^\s]+|\bwww\.[^\s]+)/iu;
 
 /** Exactly the fields the contract allows. Anything else is an extra field. */
-const ALLOWED_OUTPUT_FIELDS = ["packages", "claimUse"] as const;
-const ALLOWED_PACKAGE_FIELDS = [
+export const ALLOWED_OUTPUT_FIELDS = ["packages", "claimUse"] as const;
+export const ALLOWED_PACKAGE_FIELDS = [
   "platform", "caption", "hashtags", "localKeywords", "recommendedTime", "openQuestions",
 ] as const;
 const ALLOWED_CLAIM_USE_FIELDS = ["platform", "factId", "summary"] as const;
+
+/**
+ * The JSON Schema sent as `output_config.format` for this stage. Shape only.
+ *
+ * The caption ceiling is per platform and is the smaller of the provider policy
+ * and this pipeline's narrowing, so it cannot be one number in a description
+ * here; the prompt states it per platform and the validator computes it.
+ */
+export const PACKAGING_ADAPTATION_RESPONSE_FORMAT = schemaObject({
+  packages: schemaArray(
+    schemaObject({
+      platform: schemaEnum(PACKAGING_PLATFORMS, "Exactly one package per requested platform, in order"),
+      caption: schemaString("No hashtag tokens; no recognizable URL syntax; per-platform ceiling"),
+      hashtags: schemaArray({ type: "string" }, '"#token" form; [] where the platform allows none'),
+      localKeywords: schemaArray(
+        { type: "string" }, "Plain phrases; no hashtags or recognizable URL syntax",
+        PACKAGING_LIMITS.maxLocalKeywords,
+      ),
+      recommendedTime: schemaString('"HH:MM ET", review metadata only'),
+      openQuestions: schemaArray(
+        { type: "string" }, "What a human must decide", PACKAGING_LIMITS.maxOpenQuestions,
+      ),
+    }),
+    "Exactly one per requested platform, in the requested order",
+  ),
+  claimUse: schemaArray(
+    schemaObject({
+      platform: schemaEnum(PACKAGING_PLATFORMS, "The platform whose caption relies on this claim"),
+      factId: schemaString("An id from SCRIPT_CLAIMS ONLY"),
+      summary: schemaString("No recognizable URL syntax", PACKAGING_LIMITS.summaryChars),
+    }),
+    "Which used claim each caption relies on",
+    PACKAGING_LIMITS.maxClaimUses,
+  ),
+});
 
 /**
  * One proposed platform package.
@@ -898,6 +937,7 @@ export async function executePackagingAdaptation(
 
   const { rawText, metadata } = await invokeStage({
     stage: PACKAGING_ADAPTATION_STAGE,
+    responseFormatSchema: PACKAGING_ADAPTATION_RESPONSE_FORMAT,
     registry,
     runner: invocation.runner,
     // This stage declares no reference asset. Explicit anyway, so adding one

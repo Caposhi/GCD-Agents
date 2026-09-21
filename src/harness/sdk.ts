@@ -71,6 +71,22 @@ export interface AgentRunOptions {
   maxTokens?: number;
   /** Omitted for legacy calls; Content Intelligence stages set this explicitly. */
   thinking?: StageThinkingPolicy;
+  /**
+   * JSON Schema constraining the response, sent as `output_config.format`.
+   *
+   * Structured outputs make a non-JSON response impossible at generation time
+   * rather than merely forbidden in prose. Every stage prompt already says "no
+   * markdown fence"; on 2026-09-21 a stage-3 response arrived fenced anyway and
+   * a paid call was discarded for it. An instruction the model may disregard is
+   * replaced here by a constraint it cannot.
+   *
+   * Note what this does NOT do: Anthropic's structured outputs support
+   * `type`, `properties`, `required`, `additionalProperties`, `enum`, `const`
+   * and string formats, but **not** `maxLength`, `maxItems`, `minimum` or
+   * `pattern`. Size ceilings therefore remain the prompt's and the validator's
+   * job; the schema carries them in `description` only, as guidance.
+   */
+  responseFormatSchema?: Record<string, unknown>;
 }
 
 /**
@@ -174,6 +190,13 @@ function buildRequest(opts: AgentRunOptions): {
       system: opts.systemPrompt,
       messages: [{ role: "user", content: opts.prompt }],
       ...(thinking ? { thinking } : {}),
+      ...(opts.responseFormatSchema
+        ? {
+          output_config: {
+            format: { type: "json_schema" as const, schema: opts.responseFormatSchema },
+          },
+        }
+        : {}),
     },
   };
 }

@@ -56,6 +56,9 @@ import {
   parseStrictJsonObject,
 } from "./stageExecution.js";
 import { STRATEGY_LIMITS, HANDOFF_GUARDS, isBoundedSerializableText } from "./payloadContract.js";
+import {
+  schemaArray, schemaEnum, schemaObject, schemaString,
+} from "./responseFormatKit.js";
 
 export const STRATEGY_CONCEPT_STAGE = "strategy-concept" as const;
 
@@ -71,7 +74,7 @@ export const STRATEGY_CONCEPT_STAGE = "strategy-concept" as const;
 export const LIMITS = STRATEGY_LIMITS;
 
 /** Exactly the fields the contract allows. Anything else is an extra field. */
-const ALLOWED_OUTPUT_FIELDS = [
+export const ALLOWED_OUTPUT_FIELDS = [
   "angle",
   "concept",
   "rationale",
@@ -81,6 +84,48 @@ const ALLOWED_OUTPUT_FIELDS = [
   "hypotheses",
   "assumptions",
 ] as const;
+
+/** The two bases a hypothesis may declare. The validator reads this same list. */
+export const HYPOTHESIS_BASES = ["creative", "causal"] as const;
+
+/**
+ * The JSON Schema sent as `output_config.format` for this stage.
+ *
+ * Built from `ALLOWED_OUTPUT_FIELDS` and `HYPOTHESIS_BASES` — the same
+ * constants the validator below reads — so the shape the provider is
+ * constrained to and the shape the validator demands cannot drift apart.
+ *
+ * It constrains shape only. `STRATEGY_LIMITS` ceilings appear in `description`
+ * text because structured outputs do not support `maxLength` or `maxItems`;
+ * they are enforced after the response arrives, exactly as before.
+ */
+export const STRATEGY_CONCEPT_RESPONSE_FORMAT = schemaObject({
+  angle: schemaString("The strategic angle, one sentence", LIMITS.angleChars),
+  concept: schemaString("The content concept this angle produces", LIMITS.conceptChars),
+  rationale: schemaString("Why this angle, referencing the evidence basis", LIMITS.rationaleChars),
+  supportingFactIds: schemaArray(
+    { type: "string" }, "Ids from allowedFacts ONLY", LIMITS.maxIds,
+  ),
+  observationIds: schemaArray(
+    { type: "string" }, "Ids from gcdObservations ONLY", LIMITS.maxIds,
+  ),
+  performanceSignalIds: schemaArray(
+    { type: "string" }, "Ids from performanceEvidence ONLY", LIMITS.maxIds,
+  ),
+  hypotheses: schemaArray(
+    schemaObject({
+      statement: schemaString("Something proposed, not asserted", LIMITS.hypothesisChars),
+      basis: schemaEnum(HYPOTHESIS_BASES, "Whether the hypothesis is creative or causal"),
+    }),
+    "Things proposed, not asserted",
+    LIMITS.maxHypotheses,
+  ),
+  assumptions: schemaArray(
+    { type: "string" },
+    "Anything assumed with no evidence; an empty array is honest",
+    LIMITS.maxAssumptions,
+  ),
+});
 
 export interface StrategyConceptHypothesis {
   statement: string;
@@ -387,6 +432,7 @@ export async function executeStrategyConcept(
     stage: STRATEGY_CONCEPT_STAGE,
     registry,
     runner: invocation.runner,
+    responseFormatSchema: STRATEGY_CONCEPT_RESPONSE_FORMAT,
     // The evidence projection below is the authoritative factual input. The
     // declared reference (`config/approved-facts.json`) is deliberately omitted
     // rather than injected: the pack already carries those facts classified,

@@ -95,7 +95,7 @@ export const TRUTH_LIMITS = {
 } as const;
 
 /** Exactly the fields the contract allows. Anything else is an extra field. */
-const ALLOWED_OUTPUT_FIELDS = [
+export const ALLOWED_OUTPUT_FIELDS = [
   "assessment",
   "allowedClaims",
   "forbiddenClaims",
@@ -120,6 +120,45 @@ export type ForbiddenClaimReason = (typeof FORBIDDEN_CLAIM_REASONS)[number];
  * the model said.
  */
 export type ClaimClass = "automotive" | "business";
+
+/** The two claim classes. The validator checks a declaration against this list. */
+export const CLAIM_CLASSES = ["automotive", "business"] as const;
+/**
+ * The JSON Schema sent as `output_config.format` for this stage.
+ * Built from the same constants the validator reads. Shape only — the
+ * `TRUTH_LIMITS` ceilings appear as `description` prose because structured
+ * outputs do not enforce `maxLength` or `maxItems`.
+ */
+export const AUTOMOTIVE_TRUTH_RESPONSE_FORMAT = schemaObject({
+  assessment: schemaString("What you concluded and why, in plain language", TRUTH_LIMITS.assessmentChars),
+  allowedClaims: schemaArray(
+    schemaObject({
+      factId: schemaString("An id from allowedFacts ONLY"),
+      claimClass: schemaEnum(CLAIM_CLASSES, "Must match the class the evidence system recorded"),
+      restatement: schemaString("How this claim would be put, in your words", TRUTH_LIMITS.restatementChars),
+    }),
+    "Claims the content may make; an empty array is honest",
+    TRUTH_LIMITS.maxAllowedClaims,
+  ),
+  forbiddenClaims: schemaArray(
+    schemaObject({
+      claim: schemaString("The claim that may NOT be made", TRUTH_LIMITS.forbiddenClaimChars),
+      reason: schemaEnum(FORBIDDEN_CLAIM_REASONS, "Why the claim is refused"),
+    }),
+    "Claims the content must not make",
+    TRUTH_LIMITS.maxForbiddenClaims,
+  ),
+  requiredCaveats: schemaArray(
+    { type: "string" }, "Qualifications a permitted claim needs to stay honest", TRUTH_LIMITS.maxCaveats,
+  ),
+  openQuestions: schemaArray(
+    { type: "string" }, "What a human would have to verify to permit more", TRUTH_LIMITS.maxOpenQuestions,
+  ),
+});
+
+import {
+  schemaArray, schemaEnum, schemaInteger, schemaObject, schemaString,
+} from "./responseFormatKit.js";
 const CLASS_OF_KIND: Partial<Record<EvidenceKind, ClaimClass>> = {
   verified_automotive_fact: "automotive",
   verified_business_fact: "business",
@@ -626,6 +665,7 @@ export async function executeAutomotiveTruth(
 
   const { rawText, metadata } = await invokeStage({
     stage: AUTOMOTIVE_TRUTH_STAGE,
+    responseFormatSchema: AUTOMOTIVE_TRUTH_RESPONSE_FORMAT,
     registry,
     runner: invocation.runner,
     // The evidence projection is the authoritative factual input. The declared

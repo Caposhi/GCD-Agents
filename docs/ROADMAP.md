@@ -449,19 +449,20 @@ evidence-class rules in every prompt are unchanged.
 [Architecture](ARCHITECTURE.md), [Testing](TESTING.md), and this file. [Status](STATUS.md) is deliberately untouched — this change verifies no production
 state, and its production tables and the M1→M2 interval record are out of scope.
 
-## Paid-call preconditions — no stage is bought before a free check can fail — `IMPLEMENTED`
+## Paid-call preconditions — no stage is bought before a free check can fail — `MERGED`
 
-**State:** `IMPLEMENTED` on a branch; `MERGED` only on merge. **Not `DEPLOYED`, not `ENABLED`, not
+**State:** `MERGED` and present on `main`. **Not `DEPLOYED`, not `ENABLED`, not
 `PRODUCTION-VALIDATED`.** All six stages remain `executionEnabled: false` and no production path
 reaches any of them, so this changes repository state and one operator-local CLI only. It
 authorizes no release, and the time-bounded partial-release interval prohibits any release of any
 service until **2026-09-24T18:52Z**. [Status](STATUS.md)'s production tables and the M1→M2 interval
 record are untouched.
 
-**PR / merge:** base `23fc1fcb91cfc5455be022308a4c8849b30636d2` (PR #78 merge). **PR number and
-merge SHA are not knowable before merging** — recorded here as a **blocking follow-up** under the
-mutable-identifier exception in [`AGENTS.md`](../AGENTS.md), to be reconciled in the first change
-after merge.
+**PR / merge:** PR #79, base `23fc1fcb91cfc5455be022308a4c8849b30636d2` (PR #78 merge), reviewed
+head `5b6c83efd0d8757d1cfe53105b6d9f26d60af8c8`, merge
+`8407d71`, whose ordered parents are the recorded base first and the reviewed head second, verified
+by direct Git inspection. **The blocking follow-up this record opened under the mutable-identifier
+exception in [`AGENTS.md`](../AGENTS.md) is hereby closed.**
 
 **The defect, and how it was found.** Three authorized live runs on 2026-09-21, from
 `scripts/local/content-run.mjs`, each paid for a stage-1 Opus 5 call and kept nothing. Every one was
@@ -564,14 +565,130 @@ autonomy boundary, or publishing instruction was touched.
 **Unresolved follow-ups.**
 
 - The PR number and merge SHA above (blocking follow-up, mutable-identifier exception).
-- **`"concept" exceeds 1200 characters` is unresolved.** Two live runs failed there identically, so
-  it is reproducible and not sampling variance. The next run will report the actual length; only
-  then can it be decided whether the prompt needs strengthening or
-  `STRATEGY_LIMITS.conceptChars` is genuinely too low. **No value should be changed before that
-  measurement exists.**
+- **`"concept" exceeds 1200 characters` is unresolved, and this record's own reading of it was
+  wrong.** It said two identical failures made the overrun "reproducible and not sampling variance".
+  A third authorized live run on 2026-09-21 passed stage 1, which refutes that: the behaviour is
+  variance around a boundary, not a deterministic overrun. The measurement that run produced says
+  why — **`concept` came back at 1,196 characters against a 1,200 ceiling**, four characters clear.
+  The model is not disregarding the stated ceiling; it is writing *to* it, which is what the
+  prompt's own "a ceiling is not a quota" guidance exists to prevent and evidently does not. So the
+  open question is no longer "how far over does it go" but whether `conceptChars` is sized for this
+  goal shape at all, and whether an anti-target instruction can work when the number is stated.
+  **No value should be changed before that is decided on its own terms.**
 - Whether the six stage prompts should state ceilings more forcefully than they now do — for
   instance beside the field rather than only in a ceilings block — is open, and depends on the same
   measurement.
+
+**Documents updated at completion:** [Architecture](ARCHITECTURE.md), [Testing](TESTING.md), and
+this file. [Status](STATUS.md) is deliberately untouched — this change verifies no production state.
+
+## Stage response format — the provider is constrained to the shape, not asked for it — `IMPLEMENTED`
+
+**State:** `IMPLEMENTED` on a branch; `MERGED` only on merge. **Not `DEPLOYED`, not `ENABLED`, not
+`PRODUCTION-VALIDATED`.** All six stages remain `executionEnabled: false` and no production path
+reaches any of them. It authorizes no release, and the time-bounded partial-release interval
+prohibits any release of any service until **2026-09-24T18:52Z**. [Status](STATUS.md)'s production
+tables and the M1→M2 interval record are untouched.
+
+**PR / merge:** base `8407d71` (PR #79 merge). **PR number and merge SHA are not knowable before
+merging** — recorded here as a **blocking follow-up** under the mutable-identifier exception in
+[`AGENTS.md`](../AGENTS.md), to be reconciled in the first change after merge.
+
+**The defect.** An authorized live run on 2026-09-21 failed at stage 3 with
+`output was not strict JSON`. The saved response — saved because PR #79 made that possible — opened
+with ` ```json ` and closed with ` ``` `. The model had wrapped correct JSON in a markdown fence.
+
+This is **not** the PR #78 defect class, and the distinction is the whole point of this change.
+Every stage prompt already says, in these words, *"No prose before or after it, no markdown fence,
+no commentary."* The instruction was present, explicit, and disregarded. Stages 1 and 2 (Opus 5)
+returned bare JSON in the same run; stage 3 (Sonnet 5) did not. Adding more prompt text about
+fences would have been writing a fourth copy of an instruction that already exists twice and did
+not work.
+
+**Delivered.** Each stage now sends a JSON Schema as `output_config.format`, so a non-JSON or
+wrong-shaped response is impossible at generation time rather than forbidden in prose. Each schema
+lives beside the validator that enforces it and is built from the same `ALLOWED_OUTPUT_FIELDS` array
+that the validator's `requireExactKeys` reads, and from the same exported enums
+(`HYPOTHESIS_BASES`, `CLAIM_CLASSES`, `STORY_BEAT_ROLES`, `SHOT_PURPOSES`, `CRITIC_VERDICTS` and the
+rest). `responseFormatKit.ts` holds the builders and imports nothing.
+
+**What this does not do, stated plainly.** Anthropic's structured outputs support `type`,
+`properties`, `required`, `additionalProperties: false`, `enum`, `const`, `anyOf`/`allOf`, internal
+`$ref` and string formats. They do **not** support `maxLength`, `minLength`, `maxItems` (beyond
+`minItems` 0 or 1), `minimum`, `maximum` or `pattern`. **Every size ceiling is therefore untouched
+by this change** and stays exactly where it was: stated in the prompt, enforced by the validator
+after the response arrives. The schemas carry ceilings in `description` text only, as a third
+instruction channel, and `CF3` fails the suite if any schema ever claims an unenforceable keyword —
+because a schema that looks like a guarantee and is not one is the confusion that produced the
+original defect.
+
+**Migrations / schema impact:** none.
+
+**Design decision — the schema lives beside its validator.** A central schema module would have to
+import all six stage modules, which import `stageExecution.ts`, which needs the schemas: a cycle.
+Worse, it would put the schema somewhere the `requireExactKeys` list is not, which is precisely how
+the two drift. Beside the validator they are built from one constant and `CF1` proves they agree.
+
+**Design decision — the field is `responseFormatSchema`, not `outputSchema`.** `registry.ts` already
+has an `outputSchema` field and it is a **validator function**, not a JSON Schema. Two unrelated
+things under one name in one directory is a defect waiting to be written; the wire concept is
+`output_config.format`, so the field is named for it.
+
+**Rejected alternatives.**
+
+- *Strengthen the prompt again.* Rejected. The instruction is already explicit and was disregarded;
+  a fourth statement of it is not a fix, it is a hope.
+- *Prefill the assistant turn with `{`.* Rejected because it is unavailable: assistant prefill
+  returns a 400 on Opus 5 and Sonnet 5 alike.
+- *Strip fences in `parseStrictJsonObject`.* Rejected. That parser refuses fence-stripping and
+  "find the first `{`" deliberately, and relaxing it would hide a model not following its contract
+  — the opposite of what this pipeline's validators exist to do.
+- *Put `maxLength` in the schemas anyway.* Rejected: unsupported, so it would read as enforcement
+  while enforcing nothing. `CF3` now makes that unmergeable.
+
+**Automated validation.** The `CF0`–`CF7` group (24 checks) asserts every stage declares a format;
+that each schema's `required` set equals the validator's own field array (`CF1`); that every object
+is closed with `additionalProperties: false` and `required` covering all properties, mirroring
+`requireExactKeys` (`CF2`); that no schema claims an unenforceable keyword (`CF3`); that enums are
+the validators' exported constants rather than restatements (`CF4`); that ceilings reach the
+descriptions, keyed off the contract (`CF5`); that the SDK request really carries
+`output_config.format` as a `json_schema` (`CF6`); and that a caller declaring no schema still sends
+no `output_config`, so the legacy path is unchanged (`CF7`). `AF5b` records that
+`responseFormatKit.ts` is a helper and not a seventh executor. `npm run test:offline` reports
+**ALL PASS** on all eight suites, 1,452 checks (content-intelligence 1,043). Mutation-checked:
+adding `maxLength` to a schema fails `CF3`; adding a field the validator does not accept fails
+`CF1`; both reverted.
+
+**Verified against real model output.** The three responses captured by PR #79 during the
+2026-09-21 live runs — genuine Opus 5 and Sonnet 5 stage output — were validated against the new
+schemas for stages 1, 2 and 3. All three are accepted, including the fenced stage-3 payload once
+unwrapped. That is the evidence that the schemas are not over-strict, and it is the closest this
+change can get to proof without a live call.
+
+**Production evidence:** none, and none is possible — no stage is enabled or reachable.
+
+**Security and privacy implications.** None. No claim, tool, model id, thinking configuration,
+capability, approval rule, autonomy boundary, or publishing instruction was touched. Thinking is
+already `disabled` at the stage boundary via `modelPolicy.ts`, so no interaction between structured
+outputs and thinking arises here.
+
+**Accepted limitations.**
+
+- **Not verified against the live API.** No live call was made from this session, so that the
+  provider accepts these exact schemas and honours them is **unverified**. Everything asserted here
+  is offline: the request bytes, the schema/validator agreement, and acceptance of previously
+  captured real responses. The first authorized live run is what confirms it.
+- The schemas constrain shape only. A response can be perfectly shaped and still exceed a character
+  ceiling, and that is still a discarded paid call.
+- `CF2` requires every object to be closed. A stage that legitimately needed an open object would
+  have to change this assertion deliberately, which is intended.
+
+**Unresolved follow-ups.**
+
+- The PR number and merge SHA above (blocking follow-up, mutable-identifier exception).
+- Whether the provider accepts and honours these schemas — needs one authorized live run.
+- `STRATEGY_LIMITS.conceptChars` at 1,200, measured at 1,196 on a passing run. Carried forward from
+  the PR #79 record above and untouched here.
 
 **Documents updated at completion:** [Architecture](ARCHITECTURE.md), [Testing](TESTING.md), and
 this file. [Status](STATUS.md) is deliberately untouched — this change verifies no production state.

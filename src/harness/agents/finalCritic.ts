@@ -243,6 +243,10 @@ export const FINAL_CRITIC_LIMITS = {
 } as const;
 
 /** Closed set. What kind of concern a finding raises. */
+import {
+  schemaArray, schemaEnum, schemaInteger, schemaObject, schemaString,
+} from "./responseFormatKit.js";
+
 export const CRITIC_FINDING_CATEGORIES = [
   "claim_fidelity",
   "uncited_implication",
@@ -301,13 +305,41 @@ export const CRITIC_VERDICTS = [
 export type CriticVerdict = (typeof CRITIC_VERDICTS)[number];
 
 /** Exactly the fields the contract allows. Anything else is an extra field. */
-const ALLOWED_OUTPUT_FIELDS = ["verdict", "summary", "findings", "claimFindingUse"] as const;
-const ALLOWED_FINDING_FIELDS = [
+export const ALLOWED_OUTPUT_FIELDS = ["verdict", "summary", "findings", "claimFindingUse"] as const;
+export const ALLOWED_FINDING_FIELDS = [
   "severity", "category", "platform", "owner", "issue", "suggestedAction",
 ] as const;
 const ALLOWED_CLAIM_FINDING_FIELDS = [
   "findingIndex", "platform", "factId", "summary",
 ] as const;
+
+/** The JSON Schema sent as `output_config.format` for this stage. Shape only. */
+export const FINAL_CRITIC_RESPONSE_FORMAT = schemaObject({
+  verdict: schemaEnum(CRITIC_VERDICTS, "The provisional, non-approving verdict"),
+  summary: schemaString("No recognizable URL syntax", FINAL_CRITIC_LIMITS.summaryChars),
+  findings: schemaArray(
+    schemaObject({
+      severity: schemaEnum(CRITIC_FINDING_SEVERITIES, "Blocking or advisory"),
+      category: schemaEnum(CRITIC_FINDING_CATEGORIES, "What kind of finding"),
+      platform: schemaEnum(CRITIC_FINDING_PLATFORMS, "Which platform, or cross_platform"),
+      owner: schemaEnum(CRITIC_FINDING_OWNERS, "Which stage or human must act"),
+      issue: schemaString("No recognizable URL syntax", FINAL_CRITIC_LIMITS.issueChars),
+      suggestedAction: schemaString("No recognizable URL syntax", FINAL_CRITIC_LIMITS.suggestedActionChars),
+    }),
+    "An empty findings array and a calm summary are a complete, correct answer",
+    FINAL_CRITIC_LIMITS.maxFindings,
+  ),
+  claimFindingUse: schemaArray(
+    schemaObject({
+      findingIndex: schemaInteger("0-based index of a finding you returned"),
+      platform: schemaEnum(PACKAGING_PLATFORMS, 'The bound platform; never "cross_platform"'),
+      factId: schemaString("An id stage 5 bound on that exact platform"),
+      summary: schemaString("No recognizable URL syntax", FINAL_CRITIC_LIMITS.claimFindingSummaryChars),
+    }),
+    "Which stage-5-bound claim a finding discusses, if any",
+    FINAL_CRITIC_LIMITS.maxClaimFindingUses,
+  ),
+});
 
 /**
  * One adversarial finding.
@@ -853,6 +885,7 @@ export async function executeFinalCritic(
 
   const { rawText, metadata } = await invokeStage({
     stage: FINAL_CRITIC_STAGE,
+    responseFormatSchema: FINAL_CRITIC_RESPONSE_FORMAT,
     registry,
     runner: invocation.runner,
     // This stage declares no reference asset. Explicit anyway, so adding one
