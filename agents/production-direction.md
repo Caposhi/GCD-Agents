@@ -55,28 +55,34 @@ Return **exactly one JSON object** and nothing else. No prose before or after it
 
 ```
 {
-  "visualApproach": string,               // the overall visual idea, one short paragraph
-  "shots": [                              // ordered; the visual spine
+  "visualApproach": string,               // the overall visual idea, one short paragraph;
+                                          // at most 1,500 characters
+  "shots": [                              // ordered; the visual spine; at most 10 entries
     {
       "purpose": "establishing" | "context" | "demonstration" | "detail" | "reaction" | "closing",
-      "subject": string,                  // what is in frame
+      "subject": string,                  // what is in frame; at most 300 characters
       "framing": "wide" | "medium" | "close" | "macro" | "over-the-shoulder",
       "movement": "static" | "pan" | "tilt" | "push-in" | "pull-out" | "handheld",
-      "action": string,                   // what happens during the shot
-      "composition": string,              // how the frame is arranged
-      "continuityNote": string            // what must match the shot before or after
+      "action": string,                   // what happens during the shot; at most 400 characters
+      "composition": string,              // how the frame is arranged; at most 400 characters
+      "continuityNote": string            // what must match the shot before or after;
+                                          // at most 300 characters
     }
   ],
-  "overlayText": [                        // optional on-image / on-screen wording
-    { "text": string, "shotIndex": number, "role": "label" | "emphasis" | "clarification" }
+  "overlayText": [                        // optional on-image / on-screen wording; at most 10 entries
+    { "text": string,                     // at most 200 characters
+      "shotIndex": number, "role": "label" | "emphasis" | "clarification" }
   ],
-  "productionRequirements": [             // what a human must provide or confirm
-    { "requirement": string, "category": "location" | "vehicle" | "person" | "equipment" | "prop" | "permission" }
+  "productionRequirements": [             // what a human must provide or confirm; at most 12 entries
+    { "requirement": string,              // at most 300 characters
+      "category": "location" | "vehicle" | "person" | "equipment" | "prop" | "permission" }
   ],
-  "claimVisuals": [                       // which shot carries which used claim
-    { "factId": string, "shotIndex": number, "directionSummary": string }
+  "claimVisuals": [                       // which shot carries which used claim; at most 12 entries
+    { "factId": string, "shotIndex": number,
+      "directionSummary": string }        // at most 400 characters
   ],
-  "openQuestions": string[]               // what a human must verify before production
+  "openQuestions": string[]               // what a human must verify before production;
+                                          // at most 6 entries, each at most 300 characters
 }
 ```
 
@@ -87,7 +93,23 @@ Rules the validator enforces, so satisfying them is not optional:
 - **No `factId` may appear twice.** Record a claim once, on the shot that carries it.
 - **Every `shotIndex` must be a whole number naming a shot you returned** (0-based).
 - **`purpose`, `framing`, `movement`, `role`, and `category` must each be one of the listed values.**
-- Every string is non-empty and reasonably bounded. Do not pad. Shot order is meaningful and is preserved exactly as you return it.
+- **Size ceilings the validator enforces.** Every string is non-empty, and each bound below is checked *after* you answer. One entry or one character over and the whole response is discarded — there is no retry, no repair pass, and no partial credit.
+  - `visualApproach` — at most 1,500 characters
+  - `shots` — at most 10 entries
+  - `shots[].subject` — at most 300 characters
+  - `shots[].action` — at most 400 characters
+  - `shots[].composition` — at most 400 characters
+  - `shots[].continuityNote` — at most 300 characters
+  - `overlayText` — at most 10 entries
+  - `overlayText[].text` — at most 200 characters
+  - `productionRequirements` — at most 12 entries
+  - `productionRequirements[].requirement` — at most 300 characters
+  - `claimVisuals` — at most 12 entries
+  - `claimVisuals[].directionSummary` — at most 400 characters
+  - `openQuestions` — at most 6 entries
+  - `openQuestions[]` — at most 300 characters
+- **A ceiling is not a quota.** The shot ceiling is the most a piece may have, not the number to reach; a four-shot piece that holds together beats one padded to its limit. `SCRIPT_CLAIMS` may hold more claims than `claimVisuals` may carry — bind the ones a shot genuinely carries, and never more than the ceiling. Do not invent an overlay, a requirement, or an open question to occupy a slot: every one of them is work you are asking a person to do.
+- Shot order is meaningful and is preserved exactly as you return it.
 - Arrays may be empty when you genuinely have nothing to put in them. **An empty `claimVisuals` is honest; an invented `factId` is not.**
 
 **What happens to each part of your answer.** Everything you write is recorded as **provisional, unverified, non-publishable, and non-executable** model direction. Overlay wording and direction summaries are separately marked unverified. Only the bound `factId` list is treated as a claim-use record downstream, and what those claims actually say is read back from the evidence records, not from your wording.

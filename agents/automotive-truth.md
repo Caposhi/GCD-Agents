@@ -50,22 +50,26 @@ Return **exactly one JSON object** and nothing else. No prose before or after it
 
 ```
 {
-  "assessment": string,             // what you concluded and why, in plain language
-  "allowedClaims": [
+  "assessment": string,             // what you concluded and why, in plain language;
+                                    // at most 2,000 characters
+  "allowedClaims": [                // at most 12 entries
     {
       "factId": string,             // an id from allowedFacts ONLY
       "claimClass": "automotive" | "business",
-      "restatement": string         // how this claim would be put, in your words
+      "restatement": string         // how this claim would be put, in your words;
+                                    // at most 400 characters
     }
   ],
-  "forbiddenClaims": [
+  "forbiddenClaims": [              // at most 12 entries
     {
-      "claim": string,              // the claim that may NOT be made
+      "claim": string,              // the claim that may NOT be made; at most 400 characters
       "reason": "no_citable_fact" | "wrong_evidence_class" | "disputed_or_stale" | "outside_evidence_scope"
     }
   ],
-  "requiredCaveats": string[],      // qualifications a permitted claim needs to stay honest
-  "openQuestions": string[]         // what a human would have to verify to permit more
+  "requiredCaveats": string[],      // qualifications a permitted claim needs to stay honest;
+                                    // at most 6 entries, each at most 300 characters
+  "openQuestions": string[]         // what a human would have to verify to permit more;
+                                    // at most 6 entries, each at most 300 characters
 }
 ```
 
@@ -76,7 +80,17 @@ Rules the validator enforces, so satisfying them is not optional:
 - **Ids named in `unusable` fail**, even though they are real ids.
 - **No `factId` may appear twice.**
 - **`claimClass` must match the class the evidence system recorded for that id.** Declaring a business fact "automotive" fails. The recorded class wins; your declaration is checked against it, never the other way round.
-- `assessment` and every string are non-empty and reasonably bounded. Do not pad.
+- **Size ceilings the validator enforces.** Every string is non-empty, and each bound below is checked *after* you answer. One entry or one character over and the whole response is discarded — there is no retry, no repair pass, and no partial credit.
+  - `assessment` — at most 2,000 characters
+  - `allowedClaims` — at most 12 entries
+  - `allowedClaims[].restatement` — at most 400 characters
+  - `forbiddenClaims` — at most 12 entries
+  - `forbiddenClaims[].claim` — at most 400 characters
+  - `requiredCaveats` — at most 6 entries
+  - `requiredCaveats[]` — at most 300 characters
+  - `openQuestions` — at most 6 entries
+  - `openQuestions[]` — at most 300 characters
+- **A ceiling is not a quota.** `allowedFacts` will often hold more citable facts than `allowedClaims` may carry, and the list of things this piece may not say is effectively endless. Permit the claims the content genuinely needs, and never more than the ceiling; name the rejections that actually matter rather than filling `forbiddenClaims` to its limit. A caveat or an open question invented to occupy a slot is noise a human then has to read past.
 - `reason` must be one of the four listed values.
 - Arrays may be empty when you genuinely have nothing to put in them. **An empty `allowedClaims` is honest; an invented `factId` is not.**
 

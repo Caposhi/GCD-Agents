@@ -41,16 +41,19 @@ Return **exactly one JSON object** and nothing else. No prose before or after it
 
 ```
 {
-  "angle": string,                  // the strategic angle, one sentence
-  "concept": string,                // the content concept this angle produces
-  "rationale": string,              // why this angle, referencing your evidence basis
-  "supportingFactIds": string[],    // ids from allowedFacts ONLY
-  "observationIds": string[],       // ids from gcdObservations ONLY
-  "performanceSignalIds": string[], // ids from performanceEvidence ONLY
-  "hypotheses": [                   // things you are proposing, not asserting
-    { "statement": string, "basis": "creative" | "causal" }
+  "angle": string,                  // the strategic angle, one sentence; at most 400 characters
+  "concept": string,                // the content concept this angle produces; at most 1,200 characters
+  "rationale": string,              // why this angle, referencing your evidence basis;
+                                    // at most 2,000 characters
+  "supportingFactIds": string[],    // ids from allowedFacts ONLY; at most 12 ids
+  "observationIds": string[],       // ids from gcdObservations ONLY; at most 12 ids
+  "performanceSignalIds": string[], // ids from performanceEvidence ONLY; at most 12 ids
+  "hypotheses": [                   // things you are proposing, not asserting; at most 6 entries
+    { "statement": string,          // at most 400 characters
+      "basis": "creative" | "causal" }
   ],
-  "assumptions": string[]           // anything you had to assume with no evidence
+  "assumptions": string[]           // anything you had to assume with no evidence;
+                                    // at most 6 entries, each at most 400 characters
 }
 ```
 
@@ -61,7 +64,18 @@ Rules the validator enforces, so satisfying them is not optional:
 - **Every field is required.** No extra fields. No nulls.
 - **Every id must appear in the matching evidence section.** An id you did not receive is a fabrication and fails. An id from the wrong section fails — a performance id in `supportingFactIds` is exactly the promotion this pipeline exists to prevent. This check covers the id channel only; it does not read your prose.
 - **Ids from `conflicts`, `staleEvidence`, or `inactiveEvidence` fail.** They are shown to you so you can avoid them.
-- `angle`, `concept`, `rationale` are non-empty and reasonably bounded. Do not pad.
+- **Size ceilings the validator enforces.** Every string is non-empty, and each bound below is checked *after* you answer. One entry or one character over and the whole response is discarded — there is no retry, no repair pass, and no partial credit.
+  - `angle` — at most 400 characters
+  - `concept` — at most 1,200 characters
+  - `rationale` — at most 2,000 characters
+  - `supportingFactIds` — at most 12 ids
+  - `observationIds` — at most 12 ids
+  - `performanceSignalIds` — at most 12 ids
+  - `hypotheses` — at most 6 entries
+  - `hypotheses[].statement` — at most 400 characters
+  - `assumptions` — at most 6 entries
+  - `assumptions[]` — at most 400 characters
+- **A ceiling is not a quota.** The evidence pack will usually hold far more ids than a channel may carry, and that is the ordinary case rather than a problem. Cite what genuinely supports the angle, and never more than the ceiling. A few well-chosen ids are a better answer than a channel filled to its limit, and an array padded because there was room left is a worse answer than a short, honest one. The same holds for prose: do not write toward a character allowance.
 - Arrays may be empty when you genuinely have nothing to put in them. **An empty array is honest; an invented id is not.**
 - If the evidence does not support a confident angle, say so in `rationale`, keep `supportingFactIds` to what you actually have, and put the gap in `assumptions`. A thin, honest concept is a correct answer. A confident, unsupported one is a failure.
 

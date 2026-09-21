@@ -7362,6 +7362,285 @@ async function run(): Promise<void> {
         && new RegExp(`note exceeds ${EVIDENCE_LIMITS.relationNoteChars} UTF-8 bytes`)
              .test(multibyteNote.refusal));
 
+    // --- CD. every stage prompt states the limits its own validator enforces -
+    //
+    // The defect this closes, reproduced live on 2026-09-21: a stage-1 run over
+    // a 22-fact evidence pack returned more `supportingFactIds` than the
+    // contract allows and failed with
+    //   StageExecutionError: stage strategy-concept: "supportingFactIds" exceeds 12 entries
+    // The validator enforces `STRATEGY_LIMITS.maxIds`; the prompt named no
+    // ceiling anywhere, so the model had no way to know one existed. Because
+    // `stageExecution.ts` makes exactly one provider request with no retry and
+    // no repair pass, that rejection discarded a completed, paid-for Opus 5
+    // response. The prompt was wrong, not the number — so these assertions
+    // check the prompts against the validators' own limit objects, and never
+    // against a number written out here.
+    //
+    // Two properties, per stage:
+    //
+    //  1. Pairing — the prompt's "Size ceilings" block names each bounded
+    //     output field and states exactly the value its validator enforces.
+    //     A field the block omits, or states twice with different values,
+    //     fails.
+    //  2. Closure — the set of every "at most N <unit>" phrase anywhere in the
+    //     prompt file is exactly the set the stage's limits derive. This is
+    //     what catches desynchronisation in the other direction: a number left
+    //     behind after a limit moves, or a ceiling invented in prose that the
+    //     contract does not have.
+    //
+    // Together they mean a change to a limit in `payloadContract.ts` fails
+    // here until the prompt carrying that limit is updated with it.
+    //
+    // Offline: this reads checked-in Markdown. No provider call, no
+    // credential, no network.
+
+    /** Digit grouping as the prompts write it: 1200 -> "1,200". */
+    const groupDigits = (n: number): string => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+    type LimitUnit = "characters" | "entries" | "ids" | "hashtags";
+    const atMost = (n: number, unit: LimitUnit): string => `at most ${groupDigits(n)} ${unit}`;
+
+    /** Every "at most N <unit>" the file states, normalized. */
+    function statedPhrases(prompt: string): Set<string> {
+      const found = new Set<string>();
+      for (const m of prompt.matchAll(/at most ([\d,]+) (characters|entries|ids|hashtags)/gi)) {
+        found.add(`at most ${m[1]} ${m[2]!.toLowerCase()}`);
+      }
+      return found;
+    }
+
+    /**
+     * The values stated on lines that name `token` in backticks.
+     *
+     * Backticks only: the prompts also quote field and platform names with `"`
+     * inside their JSON schema blocks, and a bare enum line such as
+     * `"platform": "instagram" | ...` carries no ceiling to check.
+     */
+    function statedFor(lines: readonly string[], token: string, unit: LimitUnit): string[] {
+      const values: string[] = [];
+      for (const line of lines) {
+        const names = [...line.matchAll(/`([^`]+)`/g)].map((m) => m[1]!);
+        if (!names.includes(token)) continue;
+        for (const m of line.matchAll(new RegExp(`at most ([\\d,]+) ${unit}`, "gi"))) {
+          values.push(m[1]!);
+        }
+      }
+      return values;
+    }
+
+    /** The bulleted sub-list under the stage's "Size ceilings" rule. */
+    function ceilingBlock(prompt: string): string[] {
+      const lines = prompt.split("\n");
+      const start = lines.findIndex((l) => l.includes("**Size ceilings the validator enforces.**"));
+      if (start < 0) return [];
+      const block: string[] = [];
+      for (let i = start + 1; i < lines.length && /^ {2}- /.test(lines[i]!); i += 1) {
+        block.push(lines[i]!);
+      }
+      return block;
+    }
+
+    type PromptLimits = {
+      readonly stage: string;
+      readonly file: string;
+      /** Field token, enforced value, unit — paired inside the ceilings block. */
+      readonly paired: ReadonlyArray<readonly [string, number, LimitUnit]>;
+      /** Enforced ceilings stated elsewhere in the file; closure-checked only. */
+      readonly elsewhere?: ReadonlyArray<readonly [number, LimitUnit]>;
+    };
+
+    // Stage 5's caption ceiling is per platform and is the smaller of the
+    // provider policy and the pipeline's own narrowing — exactly as
+    // `validatePackagingAdaptationOutput` computes it. It is stated in the
+    // per-platform section rather than the ceilings block, so it is paired
+    // against the platform name below instead.
+    const effectiveCaptionMax = (platform: PackagingPlatform): number => Math.min(
+      PLATFORM_PACKAGING_POLICY[platform].captionMax, PACKAGING_LIMITS.pipelineCaptionChars,
+    );
+    const effectiveHashtagMax = (platform: PackagingPlatform): number => Math.min(
+      PLATFORM_PACKAGING_POLICY[platform].hashtagMax, PACKAGING_LIMITS.maxHashtags,
+    );
+
+    const promptLimits: readonly PromptLimits[] = [
+      {
+        stage: "strategy-concept",
+        file: "agents/strategy-concept.md",
+        paired: [
+          ["angle", LIMITS.angleChars, "characters"],
+          ["concept", LIMITS.conceptChars, "characters"],
+          ["rationale", LIMITS.rationaleChars, "characters"],
+          ["supportingFactIds", LIMITS.maxIds, "ids"],
+          ["observationIds", LIMITS.maxIds, "ids"],
+          ["performanceSignalIds", LIMITS.maxIds, "ids"],
+          ["hypotheses", LIMITS.maxHypotheses, "entries"],
+          ["hypotheses[].statement", LIMITS.hypothesisChars, "characters"],
+          ["assumptions", LIMITS.maxAssumptions, "entries"],
+          ["assumptions[]", LIMITS.assumptionChars, "characters"],
+        ],
+      },
+      {
+        stage: "automotive-truth",
+        file: "agents/automotive-truth.md",
+        paired: [
+          ["assessment", TRUTH_LIMITS.assessmentChars, "characters"],
+          ["allowedClaims", TRUTH_LIMITS.maxAllowedClaims, "entries"],
+          ["allowedClaims[].restatement", TRUTH_LIMITS.restatementChars, "characters"],
+          ["forbiddenClaims", TRUTH_LIMITS.maxForbiddenClaims, "entries"],
+          ["forbiddenClaims[].claim", TRUTH_LIMITS.forbiddenClaimChars, "characters"],
+          ["requiredCaveats", TRUTH_LIMITS.maxCaveats, "entries"],
+          ["requiredCaveats[]", TRUTH_LIMITS.caveatChars, "characters"],
+          ["openQuestions", TRUTH_LIMITS.maxOpenQuestions, "entries"],
+          ["openQuestions[]", TRUTH_LIMITS.openQuestionChars, "characters"],
+        ],
+      },
+      {
+        stage: "hook-story-script",
+        file: "agents/hook-story-script.md",
+        paired: [
+          ["hook", SCRIPT_LIMITS.hookChars, "characters"],
+          ["storyBeats", SCRIPT_LIMITS.maxBeats, "entries"],
+          ["storyBeats[].beat", SCRIPT_LIMITS.beatChars, "characters"],
+          ["script", SCRIPT_LIMITS.scriptChars, "characters"],
+          ["claimUse", SCRIPT_LIMITS.maxClaimUses, "entries"],
+          ["claimUse[].paraphrase", SCRIPT_LIMITS.paraphraseChars, "characters"],
+          ["openQuestions", SCRIPT_LIMITS.maxOpenQuestions, "entries"],
+          ["openQuestions[]", SCRIPT_LIMITS.openQuestionChars, "characters"],
+        ],
+      },
+      {
+        stage: "production-direction",
+        file: "agents/production-direction.md",
+        paired: [
+          ["visualApproach", DIRECTION_LIMITS.visualApproachChars, "characters"],
+          ["shots", DIRECTION_LIMITS.maxShots, "entries"],
+          ["shots[].subject", DIRECTION_LIMITS.subjectChars, "characters"],
+          ["shots[].action", DIRECTION_LIMITS.actionChars, "characters"],
+          ["shots[].composition", DIRECTION_LIMITS.compositionChars, "characters"],
+          ["shots[].continuityNote", DIRECTION_LIMITS.continuityChars, "characters"],
+          ["overlayText", DIRECTION_LIMITS.maxOverlayText, "entries"],
+          ["overlayText[].text", DIRECTION_LIMITS.overlayTextChars, "characters"],
+          ["productionRequirements", DIRECTION_LIMITS.maxRequirements, "entries"],
+          ["productionRequirements[].requirement", DIRECTION_LIMITS.requirementChars, "characters"],
+          ["claimVisuals", DIRECTION_LIMITS.maxClaimVisuals, "entries"],
+          ["claimVisuals[].directionSummary", DIRECTION_LIMITS.directionSummaryChars, "characters"],
+          ["openQuestions", DIRECTION_LIMITS.maxOpenQuestions, "entries"],
+          ["openQuestions[]", DIRECTION_LIMITS.openQuestionChars, "characters"],
+        ],
+      },
+      {
+        stage: "packaging-adaptation",
+        file: "agents/packaging-adaptation.md",
+        paired: [
+          ["packages[].localKeywords", PACKAGING_LIMITS.maxLocalKeywords, "entries"],
+          ["packages[].localKeywords[]", PACKAGING_LIMITS.localKeywordChars, "characters"],
+          ["packages[].openQuestions", PACKAGING_LIMITS.maxOpenQuestions, "entries"],
+          ["packages[].openQuestions[]", PACKAGING_LIMITS.openQuestionChars, "characters"],
+          ["claimUse", PACKAGING_LIMITS.maxClaimUses, "entries"],
+          ["claimUse[].summary", PACKAGING_LIMITS.summaryChars, "characters"],
+        ],
+        elsewhere: [
+          ...PACKAGING_PLATFORMS.map((p) => [effectiveCaptionMax(p), "characters"] as const),
+          // Instagram's is a stated range and Google Business Profile's is
+          // zero ("no hashtags at all"); only Facebook's reads as "at most N".
+          [effectiveHashtagMax("facebook"), "hashtags"],
+        ],
+      },
+      {
+        stage: "final-critic",
+        file: "agents/final-critic.md",
+        paired: [
+          ["summary", FINAL_CRITIC_LIMITS.summaryChars, "characters"],
+          ["findings", FINAL_CRITIC_LIMITS.maxFindings, "entries"],
+          ["findings[].issue", FINAL_CRITIC_LIMITS.issueChars, "characters"],
+          ["findings[].suggestedAction", FINAL_CRITIC_LIMITS.suggestedActionChars, "characters"],
+          ["claimFindingUse", FINAL_CRITIC_LIMITS.maxClaimFindingUses, "entries"],
+          ["claimFindingUse[].summary", FINAL_CRITIC_LIMITS.claimFindingSummaryChars, "characters"],
+        ],
+      },
+    ];
+
+    check("CD0. every target stage has a prompt-limit specification",
+      promptLimits.length === TARGET_STAGE_IDS.length
+        && TARGET_STAGE_IDS.every((id) => promptLimits.some((s) => s.stage === id)));
+
+    const strategySpec = promptLimits.find((s) => s.stage === "strategy-concept");
+    check("CD0b. stage 1's three id channels are each specified, so a fourth channel "
+      + "cannot be added without a prompt line",
+      strategySpec !== undefined
+        && strategySpec.paired.filter(([, , unit]) => unit === "ids").length
+             === STRATEGY_ID_CHANNELS);
+
+    for (const spec of promptLimits) {
+      const prompt = await readFile(resolve(REPO_ROOT, spec.file), "utf8");
+      const block = ceilingBlock(prompt);
+
+      check(`CD1 (${spec.stage}). the prompt carries a size-ceiling block`, block.length > 0);
+
+      const unpaired = spec.paired.filter(([field, value, unit]) => {
+        const stated = statedFor(block, field, unit);
+        return stated.length !== 1 || stated[0] !== groupDigits(value);
+      });
+      check(`CD2 (${spec.stage}). every enforced output ceiling is stated against its own `
+        + `field, exactly once, at the value the validator applies`
+        + (unpaired.length ? ` — unstated or wrong: ${unpaired.map(([f]) => f).join(", ")}` : ""),
+        unpaired.length === 0);
+
+      const expected = new Set<string>([
+        ...spec.paired.map(([, value, unit]) => atMost(value, unit)),
+        ...(spec.elsewhere ?? []).map(([value, unit]) => atMost(value, unit)),
+      ]);
+      const actual = statedPhrases(prompt);
+      const missing = [...expected].filter((p) => !actual.has(p));
+      const stale = [...actual].filter((p) => !expected.has(p));
+      check(`CD3 (${spec.stage}). the prompt states these ceilings and no others — a number `
+        + `left behind after a limit moves fails here`
+        + (missing.length ? ` — missing: ${missing.join("; ")}` : "")
+        + (stale.length ? ` — unaccounted: ${stale.join("; ")}` : ""),
+        missing.length === 0 && stale.length === 0);
+
+      check(`CD4 (${spec.stage}). the ceiling is framed as a ceiling, not a target`,
+        /\*\*A ceiling is not a quota\.\*\*/.test(prompt)
+          && /never more than the ceiling|not the number to reach|not a standard to meet/
+               .test(prompt));
+
+      check(`CD5 (${spec.stage}). the prompt says the rejection is final, because it is — `
+        + "one request, no retry, no repair pass",
+        /no retry, no repair pass, and no partial credit/.test(prompt));
+    }
+
+    // Stage 5's per-platform caption and hashtag policy: the model is told the
+    // number the validator will actually apply, which for a caption is the
+    // smaller of the provider limit and this pipeline's narrowing. Facebook is
+    // the case that motivated stating it — its provider limit is 63,206, so
+    // without the narrowing written down the prompt implies ~28x the room the
+    // validator allows.
+    const packagingPrompt = (await readFile(resolve(REPO_ROOT, "agents/packaging-adaptation.md"), "utf8"))
+      .split("\n");
+    for (const platform of PACKAGING_PLATFORMS) {
+      const captions = statedFor(packagingPrompt, platform, "characters");
+      check(`CD6 (${platform}). the enforced caption ceiling is stated for this platform`,
+        captions.length === 1 && captions[0] === groupDigits(effectiveCaptionMax(platform)));
+    }
+    check("CD7. the enforced hashtag range is stated for every platform",
+      packagingPrompt.some((l) => l.includes("`instagram`")
+        && l.includes(`**${INSTAGRAM_HASHTAG_MIN}–${effectiveHashtagMax("instagram")} hashtags**`))
+        && statedFor(packagingPrompt, "facebook", "hashtags")
+             .join() === groupDigits(effectiveHashtagMax("facebook"))
+        && effectiveHashtagMax("google_business_profile") === 0
+        && packagingPrompt.some((l) => l.includes("`google_business_profile`")
+             && l.includes("**No hashtags at all.**")));
+
+    // The guidance the ceilings must not have displaced: an honest short answer
+    // is still the right answer, and an empty array is still honest.
+    check("CD8. stating a ceiling did not turn an empty array into a failure",
+      [
+        ["agents/strategy-concept.md", "An empty array is honest"],
+        ["agents/automotive-truth.md", "An empty `allowedClaims` is honest"],
+        ["agents/hook-story-script.md", "An empty `claimUse` is honest"],
+        ["agents/production-direction.md", "An empty `claimVisuals` is honest"],
+        ["agents/packaging-adaptation.md", "A shorter, thinner caption is a correct answer"],
+        ["agents/final-critic.md", "an empty `findings` array and a calm summary are a complete, correct answer"],
+      ].every(([file, phrase]) => readFileSync(resolve(REPO_ROOT, file!), "utf8").includes(phrase!)));
+
   console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURE(S)`);
   process.exit(failures === 0 ? 0 : 1);
 }

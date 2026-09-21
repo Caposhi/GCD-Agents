@@ -52,19 +52,22 @@ Return **exactly one JSON object** and nothing else. No prose before or after it
 
 ```
 {
-  "hook": string,                    // the opening line, channel-neutral
-  "storyBeats": [                    // ordered; the narrative spine
-    { "beat": string, "role": "setup" | "tension" | "insight" | "proof" | "closing" }
+  "hook": string,                    // the opening line, channel-neutral; at most 300 characters
+  "storyBeats": [                    // ordered; the narrative spine; at most 8 entries
+    { "beat": string,                // at most 400 characters
+      "role": "setup" | "tension" | "insight" | "proof" | "closing" }
   ],
-  "script": string,                  // the full channel-neutral script
-  "claimUse": [                      // every permitted claim this script actually uses
+  "script": string,                  // the full channel-neutral script; at most 6,000 characters
+  "claimUse": [                      // every permitted claim this script actually uses;
+                                     // at most 12 entries
     {
       "factId": string,              // an id from PERMITTED_CLAIMS ONLY
       "usedIn": "hook" | "beats" | "script",
-      "paraphrase": string           // how you put it, in your words
+      "paraphrase": string           // how you put it, in your words; at most 400 characters
     }
   ],
-  "openQuestions": string[]          // what a human would have to verify to say more
+  "openQuestions": string[]          // what a human would have to verify to say more;
+                                     // at most 6 entries, each at most 300 characters
 }
 ```
 
@@ -74,7 +77,16 @@ Rules the validator enforces, so satisfying them is not optional:
 - **Every `factId` must appear in `PERMITTED_CLAIMS`.** An id you did not receive is a fabrication and fails. An id that exists in the wider evidence system but that stage 2 did not permit **also fails** — stage 2's list is the boundary, not the evidence system's.
 - **No `factId` may appear twice.** Record a claim once, under the place it does the most work.
 - **`usedIn` and `role` must be one of the listed values.**
-- `hook`, `script`, every beat, and every paraphrase are non-empty and reasonably bounded. Do not pad.
+- **Size ceilings the validator enforces.** Every string is non-empty, and each bound below is checked *after* you answer. One entry or one character over and the whole response is discarded — there is no retry, no repair pass, and no partial credit.
+  - `hook` — at most 300 characters
+  - `storyBeats` — at most 8 entries
+  - `storyBeats[].beat` — at most 400 characters
+  - `script` — at most 6,000 characters
+  - `claimUse` — at most 12 entries
+  - `claimUse[].paraphrase` — at most 400 characters
+  - `openQuestions` — at most 6 entries
+  - `openQuestions[]` — at most 300 characters
+- **A ceiling is not a quota.** `PERMITTED_CLAIMS` may well hold more claims than `claimUse` can carry. Bind the claims the script genuinely uses, and never more than the ceiling — do not reach for one more, and do not work an extra claim into the script so that it has somewhere to go. The beat ceiling is the most a spine may have, not the shape to aim for, and the script allowance is a wall, not a target. A shorter, tighter script is the better answer whenever it is the honest one.
 - `storyBeats` order is meaningful and is preserved exactly as you return it.
 - Arrays may be empty when you genuinely have nothing to put in them. **An empty `claimUse` is honest; an invented `factId` is not.**
 

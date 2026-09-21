@@ -189,9 +189,13 @@ release. This change is repository state only; it authorizes no release, and a t
 partial-release interval prohibits any release of any service until **2026-09-24T18:52Z**. No
 production state was verified or changed, and [Status](STATUS.md)'s production tables are untouched.
 
-**PR / merge:** base `c1c004e5d5524cb5b0dfe0407fd9694bd35244a8` (PR #75 merge). **PR number and merge
-SHA are not knowable before merging** — recorded here as a **blocking follow-up** under the mutable-
-identifier exception in [`AGENTS.md`](../AGENTS.md), to be reconciled in the first change after merge.
+**PR / merge:** PR #76, base `c1c004e5d5524cb5b0dfe0407fd9694bd35244a8` (PR #75 merge), merge
+`b3805ce0f19d0e6d78c41d99d83c48a74ae945c6`, whose ordered parents are
+`9392b9e9bc1d38cde004ffc511521971063888d2` then the reviewed head
+`dcddfd26a7e931d7d0444934b6691ab51ddcc1df`, verified by direct Git inspection. **The blocking
+follow-up this record opened under the mutable-identifier exception in
+[`AGENTS.md`](../AGENTS.md) is hereby closed.** These are historical, immutable identifiers; they
+say nothing about deployment, and the state above is unchanged.
 
 **Why this is roadmap state.** `src/worker/index.ts` imports `runBrief` from
 `src/harness/orchestrator.ts`, whose `loadAgent()` parses `model:` out of each agent's frontmatter
@@ -301,6 +305,134 @@ that gate's strict-JSON contract depends on.
 [`skills/model-routing/SKILL.md`](../skills/model-routing/SKILL.md),
 [Architecture](ARCHITECTURE.md), [Environment](ENVIRONMENT.md), [Testing](TESTING.md), and this
 file. [Status](STATUS.md) is deliberately untouched — this change verifies no production state.
+
+## Stage-prompt contract limits — prompts now state the ceilings their validators enforce — `IMPLEMENTED`
+
+**State:** `IMPLEMENTED` on this branch; `MERGED` only on merge. **Not `DEPLOYED`, not `ENABLED`,
+not `PRODUCTION-VALIDATED`.** All six stages remain `executionEnabled: false` and no production path
+reaches any of them, so this changes repository state only. It authorizes no release, and the
+time-bounded partial-release interval prohibits any release of any service until
+**2026-09-24T18:52Z**. No production state was verified or changed, and [Status](STATUS.md)'s
+production tables and the M1→M2 interval record are untouched.
+
+**PR / merge:** base `b3805ce0f19d0e6d78c41d99d83c48a74ae945c6` (PR #76 merge). **PR number and
+merge SHA are not knowable before merging** — recorded here as a **blocking follow-up** under the
+mutable-identifier exception in [`AGENTS.md`](../AGENTS.md), to be reconciled in the first change
+after merge.
+
+**The defect, and how it was found.** A live evaluation run on **2026-09-21**, over an evidence pack
+of 22 facts, failed at stage 1 with:
+
+```
+StageExecutionError: stage strategy-concept: "supportingFactIds" exceeds 12 entries
+```
+
+The validator was correct: `requireIdArray` in `src/harness/agents/strategyConcept.ts` enforces
+`STRATEGY_LIMITS.maxIds` (12) on each of the three id channels. The prompt was wrong —
+`agents/strategy-concept.md` named **no ceiling anywhere**, so the model had no way to know one
+existed and cited more ids than the contract allows.
+
+**What that cost, and why it is not merely cosmetic.** `src/harness/agents/stageExecution.ts` makes
+**exactly one provider request with no retry and no repair pass** — a deliberate property, recorded
+in its own header and asserted by the offline suite. Validation runs *after* the call returns.
+So the rejection **discarded a completed, paid-for Opus 5 response in full**: the run paid for the
+tokens and kept nothing. This is the specific, recurring cost of the omission, and it grows with the
+evidence pack — the operator's real pack is **42 facts**, so a stage-1 answer that cites what the
+pack offers is now considerably more likely to cross a 12-id ceiling than the 22-fact pack that
+already crossed it.
+
+**Scope, established before changing anything.** `maxIds` was not the only case. Auditing all six
+stage prompts against `STRATEGY_LIMITS`, `TRUTH_FIELD_LIMITS`, `SCRIPT_FIELD_LIMITS`,
+`DIRECTION_FIELD_LIMITS`, `PACKAGING_FIELD_LIMITS`, `CRITIC_FIELD_LIMITS` and
+`PLATFORM_PACKAGING_POLICY` found **52 validator-enforced output limits that no prompt stated**:
+8 in `strategy-concept`, 9 in `automotive-truth`, 8 in `hook-story-script`, 14 in
+`production-direction`, 7 in `packaging-adaptation`, and 6 in `final-critic`. Only stage 5 stated
+any limit at all, and even there Facebook's caption ceiling was one of the seven: the prompt said “tighter
+caption” while the validator applies `Math.min(63,206 provider limit, 2,200 pipeline narrowing)`
+— 2,200, about a twenty-eighth of what the prompt implied. The six inter-stage handoff guards
+(`evidencePackChars`, `strategyOutputChars`, `truthOutputChars`, `scriptOutputChars`,
+`directionOutputChars`, `packagingOutputChars`) and `maxRequestedPlatforms` are deliberately
+excluded: they bound **inputs** a stage is handed, not anything a model chooses.
+
+**Delivered.** Each of the six prompts in `agents/` now states, in its own voice and format, the
+limits its own validator enforces — once beside the output schema where the model acts, and once as
+a **Size ceilings the validator enforces** block inside the existing rules list. Stage 5's
+per-platform caption and hashtag ceilings are stated at the **effective** number the validator
+applies, not the raw provider policy. Every ceiling is framed as a ceiling and not a target
+(“cite what genuinely supports the angle, and never more than N”), and each prompt says plainly
+that the rejection is final because there is no retry and no repair pass.
+
+**Migrations / schema impact:** none.
+
+**Design decision — the prompt was changed, never a limit.** No value in
+`src/harness/agents/payloadContract.ts` moved. The numbers there are derived from measured shape
+witnesses and are load-bearing for every downstream ceiling, so raising one to accommodate a model's
+behaviour would silently widen every derivation built on it. Nothing observed in this work suggests
+any value is genuinely too low: 12 ids per channel, 12 permitted claims, and 20 findings are all
+generous for a single piece of short-form content, and a run that wants more of them is usually a
+run that should have chosen. If a value ever does need to change, it changes in `payloadContract.ts`
+under its own derivation review, and the new offline assertions will then require the prompt to move
+with it.
+
+**Rejected alternatives.**
+
+- *Add a retry or a repair pass so an over-cap answer can be corrected.* Rejected. The single-request
+  guarantee is an explicit safety property, not an oversight: a silent retry turns one budgeted
+  decision into unbounded spend, and a repair pass is a second chance for a model to argue itself
+  into an unsupported claim. Both are asserted against in the offline suite.
+- *Truncate an over-cap array in the validator instead of failing.* Rejected. Silently dropping
+  citations changes which evidence the answer rests on, which is exactly the class of quiet
+  corruption this pipeline's validators exist to prevent.
+- *Hardcode the expected numbers in the new tests.* Rejected. That reproduces the defect one layer
+  up: the test would pass while the prompt and the contract drifted apart. The assertions read the
+  validators' own limit objects.
+
+**Automated validation.** `src/harness/contentIntelligence.selftest.ts` gains the `CD0`–`CD8` group
+(37 checks), keyed off `LIMITS`, `TRUTH_LIMITS`, `SCRIPT_LIMITS`, `DIRECTION_LIMITS`,
+`PACKAGING_LIMITS`, `FINAL_CRITIC_LIMITS`, `PLATFORM_PACKAGING_POLICY` and `STRATEGY_ID_CHANNELS`.
+It asserts per-field pairing inside each prompt's ceiling block, set-closure over every
+`at most N <unit>` phrase in the file (which catches a number left behind after a limit moves),
+ceiling-not-target framing, the finality of the rejection, stage 5's per-platform effective caption
+and hashtag policy, and that the pre-existing “an empty array is honest” guidance survived in all
+six prompts. `npm run test:offline` reports **ALL PASS** on all eight suites, 1,422 checks
+(content-intelligence 1,013). The group was mutation-checked three ways: changing
+`STRATEGY_LIMITS.maxIds` from 12 to 13 fails `CD2`/`CD3` — **and no other check in any suite** —
+so without this group that edit would have desynchronised the prompt silently; editing a stated
+number in a prompt fails `CD2`/`CD3`; deleting a ceiling line fails `CD2`. All three mutations were
+reverted. The group is offline: it reads checked-in Markdown, makes no provider call, and needs no
+credential.
+
+**Production evidence:** none, and none is possible — no stage is enabled or reachable. The
+2026-09-21 failure is **local evaluation evidence** from the out-of-band CLI, not production
+evidence.
+
+**Security and privacy implications.** None. Agent prompt text is executable input under
+[`AGENTS.md`](../AGENTS.md), so this was treated as a code change and tested as one; the changes add
+only size statements. No claim, tool, model id, thinking configuration, capability, approval rule,
+autonomy boundary, or publishing instruction was touched, and the untrusted-data framing and
+evidence-class rules in every prompt are unchanged.
+
+**Accepted limitations.**
+
+- Stating a ceiling does not guarantee a model respects it. This removes the case where the model
+  could not have known; it does not remove the failure mode, and one rejection still ends the run.
+- The offline assertions prove a prompt *states* each limit at the right value. They cannot prove the
+  wording is persuasive, and they do not read the schema-block comments field by field — those are
+  covered by set-closure (`CD3`) rather than by pairing.
+- The `at most N <unit>` phrasing is now load-bearing for `CD2`/`CD3`. A future editor who rewords a
+  ceiling into free prose will fail the suite; that is intentional, and the failure line names the
+  field.
+
+**Unresolved follow-ups.**
+
+- The PR number and merge SHA above (blocking follow-up, mutable-identifier exception).
+- A stage-1 run against the operator's real 42-fact pack has still not been made, so whether stating
+  the ceiling is sufficient in practice is **unverified**. It needs a separately authorized live run
+  and is not authorized here.
+
+**Documents updated at completion:** the root [README](../README.md),
+[Architecture](ARCHITECTURE.md), [Testing](TESTING.md), and this file. [Status](STATUS.md) is deliberately untouched — this change verifies no production
+state, and its production tables and the M1→M2 interval record are out of scope.
 
 ## PR #57 — CC5 proposition-bound reconciliation and bounded closeout — `MERGED`
 
@@ -1574,6 +1706,11 @@ live application state is now established `APPLIED`, independently verified via 
 **State:** foundation `MERGED` and `DEPLOYED`; all six executors — `strategy-concept`, `automotive-truth`, `hook-story-script`, `production-direction`, `packaging-adaptation`, and `final-critic` — **`MERGED`** and dormant, the sixth through PR #52; the payload-contract reconciliation **`MERGED`** through PR #54. **None is `ENABLED`, established as `DEPLOYED`, or `PRODUCTION-VALIDATED`**, and none has production evidence. **All six target stages now have a merged executor on `main`**, and every registry entry reports `executionEnabled: false`. Separately, on the deployment-authority track, **M1 (migration 007's rollout as an API-only deployment) is now complete and independently verified** — see the active product cursor above; this did not enable any stage and did not authorize M2.
 
 **Last merged slice: the payload-contract reconciliation, `MERGED` through PR #54** (merge `0c13ab1af9c7ca796a1d48ed37207715a47166e4`), recorded in its own section above. Before it, Phase 0B.6 — the dormant `final-critic` stage executor — was `MERGED` through PR #52; see its dedicated section for the full record and durable identifiers. The reconciliation that gates production wiring is therefore **satisfied in repository state**: it is present on `main`, and it is not established as deployed, not enabled, and not production-validated. Deployment-authority work remains an independent track and must not be combined with any of this. **The separately reviewed production-wiring design is accepted and `MERGED` through PR #56** (merge `53e2c2bb6115e457670c1f99956d11a1a54530cd`), recorded in its own section above, and is **`UNIMPLEMENTED`** — authorizing neither implementation nor operations. **No implementation PR (P1–P8) exists. M1 was performed 2026-09-17 and independently verified 2026-09-18; no other operator milestone (M2–M7) has been performed** — see the active product cursor above. Not a new phase number, and no production wiring, deployment, enablement, migration application, or production validation has occurred.
+
+Separately, the six stage prompts now state the output limits their own validators enforce —
+`IMPLEMENTED` on a branch, recorded in its own section above. That is a correctness fix to checked-in
+prompt text found by a local evaluation run; it moves no cursor, enables no stage, and authorizes
+nothing.
 
 Phase 0B.0 delivered the two runtime primitives the rest of the phase depends on:
 
