@@ -306,19 +306,31 @@ that gate's strict-JSON contract depends on.
 [Architecture](ARCHITECTURE.md), [Environment](ENVIRONMENT.md), [Testing](TESTING.md), and this
 file. [Status](STATUS.md) is deliberately untouched — this change verifies no production state.
 
-## Stage-prompt contract limits — prompts now state the ceilings their validators enforce — `IMPLEMENTED`
+## Stage-prompt contract limits — prompts now state the ceilings their validators enforce — `MERGED`
 
-**State:** `IMPLEMENTED` on this branch; `MERGED` only on merge. **Not `DEPLOYED`, not `ENABLED`,
+**State:** `MERGED` and present on `main`. **Not `DEPLOYED`, not `ENABLED`,
 not `PRODUCTION-VALIDATED`.** All six stages remain `executionEnabled: false` and no production path
 reaches any of them, so this changes repository state only. It authorizes no release, and the
 time-bounded partial-release interval prohibits any release of any service until
 **2026-09-24T18:52Z**. No production state was verified or changed, and [Status](STATUS.md)'s
 production tables and the M1→M2 interval record are untouched.
 
-**PR / merge:** base `b3805ce0f19d0e6d78c41d99d83c48a74ae945c6` (PR #76 merge). **PR number and
-merge SHA are not knowable before merging** — recorded here as a **blocking follow-up** under the
-mutable-identifier exception in [`AGENTS.md`](../AGENTS.md), to be reconciled in the first change
-after merge.
+**PR / merge:** PR #78, base `b3805ce0f19d0e6d78c41d99d83c48a74ae945c6` (PR #76 merge), reviewed
+head `b21dd674777b57784c5492c1f71d1c8500c38e86`, merge
+`23fc1fcb91cfc5455be022308a4c8849b30636d2`, whose ordered parents are the recorded base first and
+the exact reviewed head second, verified by direct Git inspection. All five CI jobs passed on the
+reviewed head. **The blocking follow-up this record opened under the mutable-identifier exception
+in [`AGENTS.md`](../AGENTS.md) is hereby closed.** These are historical, immutable identifiers;
+they say nothing about deployment, and the state above is otherwise unchanged.
+
+**Live outcome, recorded because it revises this record's own open question.** The follow-up below
+asked whether stating the ceiling is sufficient against the operator's real 42-fact pack. Two
+authorized live runs on 2026-09-21 answered the id half: **stage 1 cited within
+`STRATEGY_LIMITS.maxIds` on a 42-fact pack**, the harder case than the 22-fact pack that first
+failed. The reported defect is therefore fixed in practice, not only in prompt text. Both runs then
+failed at a *different* ceiling — `"concept" exceeds 1200 characters` — which is the residual this
+record's own accepted limitations named: stating a ceiling does not guarantee a model respects it.
+That failure is carried forward in the section below; it is not a regression of this change.
 
 **The defect, and how it was found.** A live evaluation run on **2026-09-21**, over an evidence pack
 of 22 facts, failed at stage 1 with:
@@ -425,14 +437,144 @@ evidence-class rules in every prompt are unchanged.
 
 **Unresolved follow-ups.**
 
-- The PR number and merge SHA above (blocking follow-up, mutable-identifier exception).
-- A stage-1 run against the operator's real 42-fact pack has still not been made, so whether stating
-  the ceiling is sufficient in practice is **unverified**. It needs a separately authorized live run
-  and is not authorized here.
+- ~~The PR number and merge SHA above (blocking follow-up, mutable-identifier exception).~~
+  **Closed** in the section's `PR / merge` block above, reconciled in the first change after merge
+  as [`AGENTS.md`](../AGENTS.md) requires.
+- ~~A stage-1 run against the operator's real 42-fact pack has still not been made.~~ **Answered
+  for the id channels** by two authorized live runs on 2026-09-21: stage 1 cited within `maxIds` on
+  a 42-fact pack. The character ceilings were not sufficient in the same run, and that is carried
+  forward in the section below.
 
 **Documents updated at completion:** the root [README](../README.md),
 [Architecture](ARCHITECTURE.md), [Testing](TESTING.md), and this file. [Status](STATUS.md) is deliberately untouched — this change verifies no production
 state, and its production tables and the M1→M2 interval record are out of scope.
+
+## Paid-call preconditions — no stage is bought before a free check can fail — `IMPLEMENTED`
+
+**State:** `IMPLEMENTED` on a branch; `MERGED` only on merge. **Not `DEPLOYED`, not `ENABLED`, not
+`PRODUCTION-VALIDATED`.** All six stages remain `executionEnabled: false` and no production path
+reaches any of them, so this changes repository state and one operator-local CLI only. It
+authorizes no release, and the time-bounded partial-release interval prohibits any release of any
+service until **2026-09-24T18:52Z**. [Status](STATUS.md)'s production tables and the M1→M2 interval
+record are untouched.
+
+**PR / merge:** base `23fc1fcb91cfc5455be022308a4c8849b30636d2` (PR #78 merge). **PR number and
+merge SHA are not knowable before merging** — recorded here as a **blocking follow-up** under the
+mutable-identifier exception in [`AGENTS.md`](../AGENTS.md), to be reconciled in the first change
+after merge.
+
+**The defect, and how it was found.** Three authorized live runs on 2026-09-21, from
+`scripts/local/content-run.mjs`, each paid for a stage-1 Opus 5 call and kept nothing. Every one was
+preventable for free, before the request, from information the run already had:
+
+1. **The evidence pack was silently incomplete.** `config/automotive-facts.local.json` was absent,
+   which the CLI reported as a `console.warn` and then continued past — into the cost gate, the
+   operator's confirmation, and a billed call. The pack held 22 business facts and **zero**
+   automotive facts. The operator confirmed spend for a 42-fact run and bought a 22-fact one.
+2. **The run was doomed before it started.** `automotive-truth` declares
+   `requiredEvidenceKinds: ["verified_automotive_fact", "verified_business_fact"]` statically in the
+   registry, and the pack is fully built before stage 1. But `stageExecution.ts` checks that
+   requirement **per stage, as each stage runs**, so a class only stage 2 needs is discovered after
+   stage 1 has been paid for. With the facts file absent the run could never have reached stage 3,
+   and everything needed to know that was available for free.
+3. **The paid response was destroyed.** `writeStage` only runs after a stage validates, and the CLI's
+   failure handler printed the error and exited. A response the operator had already paid for was
+   never written to disk — not even for inspection or manual salvage.
+
+A fourth, smaller defect compounded all three: `"concept" exceeds 1200 characters` reported the
+bound but not the measurement, so the operator could not tell whether the model overran by fifty
+characters or by two thousand — which is exactly the distinction between "nudge the prompt" and
+"this ceiling is too low for the work".
+
+**Delivered.**
+
+- **A live run refuses an incomplete evidence pack.** The missing-facts warning becomes a fatal
+  error under `--runner live`, raised **before** the cost estimate and before any runner is
+  constructed. `--runner fake` still warns and proceeds, because inspecting a partial pack for free
+  is the point of the fake runner.
+- **All six stages' evidence classes are checked up front.** The CLI now iterates
+  `TARGET_STAGE_IDS`, reads each stage's `requiredEvidenceKinds` from the registry, and fails before
+  the cost gate if the pack cannot satisfy every stage. Same rule and same source of truth as
+  `stageExecution.ts`; only the timing moved, and only in the CLI.
+- **Raw provider responses are persisted on failure.** The CLI wraps its runner, records every
+  response as it arrives, and on any failure writes them to `rejected-responses.json` beside the
+  run. Nothing recorded is read back as stage output and no validation outcome changes — a rejected
+  payload is still rejected, it is simply no longer incinerated.
+- **Bounded-string rejections report the measurement.** All six stage validators now emit
+  `"<field>" exceeds <max> characters (actual <n>)`.
+
+**Migrations / schema impact:** none.
+
+**Design decision — the harness contract was not touched.** `stageExecution.ts` keeps its per-stage
+check, its single-request guarantee, and its no-retry, no-repair posture. The preflight is additive
+and lives in the operator CLI, so it cannot weaken a boundary the dormant executors rely on. The
+response capture is likewise a CLI-side runner wrapper rather than a change to
+`StageExecutionError`, which carries no payload by design.
+
+**Design decision — no limit value moved.** `payloadContract.ts` is unchanged. The `concept`
+overrun is real evidence that `STRATEGY_LIMITS.conceptChars` may be too low for this goal shape, but
+the overrun was never measured, because the error did not report it. Measuring it is what this
+change enables; changing the number is a separate decision under its own derivation review, and is
+**not** taken here.
+
+**Rejected alternatives.**
+
+- *Add a retry or repair pass so an over-cap answer can be corrected.* Rejected, for the reasons
+  PR #78 already recorded: the single-request guarantee is a safety property, a silent retry turns
+  one budgeted decision into unbounded spend, and a repair pass is a second chance for a model to
+  argue itself into an unsupported claim.
+- *Raise `conceptChars` so the observed response fits.* Rejected as premature. Sizing a derived,
+  load-bearing bound to one unmeasured overrun is how a contract stops meaning anything.
+- *Move the per-stage evidence check out of `stageExecution.ts` into the pack builder.* Rejected.
+  The per-stage check is the boundary's own guarantee and must hold for any caller; the CLI's
+  preflight is an additional courtesy to the operator, not a replacement.
+
+**Automated validation.** `AB2b` asserts behaviorally that an over-limit string reports its actual
+length, keyed off `LIMITS.conceptChars` rather than a literal. The `CE1`–`CE5` group asserts the CLI
+wires the three preconditions and that the two free checks precede the cost gate — index order plus
+presence, since `indexOf` returns `-1` for a deleted marker and `-1` sorts before every real index.
+`CE3` drives the preflight assertion off `TARGET_STAGE_IDS`, so a seventh stage cannot be added
+without being covered. `npm run test:offline` reports **ALL PASS** on all eight suites, 1,428 checks
+(content-intelligence 1,019). Mutation-checked: removing the live refusal fails `CE1` and `CE4`;
+both were reverted. Every assertion is offline — no provider call, no credential, no network.
+
+**Production evidence:** none, and none is possible — no stage is enabled or reachable. The
+2026-09-21 runs are **local evaluation evidence** from the out-of-band CLI, not production evidence.
+
+**Security and privacy implications.** One consideration, stated plainly:
+`rejected-responses.json` contains raw model output, written under `local-output/`, which is
+gitignored and operator-local. It is model prose about the operator's own evidence pack, not
+credentials and not customer data, and it is written only on the operator's own machine by a
+manually invoked CLI. No claim, tool, model id, thinking configuration, capability, approval rule,
+autonomy boundary, or publishing instruction was touched.
+
+**Accepted limitations.**
+
+- The `CE` group reads the CLI's checked-in source rather than executing it. The script is an
+  executable `.mjs` that loads from `dist/` at runtime and is not importable by the suite, so this
+  follows the same static-wiring precedent as the worker boundary assertions. The three behaviors
+  were additionally verified by hand against the real CLI.
+- The preflight proves a pack *can* satisfy every stage's declared evidence classes. It cannot
+  prove a stage will succeed; a validation ceiling can still reject a paid response, which is the
+  failure that remains open below.
+- `scripts/local/content-run.mjs` was, and to a large extent remains, **undocumented** outside this
+  record — it appears in no README, Architecture or Testing prose. That gap predates this change;
+  this record and the new Architecture paragraph narrow it but do not close it.
+
+**Unresolved follow-ups.**
+
+- The PR number and merge SHA above (blocking follow-up, mutable-identifier exception).
+- **`"concept" exceeds 1200 characters` is unresolved.** Two live runs failed there identically, so
+  it is reproducible and not sampling variance. The next run will report the actual length; only
+  then can it be decided whether the prompt needs strengthening or
+  `STRATEGY_LIMITS.conceptChars` is genuinely too low. **No value should be changed before that
+  measurement exists.**
+- Whether the six stage prompts should state ceilings more forcefully than they now do — for
+  instance beside the field rather than only in a ceilings block — is open, and depends on the same
+  measurement.
+
+**Documents updated at completion:** [Architecture](ARCHITECTURE.md), [Testing](TESTING.md), and
+this file. [Status](STATUS.md) is deliberately untouched — this change verifies no production state.
 
 ## PR #57 — CC5 proposition-bound reconciliation and bounded closeout — `MERGED`
 

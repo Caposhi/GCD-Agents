@@ -205,7 +205,8 @@ function requireBoundedString(value: unknown, field: string, max: number): strin
   if (typeof value !== "string") fail(`"${field}" must be a string`);
   const text = (value as string).trim();
   if (!text) fail(`"${field}" must not be empty`);
-  if (text.length > max) fail(`"${field}" exceeds ${max} characters`);
+  // Reports the measurement, not only the bound: a paid response dies here.
+  if (text.length > max) fail(`"${field}" exceeds ${max} characters (actual ${text.length})`);
   // Serializable text only. Control characters and unpaired surrogates are the
   // only things JSON.stringify expands sixfold; the shared helper also enforces
   // the UTF-8 byte allowance used by the worst-case token proof.
