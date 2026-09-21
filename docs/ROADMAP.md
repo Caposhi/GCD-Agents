@@ -1,6 +1,6 @@
 # GCD Content Intelligence roadmap
 
-Last reviewed: 2026-09-19.
+Last reviewed: 2026-09-21.
 
 This roadmap is the canonical unfinished-work sequence and the current-phase cursor. It orders work; it does not grant authority to deploy, migrate, call providers, change external configuration, or begin a phase. [Status](STATUS.md) records what is verified true now. Where this file and verified production evidence disagree, resolve the discrepancy rather than following this text. Roadmap continuity is binding — see [`AGENTS.md`](../AGENTS.md).
 
@@ -582,17 +582,22 @@ autonomy boundary, or publishing instruction was touched.
 **Documents updated at completion:** [Architecture](ARCHITECTURE.md), [Testing](TESTING.md), and
 this file. [Status](STATUS.md) is deliberately untouched — this change verifies no production state.
 
-## Stage response format — the provider is constrained to the shape, not asked for it — `IMPLEMENTED`
+## Stage response format — the provider is constrained to the shape, not asked for it — `MERGED`
 
-**State:** `IMPLEMENTED` on a branch; `MERGED` only on merge. **Not `DEPLOYED`, not `ENABLED`, not
+**State:** `MERGED`. **Not `DEPLOYED`, not `ENABLED`, not
 `PRODUCTION-VALIDATED`.** All six stages remain `executionEnabled: false` and no production path
 reaches any of them. It authorizes no release, and the time-bounded partial-release interval
 prohibits any release of any service until **2026-09-24T18:52Z**. [Status](STATUS.md)'s production
 tables and the M1→M2 interval record are untouched.
 
-**PR / merge:** base `8407d71` (PR #79 merge). **PR number and merge SHA are not knowable before
-merging** — recorded here as a **blocking follow-up** under the mutable-identifier exception in
-[`AGENTS.md`](../AGENTS.md), to be reconciled in the first change after merge.
+**PR / merge:** PR #80, base `8407d71d688193165aa56f87b91a97b5a83dd32a` (PR #79 merge), reviewed
+head `d1cea69f09147ca950d4a575b19560e8ad5c1b27`, merge
+`45e2e614fbf09ce2a0576d7ac490dbacf732df2c`, whose ordered parents are exactly
+`8407d71d688193165aa56f87b91a97b5a83dd32a` then `d1cea69f09147ca950d4a575b19560e8ad5c1b27` —
+verified by direct Git inspection (`git rev-list --parents -n 1 45e2e61`), not read from the pull
+request. **The blocking follow-up this record opened under the mutable-identifier exception in
+[`AGENTS.md`](../AGENTS.md) is hereby closed.** These are historical, immutable identifiers; they
+say nothing about deployment, and the state above is unchanged.
 
 **The defect.** An authorized live run on 2026-09-21 failed at stage 3 with
 `output was not strict JSON`. The saved response — saved because PR #79 made that possible — opened
@@ -674,24 +679,209 @@ outputs and thinking arises here.
 
 **Accepted limitations.**
 
-- **Not verified against the live API.** No live call was made from this session, so that the
-  provider accepts these exact schemas and honours them is **unverified**. Everything asserted here
-  is offline: the request bytes, the schema/validator agreement, and acceptance of previously
-  captured real responses. The first authorized live run is what confirms it.
+- **Not verified against the live API** *at the time of this record*. No live call was made from
+  that session, so that the provider accepts these exact schemas and honours them was
+  **unverified**. Everything asserted here is offline: the request bytes, the schema/validator
+  agreement, and acceptance of previously captured real responses. The first authorized live run is
+  what confirms it — **and it has since run; see the follow-up below, which is now closed for
+  stage 1 only.**
 - The schemas constrain shape only. A response can be perfectly shaped and still exceed a character
   ceiling, and that is still a discarded paid call.
 - `CF2` requires every object to be closed. A stage that legitimately needed an open object would
   have to change this assertion deliberately, which is intended.
 
-**Unresolved follow-ups.**
+**Unresolved follow-ups — all three closed by the `conceptChars` change recorded immediately
+below, which is the first change after this merge.**
 
-- The PR number and merge SHA above (blocking follow-up, mutable-identifier exception).
-- Whether the provider accepts and honours these schemas — needs one authorized live run.
-- `STRATEGY_LIMITS.conceptChars` at 1,200, measured at 1,196 on a passing run. Carried forward from
-  the PR #79 record above and untouched here.
+- ~~The PR number and merge SHA above (blocking follow-up, mutable-identifier exception).~~
+  **Closed** in the **PR / merge** line above, by direct Git inspection of the ordered parents.
+
+- ~~Whether the provider accepts and honours these schemas — needs one authorized live run.~~
+  **Closed for what one run can close, and no further.** An authorized live run on
+  **2026-09-21 at `20:25:34Z`, against reviewed head `d1cea69`**, established two things:
+
+  1. **The provider accepted the schemas.** No `400`, no complaint about `output_config`. The
+     request was served and billed. The `output_config.format` shape this change introduced is
+     therefore valid on the wire, not merely valid against the documentation.
+  2. **Structured outputs worked.** The run failed at
+     `StageExecutionError: stage strategy-concept: "concept" exceeds 1200 characters (actual
+     1259)`. That is a **validator** error, and stage 1's validator runs only *after*
+     `parseStrictJsonObject` has already succeeded. So the response was strict, unfenced JSON:
+     exactly the defect this change existed to make impossible, made impossible. No markdown
+     fence, no prose, no repair.
+
+  **What it does not prove, stated as plainly.** Nothing whatsoever about stages 2 through 6. The
+  run failed inside stage 1 and **never reached them**, so their five schemas remain exactly as
+  unverified against the live provider as they were at this merge. It also proves nothing about
+  whether the provider *honours* a schema under adversarial or unusual input — one accepted,
+  well-shaped response is one data point, not a guarantee. The offline `CF0`–`CF7` evidence is
+  unchanged and is still the reason to believe the other five are correct.
+
+- ~~`STRATEGY_LIMITS.conceptChars` at 1,200, measured at 1,196 on a passing run.~~ **Resolved** by
+  the change recorded immediately below: the figure the prompt states (1,200) and the ceiling the
+  validator enforces (1,500) are now separate constants with a declared 1.25× minimum margin
+  between them. The reasoning, and the rejected alternative of simply raising the number, are in
+  that record.
 
 **Documents updated at completion:** [Architecture](ARCHITECTURE.md), [Testing](TESTING.md), and
 this file. [Status](STATUS.md) is deliberately untouched — this change verifies no production state.
+
+## Stage 1 `concept` — the stated figure and the enforced ceiling are separated — `IMPLEMENTED`
+
+**State:** `IMPLEMENTED` on a branch; `MERGED` only on merge. **Not `DEPLOYED`, not `ENABLED`, not
+`PRODUCTION-VALIDATED`.** All six stages remain `executionEnabled: false` and no production path
+reaches any of them. It authorizes no release, and the time-bounded partial-release interval
+prohibits any release of any service until **2026-09-24T18:52Z**. [Status](STATUS.md)'s production
+tables and the M1→M2 interval record are untouched.
+
+**PR / merge:** base `45e2e614fbf09ce2a0576d7ac490dbacf732df2c` (PR #80 merge). **PR number and
+merge SHA are not knowable before merging** — recorded here as a **blocking follow-up** under the
+mutable-identifier exception in [`AGENTS.md`](../AGENTS.md), to be reconciled in the first change
+after merge.
+
+**The defect — and it is a measurement, not an impression.** Two authorized live runs on
+2026-09-21 measured stage 1's `concept` field against a ceiling that was both stated in the prompt
+and enforced by the validator at 1,200 characters:
+
+| Run | `concept` length | `conceptChars` | Result |
+|---|---|---|---|
+| earlier 2026-09-21 | 1,196 | 1,200 | passed, by four characters |
+| 2026-09-21T20:25:34Z | 1,259 | 1,200 | failed, by fifty-nine |
+
+99.7% and 104.9% of the stated number. The model is **not disregarding the ceiling — it is aiming
+at it**, and landing within roughly ±5%. The prompt's `**A ceiling is not a quota.**` guidance,
+which exists precisely to prevent this, does not prevent it; nor does the schema `description`,
+which is a third statement of the same thing.
+
+**Delivered.** The figure the prompt states is now a separate constant from the ceiling the
+validator enforces.
+
+- `STATED_FIELD_CEILINGS` in `payloadContract.ts` declares, per field, a stated figure lower than
+  the enforced limit. Keys are `<stage id>.<field token>` — exactly the tokens the `CD2`/`CD3`
+  drift assertions already pair against — so a second field joins by adding one entry and nothing
+  else. `statedCeiling(key, enforced)` returns the declared figure or falls back to the enforced
+  value, so every field that declares nothing is untouched by the mechanism.
+- `CEILING_SLACK_MULTIPLIER` is **1.25**, and `CD0c` fails the suite if any enforced limit drops
+  below `stated × 1.25`.
+- `STRATEGY_LIMITS.conceptChars` moves **1,200 → 1,500**. Exactly 1.25× the stated figure, and the
+  only limit value in `payloadContract.ts` this change touches.
+- `agents/strategy-concept.md` is **unchanged**. It still says `at most 1,200 characters`, in those
+  words, framed as a ceiling. The model should still aim at 1,200; the slack is deliberately
+  something it is never told.
+- Stage 1's response-schema `description` for `concept` now reads through `statedCeiling` rather
+  than the raw limit, because a `description` is a model-facing channel like the prompt. Leaving it
+  on the enforced value would have told the model 1,500 through one channel and 1,200 through
+  another — and the larger number is the one it would have aimed at.
+
+**Migrations / schema impact:** none.
+
+**Material design decision — the slack is secret, and that is the whole mechanism.** A stated
+figure the model can see is a target it will approach. A margin it cannot see is a boundary it will
+not approach. Separating them is the only arrangement in which both properties hold at once: the
+prompt keeps asking for roughly 1,200 characters of concept — which is a product decision about
+how long a concept should be — while a response that lands at 1,259 is no longer thrown away.
+
+**Material rejected alternative — simply raising `conceptChars` to a larger number.** Rejected on
+the measurement, not on taste. The stated number *is* the aim point: 1,196 and 1,259 are 99.7% and
+104.9% of 1,200. Restating the ceiling as 1,500 moves the aim point to 1,500 and reproduces the
+same proportional overshoot at roughly 1,575 — a larger ceiling, an identical failure, and one
+more discarded paid call to discover it. Every number in this pipeline is derived; a number chosen
+to make today's observation fit would have been the first that was not.
+
+**Other rejected alternatives.**
+
+- *Reword the prompt to "about 1,200" or "aim for 1,200".* Rejected. `CD4` requires the ceiling to
+  be framed as a ceiling, and rightly: softening it invites a response at 1,400 as readily as one
+  at 1,100, and the validator would still be the thing that decides. The wording is not the
+  problem; a boundary sitting inside the model's ordinary variance is.
+- *A fifth restatement of "a ceiling is not a quota".* Rejected for the reason PR #80 rejected the
+  fourth: the instruction is present, explicit and measurably ineffective. More of it is a hope.
+- *Truncate an over-length `concept` instead of rejecting it.* Rejected. The validators exist to
+  refuse a response that does not meet its contract, not to repair one; silently truncating a
+  concept is the same class of error as stripping a markdown fence, which PR #80 rejected for the
+  same reason.
+- *Generalize the target/ceiling split across all 53 bounded limits.* Rejected as unevidenced. One
+  field has been measured against a live model. The other fifty-two have not, and giving every one
+  of them an invisible margin would widen fifty-two contracts on the strength of two observations
+  of a fifty-third. The mechanism is built to take a second field without redesign; a second field
+  should arrive with its own measurement.
+
+**Derived consequences, recorded because they are derived and not chosen.** Raising `conceptChars`
+by 300 raises stage 1's serialized output ceiling by `300 × MAX_JSON_ESCAPE_EXPANSION` = 600, and
+every value downstream of it follows:
+
+| Derived value | Before | After |
+|---|---|---|
+| `STRATEGY_OUTPUT.transportChars` | 32,422 | 33,022 |
+| `STRATEGY_OUTPUT.contractChars` | 16,822 | 17,122 |
+| `HANDOFF_GUARDS.strategyOutputChars` | 32,422 | 33,022 |
+| `STAGE_ASSEMBLED_CEILINGS["automotive-truth"]` | 369,964 | 370,564 |
+| `STAGE_ASSEMBLED_CEILINGS["hook-story-script"]` | 105,030 | 105,630 |
+| `MAX_PAYLOAD_CHARS` | 370,000 | 380,000 |
+| `POLICY_OUTPUT_TOKEN_FLOORS["reasoning-heavy"]` | 40,000 | **40,000 — unchanged** |
+
+The output-token floor is unchanged because it is the maximum over stages 1 and 2, and stage 2's
+39,459 still dominates stage 1's 33,022; 40,000 remains far below the 128,000-token output cap both
+configured models offer. `MAX_PAYLOAD_CHARS` moved because `automotive-truth` assembles stage 1's
+output and its ceiling crossed a ten-thousand boundary. No guard, ceiling or budget was
+hand-adjusted to accommodate any of this — the derivation regressions recompute all of it.
+
+**Automated validation.** `npm run build` clean. `npm run test:offline` **ALL PASS** on all eight
+suites. The `CD` group gains `CD0c` (every declared stated figure is enforced at ≥ 1.25×) and
+`CD0d` (every declared key names a field a prompt specification actually pairs); `CD2` and `CD3`
+now compare against the stated figure where one is declared and the enforced limit otherwise, so
+both still fail on a stale prompt number; `CD4` passes unchanged, because the prompt wording did
+not change. `CF5` reads the stated figure for the same reason the schema does. Every assertion
+keys off the constants; no test carries a literal 1,200 or 1,500. Mutation-checked, each reverted:
+lowering `conceptChars` to 1,400 fails `CD0c`; raising the prompt's stated number to 1,500 fails
+`CD2` and `CD3`; renaming the `STATED_FIELD_CEILINGS` key fails `CD0d`; pointing the schema
+`description` back at the enforced limit fails `CF5`.
+
+**Production evidence:** none, and none is possible — no stage is enabled or reachable. **No live
+model call was made by this change**, by instruction.
+
+**Rollback / recovery status:** no migration and no durable state. Reverting the commit restores
+the previous constants exactly.
+
+**Security and privacy implications.** None. No claim, tool, model id, thinking configuration,
+capability, approval rule, autonomy boundary, or publishing instruction was touched.
+`stageExecution.ts`, its single-request guarantee and its no-retry behaviour are untouched.
+
+**Accepted limitations.**
+
+- **1.25× is a judgement calibrated on two measurements, not a proof.** It is five times the ±5%
+  spread those two runs showed, which is a deliberate margin rather than a tight one, but two
+  observations cannot establish a distribution. A response at 1,501 characters is still a
+  discarded paid call, and nothing here makes that impossible.
+- **The mechanism does not make the model shorter.** It widens the boundary so ordinary variance
+  around an unchanged target no longer crosses it. If a later measurement shows the model aiming
+  well past the stated figure rather than around it, this is the wrong fix and the stated figure
+  itself is what should change.
+- **Only `concept` is covered.** Every other bounded field in all six stages still states and
+  enforces one number, and none has been measured against a live model. A second overshoot in a
+  different field is not prevented by this change; it is made one line cheaper to fix.
+- **Stages 2–6 have still never returned a response to a live validator.** Nothing here changes
+  that, and the `conceptChars` evidence says nothing about whether their ceilings are sized right.
+
+**Unresolved follow-ups.**
+
+- The PR number and merge SHA above (blocking follow-up, mutable-identifier exception).
+- **[`docs/STATUS.md`](STATUS.md) line 116 still states the shared payload boundary as `370,000`,
+  which this change makes stale at `380,000`.** It was left untouched under an explicit instruction
+  not to modify that file, its M1→M2 interval record, or anything production-facing. This is
+  recorded here as a **blocking documentation follow-up** rather than presented as done: the
+  statement is now wrong, it is wrong in the document that records verified current reality, and
+  the correction is a one-number edit that needs the authority to touch that file. Nothing about
+  production state is affected — the number describes a repository-side derived constant.
+- Whether the provider accepts and honours the five schemas for stages 2 through 6 — carried
+  forward from the PR #80 record above, still open, still needing a live run that reaches them.
+- Whether the other bounded output ceilings are sized for real model output. Unmeasured, and
+  deliberately not guessed at here.
+
+**Documents updated at completion:** [README](../README.md), [Architecture](ARCHITECTURE.md),
+[AI handoff](AI_HANDOFF.md), [Security and continuity](SECURITY_AND_CONTINUITY.md),
+[Testing](TESTING.md), and this file. [Status](STATUS.md) is deliberately untouched under explicit
+instruction, which leaves the stale number recorded as a blocking follow-up immediately above.
 
 ## PR #57 — CC5 proposition-bound reconciliation and bounded closeout — `MERGED`
 

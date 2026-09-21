@@ -39,6 +39,7 @@ import {
 } from "./evidence/pack.js";
 import type { EvidenceConflict, EvidencePack } from "./evidence/pack.js";
 import {
+  CEILING_SLACK_MULTIPLIER,
   CRITIC_OUTPUT,
   DIRECTION_OUTPUT,
   EVIDENCE_LIMITS,
@@ -50,6 +51,7 @@ import {
   POLICY_OUTPUT_TOKEN_FLOORS,
   SCRIPT_OUTPUT,
   STAGE_ASSEMBLED_CEILINGS,
+  STATED_FIELD_CEILINGS,
   STRATEGY_ID_CHANNELS,
   MIN_OUTPUT_TOKENS_PER_SECOND,
   POLICY_STREAM_DEADLINE_MS,
@@ -58,6 +60,7 @@ import {
   STRATEGY_OUTPUT,
   TRUTH_OUTPUT,
   stageStreamDeadlineMs,
+  statedCeiling,
   isSerializableText,
   minimumOutputTokens,
   utf8ByteLength,
@@ -7610,9 +7613,51 @@ async function run(): Promise<void> {
       },
     ];
 
+    /**
+     * The figure the prompt is required to state for a field: the enforced
+     * limit, unless `STATED_FIELD_CEILINGS` declares a deliberately lower one.
+     *
+     * `concept` is the only such field today. Its prompt still says 1,200 while
+     * the validator enforces 1,500, because two live runs measured the model
+     * aiming at the stated number (1,196 and 1,259 against 1,200) rather than
+     * treating it as a ceiling. Both numbers come from the contract; neither is
+     * written here.
+     */
+    const promptFigure = (stage: string, field: string, enforced: number): number =>
+      statedCeiling(`${stage}.${field}`, enforced);
+
     check("CD0. every target stage has a prompt-limit specification",
       promptLimits.length === TARGET_STAGE_IDS.length
         && TARGET_STAGE_IDS.every((id) => promptLimits.some((s) => s.stage === id)));
+
+    // Every declared stated figure must sit far enough inside its enforced
+    // ceiling that ordinary variance around the stated number cannot reach the
+    // boundary. Narrowing the margin — or raising the stated figure toward the
+    // enforced one — fails here, which is what stops a future edit from
+    // collapsing the two numbers back together.
+    {
+      const specByStage = new Map(promptLimits.map((s) => [s.stage, s] as const));
+      const declared = Object.entries(STATED_FIELD_CEILINGS);
+      const enforcedFor = (key: string): number | undefined => {
+        const dot = key.lastIndexOf(".");
+        const pair = specByStage.get(key.slice(0, dot))
+          ?.paired.find(([f]) => f === key.slice(dot + 1));
+        return pair?.[1];
+      };
+      const tooTight = declared.filter(([key, stated]) => {
+        const enforced = enforcedFor(key);
+        return enforced === undefined || enforced < stated * CEILING_SLACK_MULTIPLIER;
+      });
+      check("CD0c. every field with a declared stated figure is enforced at no less than "
+        + `${CEILING_SLACK_MULTIPLIER}x that figure, so variance around the stated number `
+        + "cannot reach the boundary"
+        + (tooTight.length ? ` — too tight: ${tooTight.map(([k]) => k).join(", ")}` : ""),
+        declared.length > 0 && tooTight.length === 0);
+
+      check("CD0d. every declared stated figure names a field some stage prompt actually pairs, "
+        + "so an entry cannot be left behind after a field is renamed or removed",
+        declared.every(([key]) => enforcedFor(key) !== undefined));
+    }
 
     const strategySpec = promptLimits.find((s) => s.stage === "strategy-concept");
     check("CD0b. stage 1's three id channels are each specified, so a fourth channel "
@@ -7629,15 +7674,18 @@ async function run(): Promise<void> {
 
       const unpaired = spec.paired.filter(([field, value, unit]) => {
         const stated = statedFor(block, field, unit);
-        return stated.length !== 1 || stated[0] !== groupDigits(value);
+        return stated.length !== 1
+          || stated[0] !== groupDigits(promptFigure(spec.stage, field, value));
       });
       check(`CD2 (${spec.stage}). every enforced output ceiling is stated against its own `
-        + `field, exactly once, at the value the validator applies`
+        + `field, exactly once, at the figure the prompt is meant to state — the value the `
+        + `validator applies, unless STATED_FIELD_CEILINGS declares a lower one`
         + (unpaired.length ? ` — unstated or wrong: ${unpaired.map(([f]) => f).join(", ")}` : ""),
         unpaired.length === 0);
 
       const expected = new Set<string>([
-        ...spec.paired.map(([, value, unit]) => atMost(value, unit)),
+        ...spec.paired.map(([field, value, unit]) =>
+          atMost(promptFigure(spec.stage, field, value), unit)),
         ...(spec.elsewhere ?? []).map(([value, unit]) => atMost(value, unit)),
       ]);
       const actual = statedPhrases(prompt);
@@ -7827,9 +7875,13 @@ async function run(): Promise<void> {
     // enforce. Keyed off the contract so moving a limit fails here too.
     const strategyProps =
       (STRATEGY_CONCEPT_RESPONSE_FORMAT as Record<string, any>).properties as Record<string, any>;
-    check("CF5. enforced ceilings are carried into the schema descriptions",
+    check("CF5. ceilings are carried into the schema descriptions, at the same figure the "
+      + "prompt states — a description is a model-facing channel, so it must not leak the "
+      + "slack between a stated figure and its enforced ceiling",
       String(strategyProps.concept.description)
-        .includes(`at most ${groupDigits(LIMITS.conceptChars)} characters`)
+        .includes(`at most ${groupDigits(
+          statedCeiling("strategy-concept.concept", LIMITS.conceptChars),
+        )} characters`)
         && String(strategyProps.supportingFactIds.description)
           .includes(`at most ${groupDigits(LIMITS.maxIds)} entries`));
 
