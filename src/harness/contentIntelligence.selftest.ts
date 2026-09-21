@@ -100,6 +100,33 @@ import {
   resolveModelPolicy,
 } from "./agents/modelPolicy.js";
 import {
+  STRATEGY_CONCEPT_RESPONSE_FORMAT,
+  ALLOWED_OUTPUT_FIELDS as STRATEGY_FIELDS,
+  HYPOTHESIS_BASES,
+} from "./agents/strategyConcept.js";
+import {
+  AUTOMOTIVE_TRUTH_RESPONSE_FORMAT,
+  ALLOWED_OUTPUT_FIELDS as TRUTH_FIELDS,
+  CLAIM_CLASSES,
+} from "./agents/automotiveTruth.js";
+import {
+  HOOK_STORY_SCRIPT_RESPONSE_FORMAT,
+  ALLOWED_OUTPUT_FIELDS as SCRIPT_FIELDS,
+} from "./agents/hookStoryScript.js";
+import {
+  PRODUCTION_DIRECTION_RESPONSE_FORMAT,
+  ALLOWED_OUTPUT_FIELDS as DIRECTION_FIELDS,
+} from "./agents/productionDirection.js";
+import {
+  PACKAGING_ADAPTATION_RESPONSE_FORMAT,
+  ALLOWED_OUTPUT_FIELDS as PACKAGING_FIELDS,
+} from "./agents/packagingAdaptation.js";
+import {
+  FINAL_CRITIC_RESPONSE_FORMAT,
+  ALLOWED_OUTPUT_FIELDS as CRITIC_FIELDS,
+} from "./agents/finalCritic.js";
+import { groupDigits } from "./agents/responseFormatKit.js";
+import {
   StageStreamDeadlineError,
   runAgentWithMessageCreator,
   runStageAgentWithStreamOpener,
@@ -979,7 +1006,16 @@ async function run(): Promise<void> {
     check("AF5. exactly six stage executors exist — strategy-concept, automotive-truth, hook-story-script, production-direction, packaging-adaptation, final-critic",
       agentModules.join()
         === "automotiveTruth.ts,finalCritic.ts,hookStoryScript.ts,modelPolicy.ts,packagingAdaptation.ts,"
-          + "payloadContract.ts,productionDirection.ts,registry.ts,stageExecution.ts,strategyConcept.ts");
+          + "payloadContract.ts,productionDirection.ts,registry.ts,responseFormatKit.ts,stageExecution.ts,"
+          + "strategyConcept.ts");
+    // `responseFormatKit.ts` is in that list and is deliberately NOT an
+    // executor: it holds the builders each stage uses to construct its own
+    // `output_config.format` schema, and imports nothing. The count that
+    // matters is the executors, asserted directly rather than by file count.
+    check("AF5b. the response-format kit is a helper, not a seventh executor",
+      !/invokeStage|executeStage|StageRunner/.test(
+        await readFile(resolve(REPO_ROOT, "src/harness/agents/responseFormatKit.ts"), "utf8"))
+        && targetStageDefinitions().length === TARGET_STAGE_IDS.length);
     const apiSource = await readFile(resolve(REPO_ROOT, "src/api/server.ts"), "utf8");
     check("AF6. no HTTP route reaches the executor",
       !/executeStrategyConcept|strategyConcept/.test(apiSource));
@@ -7699,6 +7735,141 @@ async function run(): Promise<void> {
       at("rejected-responses.json") > 0
         && at("failureContext") > 0
         && /transcript\.push\(\{[\s\S]{0,400}text:/.test(cli));
+
+    // --- CF. the provider is constrained to the shape, not merely asked ------
+    //
+    // On 2026-09-21 a stage-3 response arrived wrapped in a ```json fence and
+    // was discarded after it had been paid for. Every stage prompt already said
+    // "no markdown fence" in those words, so this was not a missing
+    // instruction — it was an instruction the model did not follow. Each stage
+    // now sends a JSON Schema as `output_config.format`, which makes a
+    // non-JSON or wrong-shaped response impossible at generation time rather
+    // than forbidden in prose.
+    //
+    // What these assertions protect is the join. A schema that drifted from its
+    // validator would either reject a response the validator accepts — breaking
+    // every run — or permit a shape the validator refuses, which buys a
+    // rejection. So each schema is checked against the very array the
+    // validator's `requireExactKeys` reads.
+
+    const RESPONSE_FORMATS = [
+      ["strategy-concept", STRATEGY_CONCEPT_RESPONSE_FORMAT, STRATEGY_FIELDS],
+      ["automotive-truth", AUTOMOTIVE_TRUTH_RESPONSE_FORMAT, TRUTH_FIELDS],
+      ["hook-story-script", HOOK_STORY_SCRIPT_RESPONSE_FORMAT, SCRIPT_FIELDS],
+      ["production-direction", PRODUCTION_DIRECTION_RESPONSE_FORMAT, DIRECTION_FIELDS],
+      ["packaging-adaptation", PACKAGING_ADAPTATION_RESPONSE_FORMAT, PACKAGING_FIELDS],
+      ["final-critic", FINAL_CRITIC_RESPONSE_FORMAT, CRITIC_FIELDS],
+    ] as const;
+
+    check("CF0. every target stage declares a response format",
+      RESPONSE_FORMATS.length === TARGET_STAGE_IDS.length
+        && TARGET_STAGE_IDS.every((id) => RESPONSE_FORMATS.some(([name]) => name === id)));
+
+    for (const [stage, schema, fields] of RESPONSE_FORMATS) {
+      const required = ((schema as Record<string, unknown>).required ?? []) as string[];
+      check(`CF1 (${stage}). the schema's required keys are exactly the validator's own field list`,
+        [...required].sort().join() === [...fields].sort().join());
+    }
+
+    /** Every subschema that declares a type, depth-first. */
+    const walkSchema = (
+      node: unknown, out: Record<string, unknown>[] = [],
+    ): Record<string, unknown>[] => {
+      if (!node || typeof node !== "object") return out;
+      const obj = node as Record<string, unknown>;
+      if (typeof obj.type === "string") out.push(obj);
+      for (const value of Object.values(obj)) {
+        if (Array.isArray(value)) value.forEach((entry) => walkSchema(entry, out));
+        else walkSchema(value, out);
+      }
+      return out;
+    };
+
+    for (const [stage, schema] of RESPONSE_FORMATS) {
+      const objects = walkSchema(schema).filter((n) => n.type === "object");
+      check(`CF2 (${stage}). every object in the schema is closed, mirroring requireExactKeys`,
+        objects.length > 0 && objects.every((n) => n.additionalProperties === false
+          && Array.isArray(n.required)
+          && (n.required as string[]).slice().sort().join()
+             === Object.keys((n.properties ?? {}) as object).sort().join()));
+    }
+
+    // Anthropic's structured outputs do NOT enforce maxLength, minLength,
+    // maxItems, minimum, maximum or pattern. A schema carrying one would read
+    // as a guarantee while being none, which is the exact confusion that
+    // produced the original defect. Size ceilings stay in the prompt and in the
+    // validator; the schema may describe them and must not claim them.
+    const UNSUPPORTED_KEYWORDS = [
+      "maxLength", "minLength", "maxItems", "minimum", "maximum", "pattern", "multipleOf",
+    ];
+    for (const [stage, schema] of RESPONSE_FORMATS) {
+      const offenders = [...new Set(
+        walkSchema(schema).flatMap((n) => UNSUPPORTED_KEYWORDS.filter((k) => k in n)),
+      )];
+      check(`CF3 (${stage}). the schema claims no constraint structured outputs cannot enforce`
+        + (offenders.length ? ` — found: ${offenders.join(", ")}` : ""),
+        offenders.length === 0);
+    }
+
+    check("CF4. enums in the schemas are the validators' own enums, not restatements",
+      JSON.stringify(((STRATEGY_CONCEPT_RESPONSE_FORMAT as Record<string, any>)
+        .properties.hypotheses.items.properties.basis.enum)) === JSON.stringify([...HYPOTHESIS_BASES])
+        && JSON.stringify(((AUTOMOTIVE_TRUTH_RESPONSE_FORMAT as Record<string, any>)
+          .properties.allowedClaims.items.properties.claimClass.enum))
+           === JSON.stringify([...CLAIM_CLASSES])
+        && JSON.stringify(((HOOK_STORY_SCRIPT_RESPONSE_FORMAT as Record<string, any>)
+          .properties.storyBeats.items.properties.role.enum))
+           === JSON.stringify([...STORY_BEAT_ROLES])
+        && JSON.stringify(((FINAL_CRITIC_RESPONSE_FORMAT as Record<string, any>)
+          .properties.verdict.enum)) === JSON.stringify([...CRITIC_VERDICTS]));
+
+    // A description is the only channel a schema has for a ceiling it cannot
+    // enforce. Keyed off the contract so moving a limit fails here too.
+    const strategyProps =
+      (STRATEGY_CONCEPT_RESPONSE_FORMAT as Record<string, any>).properties as Record<string, any>;
+    check("CF5. enforced ceilings are carried into the schema descriptions",
+      String(strategyProps.concept.description)
+        .includes(`at most ${groupDigits(LIMITS.conceptChars)} characters`)
+        && String(strategyProps.supportingFactIds.description)
+          .includes(`at most ${groupDigits(LIMITS.maxIds)} entries`));
+
+    {
+      let stageRequestSent: Record<string, unknown> | undefined;
+      await runStageAgentWithStreamOpener(
+        {
+          systemPrompt: "s", prompt: "p", model: "claude-opus-5", maxTokens: 1024,
+          thinking: { type: "disabled" },
+          responseFormatSchema: STRATEGY_CONCEPT_RESPONSE_FORMAT,
+        },
+        (request) => {
+          stageRequestSent = request as unknown as Record<string, unknown>;
+          return {
+            finalMessage: async () => ({
+              content: [{ type: "text", text: "{}" }],
+              usage: { input_tokens: 1, output_tokens: 1 },
+            }) as never,
+            abort: () => {},
+          };
+        },
+      );
+      const format = (stageRequestSent?.output_config as Record<string, unknown> | undefined)
+        ?.format as Record<string, unknown> | undefined;
+      check("CF6. the stage request actually carries output_config.format as a json_schema",
+        format !== undefined && format.type === "json_schema"
+          && format.schema === STRATEGY_CONCEPT_RESPONSE_FORMAT);
+
+      let legacyRequestSent: Record<string, unknown> | undefined;
+      await runAgentWithMessageCreator(
+        { systemPrompt: "s", prompt: "p", model: "claude-opus-5", maxTokens: 64 },
+        async (request) => {
+          legacyRequestSent = request as unknown as Record<string, unknown>;
+          return { content: [{ type: "text", text: "ok" }], usage: {} } as never;
+        },
+      );
+      check("CF7. a caller declaring no schema sends no output_config — the legacy path "
+        + "is unchanged",
+        legacyRequestSent !== undefined && !("output_config" in legacyRequestSent));
+    }
 
   console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURE(S)`);
   process.exit(failures === 0 ? 0 : 1);

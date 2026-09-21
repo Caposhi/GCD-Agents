@@ -77,6 +77,17 @@ Validation is where the epistemic contract is actually enforced. The model's cit
 
 **The stage contract has two halves, and both are checked.** The validator half is `payloadContract.ts` plus each stage's own validator. The prompt half is the checked-in Markdown in `agents/`, which is the only instruction channel the boundary has: every stage prompt states the output limits its own validator enforces — each bounded string's character ceiling and each array's cardinality, and for `packaging-adaptation` the per-platform caption and hashtag ceiling at the **effective** number (`Math.min` of the provider policy and this pipeline's narrowing, so Facebook's stated 2,200 rather than its 63,206 provider limit). This is load-bearing rather than courteous, because the boundary makes exactly one provider request with no retry and no repair pass: a ceiling the prompt omits is discovered only by a completed, paid-for response being discarded whole. The `CD0`–`CD8` group in the offline suite asserts the two halves agree, keyed off the validators' own limit objects, so changing a limit fails the suite instead of silently desynchronising the prompt. The prompts state each ceiling as a ceiling and not a target — cite what genuinely supports the work, and never more than N — and the pre-existing "an empty array is honest" guidance is preserved and separately asserted.
 
+**The provider is constrained to the response shape, not asked for it.** Each stage sends a JSON
+Schema as `output_config.format`, built beside the validator that enforces it from the same
+`ALLOWED_OUTPUT_FIELDS` array `requireExactKeys` reads and the same exported enums, so the shape
+generation is constrained to and the shape validation demands cannot drift. This replaces an
+instruction with a constraint: every stage prompt already said "no markdown fence", and a paid
+stage-3 response arrived fenced anyway. The limits of the mechanism are part of the design —
+structured outputs enforce `type`, `properties`, `required`, `additionalProperties`, `enum`,
+`const` and string formats, and do **not** enforce `maxLength`, `maxItems`, `minimum` or `pattern`
+— so every character and cardinality ceiling remains exactly where it was, in the prompt and in the
+validator, and the offline suite fails any schema that claims otherwise.
+
 **Nothing buys a stage before a free check can fail.** Validation runs *after* the provider
 returns and one rejection ends the run, so any precondition knowable beforehand must be checked
 beforehand or it is paid for. The operator-local evaluation CLI, `scripts/local/content-run.mjs`

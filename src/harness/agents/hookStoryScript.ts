@@ -96,7 +96,7 @@ export const SCRIPT_LIMITS = {
 } as const;
 
 /** Exactly the fields the contract allows. Anything else is an extra field. */
-const ALLOWED_OUTPUT_FIELDS = [
+export const ALLOWED_OUTPUT_FIELDS = [
   "hook",
   "storyBeats",
   "script",
@@ -110,6 +110,35 @@ export type StoryBeatRole = (typeof STORY_BEAT_ROLES)[number];
 
 /** Closed set. Where in the piece a permitted claim does its work. */
 export const CLAIM_USE_LOCATIONS = ["hook", "beats", "script"] as const;
+import {
+  schemaArray, schemaEnum, schemaInteger, schemaObject, schemaString,
+} from "./responseFormatKit.js";
+
+/** The JSON Schema sent as `output_config.format` for this stage. Shape only. */
+export const HOOK_STORY_SCRIPT_RESPONSE_FORMAT = schemaObject({
+  hook: schemaString("The opening line, channel-neutral", SCRIPT_LIMITS.hookChars),
+  storyBeats: schemaArray(
+    schemaObject({
+      beat: schemaString("One beat of the narrative spine", SCRIPT_LIMITS.beatChars),
+      role: schemaEnum(STORY_BEAT_ROLES, "What this beat does in the spine"),
+    }),
+    "Ordered; the narrative spine",
+    SCRIPT_LIMITS.maxBeats,
+  ),
+  script: schemaString("The full channel-neutral script", SCRIPT_LIMITS.scriptChars),
+  claimUse: schemaArray(
+    schemaObject({
+      factId: schemaString("An id from PERMITTED_CLAIMS ONLY"),
+      usedIn: schemaEnum(CLAIM_USE_LOCATIONS, "Where the claim does its work"),
+      paraphrase: schemaString("How you put it, in your words", SCRIPT_LIMITS.paraphraseChars),
+    }),
+    "Every permitted claim this script actually uses; an empty array is honest",
+    SCRIPT_LIMITS.maxClaimUses,
+  ),
+  openQuestions: schemaArray(
+    { type: "string" }, "What a human would have to verify to say more", SCRIPT_LIMITS.maxOpenQuestions,
+  ),
+});
 export type ClaimUseLocation = (typeof CLAIM_USE_LOCATIONS)[number];
 
 export interface StoryBeat {
@@ -654,6 +683,7 @@ export async function executeHookStoryScript(
 
   const { rawText, metadata } = await invokeStage({
     stage: HOOK_STORY_SCRIPT_STAGE,
+    responseFormatSchema: HOOK_STORY_SCRIPT_RESPONSE_FORMAT,
     registry,
     runner: invocation.runner,
     // This stage declares no reference asset. The setting is explicit anyway, so

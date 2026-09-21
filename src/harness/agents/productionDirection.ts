@@ -110,7 +110,7 @@ export const DIRECTION_LIMITS = {
 } as const;
 
 /** Exactly the fields the contract allows. Anything else is an extra field. */
-const ALLOWED_OUTPUT_FIELDS = [
+export const ALLOWED_OUTPUT_FIELDS = [
   "visualApproach",
   "shots",
   "overlayText",
@@ -120,6 +120,10 @@ const ALLOWED_OUTPUT_FIELDS = [
 ] as const;
 
 /** Closed set. What a shot is for; order is meaningful, the role is not free text. */
+import {
+  schemaArray, schemaEnum, schemaInteger, schemaObject, schemaString,
+} from "./responseFormatKit.js";
+
 export const SHOT_PURPOSES = [
   "establishing", "context", "demonstration", "detail", "reaction", "closing",
 ] as const;
@@ -141,6 +145,53 @@ export type OverlayRole = (typeof OVERLAY_ROLES)[number];
 export const REQUIREMENT_CATEGORIES = [
   "location", "vehicle", "person", "equipment", "prop", "permission",
 ] as const;
+
+/** The JSON Schema sent as `output_config.format` for this stage. Shape only. */
+export const PRODUCTION_DIRECTION_RESPONSE_FORMAT = schemaObject({
+  visualApproach: schemaString("The overall visual idea, one short paragraph", DIRECTION_LIMITS.visualApproachChars),
+  shots: schemaArray(
+    schemaObject({
+      purpose: schemaEnum(SHOT_PURPOSES, "What this shot is for"),
+      subject: schemaString("What is in frame", DIRECTION_LIMITS.subjectChars),
+      framing: schemaEnum(SHOT_FRAMINGS, "How the shot is framed"),
+      movement: schemaEnum(SHOT_MOVEMENTS, "Camera movement"),
+      action: schemaString("What happens during the shot", DIRECTION_LIMITS.actionChars),
+      composition: schemaString("How the frame is arranged", DIRECTION_LIMITS.compositionChars),
+      continuityNote: schemaString("What must match the shot before or after", DIRECTION_LIMITS.continuityChars),
+    }),
+    "Ordered; the visual spine",
+    DIRECTION_LIMITS.maxShots,
+  ),
+  overlayText: schemaArray(
+    schemaObject({
+      text: schemaString("On-image or on-screen wording", DIRECTION_LIMITS.overlayTextChars),
+      shotIndex: schemaInteger("0-based index of a shot you returned"),
+      role: schemaEnum(OVERLAY_ROLES, "What the overlay does"),
+    }),
+    "Optional on-image / on-screen wording",
+    DIRECTION_LIMITS.maxOverlayText,
+  ),
+  productionRequirements: schemaArray(
+    schemaObject({
+      requirement: schemaString("What a human must provide or confirm", DIRECTION_LIMITS.requirementChars),
+      category: schemaEnum(REQUIREMENT_CATEGORIES, "What kind of requirement"),
+    }),
+    "What a human must provide or confirm",
+    DIRECTION_LIMITS.maxRequirements,
+  ),
+  claimVisuals: schemaArray(
+    schemaObject({
+      factId: schemaString("An id from SCRIPT_CLAIMS ONLY"),
+      shotIndex: schemaInteger("0-based index of a shot you returned"),
+      directionSummary: schemaString("How the shot carries the claim", DIRECTION_LIMITS.directionSummaryChars),
+    }),
+    "Which shot carries which used claim; an empty array is honest",
+    DIRECTION_LIMITS.maxClaimVisuals,
+  ),
+  openQuestions: schemaArray(
+    { type: "string" }, "What a human must verify before production", DIRECTION_LIMITS.maxOpenQuestions,
+  ),
+});
 export type RequirementCategory = (typeof REQUIREMENT_CATEGORIES)[number];
 
 export interface ProductionShot {
@@ -739,6 +790,7 @@ export async function executeProductionDirection(
 
   const { rawText, metadata } = await invokeStage({
     stage: PRODUCTION_DIRECTION_STAGE,
+    responseFormatSchema: PRODUCTION_DIRECTION_RESPONSE_FORMAT,
     registry,
     runner: invocation.runner,
     // This stage declares no reference asset. The setting is explicit anyway, so
