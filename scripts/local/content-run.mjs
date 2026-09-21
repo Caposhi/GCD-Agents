@@ -36,7 +36,7 @@
  *   -h, --help
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -44,6 +44,13 @@ import { fileURLToPath } from "node:url";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, "../..");
 const DIST_HARNESS = resolve(REPO_ROOT, "dist/harness");
+
+/**
+ * Set once the run directory exists, so the failure handler can persist the
+ * raw provider responses the run already paid for. Null until then, and left
+ * null entirely for failures that happen before any request is made.
+ */
+let failureContext = null;
 
 function usage() {
   console.log(`Usage: node scripts/local/content-run.mjs "<goal text>" [options]
@@ -347,7 +354,7 @@ async function main() {
   const { buildEvidencePack, assertUsableEvidencePack, EvidencePackBoundsError } =
     await import(resolve(DIST_HARNESS, "evidence/pack.js"));
   const { EvidenceValidationError } = await import(resolve(DIST_HARNESS, "evidence/contract.js"));
-  const { AgentRegistry } = await import(resolve(DIST_HARNESS, "agents/registry.js"));
+  const { AgentRegistry, TARGET_STAGE_IDS } = await import(resolve(DIST_HARNESS, "agents/registry.js"));
   const { StageExecutionError, createAnthropicStageRunner } =
     await import(resolve(DIST_HARNESS, "agents/stageExecution.js"));
   const { executeStrategyConcept } = await import(resolve(DIST_HARNESS, "agents/strategyConcept.js"));
@@ -364,6 +371,59 @@ async function main() {
   const platforms = args.platforms ?? [...PACKAGING_PLATFORMS];
   for (const p of platforms) {
     if (!PACKAGING_PLATFORMS.includes(p)) throw new Error(`unknown platform: ${p} (known: ${PACKAGING_PLATFORMS.join(", ")})`);
+  }
+
+  const now = Date.now();
+  const approvedFactsRaw = await readFile(resolve(REPO_ROOT, "config/approved-facts.json"), "utf8");
+  const { records: businessRecords } = adaptApprovedFactsFile(approvedFactsRaw, {
+    reviewedAt: args.reviewedAt, now,
+  });
+  const { records: automotiveRecords, warning } = await loadAutomotiveFacts(args.automotiveFactsPath, now);
+  if (warning) {
+    // A live run must never buy a stage against an evidence pack the operator
+    // did not mean to send. On 2026-09-21 this was a warning: the run scrolled
+    // past it, billed a full Opus 5 stage-1 call, and the pack it reasoned over
+    // held zero automotive facts. Nothing about that was recoverable after the
+    // fact, and everything needed to prevent it was already known here, for
+    // free, before the first request.
+    if (args.runner === "live") {
+      throw new Error(
+        `${warning}\n  Refusing to start a LIVE run against an incomplete evidence pack. `
+        + "Re-run with --runner fake to inspect the pack at no cost, or pass "
+        + "--automotive-facts <path> to point at the file you meant.",
+      );
+    }
+    console.warn(`warning: ${warning}`);
+  }
+
+  const pack = assertUsableEvidencePack(buildEvidencePack({
+    goal: args.goal,
+    records: [...businessRecords, ...automotiveRecords],
+    now,
+  }));
+  console.log(`Evidence pack built: ${JSON.stringify(pack.counts)}`);
+
+  const registry = new AgentRegistry();
+  await registry.verifyAllAssets();
+
+  // Every stage's required evidence classes are declared statically in the
+  // registry and the pack is fully built here, so the whole six-stage
+  // requirement is knowable before the first request. `stageExecution.ts`
+  // checks this per stage as each one runs, which means a class only stage 2
+  // needs is discovered after stage 1 has already been paid for. Check all six
+  // up front instead: same rule, same source of truth, nothing billed.
+  const availableKinds = new Set(pack.allowedFacts.map((r) => r.kind));
+  const unmet = [];
+  for (const stage of TARGET_STAGE_IDS) {
+    const missing = registry.get(stage).requiredEvidenceKinds
+      .filter((kind) => !availableKinds.has(kind));
+    if (missing.length) unmet.push(`${stage} requires ${missing.join(", ")}`);
+  }
+  if (unmet.length) {
+    throw new Error(
+      "evidence pack cannot satisfy every stage, so the run would fail partway "
+      + `after paying for the stages before it:\n  - ${unmet.join("\n  - ")}`,
+    );
   }
 
   if (args.runner === "live") {
@@ -396,63 +456,70 @@ async function main() {
     console.log("Proceeding with LIVE model calls — this will incur real cost.");
   }
 
-  const now = Date.now();
-  const approvedFactsRaw = await readFile(resolve(REPO_ROOT, "config/approved-facts.json"), "utf8");
-  const { records: businessRecords } = adaptApprovedFactsFile(approvedFactsRaw, {
-    reviewedAt: args.reviewedAt, now,
-  });
-  const { records: automotiveRecords, warning } = await loadAutomotiveFacts(args.automotiveFactsPath, now);
-  if (warning) console.warn(`warning: ${warning}`);
-
-  const pack = assertUsableEvidencePack(buildEvidencePack({
-    goal: args.goal,
-    records: [...businessRecords, ...automotiveRecords],
-    now,
-  }));
-  console.log(`Evidence pack built: ${JSON.stringify(pack.counts)}`);
-
-  const registry = new AgentRegistry();
-  await registry.verifyAllAssets();
-
   const runner = args.runner === "live"
     ? createAnthropicStageRunner()
     : undefined; // per-stage fake runners are built below, once real ids are known
-
-  const fake = buildFakeStageResponses(args.goal, pack);
-  const runnerFor = (buildResponse) => args.runner === "live"
-    ? runner
-    : async () => ({ text: JSON.stringify(buildResponse()), totalCostUsd: 0, usage: { input_tokens: 0, output_tokens: 0 } });
 
   const timestamp = new Date(now).toISOString().replace(/[:.]/g, "-");
   const runDir = resolve(args.outDir, timestamp);
   await mkdir(runDir, { recursive: true });
   const writeStage = (name, payload) => writeFile(resolve(runDir, `${name}.json`), JSON.stringify(payload, null, 2), "utf8");
 
+  // Validation runs after the provider returns, and one rejection ends the run
+  // with no retry — so a response that fails a size ceiling is a response the
+  // operator has already paid for. Discarding it outright, as this CLI did
+  // until now, throws away both the money and the only evidence of what the
+  // model actually produced. Record every raw response as it arrives; on
+  // failure the catch handler writes them next to the run. This changes no
+  // validation outcome: a rejected payload is still rejected, and nothing
+  // recorded here is ever read back as stage output.
+  const transcript = [];
+  failureContext = { runDir, transcript };
+
+  const fake = buildFakeStageResponses(args.goal, pack);
+  const runnerFor = (stage, buildResponse) => {
+    const inner = args.runner === "live"
+      ? runner
+      : async () => ({ text: JSON.stringify(buildResponse()), totalCostUsd: 0, usage: { input_tokens: 0, output_tokens: 0 } });
+    return async (...callArgs) => {
+      const response = await inner(...callArgs);
+      transcript.push({
+        stage,
+        receivedAt: new Date().toISOString(),
+        chars: typeof response?.text === "string" ? response.text.length : null,
+        usage: response?.usage ?? null,
+        totalCostUsd: response?.totalCostUsd ?? null,
+        text: response?.text ?? null,
+      });
+      return response;
+    };
+  };
+
   console.log("Running stage 1/6: strategy-concept");
   const strategy = await executeStrategyConcept({
     goal: args.goal, evidencePack: pack, registry,
-    runner: runnerFor(() => fake.strategyConcept()),
+    runner: runnerFor("strategy-concept", () => fake.strategyConcept()),
   });
   await writeStage("01-strategy-concept", strategy);
 
   console.log("Running stage 2/6: automotive-truth");
   const truth = await executeAutomotiveTruth({
     strategyOutput: strategy.output, evidencePack: pack, registry,
-    runner: runnerFor(() => fake.automotiveTruth()),
+    runner: runnerFor("automotive-truth", () => fake.automotiveTruth()),
   });
   await writeStage("02-automotive-truth", truth);
 
   console.log("Running stage 3/6: hook-story-script");
   const script = await executeHookStoryScript({
     strategyOutput: strategy.output, truthOutput: truth.output, evidencePack: pack, registry,
-    runner: runnerFor(() => fake.hookStoryScript(truth.output)),
+    runner: runnerFor("hook-story-script", () => fake.hookStoryScript(truth.output)),
   });
   await writeStage("03-hook-story-script", script);
 
   console.log("Running stage 4/6: production-direction");
   const direction = await executeProductionDirection({
     scriptOutput: script.output, truthOutput: truth.output, evidencePack: pack, registry,
-    runner: runnerFor(() => fake.productionDirection(script.output)),
+    runner: runnerFor("production-direction", () => fake.productionDirection(script.output)),
   });
   await writeStage("04-production-direction", direction);
 
@@ -460,7 +527,7 @@ async function main() {
   const packaging = await executePackagingAdaptation({
     scriptOutput: script.output, directionOutput: direction.output, truthOutput: truth.output,
     evidencePack: pack, requestedPlatforms: platforms, registry,
-    runner: runnerFor(() => fake.packagingAdaptation(script.output, platforms)),
+    runner: runnerFor("packaging-adaptation", () => fake.packagingAdaptation(script.output, platforms)),
   });
   await writeStage("05-packaging-adaptation", packaging);
 
@@ -468,7 +535,7 @@ async function main() {
   const critic = await executeFinalCritic({
     scriptOutput: script.output, directionOutput: direction.output, packagingOutput: packaging.output,
     truthOutput: truth.output, evidencePack: pack, requestedPlatforms: platforms, registry,
-    runner: runnerFor(() => fake.finalCritic(packaging.output, platforms)),
+    runner: runnerFor("final-critic", () => fake.finalCritic(packaging.output, platforms)),
   });
   await writeStage("06-final-critic", critic);
 
@@ -483,6 +550,20 @@ async function main() {
 }
 
 main().catch((err) => {
+  // Whatever went wrong, anything the provider already returned was billed.
+  // Write it out before reporting the failure so the operator keeps what they
+  // bought and can see exactly what the model produced.
+  if (failureContext?.transcript?.length) {
+    const target = resolve(failureContext.runDir, "rejected-responses.json");
+    try {
+      writeFileSync(target, JSON.stringify(failureContext.transcript, null, 2), "utf8");
+      console.error(
+        `Saved ${failureContext.transcript.length} raw provider response(s) — already paid for — to:\n  ${target}`,
+      );
+    } catch (writeErr) {
+      console.error(`could not save raw provider responses: ${writeErr?.message ?? writeErr}`);
+    }
+  }
   if (err?.name === "EvidencePackBoundsError" || err?.name === "EvidencePackSemanticError") {
     console.error(`${err.name}: ${err.message}`);
     if (Array.isArray(err.violations)) for (const v of err.violations) console.error(`  - ${v}`);

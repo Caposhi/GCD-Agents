@@ -77,6 +77,21 @@ Validation is where the epistemic contract is actually enforced. The model's cit
 
 **The stage contract has two halves, and both are checked.** The validator half is `payloadContract.ts` plus each stage's own validator. The prompt half is the checked-in Markdown in `agents/`, which is the only instruction channel the boundary has: every stage prompt states the output limits its own validator enforces — each bounded string's character ceiling and each array's cardinality, and for `packaging-adaptation` the per-platform caption and hashtag ceiling at the **effective** number (`Math.min` of the provider policy and this pipeline's narrowing, so Facebook's stated 2,200 rather than its 63,206 provider limit). This is load-bearing rather than courteous, because the boundary makes exactly one provider request with no retry and no repair pass: a ceiling the prompt omits is discovered only by a completed, paid-for response being discarded whole. The `CD0`–`CD8` group in the offline suite asserts the two halves agree, keyed off the validators' own limit objects, so changing a limit fails the suite instead of silently desynchronising the prompt. The prompts state each ceiling as a ceiling and not a target — cite what genuinely supports the work, and never more than N — and the pre-existing "an empty array is honest" guidance is preserved and separately asserted.
 
+**Nothing buys a stage before a free check can fail.** Validation runs *after* the provider
+returns and one rejection ends the run, so any precondition knowable beforehand must be checked
+beforehand or it is paid for. The operator-local evaluation CLI, `scripts/local/content-run.mjs`
+— the only path that executes these otherwise dormant stages, invoked by hand and never by a
+service — enforces three such preconditions ahead of its cost gate: a `--runner live` run refuses
+an absent automotive-facts file rather than warning past it; every stage's `requiredEvidenceKinds`
+is checked against the built pack across all of `TARGET_STAGE_IDS`, because `stageExecution.ts`
+checks that per stage as each one runs and so discovers a class only stage 2 needs after stage 1
+has been billed; and any response the provider already returned is written to
+`rejected-responses.json` beside the run rather than discarded with the error. None of this
+weakens the boundary: `stageExecution.ts` keeps its per-stage check, its single request, and its
+no-retry, no-repair guarantee, and nothing captured is read back as stage output. Size rejections
+also report the measured length alongside the bound, since a fifty-character overrun and a
+two-thousand-character overrun call for different fixes.
+
 ### Content Intelligence foundation (Phase 0B.0) — merged and deployed
 
 Additive and inert. It changes no production behavior: the scheduled pipeline below is untouched, and no reasoning stage executes.

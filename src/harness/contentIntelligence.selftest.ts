@@ -816,6 +816,22 @@ async function run(): Promise<void> {
     check("AB1. an empty goal fails", await rejects(() => runStrategy(okText, strategyPack, "  ")));
     check("AB2. an oversized goal fails",
       await rejects(() => runStrategy(okText, strategyPack, "x".repeat(LIMITS.goalChars + 1))));
+
+    // A size rejection discards a response the operator has already paid for,
+    // and one rejection ends the run. The message therefore has to carry the
+    // measurement and not only the bound: an overrun of 50 characters is a
+    // prompt nudge, an overrun of 2,000 says the ceiling is too low for the
+    // work being asked for. Keyed off the contract's own value.
+    {
+      const over = LIMITS.conceptChars + 137;
+      let message = "";
+      try {
+        await runStrategy(JSON.stringify({ ...validOutput, concept: "c".repeat(over) }));
+      } catch (e) { message = e instanceof Error ? e.message : String(e); }
+      check("AB2b. an over-limit string reports the actual length, not only the bound",
+        message.includes(`exceeds ${LIMITS.conceptChars} characters`)
+          && message.includes(`(actual ${over})`));
+    }
     check("AB3. a runner error fails closed", await rejectsWithStageError(() => executeStrategyConcept({
       goal: "g", evidencePack: strategyPack,
       runner: async () => { throw new Error("upstream 500"); },
@@ -7640,6 +7656,49 @@ async function run(): Promise<void> {
         ["agents/packaging-adaptation.md", "A shorter, thinner caption is a correct answer"],
         ["agents/final-critic.md", "an empty `findings` array and a calm summary are a complete, correct answer"],
       ].every(([file, phrase]) => readFileSync(resolve(REPO_ROOT, file!), "utf8").includes(phrase!)));
+
+    // --- CE. the local CLI commits no spend before a free check can fail ----
+    //
+    // Two live runs on 2026-09-21 paid for a stage-1 Opus 5 call and kept
+    // nothing. Both were preventable for free and before the request:
+    // the facts file was absent (a warning the run scrolled past), and stage
+    // 2's required evidence class was missing from the pack the whole time,
+    // so the run was doomed before it started. Every input to both checks is
+    // known once the pack is built.
+    //
+    // These read the checked-in CLI source. The script is not importable
+    // (it is an executable .mjs that loads from dist/ at runtime), so this
+    // follows the same static-wiring precedent as the worker boundary checks.
+
+    const cli = await readFile(resolve(REPO_ROOT, "scripts/local/content-run.mjs"), "utf8");
+    const at = (needle: string): number => cli.indexOf(needle);
+
+    const refusal = at("Refusing to start a LIVE run against an incomplete evidence pack");
+    check("CE1. a live run refuses an incomplete evidence pack instead of warning past it",
+      refusal > 0 && at('if (args.runner === "live") {\n      throw new Error(') > 0);
+
+    const preflight = at("evidence pack cannot satisfy every stage");
+    const costGate = at("Estimated ceiling cost per stage");
+    check("CE2. every stage's required evidence classes are checked before any spend "
+      + "is authorized, not per stage as each one runs",
+      preflight > 0 && costGate > 0 && preflight < costGate
+        && at("TARGET_STAGE_IDS") > 0 && at("requiredEvidenceKinds") > 0);
+
+    check("CE3. the preflight is driven by the registry's own stage list, so a new "
+      + "stage cannot be added without being covered",
+      /for \(const stage of TARGET_STAGE_IDS\)[\s\S]{0,240}requiredEvidenceKinds/.test(cli));
+
+    // `indexOf` returns -1 for a marker that is gone, and -1 sorts before
+    // every real index — so presence has to be asserted alongside order, or
+    // deleting a check would read as "it comes first".
+    check("CE4. both free checks are present and run before the cost gate authorizes spend",
+      refusal > 0 && preflight > 0 && costGate > 0
+        && refusal < costGate && preflight < costGate);
+
+    check("CE5. a response the run already paid for is written out, never discarded",
+      at("rejected-responses.json") > 0
+        && at("failureContext") > 0
+        && /transcript\.push\(\{[\s\S]{0,400}text:/.test(cli));
 
   console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURE(S)`);
   process.exit(failures === 0 ? 0 : 1);
