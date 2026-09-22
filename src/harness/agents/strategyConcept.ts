@@ -102,17 +102,24 @@ export const HYPOTHESIS_BASES = ["creative", "causal"] as const;
  * they are enforced after the response arrives, exactly as before.
  *
  * A `description` is a model-facing channel, so it states the same figure the
- * prompt states — `statedCeiling`, not the enforced limit. For `concept` those
- * differ deliberately and the difference is not something the model is told;
+ * prompt states — `statedCeiling`, not the enforced limit. For every character
+ * field this stage emits those differ deliberately, because all of them are
+ * internal plumbing, and the difference is not something the model is told;
  * see `STATED_FIELD_CEILINGS` in `payloadContract.ts`.
  */
 export const STRATEGY_CONCEPT_RESPONSE_FORMAT = schemaObject({
-  angle: schemaString("The strategic angle, one sentence", LIMITS.angleChars),
+  angle: schemaString(
+    "The strategic angle, one sentence",
+    statedCeiling("strategy-concept.angle", LIMITS.angleChars),
+  ),
   concept: schemaString(
     "The content concept this angle produces",
     statedCeiling("strategy-concept.concept", LIMITS.conceptChars),
   ),
-  rationale: schemaString("Why this angle, referencing the evidence basis", LIMITS.rationaleChars),
+  rationale: schemaString(
+    "Why this angle, referencing the evidence basis",
+    statedCeiling("strategy-concept.rationale", LIMITS.rationaleChars),
+  ),
   supportingFactIds: schemaArray(
     { type: "string" }, "Ids from allowedFacts ONLY", LIMITS.maxIds,
   ),
@@ -124,7 +131,10 @@ export const STRATEGY_CONCEPT_RESPONSE_FORMAT = schemaObject({
   ),
   hypotheses: schemaArray(
     schemaObject({
-      statement: schemaString("Something proposed, not asserted", LIMITS.hypothesisChars),
+      statement: schemaString(
+        "Something proposed, not asserted",
+        statedCeiling("strategy-concept.hypotheses[].statement", LIMITS.hypothesisChars),
+      ),
       basis: schemaEnum(HYPOTHESIS_BASES, "Whether the hypothesis is creative or causal"),
     }),
     "Things proposed, not asserted",

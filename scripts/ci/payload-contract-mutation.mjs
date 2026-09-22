@@ -3021,7 +3021,48 @@ const RAW_IDENTITY_MUTATIONS = [
   },
 ];
 
-const MUTATIONS = [...LEGACY_MUTATIONS, ...RAW_IDENTITY_MUTATIONS];
+// The field-classification margins. Appended after every earlier group so no
+// existing mutation id moves. Each targets `payloadContract.ts` alone — the
+// classification, the stated figures and the enforced limits all live there.
+const FIELD_MARGIN_MUTATIONS = [
+  {
+    name: "an internal-plumbing margin is narrowed below the declared minimum",
+    file: PAYLOAD,
+    from: "  rationaleChars: 6_000,",
+    to: "  rationaleChars: 3_000,",
+    expect: ["CD0c."],
+  },
+  {
+    name: "a plumbing margin pushes a policy's derived output floor past its model's output cap",
+    file: PAYLOAD,
+    from: "  summaryChars: 800,",
+    to: "  summaryChars: 3_000,",
+    expect: ["CC19a.", "CC22."],
+  },
+  {
+    name: "a product-bearing field is given a hidden margin",
+    file: PAYLOAD,
+    from: '  "final-critic.claimFindingUse[].summary": 400,',
+    to: '  "final-critic.claimFindingUse[].summary": 400,\n  "final-critic.summary": 750,',
+    expect: ["CD0f."],
+  },
+  {
+    name: "a plumbing field is reclassified product-bearing while keeping its margin",
+    file: PAYLOAD,
+    from: '  "strategy-concept.rationale": plumbing(',
+    to: '  "strategy-concept.rationale": product(',
+    expect: ["CD0f."],
+  },
+  {
+    name: "a plumbing character field loses its stated figure, so the prompt's number no longer matches",
+    file: PAYLOAD,
+    from: '  "automotive-truth.assessment": 2_000,\n',
+    to: "",
+    expect: ["CD0f.", "CD2 (automotive-truth)."],
+  },
+];
+
+const MUTATIONS = [...LEGACY_MUTATIONS, ...RAW_IDENTITY_MUTATIONS, ...FIELD_MARGIN_MUTATIONS];
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const decodeUtf8Strict = (bytes) => new TextDecoder("utf-8", { fatal: true }).decode(bytes);

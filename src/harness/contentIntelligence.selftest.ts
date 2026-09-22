@@ -46,6 +46,7 @@ import {
   HANDOFF_GUARDS,
   MAX_JSON_ESCAPE_EXPANSION,
   MAX_TOKENS_PER_UTF8_BYTE,
+  OUTPUT_FIELD_BOUNDS,
   PACKAGING_OUTPUT,
   PLATFORM_CLAIMS_BLOCK_CHARS,
   POLICY_OUTPUT_TOKEN_FLOORS,
@@ -6389,6 +6390,18 @@ async function run(): Promise<void> {
     check("CC19. every stage's maximal output contract fits its policy's token budget"
       + (shortBudgets.length ? ` (short: ${shortBudgets.join("; ")})` : ""),
       shortBudgets.length === 0 && BUDGETS.length === TARGET_STAGE_IDS.length);
+    // A limit change can only move a floor through the derivation, so this is
+    // the check that keeps a future widening — a margin on a plumbing field
+    // included — from asking a model for more output than it can return.
+    const overCap = Object.entries(POLICY_OUTPUT_TOKEN_FLOORS).filter(([policy, floor]) => {
+      const cap = POLICY_MODEL_OUTPUT_CAPS[policy as keyof typeof POLICY_MODEL_OUTPUT_CAPS];
+      return cap === undefined || !(floor < cap);
+    });
+    check("CC19a. every derived output-token floor is strictly below its model's output cap"
+      + (overCap.length ? ` — at or over: ${overCap.map(([p, f]) => `${p}=${f}`).join(", ")}` : ""),
+      overCap.length === 0
+        && Object.keys(POLICY_OUTPUT_TOKEN_FLOORS).sort().join()
+             === Object.keys(POLICY_MODEL_OUTPUT_CAPS).sort().join());
     check("CC20. every registered stage's declared policy is one of the three budgeted "
       + "policies, so no stage can be added without a budget",
       targetStageDefinitions().every((d) =>
@@ -7766,11 +7779,11 @@ async function run(): Promise<void> {
      * The figure the prompt is required to state for a field: the enforced
      * limit, unless `STATED_FIELD_CEILINGS` declares a deliberately lower one.
      *
-     * `concept` is the only such field today. Its prompt still says 1,200 while
-     * the validator enforces 1,500, because two live runs measured the model
-     * aiming at the stated number (1,196 and 1,259 against 1,200) rather than
-     * treating it as a ceiling. Both numbers come from the contract; neither is
-     * written here.
+     * Every internal-plumbing character field declares one, because live runs
+     * measured the model aiming at the stated number and landing around it
+     * (`concept` 1,196 and 1,259 against 1,200; `rationale` 2,580 against
+     * 2,000). Product-bearing fields declare none and state exactly what they
+     * enforce. Both numbers come from the contract; neither is written here.
      */
     const promptFigure = (stage: string, field: string, enforced: number): number =>
       statedCeiling(`${stage}.${field}`, enforced);
@@ -7787,8 +7800,10 @@ async function run(): Promise<void> {
     {
       const specByStage = new Map(promptLimits.map((s) => [s.stage, s] as const));
       const declared = Object.entries(STATED_FIELD_CEILINGS);
+      // Stage ids contain no dot; field tokens can (`hypotheses[].statement`),
+      // so the key splits at its first dot, not its last.
       const enforcedFor = (key: string): number | undefined => {
-        const dot = key.lastIndexOf(".");
+        const dot = key.indexOf(".");
         const pair = specByStage.get(key.slice(0, dot))
           ?.paired.find(([f]) => f === key.slice(dot + 1));
         return pair?.[1];
@@ -7806,6 +7821,70 @@ async function run(): Promise<void> {
       check("CD0d. every declared stated figure names a field some stage prompt actually pairs, "
         + "so an entry cannot be left behind after a field is renamed or removed",
         declared.every(([key]) => enforcedFor(key) !== undefined));
+    }
+
+    // The classification is recorded in code beside the limits, and these
+    // checks are what keep it honest: it must cover every bounded field the
+    // prompts pair (plus stage 5's per-platform caption and hashtag fields),
+    // carry the validators' own values, give a hidden margin to every plumbing
+    // character field and to nothing product-bearing, and agree with the one
+    // human review surface this pipeline has.
+    {
+      const PER_PLATFORM_FIELDS: ReadonlyArray<readonly [string, number, LimitUnit]> = [
+        ["packaging-adaptation.packages[].caption", PACKAGING_LIMITS.pipelineCaptionChars, "characters"],
+        ["packaging-adaptation.packages[].hashtags", PACKAGING_LIMITS.maxHashtags, "entries"],
+      ];
+      const expectedBounds = [
+        ...promptLimits.flatMap((spec) => spec.paired.map(
+          ([field, value, unit]) => [`${spec.stage}.${field}`, value, unit] as const)),
+        ...PER_PLATFORM_FIELDS,
+      ];
+      const classified = Object.entries(OUTPUT_FIELD_BOUNDS);
+      const drift = expectedBounds.filter(([key, value, unit]) => {
+        const bound = OUTPUT_FIELD_BOUNDS[key];
+        return bound === undefined || bound.enforced !== value || bound.unit !== unit
+          || bound.basis.trim().length === 0;
+      });
+      check("CD0e. every bounded output field is classified, beside its limit, at the value and "
+        + "unit its validator enforces, with a recorded basis"
+        + (drift.length ? ` — missing or drifted: ${drift.map(([k]) => k).join(", ")}` : ""),
+        drift.length === 0 && classified.length === expectedBounds.length
+          && classified.every(([, b]) => b.class === "product-bearing" || b.class === "internal-plumbing"));
+
+      const declaredKeys = new Set(Object.keys(STATED_FIELD_CEILINGS));
+      const unsplitPlumbing = classified
+        .filter(([key, b]) => b.class === "internal-plumbing" && b.unit === "characters"
+          && !declaredKeys.has(key))
+        .map(([key]) => key);
+      const splitProduct = [...declaredKeys]
+        .filter((key) => OUTPUT_FIELD_BOUNDS[key]?.class !== "internal-plumbing"
+          || OUTPUT_FIELD_BOUNDS[key]?.unit !== "characters");
+      check("CD0f. every internal-plumbing character field states a lower figure than it "
+        + "enforces, and no product-bearing field is given a margin"
+        + (unsplitPlumbing.length ? ` — plumbing without a margin: ${unsplitPlumbing.join(", ")}` : "")
+        + (splitProduct.length ? ` — margin on a product-bearing field: ${splitProduct.join(", ")}` : ""),
+        unsplitPlumbing.length === 0 && splitProduct.length === 0 && declaredKeys.size > 0);
+
+      // The review surface is `markdownSummary` in the local CLI — the only
+      // place this pipeline renders stage output for a person. A plumbing
+      // field that starts appearing there reaches a human reviewer, so it is
+      // product-bearing by definition and must be reclassified, not given
+      // slack. Plumbing fields are found by their top-level token, which is
+      // what the summary would have to name to render one.
+      const runCli = await readFile(resolve(REPO_ROOT, "scripts/local/content-run.mjs"), "utf8");
+      const summaryStart = runCli.indexOf("function markdownSummary(");
+      const summaryEnd = runCli.indexOf("\nasync function main(", summaryStart);
+      const summarySource = summaryStart >= 0 && summaryEnd > summaryStart
+        ? runCli.slice(summaryStart, summaryEnd) : "";
+      const rendered = classified
+        .filter(([, b]) => b.class === "internal-plumbing")
+        .map(([key]) => key.slice(key.indexOf(".") + 1).split(/[.[]/)[0]!)
+        .filter((token, index, all) => all.indexOf(token) === index)
+        .filter((token) => new RegExp(`\\b${token}\\b`).test(summarySource));
+      check("CD0g. no internal-plumbing field is rendered on the run's human review surface"
+        + (rendered.length ? ` — rendered: ${rendered.join(", ")}` : ""),
+        summarySource.length > 0 && rendered.length === 0
+          && /\bhook\b/.test(summarySource) && /\bcaption\b/.test(summarySource));
     }
 
     const strategySpec = promptLimits.find((s) => s.stage === "strategy-concept");
@@ -7933,6 +8012,20 @@ async function run(): Promise<void> {
         && at("failureContext") > 0
         && /transcript\.push\(\{[\s\S]{0,400}text:/.test(cli));
 
+    // Every run — fake or live, passing or failing — measures each output
+    // field against its limit and writes the table beside the run, measured
+    // from the raw responses so a rejected one is measured too. That is what
+    // turns the next field that outgrows its limit into data rather than
+    // another paid round trip.
+    check("CE6. every run writes per-field measurements, on success and on failure, from the "
+      + "raw responses, keyed by the contract's own field bounds",
+      at("field-measurements.md") > 0
+        && at("OUTPUT_FIELD_BOUNDS") > 0
+        && /measureFields\(transcript,/.test(cli)
+        && /const measured = writeMeasurements\(\);/.test(cli)
+        && /failureContext\.writeMeasurements\(\)/.test(cli)
+        && at("failureContext.writeMeasurements()") < at("rejected-responses.json\");"));
+
     // --- CF. the provider is constrained to the shape, not merely asked ------
     //
     // On 2026-09-21 a stage-3 response arrived wrapped in a ```json fence and
@@ -8021,16 +8114,43 @@ async function run(): Promise<void> {
           .properties.verdict.enum)) === JSON.stringify([...CRITIC_VERDICTS]));
 
     // A description is the only channel a schema has for a ceiling it cannot
-    // enforce. Keyed off the contract so moving a limit fails here too.
+    // enforce. Keyed off the contract so moving a limit fails here too — and
+    // for every field with a declared stated figure, the description must
+    // state that figure and must not state the enforced one, or the margin the
+    // model is never told about would be told to it through the schema.
+    const schemaNodeFor = (key: string): Record<string, any> | undefined => {
+      const dot = key.indexOf(".");
+      const schema = RESPONSE_FORMATS.find(([name]) => name === key.slice(0, dot))?.[1];
+      let node: Record<string, any> | undefined = schema as Record<string, any> | undefined;
+      for (const part of key.slice(dot + 1).split(".")) {
+        const name = part.replace(/\[\]$/, "");
+        node = node?.properties?.[name];
+        if (part.endsWith("[]")) node = node?.items;
+      }
+      return node;
+    };
+    const leaks = Object.entries(STATED_FIELD_CEILINGS).filter(([key, stated]) => {
+      const node = schemaNodeFor(key);
+      const enforced = OUTPUT_FIELD_BOUNDS[key]?.enforced;
+      if (node === undefined || enforced === undefined) return true;
+      const description = String(node.description ?? "");
+      // A string item with no description of its own (e.g. `assumptions[]`)
+      // states no ceiling at all, which leaks nothing.
+      if (node.description === undefined) return false;
+      return !description.includes(`at most ${groupDigits(stated)} characters`)
+        || description.includes(`at most ${groupDigits(enforced)} characters`);
+    });
     const strategyProps =
       (STRATEGY_CONCEPT_RESPONSE_FORMAT as Record<string, any>).properties as Record<string, any>;
     check("CF5. ceilings are carried into the schema descriptions, at the same figure the "
       + "prompt states — a description is a model-facing channel, so it must not leak the "
-      + "slack between a stated figure and its enforced ceiling",
-      String(strategyProps.concept.description)
-        .includes(`at most ${groupDigits(
-          statedCeiling("strategy-concept.concept", LIMITS.conceptChars),
-        )} characters`)
+      + "slack between a stated figure and its enforced ceiling"
+      + (leaks.length ? ` — wrong or leaking: ${leaks.map(([k]) => k).join(", ")}` : ""),
+      leaks.length === 0
+        && String(strategyProps.concept.description)
+          .includes(`at most ${groupDigits(
+            statedCeiling("strategy-concept.concept", LIMITS.conceptChars),
+          )} characters`)
         && String(strategyProps.supportingFactIds.description)
           .includes(`at most ${groupDigits(LIMITS.maxIds)} entries`));
 
