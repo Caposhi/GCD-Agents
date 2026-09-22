@@ -55,7 +55,9 @@ The dry run needs no database at all. The applying run requires durable state an
 
 A sixth item is **informational and never fails the job**: the current `main` SHA and the days remaining until the interval bound. Expiry is a decision point, not a cliff, and the decision is the named owner's — a monitor that failed on the calendar would be asserting an authority it does not have.
 
-Every expected value comes from `scripts/ops/interval-monitor/expected.mjs`, never from the workflow file. `npm run test:offline` asserts that module against both [Status](STATUS.md) and the workflow, so editing one without the other fails CI — see [Testing](TESTING.md).
+**Bound, as of 2026-09-22.** The owner re-authorized the interval on 2026-09-22 under a new bound of `2026-10-22T18:52Z` (see [Status](STATUS.md)), and `INTERVAL_EXPIRY` in `scripts/ops/interval-monitor/expected.mjs` carries that bound, so the sixth item counts down to it. The superseded `2026-09-24T18:52Z` stays in Status as history; the offline suite binds the constant to the *current* bound Status records, not to any date in the file — see [Testing](TESTING.md). A future re-authorization moves the constant in the same change that records it.
+
+Every expected value comes from `scripts/ops/interval-monitor/expected.mjs`, never from the workflow file. `npm run test:offline` asserts that module against both [Status](STATUS.md) and the workflow. Against Status most checks are containment — they catch a constant edited to a value Status does not record, not a Status edit that leaves the old value elsewhere in the file — while the interval expiry is bound to the current bound Status records — see [Testing](TESTING.md).
 
 **What a failure means.** The job reports three states, and the difference between the last two is the reason it exists:
 

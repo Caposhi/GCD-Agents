@@ -13,12 +13,14 @@
  * a different expectation changes this file, in a reviewed commit, and the diff
  * says so. No environment variable can relax, widen or disable any value here.
  *
- * `offline.selftest.mjs` asserts three separate agreements, so a future edit to
- * any one of them alone fails `npm run test:offline`:
+ * `offline.selftest.mjs` asserts three separate agreements:
  *
  *   1. these constants against what [`docs/STATUS.md`](../../../docs/STATUS.md)
  *      records for the interval — the document is the authority, this file is
- *      its executable restatement;
+ *      its executable restatement. Most of these are containment checks: they
+ *      fail when a constant here is edited to a value Status does not record,
+ *      not when Status is edited and the old value survives elsewhere in it.
+ *      The interval expiry is bound to the CURRENT bound Status records;
  *   2. these constants against `.github/workflows/interval-monitor.yml` — its
  *      schedule, its environment, its secret name, its trigger set and its
  *      permission set;
@@ -146,8 +148,13 @@ export const WORKFLOW_REFUSAL_SINCE = "2026-09-17T18:52:47Z";
  * Reaching it authorizes nothing: it obliges the named owner to choose M2
  * completion, explicit re-authorization with a new bound and reason, or the
  * recovery path. This monitor reports the remaining days and never decides.
+ *
+ * This is the CURRENT bound. The owner re-authorized the interval on 2026-09-22
+ * (outcome (b)), superseding the original `2026-09-24T18:52Z`; `docs/STATUS.md`
+ * keeps that superseded bound as history. The offline suite binds this constant
+ * to the current bound Status records, not to any date appearing in the file.
  */
-export const INTERVAL_EXPIRY = "2026-09-24T18:52Z";
+export const INTERVAL_EXPIRY = "2026-10-22T18:52Z";
 
 /** The GitHub environment holding the read-only database secret. */
 export const MONITOR_ENVIRONMENT = "monitoring";

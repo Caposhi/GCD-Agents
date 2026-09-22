@@ -10,7 +10,10 @@
 # scripts/ops/interval-monitor/expected.mjs, not in this file. npm run
 # test:offline asserts that module against what docs/STATUS.md records AND
 # against this file's schedule, triggers, permissions, environment and secret
-# name, so editing one without the other fails CI.
+# name. Against Status most of those checks are containment: they catch a
+# constant edited to a value Status does not record, not a Status edit that
+# leaves the old value elsewhere in the file. The interval expiry is bound to
+# the current bound Status records.
 #
 # This job is strictly read-only: two GitHub GETs, one /healthz GET, and one
 # read-only PostgreSQL session. It writes nothing and deploys nothing. The
