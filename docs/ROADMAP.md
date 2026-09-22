@@ -1348,10 +1348,42 @@ above), so provider evidence does not and cannot independently establish who per
 deploy; the attestation and that evidentiary gap are separate facts, and this attestation does not
 close it.
 
+#### M1→M2 interval — re-authorization (recorded 2026-09-22)
+
+Authorized by: Michael Capote, CTO, Alan Gelfand Inc. DBA German Car Depot — the named operator who performed M1 and the owner of record for this interval.
+
+Action taken: outcome (b), explicit re-authorization of the partial-release interval under a new bound, decided on 2026-09-22, two days before the `2026-09-24T18:52Z` decision point rather than at it. M2 was not performed and is not declared complete. The worker and scheduler remain at exact artifact `R` = `44d7336f2c75ff880cff0d8205d2fafe13eb91b5`; the API remains at exact artifact `A` = `d5015236672a02bf8f58d342625c32a4f5acc8a1`. The recovery path was not taken.
+
+New bound: `2026-10-22T18:52Z`. This supersedes the `2026-09-24T18:52Z` bound and nothing else. Every other term of the interval remains in force unchanged.
+
+Stated reason. The partial-release state has been verified twice: a read-only human pass on `2026-09-21T15:28:38Z` covering all four required checks, and an automated six-check pass on `2026-09-22T17:08:36Z`. Both found the state unchanged. M2 is a controlled reconciliation requiring its own preflight, gates and post-deployment verification, and is not work that should be compressed to meet a calendar date. Extending the bound is therefore preferred to performing M2 under time pressure, or to performing a production deploy on a demonstrably healthy system in order to take the recovery path.
+
+Monitoring — the condition is now met, for the first time since M1. The prior interval's monitoring requirement went unmet: no daily check was ever established and none ran on any day. That is not retroactively fixable and is not claimed to be. For this interval:
+
+* A daily read-only check runs as the `Interval monitor` GitHub Actions workflow (.github/workflows/interval-monitor.yml, merged in PR #83 at `b8f12f3`), scheduled `0 14 * * *`. It outlives any session and keeps a durable, inspectable run history — the two properties the previous attempt lacked.
+* It performs six checks: the API's live artifact and health via `/healthz`; the applied migration set; scheduler liveness via `brief_queue`; the deployment-automation gate variable; the `deploy-production` refusal history; and interval context. A check that cannot be performed reports `NOT CHECKED` and fails the run; it never reports a pass on incomplete evidence.
+* That behaviour was demonstrated rather than assumed. Run #1 on `2026-09-22T16:52:36Z` failed because the database credential was wrong, reporting two checks as `NOT CHECKED` and refusing an all-clear. Run #2 on `2026-09-22T17:08:36Z` returned ALL CLEAR: API live at exact `A` and healthy; `_migrations` holding exactly `001`–`007` with no `008`; newest `brief_queue` row `2026-09-22T13:00:52.389Z`, 4.1 hours before database `now()`; `RENDER_DEPLOY_AUTOMATION_ENABLED` exactly `false`; and no `deploy-production` run concluding `success` across 48 runs inspected.
+* Two things the automated check does not cover, stated plainly rather than implied: the deploy identity of the worker and scheduler, and the Render native auto-deploy setting. Both require Render credentials the workflow deliberately does not hold, because the only Render API key available is account-wide with write authority and does not belong in an unattended job. Both remain covered by human verification passes.
+* Two full read-only verification passes with Render and PostgreSQL access are scheduled: one at approximately `2026-10-08`, and one before the `2026-10-22T18:52Z` decision point. The expiry decision requires the second, exactly as the prior interval's did.
+* The compensating controls remain in force and are not a substitute for monitoring: Render native auto-deploy is `no`/`off` on all three services, and the `deploy-production` workflow has refused at its "Refuse while production automation is disabled" step on every `main` merge since the interval began.
+
+Standing prohibitions, unchanged and in force for the whole extended interval: ordinary automated deployment is prohibited and the controller must not be forced past it; no unrelated release may occur, of any service, for any reason; the interval remains explicitly time-bounded, owned as recorded above, and monitored as scoped above.
+
+This re-authorization authorizes nothing else. It does not begin, schedule or imply M2. It does not authorize P1–P8, migration `008`, production wiring, executor enablement, or the Google Business Profile expansion. It does not authorize the recovery path. Each requires its own explicit authorization. The recovery path remains available and unchanged: redeploy the API to exact `R`, leaving migration 007 applied.
+
+Open follow-ups recorded with this authorization:
+
+* The `0 14 * * *` scheduled trigger has never fired. Only `workflow_dispatch` is proven. Confirm the first scheduled run lands on 2026-09-23; a scheduled workflow that silently never runs is the failure mode that ended the previous attempt.
+* docs/STATUS.md line 126 still states that `main` "remains at `A` with zero commits after." That is false — `main` has advanced well beyond `A` — and it is corrected by this change.
+* The monitor connects with `sslmode=require`, which the current `pg` driver treats as `verify-full` and which will adopt weaker libpq semantics in `pg` v9. Pin the intended mode explicitly before that upgrade.
+
+#### Interval record as first set (recorded 2026-09-18) — bound superseded above
+
 **Interval bound.**
 - Start: `2026-09-17T18:52:47.893627Z` — the finish time of the M1 API deploy
   `dep-dam3dfv40ujc73fgidhg`.
-- Expiry: `2026-09-24T18:52Z`.
+- Expiry: `2026-09-24T18:52Z` — **superseded** by the 2026-09-22 re-authorization above, which
+  set the new bound `2026-10-22T18:52Z` under outcome (b). Preserved as history.
 
 Expiry is a decision point, not a cliff. On or before expiry, exactly one of the following three
 outcomes must occur, and **none of them is automatic**:
@@ -1372,14 +1404,14 @@ agreement. **This does not unapply migration 007** — the database stays ahead 
 007's rollback file (`state/rollback/007_evidence_bounds_rollback.sql`) is separately authorized
 and applied.
 
-**Monitoring.** The M1 exit conditions require this interval be actively monitored. **That condition is unmet.** No daily automated check was ever established, and none has run on any day of the interval. A Routine was created self-bound to the originating session, fired once as a test whose result was never seen, and does not exist now — a current listing of this account's Routines, including completed ones, returns zero.
+**Monitoring — prior interval, to the superseded `2026-09-24T18:52Z` bound; preserved as history.** For the extended interval, the monitoring condition is recorded as met in the re-authorization above. The M1 exit conditions require this interval be actively monitored. **That condition is unmet.** No daily automated check was ever established, and none has run on any day of the interval. A Routine was created self-bound to the originating session, fired once as a test whose result was never seen, and does not exist now — a current listing of this account's Routines, including completed ones, returns zero.
 
 In its place, two preventive controls have held, with evidence:
 
   - Render native auto-deploy off on all three services (`gcd-social-api`, `gcd-social-worker`, `gcd-social-scheduler`) and `RENDER_DEPLOY_AUTOMATION_ENABLED` exactly `false`, both as of the 2026-09-18 verification — a dated observation, not current truth.
   - The `deploy-production` workflow has refused at its "Refuse while production automation is disabled" step on every `main` merge since the interval began: eight runs, run `35368071350` (run #33, 2026-09-18T16:22Z) through run `35448454979` (run #40, 2026-09-19T14:21Z), each failing at exactly that step.
 
-These are compensating controls, not the promised monitoring, and neither one checks the migration set or the API's live artifact/health on any cadence. **An implementation of the promised daily check now exists and is `IMPLEMENTED` — see [the interval monitor record](#m1m2-interval-monitoring--daily-read-only-drift-check--implemented) below. It does not by itself close this condition:** it is not merged, and it has never fired. A green pull request proves the monitor's logic and its agreement with this record; it does not prove that GitHub schedules the workflow, that the `monitoring` environment resolves its secret, or that the read-only role can read what it is granted. The condition stays **unmet** until a real firing is observed. A single read-only verification of the four checks below is scheduled before the 2026-09-24T18:52Z decision point, and the expiry decision requires it. The four checks that verification must cover:
+These are compensating controls, not the promised monitoring, and neither one checks the migration set or the API's live artifact/health on any cadence. **An implementation of the promised daily check now exists and is `IMPLEMENTED` — see [the interval monitor record](#m1m2-interval-monitoring--daily-read-only-drift-check--merged) below. It does not by itself close this condition:** it is not merged, and it has never fired. A green pull request proves the monitor's logic and its agreement with this record; it does not prove that GitHub schedules the workflow, that the `monitoring` environment resolves its secret, or that the read-only role can read what it is granted. The condition stays **unmet** until a real firing is observed. **Update 2026-09-22:** the monitor has since merged through PR #83 (`b8f12f3`) and fired twice by `workflow_dispatch` on `main`; the re-authorization above records the monitoring condition as met for the extended interval, as scoped there, and records that its `0 14 * * *` scheduled trigger has not yet fired. A single read-only verification of the four checks below is scheduled before the 2026-09-24T18:52Z decision point, and the expiry decision requires it. The re-authorization above records that verification as a read-only human pass on `2026-09-21T15:28:38Z` covering all four checks. The four checks that verification must cover:
 
   1. no new deploy on `gcd-social-api`, `gcd-social-worker`, or `gcd-social-scheduler`;
   2. the applied migration set is still exactly `001`–`007`, with no `008`;
@@ -1431,7 +1463,16 @@ NUL-delimited and compared byte for byte. And the failure path echoed a **server
 so a custom `ERRCODE` reached operator logs; both scripts now emit only fixed categories defined in
 the script, and `UNKNOWN` for anything unrecognised.
 
-## M1→M2 interval monitoring — daily read-only drift check — `IMPLEMENTED`
+## M1→M2 interval monitoring — daily read-only drift check — `MERGED`
+
+**Update 2026-09-22 — `MERGED`, and fired by manual dispatch; the scheduled trigger is not yet
+observed.** Two `workflow_dispatch` runs on `main` followed the merge recorded below: run #1
+(`35756897890`) failed on a wrong database credential and refused an all-clear, and run #2
+(`35758714546`) returned ALL CLEAR. The 2026-09-22 re-authorization in the M1→M2 interval section
+above records the monitoring condition as met for the extended interval, as scoped there, and
+records as an open follow-up that the `0 14 * * *` scheduled trigger has never fired. The rest of
+this record is preserved as written at implementation; where it says *not merged*, *never fired*
+or *unmet*, that was true then and is superseded by this update.
 
 **State:** `IMPLEMENTED` on a branch; `MERGED` only on merge. **Not `DEPLOYED`, not `ENABLED`, not
 `PRODUCTION-VALIDATED`, and explicitly not yet proof that the M1 exit conditions' monitoring
@@ -1441,7 +1482,11 @@ unrelated release may occur, of any service, for any reason* — is in force unt
 [Status](STATUS.md)'s production tables, live SHAs, M1→M2 interval record and current cursor are
 **untouched** by this change.
 
-**PR / merge:** based on `main` at `5e7e2f036e79192a8ebd05c702921988eee81088`. **PR number and merge
+**PR / merge:** based on `main` at `5e7e2f036e79192a8ebd05c702921988eee81088`. **Closed 2026-09-22:**
+PR #83, merge `b8f12f3fb2a43ae88d595eeee79528376b170195`, whose ordered parents are
+`0c45c0a676db6b07ae7e34df76c980a854ee9d72` (the PR #82 merge) then
+`5283c4aca763db7e1ec488085752b81af340883f`, verified by direct Git inspection. The original text
+follows. **PR number and merge
 SHA are not knowable before merging** — recorded here as a **blocking follow-up** under the
 mutable-identifier exception in [`AGENTS.md`](../AGENTS.md), to be reconciled in the first change
 after merge.
@@ -1596,7 +1641,8 @@ reported as fixed categories, never the driver's own message, which can carry co
 
 **Unresolved follow-ups.**
 
-- The PR number and merge SHA above (blocking follow-up, mutable-identifier exception).
+- ~~The PR number and merge SHA above (blocking follow-up, mutable-identifier exception).~~
+  **Closed** in the **PR / merge** line above: PR #83, merge `b8f12f3`.
 - **The first real firing is what proves this workflow — open until it is observed.** A manual
   `workflow_dispatch` on `main` after merge is the first genuine end-to-end evidence: that GitHub
   schedules the workflow, that `environment: monitoring` resolves `GCD_MONITOR_DATABASE_URL`, that
@@ -1605,17 +1651,23 @@ reported as fixed categories, never the driver's own message, which can carry co
   as intended. Until that run is observed, the monitoring condition in [Status](STATUS.md) and in
   the M1→M2 interval section above stays **unmet**, and neither this record nor a green pull request
   may be read as closing it.
+  **Update 2026-09-22:** the manual `workflow_dispatch` proof is observed (run #2, ALL CLEAR); the
+  first *scheduled* firing is not, and remains open as a follow-up of the re-authorization above.
 - **[Status](STATUS.md) is deliberately not updated by this change**, by instruction: its production
   tables, live SHAs, M1→M2 interval record and current cursor are untouched. Its Monitoring
   paragraph therefore does not mention this implementation, while the corresponding paragraph in
   this file now does. Reconciling the two — once the first firing has been observed, and only then
   — is an open documentation follow-up.
+  **Closed 2026-09-22** by the re-authorization change, which records the monitor in
+  [Status](STATUS.md)'s M1→M2 interval section.
 - **The same expired fact survives in [Status](STATUS.md)'s current-cursor paragraph**, which
   states that `main` "remains at `A` with zero commits after" inside its Tier 3 summary. It is the
   same defect corrected in this file above, and it was **not** fixed by PR #81 — that PR re-tensed a
   different clause, the derived payload boundary. It is left untouched here because the instruction
   under which this change was made forbids editing that file's current cursor. Correcting it needs
   its own authorization, and is recorded rather than silently carried.
+  **Closed 2026-09-22** by the re-authorization change, which records this correction as one of
+  its follow-ups and re-tenses the clause as a dated snapshot.
 - **A second expired fact, reported and deliberately not edited: "documentation-only".** The
   `main`/production divergence paragraph in the M1→M2 interval section of this file, and the
   matching paragraph in [Status](STATUS.md), both say `main` is ahead of `A` "by documentation-only
