@@ -283,11 +283,6 @@ check(
   "the deployment gate expectation matches the value Status records",
   STATUS_DOC.includes(`\`${DEPLOY_AUTOMATION_VARIABLE}\` exactly \`${DEPLOY_AUTOMATION_EXPECTED}\``),
 );
-check(
-  "status",
-  "Status still records the monitoring condition as unmet, which this workflow does not by itself close",
-  STATUS_DOC.includes("**That condition is unmet.**"),
-);
 
 // --- workflow --------------------------------------------------------------
 

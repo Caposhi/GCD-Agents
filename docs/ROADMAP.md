@@ -1488,9 +1488,20 @@ the constant still at `2026-09-24T18:52Z`. The claim below that editing any one 
 was therefore overstated for every containment check, and false for the expiry once a bound was
 superseded. The expiry check now binds to the *current* bound (the first `New bound:` line in the
 interval section, else the original `- Expiry:` line), a second check requires the original line to
-be marked superseded once re-authorized, and the suite reports **95 checks**. Five mutations, each
+be marked superseded once re-authorized. Five mutations, each
 reverted, confirm it; see [Testing](TESTING.md). The other `status` checks remain containment, and
-the suite comment now says so.
+the suite comment, the `expected.mjs` header and the workflow file's header comment now say so.
+
+**Same change: one `status` check removed, rationale relocated here and to [Testing](TESTING.md).**
+The check asserting that Status still contains "**That condition is unmet.**" existed so that the
+monitor's own merge or green run could not be read as closing the M1 exit conditions' monitoring
+requirement — evidence is not the decision. Its premise was superseded by the named owner's
+2026-09-22 re-authorization, which recorded the condition as met: **closed by an owner
+authorization, with the workflow as its evidence, not by the workflow or by code.** From then on
+the phrase survived only in preserved prior-interval history, and the check passed identically
+whether Status recorded the current condition as met or unmet — demonstrated both ways before
+removal. It is removed rather than re-pointed because nothing true remains for it to assert, and the
+suite reports **94 checks**.
 
 **State:** `IMPLEMENTED` on a branch; `MERGED` only on merge. **Not `DEPLOYED`, not `ENABLED`, not
 `PRODUCTION-VALIDATED`, and explicitly not yet proof that the M1 exit conditions' monitoring
