@@ -1168,8 +1168,15 @@ executors remain disabled and unreachable; no provider call, approval, or public
 - Render exposes no field recording whether the operator selected an immutable specific commit or
   "latest commit" when triggering the manual deploy. This is permanently unanswerable from provider
   evidence. It has no effect on the deployed artifact: the deploy record immutably names commit `A`,
-  `main` was at `A` at deploy time and remains at `A` with zero commits after, and auto-deploy is
-  off, so the service cannot drift.
+  and **as a dated snapshot at the 2026-09-17 deploy** `main` was at `A` with no commit after it, so
+  either selection resolved to `A`. **`main` has since advanced well beyond `A`** — the exact
+  current `main` and the exact distance are a Git/GitHub lookup, not fields this file maintains: run
+  `git rev-parse origin/main` and `git rev-list --count <A>..origin/main`; see [Status](STATUS.md)
+  for the current record. That advance carries documentation and **dormant, undeployed**
+  `src/harness/` stage-executor source; it is not documentation alone. It still cannot reach the
+  service: auto-deploy is off on all three services, so the deployed artifact cannot drift from `A`
+  without a new authorized deploy. The Tier 3 limitation itself is unchanged — which selection the
+  operator made is still unanswerable, and still immaterial.
 - Render exposes no deploy-level actor-identity field. Who performed the deploy cannot be
   established from provider evidence.
 - The repository-scoped GitHub Actions variable `RENDER_DEPLOY_AUTOMATION_ENABLED` was read in the
@@ -1330,6 +1337,25 @@ not outlive its creator, and its output had no durable, inspectable home.
   trigger set and permission set. Editing any one of them alone fails CI. This is deliberately the
   same shape as the `CD`/`CF` guards that hold the stage prompts and their validators together.
 
+**One pre-existing correction carried in the same change.** The Tier 3 bullet in the active product
+cursor above asserted that `main` "remains at `A` with zero commits after". That was true when
+written and is not now — `main` is 36 commits ahead of `A`, verified by `git rev-list --count` at
+`5e7e2f0`. The clause is re-tensed to what it always was, a **dated snapshot at the 2026-09-17
+deploy**, with a pointer to [Status](STATUS.md) for current truth, following the pattern PR #81 used
+for the derived payload boundary. **A second expired fact was found while making that edit and is
+deliberately not repeated**: those 36 commits are described elsewhere as "documentation-only", which
+is also no longer true — they include 15 files under `src/harness/` and 13 under `agents/`. The
+re-tensed clause says what is actually the case. Verified at `5e7e2f0`: **nothing under `src/api`,
+`src/worker`, `src/scheduler`, `state/migrations` or `render.yaml` changed since `A`**, so the
+substantive point the original clause rested on survives intact — none of the advance is deployed,
+and none of it touches a deployed service's behaviour. **The surrounding Tier 3 reasoning is
+unchanged and still sound**: which commit selection the operator made remains unanswerable from
+provider evidence, and remains immaterial — the deploy record immutably names `A`, either selection
+resolved to `A` at that instant, and auto-deploy being off is what prevents drift since. Only the
+expired supporting fact moved. This did not become stale because of this change; it is corrected
+here because this change already edits this file and [`AGENTS.md`](../AGENTS.md) requires a dated
+snapshot be labelled as a snapshot rather than left as mutable current truth.
+
 **Material design decisions.**
 
 - **A workflow, not a scheduled assistant task.** It outlives every session and its run history is
@@ -1441,6 +1467,21 @@ reported as fixed categories, never the driver's own message, which can carry co
   paragraph therefore does not mention this implementation, while the corresponding paragraph in
   this file now does. Reconciling the two — once the first firing has been observed, and only then
   — is an open documentation follow-up.
+- **The same expired fact survives in [Status](STATUS.md)'s current-cursor paragraph**, which
+  states that `main` "remains at `A` with zero commits after" inside its Tier 3 summary. It is the
+  same defect corrected in this file above, and it was **not** fixed by PR #81 — that PR re-tensed a
+  different clause, the derived payload boundary. It is left untouched here because the instruction
+  under which this change was made forbids editing that file's current cursor. Correcting it needs
+  its own authorization, and is recorded rather than silently carried.
+- **A second expired fact, reported and deliberately not edited: "documentation-only".** The
+  `main`/production divergence paragraph in the M1→M2 interval section of this file, and the
+  matching paragraph in [Status](STATUS.md), both say `main` is ahead of `A` "by documentation-only
+  commits". Verified false at `5e7e2f0`: the 36 commits since `A` touch 15 files under
+  `src/harness/` and 13 under `agents/`. The substantive point survives — nothing under `src/api`,
+  `src/worker`, `src/scheduler`, `state/migrations` or `render.yaml` changed, so none of it is
+  deployed or reaches a deployed service — but the wording is wrong. Both instances sit inside the
+  M1→M2 interval record, which the instruction under which this change was made forbids editing, so
+  neither is touched here. Correcting them needs its own authorization.
 - **Worker and scheduler deploy observation** is not covered and needs a Render credential; not
   begun and not authorized.
 - Whether the 25-hour liveness bound is the right one has not been calibrated against more than the
