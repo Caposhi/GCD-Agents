@@ -1,0 +1,72 @@
+# Daily read-only drift check for the M1 to M2 partial-release interval.
+#
+# The M1 exit conditions require that interval to be actively monitored. It was
+# not: a scheduled Routine bound to a chat session went away with the session,
+# and its one test firing was never seen. A workflow outlives every session and
+# keeps a durable, inspectable run history, which is the property that was
+# missing.
+#
+# Every expected value this job compares against lives in
+# scripts/ops/interval-monitor/expected.mjs, not in this file. npm run
+# test:offline asserts that module against what docs/STATUS.md records AND
+# against this file's schedule, triggers, permissions, environment and secret
+# name, so editing one without the other fails CI.
+#
+# This job is strictly read-only: two GitHub GETs, one /healthz GET, and one
+# read-only PostgreSQL session. It writes nothing and deploys nothing. The
+# standing prohibition for the interval - no unrelated release may occur, of any
+# service, for any reason - is in force, and nothing here can violate it.
+name: Interval monitor
+
+on:
+  # After the production scheduler's 0 13 * * * run, so the day's brief_queue
+  # row already exists when scheduler liveness is evaluated.
+  schedule:
+    - cron: "0 14 * * *"
+  # Manual runs only. There is deliberately no pull_request trigger: the
+  # database secret must never be reachable from a fork's pull request.
+  workflow_dispatch:
+
+# Read-only, and nothing beyond what the checks need. actions:read is required
+# to enumerate deploy-production run history; contents:read to check out the
+# scripts and read the main ref.
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: interval-monitor
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  check:
+    name: Read-only M1 to M2 interval drift check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # The database URL is an environment secret here, not a repository secret,
+    # and this environment is restricted to main. A run on any other ref cannot
+    # reach it; that restriction must not be relaxed to make the job testable
+    # from a branch.
+    environment: monitoring
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      # The monitor needs only the pg driver, which is a production dependency.
+      - name: Install locked production dependencies
+        run: npm ci --omit=dev
+
+      - name: Read-only interval drift check
+        env:
+          GCD_MONITOR_DATABASE_URL: ${{ secrets.GCD_MONITOR_DATABASE_URL }}
+          DEPLOY_AUTOMATION_GATE: ${{ vars.RENDER_DEPLOY_AUTOMATION_ENABLED }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/ops/interval-monitor/run.mjs

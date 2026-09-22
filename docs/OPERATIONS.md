@@ -37,6 +37,42 @@ The dry run needs no database at all. The applying run requires durable state an
 
 **Do not run this against production in an unauthorized session.** Migration 006 **was applied to production on 2026-08-28** and the rollout has since completed on all three services, so the tables now exist — and they are **empty**, which is correct. A first production sync is a separately authorized operation that follows the rollout; it is explicitly **not** part of it and has **not yet been run**. See the [Phase 0B.0 rollout runbook](ROLLOUT_PHASE_0B0.md).
 
+## M1→M2 interval monitor
+
+`.github/workflows/interval-monitor.yml` runs a **read-only** drift check against production every day at `0 14 * * *` (UTC), one hour after the production scheduler's `0 13 * * *` enqueue so the day's `brief_queue` row already exists. It can also be run on demand with `workflow_dispatch`.
+
+**Why it is a workflow and not a scheduled assistant task.** The M1 exit conditions require the M1→M2 interval to be actively monitored, and that condition was recorded as **unmet**: the previous attempt was a Routine bound to a chat session, which ceased to exist when the session ended, and whose single test firing was never seen. A workflow outlives every session and keeps a durable, inspectable run history. GitHub Actions runners also have unrestricted outbound network, which an assistant session in this environment does not — neither the Render PostgreSQL host nor `gcd-social-api.onrender.com` is reachable from one.
+
+**What it checks.** Five gating checks, each evaluated independently, with every result reported before the job exits:
+
+| # | Check | Passes when |
+|---|---|---|
+| 1 | API artifact and health | `GET https://gcd-social-api.onrender.com/healthz` returns HTTP 200 with `status: "ok"`, `service: "gcd-social-api"`, and `commit` equal to exact artifact `A` |
+| 2 | Applied migration set | `_migrations` holds exactly `001_init.sql` through `007_evidence_bounds.sql`, each once, and no `008` |
+| 3 | Scheduler liveness | `brief_queue` holds a row created within the last 25 hours |
+| 4 | Deployment automation gate | `RENDER_DEPLOY_AUTOMATION_ENABLED` is exactly the string `false` |
+| 5 | Production workflow refusals | no `deploy-production` run on `main` has concluded `success` since the interval began |
+
+A sixth item is **informational and never fails the job**: the current `main` SHA and the days remaining until the interval bound. Expiry is a decision point, not a cliff, and the decision is the named owner's — a monitor that failed on the calendar would be asserting an authority it does not have.
+
+Every expected value comes from `scripts/ops/interval-monitor/expected.mjs`, never from the workflow file. `npm run test:offline` asserts that module against both [Status](STATUS.md) and the workflow, so editing one without the other fails CI — see [Testing](TESTING.md).
+
+**What a failure means.** The job reports three states, and the difference between the last two is the reason it exists:
+
+- `PASS` — the check ran and matched the record.
+- `DRIFT` — the check ran and did **not** match. Production has moved.
+- `ERROR` — the check **did not run**. The database was unreachable, the secret was missing, `/healthz` timed out, or the GitHub API refused.
+
+`DRIFT` and `ERROR` both fail the job, and an incomplete run is never reported as all clear: the summary for an `ERROR` run says explicitly that nothing was proven. A monitor that cannot distinguish "checked, fine" from "couldn't check" is the defect that made the first attempt worthless. A green run is evidence for **the day it ran** and for nothing else.
+
+The job summary on the run page names the failing check, the expected value and the observed one, so a drift can be read without opening a log; each failure is also emitted as a workflow error annotation. (GitHub's own notification email carries the workflow and run identity with a link; the summary is what that link lands on.)
+
+**Who acts.** The named owner of the M1→M2 interval — recorded in [Status](STATUS.md) — or whoever holds the equivalent accountability at the time. **Investigate read-only first.** A drift report is not authorization to act on production: the standing prohibition for the interval is that *no unrelated release may occur, of any service, for any reason*, and it is in force until the recorded expiry or an explicit re-authorization. Do not deploy, roll back, or apply a migration in response to this report without the owner's explicit authorization. Check 2 failing on an applied `008`, or check 5 failing on a successful production run, each mean something reached production that was not authorized, and both are incidents rather than maintenance.
+
+**What the job cannot do.** It holds `contents: read` and `actions: read` and nothing else. It has no `pull_request` trigger, so a fork's pull request can never reach its secret. It writes nothing to the database, the repository, or any external system, and deploys nothing. Its database credential is `GCD_MONITOR_DATABASE_URL`, an **environment** secret on the `monitoring` GitHub environment — a read-only PostgreSQL role with `SELECT` on `_migrations` and on four columns of `brief_queue`, and nothing else. The environment is restricted to `main`, so the workflow **cannot be exercised end to end from a branch**; the job declares `environment: monitoring`, without which the secret is unreachable. The session opens the database through the same read-only boundary the M1 readiness runner uses — `default_transaction_read_only`, `BEGIN TRANSACTION READ ONLY`, both verified with `SHOW` rather than assumed — and identifies itself in `pg_stat_activity` as `gcd-interval-monitor`. Database failures are reported as fixed categories, never the driver's own message, which can carry the database user, host or port.
+
+Because the job declares an environment, each run appears in that environment's GitHub deployment history. **That is GitHub bookkeeping for environment usage, not a release**: nothing is deployed to Render or anywhere else by this workflow.
+
 ## Routine checks
 
 Daily: API/worker/scheduler status, pending/running/failed briefs, pending/expired/revoked approvals, last events, provider post IDs/results, token-refresh estimates, and Slack delivery. Treat a legacy/missing-hash approval as invalid and issue a fresh review; never repair it by hand. Reconcile any composite notification/revocation error before resuming. Weekly: reconcile platform posts against `brief_queue.outcome`, review model/image costs, verify that the approved destination and runtime IDs/host/version still match, and verify the shared-secret route contract/limits. Do not try to remove media rows: migration 005 deliberately rejects every media DELETE until a future reviewed retention migration exists. Monthly: provider scopes/tokens/billing, Render access, database backups, dependency advisories, canonical approved facts/CTA URLs, fact provenance/freshness, platform/model/API assumptions, and the public booking capability.
@@ -108,7 +144,10 @@ Application rollback selects a prior release/commit. SQL migrations are forward-
 - No stale-running-brief reaper or worker lease is needed for a single-instance worker now that ownership plus startup recovery is in place; a lease would be required again only for multi-instance operation.
 - No durable publish idempotency/reconciliation ledger.
 - No event/approval retention process; migration 005 deliberately prevents media-row deletion, so media retention needs a reviewed forward migration.
-- No automated database/provider end-to-end health probe.
+- No automated database/provider end-to-end **functional** probe. Since the M1→M2 interval
+  monitor above, a daily read-only observation of API health, the applied migration set and
+  scheduler liveness does exist; it observes state and exercises no provider path, no
+  publication path and no write.
 - No documented restore exercise or external account takeover evidence.
 - Approval review still uses a URL bearer token and a generic `human` actor label; revocation has no operator-facing route.
 - Control-plane authentication shares one secret and uses per-process, direct-socket rate limits rather than distributed identity-aware enforcement.
