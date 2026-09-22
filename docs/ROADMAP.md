@@ -1012,6 +1012,16 @@ behaviour are untouched.** No model id, no existing thinking policy and no token
 - **Wiring a declared effort through to `output_config.effort`** — `stageExecution.ts` and
   `sdk.ts`, both deliberately untouched here. Required before `POLICY_EFFORT` can carry a value
   that does anything.
+- **The invariant only sees an effort that travels through `POLICY_EFFORT`, and that is a
+  residual gap, not a closed one.** `resolveModelPolicy()` reads that table and nothing else. An
+  `effort` option added straight to `sdk.ts` and set at a call site would never pass the table, so
+  the guard would be skipped in silence and the 400 would return on a paid call — the exact failure
+  this change exists to prevent, reappearing through a door it does not watch. Whoever plumbs
+  effort through to the request therefore owes one of two things: route every effort through
+  `POLICY_EFFORT`, so the declaration stays the single place the invariant reads; or re-site the
+  invariant to where the request is actually built, so it covers every path that can set the field.
+  A per-call effort that bypasses both is not an acceptable outcome. Recorded here so that
+  constraint is inherited rather than rediscovered.
 - Whether the provider accepts and honours the five schemas for stages 2 through 6 — carried
   forward from the PR #81 record above, still open, still needing a live run that reaches them.
 - Whether the other bounded output ceilings are sized for real model output — carried forward,
