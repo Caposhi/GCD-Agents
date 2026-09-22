@@ -1,6 +1,6 @@
 # GCD Content Intelligence roadmap
 
-Last reviewed: 2026-09-21.
+Last reviewed: 2026-09-22.
 
 This roadmap is the canonical unfinished-work sequence and the current-phase cursor. It orders work; it does not grant authority to deploy, migrate, call providers, change external configuration, or begin a phase. [Status](STATUS.md) records what is verified true now. Where this file and verified production evidence disagree, resolve the discrepancy rather than following this text. Roadmap continuity is binding — see [`AGENTS.md`](../AGENTS.md).
 
@@ -564,7 +564,9 @@ autonomy boundary, or publishing instruction was touched.
 
 **Unresolved follow-ups.**
 
-- The PR number and merge SHA above (blocking follow-up, mutable-identifier exception).
+- ~~The PR number and merge SHA above (blocking follow-up, mutable-identifier exception).~~
+  **Closed**: the PR / merge line above records PR #79 and merge `8407d71`. This bullet was left
+  unstruck when that line was filled in; corrected here.
 - **`"concept" exceeds 1200 characters` is unresolved, and this record's own reading of it was
   wrong.** It said two identical failures made the overrun "reproducible and not sampling variance".
   A third authorized live run on 2026-09-21 passed stage 1, which refutes that: the behaviour is
@@ -726,19 +728,23 @@ below, which is the first change after this merge.**
 **Documents updated at completion:** [Architecture](ARCHITECTURE.md), [Testing](TESTING.md), and
 this file. [Status](STATUS.md) is deliberately untouched — this change verifies no production state.
 
-## Stage 1 `concept` — the stated figure and the enforced ceiling are separated — `IMPLEMENTED`
+## Stage 1 `concept` — the stated figure and the enforced ceiling are separated — `MERGED`
 
-**State:** `IMPLEMENTED` on a branch; `MERGED` only on merge. **Not `DEPLOYED`, not `ENABLED`, not
+**State:** `MERGED`. **Not `DEPLOYED`, not `ENABLED`, not
 `PRODUCTION-VALIDATED`.** All six stages remain `executionEnabled: false` and no production path
 reaches any of them. It authorizes no release, and the time-bounded partial-release interval
 prohibits any release of any service until **2026-09-24T18:52Z**. [Status](STATUS.md)'s production
 tables, live SHAs, M1→M2 interval record and cursor are untouched; the single clause it does change
 is a derived repository constant inside the PR #54 merge record, and verifies no production state.
 
-**PR / merge:** base `45e2e614fbf09ce2a0576d7ac490dbacf732df2c` (PR #80 merge). **PR number and
-merge SHA are not knowable before merging** — recorded here as a **blocking follow-up** under the
-mutable-identifier exception in [`AGENTS.md`](../AGENTS.md), to be reconciled in the first change
-after merge.
+**PR / merge:** PR #81, base `45e2e614fbf09ce2a0576d7ac490dbacf732df2c` (PR #80 merge), reviewed
+head `7d0d93f4a6cadfc9bba6d65c6f93ad6af066e515`, merge
+`5e7e2f036e79192a8ebd05c702921988eee81088`, whose ordered parents are exactly
+`45e2e614fbf09ce2a0576d7ac490dbacf732df2c` then `7d0d93f4a6cadfc9bba6d65c6f93ad6af066e515` —
+verified by direct Git inspection (`git rev-list --parents -n 1 5e7e2f0`), not read from the pull
+request. **The blocking follow-up this record opened under the mutable-identifier exception in
+[`AGENTS.md`](../AGENTS.md) is hereby closed.** These are historical, immutable identifiers; they
+say nothing about deployment, and the state above is unchanged.
 
 **The defect — and it is a measurement, not an impression.** Two authorized live runs on
 2026-09-21 measured stage 1's `concept` field against a ceiling that was both stated in the prompt
@@ -866,7 +872,9 @@ capability, approval rule, autonomy boundary, or publishing instruction was touc
 
 **Unresolved follow-ups.**
 
-- The PR number and merge SHA above (blocking follow-up, mutable-identifier exception).
+- ~~The PR number and merge SHA above (blocking follow-up, mutable-identifier exception).~~
+  **Closed in the change recorded below**, the first change after this merge: PR #81, merge
+  `5e7e2f036e79192a8ebd05c702921988eee81088`, ordered parents verified by direct Git inspection.
 - ~~[`docs/STATUS.md`](STATUS.md) states the shared payload boundary as `370,000`, which this
   change makes stale at `380,000`.~~ **Closed inside this change.** It was opened as a **blocking
   documentation follow-up** because the instruction under which this change was made forbade
@@ -891,6 +899,131 @@ capability, approval rule, autonomy boundary, or publishing instruction was touc
 clause on one line, correcting and re-tensing a derived repository constant inside the PR #54
 record; **no production table, no live SHA, no M1→M2 interval record and no cursor was touched**,
 and this change still verifies no production state.
+
+## Disabled thinking and effort — the pairing a model rejects cannot be configured — `IMPLEMENTED`
+
+**State:** `IMPLEMENTED` on a branch; `MERGED` only on merge. **Not `DEPLOYED`, not `ENABLED`, not
+`PRODUCTION-VALIDATED`.** All six stages remain `executionEnabled: false` and no production path
+reaches any of them. It authorizes no release, and the time-bounded partial-release interval
+prohibits any release of any service until **2026-09-24T18:52Z**. [Status](STATUS.md) is **not
+modified by this change at all** — no production table, no live SHA, no M1→M2 interval record, no
+cursor, and no other clause; nothing it states became stale, because no value it records moved.
+
+**PR / merge:** base `5e7e2f036e79192a8ebd05c702921988eee81088` (PR #81 merge). **PR number and
+merge SHA are not knowable before merging** — recorded here as a **blocking follow-up** under the
+mutable-identifier exception in [`AGENTS.md`](../AGENTS.md), to be reconciled in the first change
+after merge.
+
+**The defect — a precondition that announces itself only after money is spent.**
+`POLICY_THINKING` pins all three policies to `{type: "disabled"}`. On Claude Opus 5 — which
+`reasoning-heavy` resolves to, and which serves stages 1 and 2 — disabled thinking is accepted
+**only at effort `high` or below**; pairing it with `xhigh` or `max` returns a **400**. No effort
+is set anywhere in the repository today, so `output_config.effort` is absent and the provider
+default applies, and the configuration is valid. Nothing prevented a later edit from adding one.
+Had it added `xhigh`, the pipeline would have failed on its first paid call, with no offline check
+catching it. This is the same defect shape as the rest of this sequence: a knowable precondition
+discovered at the provider rather than at review.
+
+**Delivered.**
+
+- **`EFFORT_LEVELS`** — the five levels in increasing order, so comparisons are by position and a
+  sixth level is placed once rather than in every comparison.
+- **`MAX_EFFORT_WITH_THINKING_DISABLED`** is `high`.
+- **`MODELS_REJECTING_DISABLED_THINKING_ABOVE_HIGH`** holds `claude-opus-5` and nothing else,
+  commented with the source and the exact rule.
+- **`POLICY_EFFORT`** — a per-policy effort declaration, **added empty**. An absent declaration
+  means the request carries no `output_config.effort` key, so behaviour is unchanged. Its purpose
+  is to be the place a future effort is declared, where the invariant can read it.
+- **One invariant in `resolveModelPolicy()`**, throwing the `ModelPolicyError` that file already
+  defines when a policy's thinking is disabled **and** its model is in the restricted set **and**
+  its declared effort ranks above the limit. The message names the policy, the model, the effort
+  level, and that the combination returns a 400, so it is actionable without reading the source.
+- `ResolvedModelPolicy` gains `effort`, `undefined` for all three policies today.
+
+**Design decision — model-aware, not blanket, and one condition rather than two guards.** The
+restriction is recorded against **model ids**, because it is a property of the model: repointing
+`reasoning-heavy` at another id must carry the restriction away with the id, and pointing another
+policy at `claude-opus-5` must pick it up. A rule keyed to the policy name would do neither.
+Expressed as a single condition, the invariant catches **both** edit directions — raising the
+effort of a disabled-thinking policy, and disabling the thinking of a policy that already declares
+a high effort — which is why it is not written as two direction-named guards: those would state one
+condition twice and invite a reviewer to delete whichever their edit did not trip.
+
+**Widening beyond an offline assertion, stated plainly.** This adds a runtime throw, not only a
+test. It is justified narrowly: resolution runs **before** the request is built and before anything
+is billed, it reuses the error type the file already throws, and it converts a paid failure into a
+free one. It cannot make a previously working configuration fail, because no policy declares an
+effort.
+
+**Rejected alternatives.**
+
+- **A test-only assertion over the constants, with no runtime throw.** Rejected: it would catch the
+  edit only when the suite runs, and the failure it prevents is a paid provider call. The throw
+  costs nothing on a valid configuration and fires at the last point before a request exists.
+- **Blanket-disallowing effort above `high` whenever thinking is disabled, for every model.**
+  Rejected as over-broad: it is documented for Claude Opus 5, and would wrongly block a valid
+  `reasoning-standard` or `critic` configuration. `CC22d` exists specifically to fail if anyone
+  implements it this way.
+- **Adding `claude-sonnet-5` to the restricted set "for symmetry".** Rejected: no such restriction
+  is documented for it. The comment states that adding any model requires a documented provider
+  source, precisely so symmetry is not mistaken for evidence.
+- **Setting an effort now** (for example `high`, the documented default). Rejected: it would change
+  the request — adding a key it does not currently carry — for no measured benefit, on stages that
+  have never run.
+- **Two separate guards, one per edit direction.** Rejected for the reason given above.
+
+**Automated validation.** `CC22a`–`CC22g`, keyed entirely off the exported constants — no model id
+and no effort-level name appears in a test body, so a future model or level is covered without
+editing them. They prove: the current configuration resolves cleanly and declares no effort
+(`CC22a`); a restricted policy throws at **every** level above the limit (`CC22b`); it still
+resolves at every level at or below it (`CC22c`); **unrestricted policies resolve at every level,
+including above the limit** — the over-broadness test (`CC22d`); the reverse edit direction throws
+under the same assertion (`CC22e`); with nothing declared the built stage request carries no
+`output_config.effort`, proven through the real stage seam, and every table the suite mutated was
+restored (`CC22f`); and the restriction is recorded against ids with its source and rule stated
+(`CC22g`).
+
+**Mutation-checked, each reverted and re-confirmed green.** Guard neutered → `CC22b` and `CC22e`
+fail; `>` weakened to `>=` → `CC22c` fails; the model-set test dropped → `CC22d` fails; the
+thinking test dropped → `CC22e` fails; `claude-sonnet-5` added to the set → `CC22a` fails, because
+it empties the unrestricted group and would make the over-broadness test vacuous; `POLICY_EFFORT`
+silently defaulted instead of left absent → `CC22a` fails.
+
+**Schema / migrations:** none. **`stageExecution.ts`, its single-request guarantee and its no-retry
+behaviour are untouched.** No model id, no existing thinking policy and no token budget changed.
+
+**Accepted limitations.**
+
+- **The declared effort is not yet wired into the request.** `POLICY_EFFORT` is read by the
+  invariant and surfaced on `ResolvedModelPolicy`, but `stageExecution.ts` — explicitly out of
+  scope here — does not pass it to `sdk.ts`, and `sdk.ts` has no `effort` option. So an effort
+  declared today would be validated and then ignored rather than sent. This is recorded as an
+  unresolved follow-up below, not presented as complete.
+- **The set is as good as its source, and covers one model.** Any other model with the same
+  restriction is unguarded until someone with a documented source adds it.
+- **The rule is a documented provider behaviour, not one this repository has observed.** No live
+  call was made; a 400 has not been reproduced here, and doing so would cost the call this change
+  exists to prevent.
+- **Nothing here makes a stage more likely to succeed.** It removes one way to make it fail.
+
+**Unresolved follow-ups.**
+
+- The PR number and merge SHA above (blocking follow-up, mutable-identifier exception).
+- **Wiring a declared effort through to `output_config.effort`** — `stageExecution.ts` and
+  `sdk.ts`, both deliberately untouched here. Required before `POLICY_EFFORT` can carry a value
+  that does anything.
+- Whether the provider accepts and honours the five schemas for stages 2 through 6 — carried
+  forward from the PR #81 record above, still open, still needing a live run that reaches them.
+- Whether the other bounded output ceilings are sized for real model output — carried forward,
+  still unmeasured.
+
+**Documents updated at completion:** [README](../README.md), [Architecture](ARCHITECTURE.md),
+[AI handoff](AI_HANDOFF.md), [Security and continuity](SECURITY_AND_CONTINUITY.md),
+[Testing](TESTING.md), and this file. [Status](STATUS.md) is deliberately **not** modified: no
+value it records moved, and its existing sentence that the stage policy explicitly disables
+thinking remains exactly true. [Environment](ENVIRONMENT.md) and [Operations](OPERATIONS.md) were
+reviewed and need no change — the former's `MANAGER_MODEL` note describes the **legacy** path's
+thinking resolution, which this change does not touch, and the latter describes no model policy.
 
 ## PR #57 — CC5 proposition-bound reconciliation and bounded closeout — `MERGED`
 
