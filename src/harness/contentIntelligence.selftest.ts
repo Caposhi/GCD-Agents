@@ -95,10 +95,16 @@ import {
   parseStrictJsonObject,
 } from "./agents/stageExecution.js";
 import {
+  EFFORT_LEVELS,
+  MAX_EFFORT_WITH_THINKING_DISABLED,
+  MODELS_REJECTING_DISABLED_THINKING_ABOVE_HIGH,
   ModelPolicyError,
+  POLICY_EFFORT,
   POLICY_MAX_TOKENS,
   POLICY_MODEL_OUTPUT_CAPS,
   POLICY_THINKING,
+  type StageEffortLevel,
+  type StageThinkingPolicy,
   modelBearingPolicies,
   resolveModelPolicy,
 } from "./agents/modelPolicy.js";
@@ -6407,6 +6413,149 @@ async function run(): Promise<void> {
            })
         && Object.entries(POLICY_MAX_TOKENS).every(([policy, budget]) =>
              budget <= POLICY_MODEL_OUTPUT_CAPS[policy as keyof typeof POLICY_MODEL_OUTPUT_CAPS]));
+
+    // --- CC-E2. disabled thinking and effort are one invariant, not two -----
+    //
+    // Every assertion here is keyed off the exported constants. No model id and
+    // no effort-level name is written in a test body: the restricted policies
+    // are found by asking which resolved model is in the restricted set, and
+    // the offending levels by taking those ranked above the documented limit.
+    // A future model id or a sixth effort level is therefore covered without
+    // editing these checks.
+    {
+      const modelPolicySource = await readFile(
+        resolve(REPO_ROOT, "src/harness/agents/modelPolicy.ts"), "utf8");
+      const aboveLimit = EFFORT_LEVELS.filter((level) =>
+        EFFORT_LEVELS.indexOf(level) > EFFORT_LEVELS.indexOf(MAX_EFFORT_WITH_THINKING_DISABLED));
+      const atOrBelowLimit = EFFORT_LEVELS.filter((level) =>
+        EFFORT_LEVELS.indexOf(level) <= EFFORT_LEVELS.indexOf(MAX_EFFORT_WITH_THINKING_DISABLED));
+      const restricted = modelBearingPolicies().filter((policy) =>
+        MODELS_REJECTING_DISABLED_THINKING_ABOVE_HIGH.has(resolveModelPolicy(policy).model));
+      const unrestricted = modelBearingPolicies().filter((policy) =>
+        !MODELS_REJECTING_DISABLED_THINKING_ABOVE_HIGH.has(resolveModelPolicy(policy).model));
+
+      // Mutating the live tables is the only honest way to test a guard whose
+      // whole purpose is to catch a future edit to them. Every case restores
+      // in a `finally`, and CC22f re-resolves afterwards to prove it did.
+      const withEffort = <T>(
+        policy: ReturnType<typeof modelBearingPolicies>[number],
+        level: StageEffortLevel,
+        body: () => T,
+      ): T => {
+        const previous = POLICY_EFFORT[policy as keyof typeof POLICY_EFFORT];
+        POLICY_EFFORT[policy as keyof typeof POLICY_EFFORT] = level;
+        try {
+          return body();
+        } finally {
+          if (previous === undefined) delete POLICY_EFFORT[policy as keyof typeof POLICY_EFFORT];
+          else POLICY_EFFORT[policy as keyof typeof POLICY_EFFORT] = previous;
+        }
+      };
+      const throwsPolicyError = (policy: Parameters<typeof resolveModelPolicy>[0]): boolean => {
+        try {
+          resolveModelPolicy(policy);
+          return false;
+        } catch (err) {
+          return err instanceof ModelPolicyError;
+        }
+      };
+
+      check("CC22a. the configuration as it stands resolves cleanly for every policy, "
+        + "declaring no effort — the guard is dormant, not merely satisfied",
+        modelBearingPolicies().every((policy) =>
+          POLICY_EFFORT[policy as keyof typeof POLICY_EFFORT] === undefined
+            && resolveModelPolicy(policy).effort === undefined)
+          && Object.keys(POLICY_EFFORT).length === 0
+          && restricted.length > 0 && unrestricted.length > 0 && aboveLimit.length > 0);
+
+      check("CC22b. a policy on a restricted model throws at resolve time at every effort "
+        + `above the documented limit (${aboveLimit.join(", ")}), before a request is built `
+        + "or anything is billed",
+        restricted.every((policy) =>
+          aboveLimit.every((level) => withEffort(policy, level, () => throwsPolicyError(policy)))));
+
+      check("CC22c. the same policies still resolve at every effort at or below the limit "
+        + `(${atOrBelowLimit.join(", ")}) — the guard bounds the pairing, it does not ban `
+        + "declaring an effort",
+        restricted.every((policy) =>
+          atOrBelowLimit.every((level) =>
+            withEffort(policy, level, () => !throwsPolicyError(policy)))));
+
+      check("CC22d. policies on unrestricted models resolve at every effort, including those "
+        + "above the limit — the over-broadness test: a guard keyed to the policy name, or "
+        + "applied to every model, fails here and must not be 'fixed' by widening the set",
+        unrestricted.every((policy) =>
+          EFFORT_LEVELS.every((level) =>
+            withEffort(policy, level, () => !throwsPolicyError(policy)))));
+
+      check("CC22e. the reverse edit direction is caught by the same assertion: a policy "
+        + "already declaring an effort above the limit resolves while its thinking is not "
+        + "disabled, and throws the moment thinking is pinned to disabled",
+        restricted.every((policy) => {
+          const key = policy as keyof typeof POLICY_THINKING;
+          const previousThinking = POLICY_THINKING[key];
+          try {
+            return aboveLimit.every((level) => withEffort(policy, level, () => {
+              // Start from thinking that is not disabled: the effort is declared
+              // first and is legal on its own.
+              POLICY_THINKING[key] = { type: "adaptive" } as unknown as StageThinkingPolicy;
+              if (throwsPolicyError(policy)) return false;
+              // The second edit — disabling thinking — is what makes it a 400.
+              POLICY_THINKING[key] = previousThinking;
+              return throwsPolicyError(policy);
+            }));
+          } finally {
+            POLICY_THINKING[key] = previousThinking;
+          }
+        }));
+
+      // The declaration is empty, so the request must be byte-identical to what
+      // it sends today. Built through the real stage seam rather than asserted
+      // about the constant, so "declares nothing" and "sends nothing" are
+      // checked as two different facts.
+      let effortProbeRequest: Record<string, unknown> | undefined;
+      const probePolicy = restricted[0]!;
+      const probe = resolveModelPolicy(probePolicy);
+      await runStageAgentWithStreamOpener(
+        {
+          systemPrompt: "s",
+          prompt: "p",
+          model: probe.model,
+          maxTokens: 1024,
+          thinking: probe.thinking,
+          responseFormatSchema: STRATEGY_CONCEPT_RESPONSE_FORMAT,
+        },
+        (request) => {
+          effortProbeRequest = request as unknown as Record<string, unknown>;
+          return {
+            finalMessage: async () => ({
+              content: [{ type: "text", text: "{}" }],
+              usage: { input_tokens: 1, output_tokens: 1 },
+            }) as never,
+            abort: () => {},
+          };
+        },
+      );
+      check("CC22f. with no effort declared, the built stage request carries no "
+        + "output_config.effort at all — the table's existence changes no request, and "
+        + "every table mutated above was restored",
+        effortProbeRequest !== undefined
+          && !("effort" in ((effortProbeRequest.output_config as Record<string, unknown>
+               | undefined) ?? {}))
+          && !("effort" in effortProbeRequest)
+          && modelBearingPolicies().every((policy) =>
+               POLICY_EFFORT[policy as keyof typeof POLICY_EFFORT] === undefined
+                 && POLICY_THINKING[policy as keyof typeof POLICY_THINKING].type === "disabled"));
+
+      check("CC22g. the restriction is recorded against model ids, not policy names, and "
+        + "names its source and the exact rule, so repointing a policy carries it",
+        /MODELS_REJECTING_DISABLED_THINKING_ABOVE_HIGH/.test(modelPolicySource)
+          && /property of the model, not of a policy name/.test(modelPolicySource)
+          && /\b400\b/.test(modelPolicySource)
+          && /documented provider source/.test(modelPolicySource)
+          && [...MODELS_REJECTING_DISABLED_THINKING_ABOVE_HIGH].every((id) =>
+               modelBearingPolicies().some((policy) => resolveModelPolicy(policy).model === id)));
+    }
 
     // --- CC-F. the narrowing that is a narrowing, recorded as one ----------
     check("CC23. the pipeline caption cap is smaller than the largest provider limit, is "
