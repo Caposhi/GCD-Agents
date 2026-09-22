@@ -187,7 +187,10 @@ import {
   invokeStage,
   parseStrictJsonObject,
 } from "./stageExecution.js";
-import { CRITIC_FIELD_LIMITS, EVIDENCE_LIMITS, HANDOFF_GUARDS, PACKAGING_OUTPUT, isBoundedSerializableText } from "./payloadContract.js";
+import {
+  CRITIC_FIELD_LIMITS, EVIDENCE_LIMITS, HANDOFF_GUARDS, PACKAGING_OUTPUT, isBoundedSerializableText,
+  statedCeiling,
+} from "./payloadContract.js";
 
 export const FINAL_CRITIC_STAGE = "final-critic" as const;
 
@@ -313,7 +316,13 @@ const ALLOWED_CLAIM_FINDING_FIELDS = [
   "findingIndex", "platform", "factId", "summary",
 ] as const;
 
-/** The JSON Schema sent as `output_config.format` for this stage. Shape only. */
+/**
+ * The JSON Schema sent as `output_config.format` for this stage. Shape only.
+ *
+ * Internal-plumbing fields state `statedCeiling`, not the enforced limit: a
+ * `description` is a model-facing channel, so it states what the prompt states.
+ * See `STATED_FIELD_CEILINGS` in `payloadContract.ts`.
+ */
 export const FINAL_CRITIC_RESPONSE_FORMAT = schemaObject({
   verdict: schemaEnum(CRITIC_VERDICTS, "The provisional, non-approving verdict"),
   summary: schemaString("No recognizable URL syntax", FINAL_CRITIC_LIMITS.summaryChars),
@@ -334,7 +343,10 @@ export const FINAL_CRITIC_RESPONSE_FORMAT = schemaObject({
       findingIndex: schemaInteger("0-based index of a finding you returned"),
       platform: schemaEnum(PACKAGING_PLATFORMS, 'The bound platform; never "cross_platform"'),
       factId: schemaString("An id stage 5 bound on that exact platform"),
-      summary: schemaString("No recognizable URL syntax", FINAL_CRITIC_LIMITS.claimFindingSummaryChars),
+      summary: schemaString(
+        "No recognizable URL syntax",
+        statedCeiling("final-critic.claimFindingUse[].summary", FINAL_CRITIC_LIMITS.claimFindingSummaryChars),
+      ),
     }),
     "Which stage-5-bound claim a finding discusses, if any",
     FINAL_CRITIC_LIMITS.maxClaimFindingUses,

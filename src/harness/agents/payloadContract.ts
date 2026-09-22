@@ -143,15 +143,17 @@ export function isBoundedSerializableText(value: string, max: number): boolean {
  *     id 27, sourceRef 39, provenance 122, reviewedBy 18, at most 3 tags of at
  *     most 21 characters, and detail serializing to at most 107 characters.
  *  3. **Worst-case payload requirements.** A claim is restated downstream into
- *     `restatementChars` (400), paraphrased into `paraphraseChars` (400) and
- *     summarized into `summaryChars` (400). A claim materially longer than a
- *     small multiple of those fields cannot be faithfully restated in them
+ *     a restatement, paraphrased into a paraphrase and summarized into a
+ *     claim-use summary, each *stated* to the model at 400 characters (their
+ *     enforced ceilings are wider; see `STATED_FIELD_CEILINGS`). A claim
+ *     materially longer than a small multiple of that figure cannot be
+ *     faithfully restated in them
  *     anyway, and each claim is projected once per citing stage — and, at Stage
  *     6, once per platform that binds it.
  *
  * `claimChars` at 1,000 is therefore roughly four times the largest real claim
- * and two and a half times the field that must restate it, with headroom for
- * research claims that run longer than business facts. Every other bound is set
+ * and two and a half times the figure a restatement is asked to fit, with
+ * headroom for research claims that run longer than business facts. Every other bound is set
  * an order of magnitude above its observed maximum, because none of them
  * reaches a model payload (see `PROJECTED_EVIDENCE_STRING_CHARS`) and their
  * only cost is storage.
@@ -212,87 +214,27 @@ export const PROJECTED_EVIDENCE_STRING_CHARS =
 // re-exports the block it owns under its established name, so existing imports
 // are unchanged.
 
-/** Stage 1 — strategy-concept. */
+/**
+ * Stage 1 — strategy-concept.
+ *
+ * **Every output character field here is internal plumbing** (see
+ * `OUTPUT_FIELD_BOUNDS`), so each value below is an *enforced ceiling* three
+ * times the figure the prompt states. The stated figures live in
+ * `STATED_FIELD_CEILINGS`; the prompt is unchanged and still states them. Do not
+ * reconcile the two numbers into one. `goalChars` is caller input, not model
+ * output, and has no stated figure.
+ */
 export const STRATEGY_LIMITS = {
-  angleChars: 400,
-  /**
-   * **Enforced ceiling, not the figure the prompt states.** See
-   * `STATED_FIELD_CEILINGS` immediately below: the prompt states 1,200 and the
-   * validator enforces 1,500. Do not reconcile these two numbers into one.
-   */
-  conceptChars: 1_500,
-  rationaleChars: 2_000,
-  hypothesisChars: 400,
-  assumptionChars: 400,
+  angleChars: 1_200,
+  conceptChars: 3_600,
+  rationaleChars: 6_000,
+  hypothesisChars: 1_200,
+  assumptionChars: 1_200,
   maxIds: 12,
   maxHypotheses: 6,
   maxAssumptions: 6,
   goalChars: 2_000,
 } as const;
-
-/**
- * Fields whose prompt-stated figure is deliberately **lower** than the ceiling
- * the validator enforces.
- *
- * **Why this exists — the measurement, not a preference.** Two authorized live
- * runs on 2026-09-21 measured stage 1's `concept` against a stated and enforced
- * ceiling of 1,200 characters:
- *
- *  - the earlier run returned **1,196** characters — four clear, and passed;
- *  - the run at `20:25:34Z` returned **1,259** characters — fifty-nine over,
- *    and the whole paid response was discarded by
- *    `StageExecutionError: stage strategy-concept: "concept" exceeds 1200
- *    characters (actual 1259)`.
- *
- * Read together those are not a model ignoring a ceiling. They are a model
- * *aiming* at the stated number and landing within roughly ±5% of it — 99.7%
- * and 104.9% of 1,200. The prompt's "a ceiling is not a quota" guidance does
- * not stop that, and adding more such prose is the fourth restatement of an
- * instruction that already exists twice.
- *
- * **Why not simply raise the number.** Because the number is the target. Moving
- * a stated 1,200 to a stated 1,500 moves the aim point to 1,500 and reproduces
- * the same proportional overshoot at ~1,575. The fix has to be a margin the
- * model is never told about, so its aim point stays where it is while the
- * enforced boundary sits outside the observed spread.
- *
- * **The margin.** `CEILING_SLACK_MULTIPLIER` is 1.25 — five times the ~5%
- * spread these two runs measured, so ordinary variance cannot reach it while
- * a genuinely unbounded response still fails. A derivation regression asserts
- * every enforced limit here is at least the stated figure times that
- * multiplier, so narrowing the margin fails the suite rather than passing
- * quietly.
- *
- * **Keys are `<stage id>.<field token>`** — exactly the tokens the `CD2`/`CD3`
- * prompt-drift assertions already pair against, so a second field joins by
- * adding one entry here and nothing else. One field needs this today; the
- * mechanism is deliberately not generalized to the other bounded fields, none
- * of which has been measured against a live model.
- *
- * A future reader must not "tidy" the stated figure and the enforced ceiling
- * back into one number. That is the defect this constant exists to hold open.
- */
-export const STATED_FIELD_CEILINGS = {
-  "strategy-concept.concept": 1_200,
-} as const;
-
-/**
- * The minimum ratio of enforced ceiling to stated figure for any field in
- * `STATED_FIELD_CEILINGS`. See that constant for the measurements behind it.
- */
-export const CEILING_SLACK_MULTIPLIER = 1.25;
-
-/**
- * The figure a prompt — and any other model-facing channel, such as a response
- * schema `description` — states for a bounded field.
- *
- * Defaults to the enforced limit, which is the case for every field except the
- * ones `STATED_FIELD_CEILINGS` names. Callers pass the enforced value so a
- * field that has no declared stated figure is unaffected by this mechanism.
- */
-export function statedCeiling(key: string, enforced: number): number {
-  return (STATED_FIELD_CEILINGS as Record<string, number | undefined>)[key] ?? enforced;
-}
 
 /**
  * Stage 1 emits three independently bounded id channels — `supportingFactIds`,
@@ -304,12 +246,19 @@ export function statedCeiling(key: string, enforced: number): number {
  */
 export const STRATEGY_ID_CHANNELS = 3;
 
-/** Stage 2 — automotive-truth, output fields only. */
+/**
+ * Stage 2 — automotive-truth, output fields only.
+ *
+ * `assessmentChars`, `restatementChars` and `caveatChars` are internal plumbing
+ * and enforce three times their stated figure (see `STATED_FIELD_CEILINGS`).
+ * `forbiddenClaimChars` and `openQuestionChars` are product-bearing — the prompt
+ * names a human reviewer as their reader — and state exactly what they enforce.
+ */
 export const TRUTH_FIELD_LIMITS = {
-  assessmentChars: 2_000,
-  restatementChars: 400,
+  assessmentChars: 6_000,
+  restatementChars: 1_200,
   forbiddenClaimChars: 400,
-  caveatChars: 300,
+  caveatChars: 900,
   openQuestionChars: 300,
   maxAllowedClaims: 12,
   maxForbiddenClaims: 12,
@@ -317,19 +266,31 @@ export const TRUTH_FIELD_LIMITS = {
   maxOpenQuestions: 6,
 } as const;
 
-/** Stage 3 — hook-story-script, output fields only. */
+/**
+ * Stage 3 — hook-story-script, output fields only.
+ *
+ * `beatChars` and `paraphraseChars` are internal plumbing and enforce three
+ * times their stated figure. `hookChars`, `scriptChars` and `openQuestionChars`
+ * are product-bearing and unchanged.
+ */
 export const SCRIPT_FIELD_LIMITS = {
   hookChars: 300,
-  beatChars: 400,
+  beatChars: 1_200,
   scriptChars: 6_000,
-  paraphraseChars: 400,
+  paraphraseChars: 1_200,
   openQuestionChars: 300,
   maxBeats: 8,
   maxClaimUses: 12,
   maxOpenQuestions: 6,
 } as const;
 
-/** Stage 4 — production-direction, output fields only. */
+/**
+ * Stage 4 — production-direction, output fields only.
+ *
+ * Only `directionSummaryChars` is internal plumbing (three times its stated
+ * figure). Everything else is the shot plan, on-screen wording or a request to
+ * a human, and is product-bearing and unchanged.
+ */
 export const DIRECTION_FIELD_LIMITS = {
   visualApproachChars: 1_500,
   subjectChars: 300,
@@ -338,7 +299,7 @@ export const DIRECTION_FIELD_LIMITS = {
   continuityChars: 300,
   overlayTextChars: 200,
   requirementChars: 300,
-  directionSummaryChars: 400,
+  directionSummaryChars: 1_200,
   openQuestionChars: 300,
   maxShots: 10,
   maxOverlayText: 10,
@@ -366,11 +327,16 @@ export const DIRECTION_FIELD_LIMITS = {
  * The narrowing is recorded rather than hidden: a valid Stage 5 output under
  * the *old* contract could carry a longer Facebook caption than this one
  * accepts. Stage 5 has never executed, so no stored output is invalidated.
+ *
+ * Only `summaryChars` — the claim-use gloss — is internal plumbing, and it
+ * enforces **two** times its stated figure rather than three: this stage sets
+ * the `reasoning-standard` budget, so its margin is the one the headroom limits.
+ * See `OUTPUT_FIELD_BOUNDS`.
  */
 export const PACKAGING_FIELD_LIMITS = {
   pipelineCaptionChars: 2_200,
   localKeywordChars: 120,
-  summaryChars: 400,
+  summaryChars: 800,
   openQuestionChars: 300,
   maxLocalKeywords: 6,
   maxOpenQuestions: 6,
@@ -391,15 +357,269 @@ export const PACKAGING_FIELD_LIMITS = {
   maxHashtags: 15,
 } as const;
 
-/** Stage 6 — final-critic, output fields only. */
+/**
+ * Stage 6 — final-critic, output fields only.
+ *
+ * `summaryChars`, `issueChars` and `suggestedActionChars` are rendered for the
+ * human reviewer and are product-bearing and unchanged. Only
+ * `claimFindingSummaryChars` is internal plumbing, at two and a half times its
+ * stated figure — the most the `critic` budget's headroom allows.
+ */
 export const CRITIC_FIELD_LIMITS = {
   summaryChars: 1_500,
   issueChars: 400,
   suggestedActionChars: 300,
-  claimFindingSummaryChars: 400,
+  claimFindingSummaryChars: 1_000,
   maxFindings: 20,
   maxClaimFindingUses: 24,
 } as const;
+
+// ---------------------------------------------------------------------------
+// Field classification — which limits are product decisions, and which are not
+// ---------------------------------------------------------------------------
+
+/**
+ * **The principle.** The skills govern craft; this payload contract governs
+ * size; and where the skills deliberately say nothing, the budget decides.
+ *
+ * Every bounded output field is one of two kinds, and only one of them has
+ * research behind it:
+ *
+ *  - **Product-bearing.** Its content reaches a human reviewer, a platform
+ *    payload, or a filming instruction. Its limit is a product decision — some
+ *    are platform maxima from `packageMap.ts`, and `skills/platform-specs` is in
+ *    places deliberately stricter than the platform (Instagram permits 30
+ *    hashtags; the skill specifies 8–15). **These limits are not margins, and a
+ *    margin is never added to one.** A product-bearing limit states exactly what
+ *    it enforces.
+ *  - **Internal plumbing.** A stage explaining itself, or a handoff to the next
+ *    stage. No customer, platform or reviewer sees it, so no research specifies
+ *    its length — `skills/script-craft` says in terms that it is "craft only"
+ *    and excludes "character-count trimming". Its limit exists only to keep the
+ *    payload and output-token budget finite. For a plumbing *character* field
+ *    the prompt keeps its stated figure (the model's aim point) and the
+ *    validator enforces a wider ceiling the model is never told about.
+ *
+ * **How each field was classified — traced, not assumed.** A field is
+ * product-bearing if any of these holds for it:
+ *
+ *  - `review surface` — it is rendered for the human reviewer in the run
+ *    summary, `markdownSummary` in `scripts/local/content-run.mjs`, the only
+ *    human review surface this pipeline has. (That script also writes every
+ *    stage's full JSON to disk as a run record; a record of everything is not a
+ *    review surface, or no field could be plumbing.)
+ *  - `human reader` — the stage prompt names a human as the field's reader
+ *    ("what a human would have to verify", "tells … human reviewers",
+ *    "what a human must provide").
+ *  - `platform` — it becomes, or is validated as, provider-visible text against
+ *    `PLATFORM_PACKAGING_POLICY`, or a skill governs it as platform copy.
+ *  - `filming` — it is part of the shot plan, on-screen wording, or a
+ *    production requirement a crew would act on.
+ *
+ * Otherwise it is plumbing, for one of two traced reasons:
+ *
+ *  - `handoff` — later stages receive it as untrusted context and nothing else
+ *    reads it: no review surface renders it and no prompt names a human reader.
+ *  - `binding gloss` — the model's own wording beside an evidence-id binding.
+ *    Every such prompt says what the claim actually says is read back from the
+ *    evidence record, never from this prose, so its length carries no product.
+ *
+ * Where a field was borderline the classification errs toward
+ * product-bearing: calling a product field plumbing would widen a product
+ * decision, while calling a plumbing field product-bearing only forgoes a
+ * margin.
+ *
+ * Cardinalities are classified too, but only character fields are given a
+ * margin. The measured failure is a model landing near a stated *length*; an
+ * entry count is discrete and has not been observed to overshoot, and several
+ * counts (`maxIds`, `maxAllowedClaims`, the claim-use counts) also size the
+ * claim blocks later stages receive, so widening one is an authority change,
+ * not slack.
+ *
+ * **Keys are `<stage id>.<field token>`** — the tokens the `CD` prompt-drift
+ * assertions pair — plus stage 5's per-platform caption and hashtag fields,
+ * whose limits the prompt states per platform. A regression asserts the keys,
+ * values and units here equal the validators' own, that every plumbing
+ * character field declares a stated figure and no product-bearing field does,
+ * and that no plumbing field appears on the review surface.
+ */
+export type OutputFieldClass = "product-bearing" | "internal-plumbing";
+
+export interface OutputFieldBound {
+  /** The limit the validator enforces. */
+  readonly enforced: number;
+  readonly unit: "characters" | "entries" | "ids";
+  readonly class: OutputFieldClass;
+  /** The traced reason, in the vocabulary above. */
+  readonly basis: string;
+}
+
+const product = (
+  enforced: number, unit: OutputFieldBound["unit"], basis: string,
+): OutputFieldBound => ({ enforced, unit, class: "product-bearing", basis });
+const plumbing = (
+  enforced: number, unit: OutputFieldBound["unit"], basis: string,
+): OutputFieldBound => ({ enforced, unit, class: "internal-plumbing", basis });
+
+const S1 = STRATEGY_LIMITS;
+const S2 = TRUTH_FIELD_LIMITS;
+const S3 = SCRIPT_FIELD_LIMITS;
+const S4 = DIRECTION_FIELD_LIMITS;
+const S5 = PACKAGING_FIELD_LIMITS;
+const S6 = CRITIC_FIELD_LIMITS;
+
+export const OUTPUT_FIELD_BOUNDS: Readonly<Record<string, OutputFieldBound>> = {
+  // Stage 1. The prompt: "recorded as provisional strategy material … passed to
+  // automotive-truth as untrusted review data". Nothing renders it for review.
+  "strategy-concept.angle": plumbing(S1.angleChars, "characters", "handoff to stages 2–3"),
+  "strategy-concept.concept": plumbing(S1.conceptChars, "characters", "handoff to stages 2–3"),
+  "strategy-concept.rationale": plumbing(S1.rationaleChars, "characters", "handoff; stage 1 explaining itself"),
+  "strategy-concept.supportingFactIds": plumbing(S1.maxIds, "ids", "handoff; id channel, not prose"),
+  "strategy-concept.observationIds": plumbing(S1.maxIds, "ids", "handoff; id channel, not prose"),
+  "strategy-concept.performanceSignalIds": plumbing(S1.maxIds, "ids", "handoff; id channel, not prose"),
+  "strategy-concept.hypotheses": plumbing(S1.maxHypotheses, "entries", "handoff to stages 2–3"),
+  "strategy-concept.hypotheses[].statement": plumbing(S1.hypothesisChars, "characters", "handoff to stages 2–3"),
+  "strategy-concept.assumptions": plumbing(S1.maxAssumptions, "entries", "handoff to stages 2–3"),
+  "strategy-concept.assumptions[]": plumbing(S1.assumptionChars, "characters", "handoff to stages 2–3"),
+
+  // Stage 2.
+  "automotive-truth.assessment": plumbing(S2.assessmentChars, "characters", "handoff to stage 3; no human reader named"),
+  "automotive-truth.allowedClaims": plumbing(S2.maxAllowedClaims, "entries", "handoff; sizes stage 3's PERMITTED_CLAIMS"),
+  "automotive-truth.allowedClaims[].restatement": plumbing(S2.restatementChars, "characters", "binding gloss; claim text is read back from the record"),
+  "automotive-truth.forbiddenClaims": product(S2.maxForbiddenClaims, "entries", "human reader: \"tells later stages and human reviewers\""),
+  "automotive-truth.forbiddenClaims[].claim": product(S2.forbiddenClaimChars, "characters", "human reader: \"tells later stages and human reviewers\""),
+  "automotive-truth.requiredCaveats": plumbing(S2.maxCaveats, "entries", "handoff to stage 3; no human reader named"),
+  "automotive-truth.requiredCaveats[]": plumbing(S2.caveatChars, "characters", "handoff to stage 3; no human reader named"),
+  "automotive-truth.openQuestions": product(S2.maxOpenQuestions, "entries", "human reader: \"what a human would have to verify\""),
+  "automotive-truth.openQuestions[]": product(S2.openQuestionChars, "characters", "human reader: \"what a human would have to verify\""),
+
+  // Stage 3. Governed by skills/script-craft, which sets no length.
+  "hook-story-script.hook": product(S3.hookChars, "characters", "review surface: summary.md \"Hook\""),
+  "hook-story-script.storyBeats": plumbing(S3.maxBeats, "entries", "handoff to stages 4–6"),
+  "hook-story-script.storyBeats[].beat": plumbing(S3.beatChars, "characters", "handoff to stages 4–6; not rendered"),
+  "hook-story-script.script": product(S3.scriptChars, "characters", "review surface: summary.md \"Script\""),
+  "hook-story-script.claimUse": plumbing(S3.maxClaimUses, "entries", "handoff; sizes SCRIPT_CLAIMS for stages 4–6"),
+  "hook-story-script.claimUse[].paraphrase": plumbing(S3.paraphraseChars, "characters", "binding gloss; claim text is read back from the record"),
+  "hook-story-script.openQuestions": product(S3.maxOpenQuestions, "entries", "human reader: \"what a human would have to verify\""),
+  "hook-story-script.openQuestions[]": product(S3.openQuestionChars, "characters", "human reader: \"what a human would have to verify\""),
+
+  // Stage 4. Governed by skills/production-craft, which sets no length.
+  "production-direction.visualApproach": product(S4.visualApproachChars, "characters", "filming: the sequence's one visual idea"),
+  "production-direction.shots": product(S4.maxShots, "entries", "filming; review surface: summary.md \"Shot list\""),
+  "production-direction.shots[].subject": product(S4.subjectChars, "characters", "filming: what is in frame"),
+  "production-direction.shots[].action": product(S4.actionChars, "characters", "filming; review surface: summary.md \"Shot list\""),
+  "production-direction.shots[].composition": product(S4.compositionChars, "characters", "filming: how the frame is arranged"),
+  "production-direction.shots[].continuityNote": product(S4.continuityChars, "characters", "filming: what must match across a cut"),
+  "production-direction.overlayText": product(S4.maxOverlayText, "entries", "filming: on-screen wording a viewer reads"),
+  "production-direction.overlayText[].text": product(S4.overlayTextChars, "characters", "filming: on-screen wording a viewer reads"),
+  "production-direction.productionRequirements": product(S4.maxRequirements, "entries", "filming; human reader: \"what a human must provide\""),
+  "production-direction.productionRequirements[].requirement": product(S4.requirementChars, "characters", "filming; human reader: \"what a human must provide\""),
+  "production-direction.claimVisuals": plumbing(S4.maxClaimVisuals, "entries", "handoff; id-to-shot binding"),
+  "production-direction.claimVisuals[].directionSummary": plumbing(S4.directionSummaryChars, "characters", "binding gloss; claim text is read back from the record"),
+  "production-direction.openQuestions": product(S4.maxOpenQuestions, "entries", "human reader: \"what a human must verify before production\""),
+  "production-direction.openQuestions[]": product(S4.openQuestionChars, "characters", "human reader: \"what a human must verify before production\""),
+
+  // Stage 5. Governed by skills/adaptation-craft, skills/platform-specs and
+  // skills/local-seo.
+  "packaging-adaptation.packages[].caption": product(S5.pipelineCaptionChars, "characters", "platform: provider-visible text; review surface: summary.md \"Captions\""),
+  "packaging-adaptation.packages[].hashtags": product(S5.maxHashtags, "entries", "platform: provider-visible text; review surface: summary.md \"Captions\""),
+  "packaging-adaptation.packages[].localKeywords": product(S5.maxLocalKeywords, "entries", "platform: SEO copy governed by skills/local-seo"),
+  "packaging-adaptation.packages[].localKeywords[]": product(S5.localKeywordChars, "characters", "platform: SEO copy governed by skills/local-seo"),
+  "packaging-adaptation.packages[].openQuestions": product(S5.maxOpenQuestions, "entries", "human reader: \"what a human must decide\""),
+  "packaging-adaptation.packages[].openQuestions[]": product(S5.openQuestionChars, "characters", "human reader: \"what a human must decide\""),
+  "packaging-adaptation.claimUse": plumbing(S5.maxClaimUses, "entries", "handoff; sizes PLATFORM_CLAIMS for stage 6"),
+  "packaging-adaptation.claimUse[].summary": plumbing(S5.summaryChars, "characters", "binding gloss; claim text is read back from the record"),
+
+  // Stage 6. Governed by skills/critique-discipline, which sets no length.
+  "final-critic.summary": product(S6.summaryChars, "characters", "review surface: summary.md \"Critic verdict\""),
+  "final-critic.findings": product(S6.maxFindings, "entries", "review surface: summary.md \"Critic verdict\""),
+  "final-critic.findings[].issue": product(S6.issueChars, "characters", "review surface: summary.md \"Critic verdict\""),
+  "final-critic.findings[].suggestedAction": product(S6.suggestedActionChars, "characters", "review surface: summary.md \"Critic verdict\""),
+  "final-critic.claimFindingUse": plumbing(S6.maxClaimFindingUses, "entries", "handoff; id-to-finding binding"),
+  "final-critic.claimFindingUse[].summary": plumbing(S6.claimFindingSummaryChars, "characters", "binding gloss; claim text is read back from the record"),
+};
+
+/**
+ * The figure the prompt states for each internal-plumbing character field —
+ * deliberately **lower** than the ceiling its validator enforces.
+ *
+ * **Why — the measurements, not a preference.** Authorized live runs measured
+ * stage 1 against stated figures that were also the enforced ceilings:
+ *
+ *  - `concept`, stated 1,200: **1,196** (passed, by four) and **1,259** (+5%,
+ *    and the paid response was discarded);
+ *  - `rationale`, stated 2,000: **2,580** (+29%, discarded).
+ *
+ * A model aims at a stated number and lands around it. PR #81 separated
+ * `concept`'s stated figure from its enforced ceiling with a 1.25× margin sized
+ * on `concept`'s own ±5% spread; applied to `rationale` that margin is 2,500 —
+ * still short of 2,580 — and `rationale` had no margin at all. Five of the six
+ * stages have never returned a live response, so every other field's spread is
+ * unknown. Discovering each one with a paid, discarded call is what this table
+ * exists to stop.
+ *
+ * **Why not simply raise the stated number.** Because the stated number is the
+ * aim point: raising it moves the aim and reproduces the same proportional
+ * overshoot above it. The margin has to be one the model is never told about —
+ * which is why the prompt, and the response schema `description`, keep the
+ * figure below.
+ *
+ * **The margins are sized from budget headroom, not a uniform multiplier.** A
+ * plumbing field's ceiling costs nothing a reviewer sees, only output-token
+ * budget, so each stage takes the widest margin its policy can afford while
+ * every policy keeps at least a fifth of its model's 128,000-token output cap
+ * unallocated (≤ 102,400):
+ *
+ *  - **3×** — stages 1 and 2 (`reasoning-heavy`, 74,000) and stages 3 and 4
+ *    (72,621 and 87,531 transport characters), which sit below stage 5 and so do
+ *    not move the `reasoning-standard` budget at all.
+ *  - **2×** — stage 5, which *sets* the `reasoning-standard` budget (99,000); 2.5×
+ *    would reach 107,684.
+ *  - **2.5×** — stage 6 (`critic`, 102,000); 3× would reach 110,606.
+ *
+ * `CEILING_SLACK_MULTIPLIER` is the declared minimum under all three: 2×, well
+ * clear of the largest overshoot yet measured (1.29×). The largest margin is 3×
+ * because beyond that the budget, not the data, would be deciding.
+ *
+ * Every key must name an `internal-plumbing` character field in
+ * `OUTPUT_FIELD_BOUNDS`; a regression fails if a product-bearing field is
+ * given one, or a plumbing character field is left without one. A future reader
+ * must not "tidy" a stated figure and its enforced ceiling back into one
+ * number: that is the defect this table exists to hold open.
+ */
+export const STATED_FIELD_CEILINGS = {
+  "strategy-concept.angle": 400,
+  "strategy-concept.concept": 1_200,
+  "strategy-concept.rationale": 2_000,
+  "strategy-concept.hypotheses[].statement": 400,
+  "strategy-concept.assumptions[]": 400,
+  "automotive-truth.assessment": 2_000,
+  "automotive-truth.allowedClaims[].restatement": 400,
+  "automotive-truth.requiredCaveats[]": 300,
+  "hook-story-script.storyBeats[].beat": 400,
+  "hook-story-script.claimUse[].paraphrase": 400,
+  "production-direction.claimVisuals[].directionSummary": 400,
+  "packaging-adaptation.claimUse[].summary": 400,
+  "final-critic.claimFindingUse[].summary": 400,
+} as const;
+
+/**
+ * The minimum ratio of enforced ceiling to stated figure for every field in
+ * `STATED_FIELD_CEILINGS`. Narrowing any margin below it fails `CD0c`.
+ */
+export const CEILING_SLACK_MULTIPLIER = 2;
+
+/**
+ * The figure a prompt — and any other model-facing channel, such as a response
+ * schema `description` — states for a bounded field.
+ *
+ * Defaults to the enforced limit, which is the case for every product-bearing
+ * field. Callers pass the enforced value so a field with no declared stated
+ * figure is unaffected by this mechanism.
+ */
+export function statedCeiling(key: string, enforced: number): number {
+  return (STATED_FIELD_CEILINGS as Record<string, number | undefined>)[key] ?? enforced;
+}
 
 // ---------------------------------------------------------------------------
 // Derivation primitives
@@ -1067,8 +1287,8 @@ export const STAGE_REQUEST_SETUP_TIMEOUT_MS = 60_000;
  * return — from opening the request to the last event of the final message.
  *
  * The 90-second non-streaming budget this replaces could not carry the output
- * contracts it was paired with: at the derived per-policy budgets — 40,000
- * tokens for `reasoning-heavy`, 79,000 for `reasoning-standard`, 73,000 for
+ * contracts it was paired with: at the derived per-policy budgets — 74,000
+ * tokens for `reasoning-heavy`, 99,000 for `reasoning-standard`, 102,000 for
  * `critic` — a contract-valid maximum response cannot be generated in 90
  * seconds by any model, so the timeout, not the contract, decided what the
  * pipeline could produce. Deriving the bound from the declared maximum is what

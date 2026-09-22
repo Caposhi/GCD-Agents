@@ -75,7 +75,9 @@ import {
   invokeStage,
   parseStrictJsonObject,
 } from "./stageExecution.js";
-import { TRUTH_FIELD_LIMITS, EVIDENCE_LIMITS, HANDOFF_GUARDS, isBoundedSerializableText } from "./payloadContract.js";
+import {
+  TRUTH_FIELD_LIMITS, EVIDENCE_LIMITS, HANDOFF_GUARDS, isBoundedSerializableText, statedCeiling,
+} from "./payloadContract.js";
 
 export const AUTOMOTIVE_TRUTH_STAGE = "automotive-truth" as const;
 
@@ -128,14 +130,24 @@ export const CLAIM_CLASSES = ["automotive", "business"] as const;
  * Built from the same constants the validator reads. Shape only — the
  * `TRUTH_LIMITS` ceilings appear as `description` prose because structured
  * outputs do not enforce `maxLength` or `maxItems`.
+ *
+ * Internal-plumbing fields state `statedCeiling`, not the enforced limit: a
+ * `description` is a model-facing channel, so it states what the prompt states.
+ * See `STATED_FIELD_CEILINGS` in `payloadContract.ts`.
  */
 export const AUTOMOTIVE_TRUTH_RESPONSE_FORMAT = schemaObject({
-  assessment: schemaString("What you concluded and why, in plain language", TRUTH_LIMITS.assessmentChars),
+  assessment: schemaString(
+    "What you concluded and why, in plain language",
+    statedCeiling("automotive-truth.assessment", TRUTH_LIMITS.assessmentChars),
+  ),
   allowedClaims: schemaArray(
     schemaObject({
       factId: schemaString("An id from allowedFacts ONLY"),
       claimClass: schemaEnum(CLAIM_CLASSES, "Must match the class the evidence system recorded"),
-      restatement: schemaString("How this claim would be put, in your words", TRUTH_LIMITS.restatementChars),
+      restatement: schemaString(
+        "How this claim would be put, in your words",
+        statedCeiling("automotive-truth.allowedClaims[].restatement", TRUTH_LIMITS.restatementChars),
+      ),
     }),
     "Claims the content may make; an empty array is honest",
     TRUTH_LIMITS.maxAllowedClaims,

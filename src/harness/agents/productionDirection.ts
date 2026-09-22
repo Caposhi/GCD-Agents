@@ -99,7 +99,9 @@ import {
   invokeStage,
   parseStrictJsonObject,
 } from "./stageExecution.js";
-import { DIRECTION_FIELD_LIMITS, EVIDENCE_LIMITS, HANDOFF_GUARDS, isBoundedSerializableText } from "./payloadContract.js";
+import {
+  DIRECTION_FIELD_LIMITS, EVIDENCE_LIMITS, HANDOFF_GUARDS, isBoundedSerializableText, statedCeiling,
+} from "./payloadContract.js";
 
 export const PRODUCTION_DIRECTION_STAGE = "production-direction" as const;
 
@@ -146,7 +148,13 @@ export const REQUIREMENT_CATEGORIES = [
   "location", "vehicle", "person", "equipment", "prop", "permission",
 ] as const;
 
-/** The JSON Schema sent as `output_config.format` for this stage. Shape only. */
+/**
+ * The JSON Schema sent as `output_config.format` for this stage. Shape only.
+ *
+ * Internal-plumbing fields state `statedCeiling`, not the enforced limit: a
+ * `description` is a model-facing channel, so it states what the prompt states.
+ * See `STATED_FIELD_CEILINGS` in `payloadContract.ts`.
+ */
 export const PRODUCTION_DIRECTION_RESPONSE_FORMAT = schemaObject({
   visualApproach: schemaString("The overall visual idea, one short paragraph", DIRECTION_LIMITS.visualApproachChars),
   shots: schemaArray(
@@ -183,7 +191,12 @@ export const PRODUCTION_DIRECTION_RESPONSE_FORMAT = schemaObject({
     schemaObject({
       factId: schemaString("An id from SCRIPT_CLAIMS ONLY"),
       shotIndex: schemaInteger("0-based index of a shot you returned"),
-      directionSummary: schemaString("How the shot carries the claim", DIRECTION_LIMITS.directionSummaryChars),
+      directionSummary: schemaString(
+        "How the shot carries the claim",
+        statedCeiling(
+          "production-direction.claimVisuals[].directionSummary", DIRECTION_LIMITS.directionSummaryChars,
+        ),
+      ),
     }),
     "Which shot carries which used claim; an empty array is honest",
     DIRECTION_LIMITS.maxClaimVisuals,

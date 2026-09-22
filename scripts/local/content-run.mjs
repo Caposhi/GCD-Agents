@@ -315,6 +315,72 @@ function buildFakeStageResponses(goal, pack) {
   };
 }
 
+/**
+ * Every output field's observed size against its limit, for every response the
+ * run received — accepted or rejected, fake or live.
+ *
+ * Measured from the raw provider text, not the validated output, so a response
+ * that failed a ceiling is measured too: that is the one that matters. Keys are
+ * `OUTPUT_FIELD_BOUNDS`' own `<stage>.<field token>`, so each row carries the
+ * enforced limit, the figure the prompt states, and the field's class. The
+ * binding size is UTF-8 bytes — every bound caps code units and bytes with one
+ * number, and bytes are never fewer. Stage 5's caption and hashtag count are
+ * measured per platform — the caption as the provider-visible text the
+ * validator compares — against that platform's effective cap. Read-only:
+ * nothing here changes a validation outcome.
+ */
+function measureFields(transcript, { bounds, statedCeiling, platformCaps, providerText }) {
+  const rows = [];
+  const bytes = (text) => Buffer.byteLength(text, "utf8");
+  const row = (stage, field, observed, enforced, stated, fieldClass) => rows.push({
+    stage, field, observed, enforced, stated, class: fieldClass,
+    pctOfStated: stated > 0 ? Math.round((observed / stated) * 100) : null, over: observed > enforced,
+  });
+  for (const { stage, text } of transcript) {
+    let raw;
+    try { raw = JSON.parse(text); } catch { rows.push({ stage, field: "(response)", observed: "not JSON" }); continue; }
+    const seen = new Map();
+    const note = (path, n) => seen.set(path, Math.max(seen.get(path) ?? 0, n));
+    const walk = (value, path) => {
+      if (typeof value === "string") note(path, bytes(value));
+      else if (Array.isArray(value)) { note(path, value.length); value.forEach((v) => walk(v, `${path}[]`)); }
+      else if (value && typeof value === "object") {
+        for (const [key, v] of Object.entries(value)) walk(v, path ? `${path}.${key}` : key);
+      }
+    };
+    walk(raw, "");
+    for (const [path, observed] of seen) {
+      const key = `${stage}.${path}`;
+      const bound = bounds[key];
+      if (!bound || key === "packaging-adaptation.packages[].caption"
+        || key === "packaging-adaptation.packages[].hashtags") continue;
+      row(stage, path, observed, bound.enforced, statedCeiling(key, bound.enforced), bound.class);
+    }
+    for (const pkg of (stage === "packaging-adaptation" && Array.isArray(raw?.packages) ? raw.packages : [])) {
+      if (typeof pkg?.caption !== "string") continue;
+      const caps = platformCaps(pkg.platform);
+      const tags = Array.isArray(pkg.hashtags) ? pkg.hashtags.filter((t) => typeof t === "string") : [];
+      row(stage, `packages[${pkg.platform}].caption+hashtags`, bytes(providerText(pkg.caption, tags)),
+        caps.caption, caps.caption, "product-bearing");
+      row(stage, `packages[${pkg.platform}].hashtags`, tags.length, caps.hashtags, caps.hashtags, "product-bearing");
+    }
+  }
+  return rows;
+}
+
+function measurementTable(rows) {
+  const lines = ["# Field measurements", "",
+    "Observed size of every bounded output field against its limit, per provider response. "
+      + "Sizes are UTF-8 bytes (never fewer than characters). `stated` is what the prompt tells the model.", "",
+    "| stage | field | class | observed | stated | enforced | % of stated | over |",
+    "|---|---|---|---:|---:|---:|---:|---|"];
+  for (const r of rows) {
+    lines.push(`| ${r.stage} | \`${r.field}\` | ${r.class ?? ""} | ${r.observed} | ${r.stated ?? ""} | `
+      + `${r.enforced ?? ""} | ${r.pctOfStated ?? ""} | ${r.over ? "**OVER**" : ""} |`);
+  }
+  return `${lines.join("\n")}\n`;
+}
+
 function markdownSummary({ goal, runner, timestamp, script, direction, packaging, critic }) {
   const lines = [];
   lines.push(`# Content Intelligence local run`, "");
@@ -361,12 +427,15 @@ async function main() {
   const { executeAutomotiveTruth } = await import(resolve(DIST_HARNESS, "agents/automotiveTruth.js"));
   const { executeHookStoryScript } = await import(resolve(DIST_HARNESS, "agents/hookStoryScript.js"));
   const { executeProductionDirection } = await import(resolve(DIST_HARNESS, "agents/productionDirection.js"));
-  const { executePackagingAdaptation, PACKAGING_PLATFORMS } =
-    await import(resolve(DIST_HARNESS, "agents/packagingAdaptation.js"));
+  const {
+    executePackagingAdaptation, PACKAGING_PLATFORMS, PLATFORM_PACKAGING_POLICY, PACKAGING_LIMITS,
+    proposedProviderText,
+  } = await import(resolve(DIST_HARNESS, "agents/packagingAdaptation.js"));
   const { executeFinalCritic } = await import(resolve(DIST_HARNESS, "agents/finalCritic.js"));
   const { resolveModelPolicy, modelBearingPolicies, POLICY_MAX_TOKENS } =
     await import(resolve(DIST_HARNESS, "agents/modelPolicy.js"));
-  const { MAX_PAYLOAD_CHARS } = await import(resolve(DIST_HARNESS, "agents/payloadContract.js"));
+  const { MAX_PAYLOAD_CHARS, OUTPUT_FIELD_BOUNDS, statedCeiling } =
+    await import(resolve(DIST_HARNESS, "agents/payloadContract.js"));
 
   const platforms = args.platforms ?? [...PACKAGING_PLATFORMS];
   for (const p of platforms) {
@@ -474,7 +543,23 @@ async function main() {
   // validation outcome: a rejected payload is still rejected, and nothing
   // recorded here is ever read back as stage output.
   const transcript = [];
-  failureContext = { runDir, transcript };
+  // Every run, fake or live, passing or failing, measures what it received, so
+  // the next field that outgrows its limit arrives as data rather than as
+  // another paid round trip.
+  const writeMeasurements = () => {
+    const rows = measureFields(transcript, {
+      bounds: OUTPUT_FIELD_BOUNDS, statedCeiling, providerText: proposedProviderText,
+      // The same `Math.min` the stage 5 validator applies.
+      platformCaps: (platform) => ({
+        caption: Math.min(PLATFORM_PACKAGING_POLICY[platform]?.captionMax ?? 0, PACKAGING_LIMITS.pipelineCaptionChars),
+        hashtags: Math.min(PLATFORM_PACKAGING_POLICY[platform]?.hashtagMax ?? 0, PACKAGING_LIMITS.maxHashtags),
+      }),
+    });
+    writeFileSync(resolve(runDir, "field-measurements.json"), JSON.stringify(rows, null, 2), "utf8");
+    writeFileSync(resolve(runDir, "field-measurements.md"), measurementTable(rows), "utf8");
+    return rows;
+  };
+  failureContext = { runDir, transcript, writeMeasurements };
 
   const fake = buildFakeStageResponses(args.goal, pack);
   const runnerFor = (stage, buildResponse) => {
@@ -544,8 +629,11 @@ async function main() {
     script: script.output, direction: direction.output, packaging: packaging.output, critic: critic.output,
   });
   await writeFile(resolve(runDir, "summary.md"), summaryMd, "utf8");
+  const measured = writeMeasurements();
 
-  console.log(`\nDone. Wrote 6 stage JSON files and summary.md to: ${runDir}`);
+  console.log(`\nDone. Wrote 6 stage JSON files, summary.md and field-measurements.md to: ${runDir}`);
+  console.log(`Measured ${measured.length} field(s); largest share of a stated figure: `
+    + `${Math.max(0, ...measured.map((r) => r.pctOfStated ?? 0))}%`);
   console.log(`Critic verdict: ${critic.output.provisional.verdict}`);
 }
 
@@ -554,6 +642,13 @@ main().catch((err) => {
   // Write it out before reporting the failure so the operator keeps what they
   // bought and can see exactly what the model produced.
   if (failureContext?.transcript?.length) {
+    try {
+      const over = failureContext.writeMeasurements().filter((r) => r.over);
+      console.error(`Wrote field measurements to ${resolve(failureContext.runDir, "field-measurements.md")}`
+        + (over.length ? ` — over: ${over.map((r) => `${r.stage}.${r.field} ${r.observed}/${r.enforced}`).join(", ")}` : ""));
+    } catch (measureErr) {
+      console.error(`could not write field measurements: ${measureErr?.message ?? measureErr}`);
+    }
     const target = resolve(failureContext.runDir, "rejected-responses.json");
     try {
       writeFileSync(target, JSON.stringify(failureContext.transcript, null, 2), "utf8");

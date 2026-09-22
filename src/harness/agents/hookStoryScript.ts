@@ -84,7 +84,9 @@ import {
   invokeStage,
   parseStrictJsonObject,
 } from "./stageExecution.js";
-import { SCRIPT_FIELD_LIMITS, EVIDENCE_LIMITS, HANDOFF_GUARDS, isBoundedSerializableText } from "./payloadContract.js";
+import {
+  SCRIPT_FIELD_LIMITS, EVIDENCE_LIMITS, HANDOFF_GUARDS, isBoundedSerializableText, statedCeiling,
+} from "./payloadContract.js";
 
 export const HOOK_STORY_SCRIPT_STAGE = "hook-story-script" as const;
 
@@ -114,12 +116,21 @@ import {
   schemaArray, schemaEnum, schemaInteger, schemaObject, schemaString,
 } from "./responseFormatKit.js";
 
-/** The JSON Schema sent as `output_config.format` for this stage. Shape only. */
+/**
+ * The JSON Schema sent as `output_config.format` for this stage. Shape only.
+ *
+ * Internal-plumbing fields state `statedCeiling`, not the enforced limit: a
+ * `description` is a model-facing channel, so it states what the prompt states.
+ * See `STATED_FIELD_CEILINGS` in `payloadContract.ts`.
+ */
 export const HOOK_STORY_SCRIPT_RESPONSE_FORMAT = schemaObject({
   hook: schemaString("The opening line, channel-neutral", SCRIPT_LIMITS.hookChars),
   storyBeats: schemaArray(
     schemaObject({
-      beat: schemaString("One beat of the narrative spine", SCRIPT_LIMITS.beatChars),
+      beat: schemaString(
+        "One beat of the narrative spine",
+        statedCeiling("hook-story-script.storyBeats[].beat", SCRIPT_LIMITS.beatChars),
+      ),
       role: schemaEnum(STORY_BEAT_ROLES, "What this beat does in the spine"),
     }),
     "Ordered; the narrative spine",
@@ -130,7 +141,10 @@ export const HOOK_STORY_SCRIPT_RESPONSE_FORMAT = schemaObject({
     schemaObject({
       factId: schemaString("An id from PERMITTED_CLAIMS ONLY"),
       usedIn: schemaEnum(CLAIM_USE_LOCATIONS, "Where the claim does its work"),
-      paraphrase: schemaString("How you put it, in your words", SCRIPT_LIMITS.paraphraseChars),
+      paraphrase: schemaString(
+        "How you put it, in your words",
+        statedCeiling("hook-story-script.claimUse[].paraphrase", SCRIPT_LIMITS.paraphraseChars),
+      ),
     }),
     "Every permitted claim this script actually uses; an empty array is honest",
     SCRIPT_LIMITS.maxClaimUses,

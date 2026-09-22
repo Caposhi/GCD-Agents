@@ -892,6 +892,14 @@ capability, approval rule, autonomy boundary, or publishing instruction was touc
   forward from the PR #80 record above, still open, still needing a live run that reaches them.
 - Whether the other bounded output ceilings are sized for real model output. Unmeasured, and
   deliberately not guessed at here.
+- **Superseded in part by the output-field classification recorded below** (*Output-field
+  classification — product limits kept, internal-plumbing limits given hidden margins*). A second
+  measured field — `rationale`, 2,580 against a stated 2,000, +29% — showed that a margin sized on
+  `concept`'s ±5% does not transfer. That change classifies every bounded field, gives every
+  internal-plumbing character field (`concept` included, now 3,600) a hidden margin sized from
+  budget headroom, raises `CEILING_SLACK_MULTIPLIER` from 1.25 to 2, and leaves every
+  product-bearing field without one. This record is preserved as written; the 1.25× figures above
+  describe the state at PR #81's merge.
 
 **Documents updated at completion:** [README](../README.md), [Architecture](ARCHITECTURE.md),
 [AI handoff](AI_HANDOFF.md), [Security and continuity](SECURITY_AND_CONTINUITY.md),
@@ -1038,6 +1046,378 @@ value it records moved, and its existing sentence that the stage policy explicit
 thinking remains exactly true. [Environment](ENVIRONMENT.md) and [Operations](OPERATIONS.md) were
 reviewed and need no change — the former's `MANAGER_MODEL` note describes the **legacy** path's
 thinking resolution, which this change does not touch, and the latter describes no model policy.
+
+## Output-field classification — product limits kept, internal-plumbing limits given hidden margins — `IMPLEMENTED`
+
+**State:** `IMPLEMENTED` on branch `claude/upbeat-heisenberg-qmitew`, opened as a draft pull
+request; `MERGED` only on merge. **Not `DEPLOYED`, not `ENABLED`, not `PRODUCTION-VALIDATED`.** All
+six stages remain `executionEnabled: false` and no production path reaches any of them. It
+authorizes no release; the partial-release interval recorded in [Status](STATUS.md) (current bound
+`2026-10-22T18:52Z`) still prohibits any release of any service. [Status](STATUS.md)'s production
+tables, live SHAs, M1→M2 interval record and cursor are untouched; it changes two derived repository
+constants inside the PR #54 record on one line — the `MAX_PAYLOAD_CHARS` figure (as PR #81 did) and
+the three output budgets — because this change makes both stale.
+
+**PR / merge:** base `32e265cf6ce230efac0791ff0712ee71842fbd03` (PR #84 merge; `origin/main` had not
+moved from the SHA the instruction named). **The PR number and merge SHA are not knowable before
+merging** — recorded here as a **blocking follow-up** under the mutable-identifier exception in
+[`AGENTS.md`](../AGENTS.md), to be reconciled in the first change after merge.
+
+**The defect — measured, and about to recur.** Authorized live runs paid for a stage-1 Opus 5 call
+and discarded it on a character ceiling that was both stated and enforced:
+
+| Field | Stated | Observed | Overshoot |
+|---|---|---|---|
+| `concept` | 1,200 | 1,196, then 1,259 | 0%, then +5% |
+| `rationale` | 2,000 | 2,580 | +29% |
+
+PR #81 gave `concept` a hidden 1.25× margin sized on its own ±5% spread. Applied to `rationale`
+that margin is 2,500 — still short of 2,580 — and `STATED_FIELD_CEILINGS` had exactly one entry, so
+`rationale` had no margin at all. Five of the six stages have never returned a live response, so
+roughly fifty further limits were untested. Discovering them one paid, discarded call at a time is
+what this change exists to stop.
+
+**The principle — and it is the durable part.** *The skills govern craft; the payload contract
+governs size; and where the skills deliberately say nothing, the budget decides.* Bounded output
+fields are of two kinds, and only one has research behind it. **Product-bearing** limits are
+product decisions: some are platform maxima, and `skills/platform-specs` is in places deliberately
+stricter than the platform (Instagram permits 30 hashtags; the skill specifies 8–15, "not 30
+generic tags") — a researched decision that outranks the platform maximum. **Internal-plumbing**
+limits are a stage explaining itself or handing off to the next; no customer, platform or reviewer
+sees them, which is why no research specifies their length — `skills/script-craft` states that it
+is "craft only" and excludes "character-count trimming". The two fields that kept failing,
+`rationale` and `concept`, are plumbing: they were failing for no product reason at all.
+
+**How fields were classified — traced, not assumed.** A field is product-bearing if its content
+reaches a human reviewer, a platform payload, or a filming instruction, established by one of four
+traced bases: **review surface** — rendered in `markdownSummary` in `scripts/local/content-run.mjs`,
+the only place this pipeline renders stage output for a person (the CLI also writes every stage's
+full JSON as a run record; a record of everything is not a review surface, or nothing could be
+plumbing); **human reader** — the stage prompt names a human as the field's reader;
+**platform** — the text becomes, or is validated as, provider-visible text, or a skill governs it
+as platform copy; **filming** — part of the shot plan, on-screen wording, or a production
+requirement. Otherwise a field is plumbing: a **handoff** (later stages receive it as untrusted
+context and nothing else reads it) or a **binding gloss** (the model's own wording beside an
+evidence-id binding, which every such prompt says is never where the claim's text is read from).
+Borderline fields were resolved toward product-bearing, because mislabelling a product field
+plumbing widens a product decision, while the reverse only forgoes a margin. The classification
+and its basis live in code, as `OUTPUT_FIELD_BOUNDS` in `payloadContract.ts`, beside the limits.
+
+**The classification, in full** (55 bounded output fields; cardinalities included; "×" is the
+enforced-to-stated ratio for fields given a margin):
+
+| Field | Kind | Basis | Stated | Enforced |
+|---|---|---|---:|---:|
+| `strategy-concept.angle` | plumbing | handoff to stages 2–3 | 400 | 1,200 (3×) |
+| `strategy-concept.concept` | plumbing | handoff to stages 2–3 | 1,200 | 3,600 (3×) |
+| `strategy-concept.rationale` | plumbing | handoff; stage 1 explaining itself | 2,000 | 6,000 (3×) |
+| `strategy-concept.supportingFactIds` | plumbing | handoff; id channel | 12 | 12 |
+| `strategy-concept.observationIds` | plumbing | handoff; id channel | 12 | 12 |
+| `strategy-concept.performanceSignalIds` | plumbing | handoff; id channel | 12 | 12 |
+| `strategy-concept.hypotheses` | plumbing | handoff to stages 2–3 | 6 | 6 |
+| `strategy-concept.hypotheses[].statement` | plumbing | handoff to stages 2–3 | 400 | 1,200 (3×) |
+| `strategy-concept.assumptions` | plumbing | handoff to stages 2–3 | 6 | 6 |
+| `strategy-concept.assumptions[]` | plumbing | handoff to stages 2–3 | 400 | 1,200 (3×) |
+| `automotive-truth.assessment` | plumbing | handoff to stage 3; no human reader named | 2,000 | 6,000 (3×) |
+| `automotive-truth.allowedClaims` | plumbing | handoff; sizes stage 3's `PERMITTED_CLAIMS` | 12 | 12 |
+| `automotive-truth.allowedClaims[].restatement` | plumbing | binding gloss | 400 | 1,200 (3×) |
+| `automotive-truth.forbiddenClaims` | product | human reader: "tells later stages and human reviewers" | 12 | 12 |
+| `automotive-truth.forbiddenClaims[].claim` | product | human reader: as above | 400 | 400 |
+| `automotive-truth.requiredCaveats` | plumbing | handoff to stage 3; no human reader named | 6 | 6 |
+| `automotive-truth.requiredCaveats[]` | plumbing | handoff to stage 3; no human reader named | 300 | 900 (3×) |
+| `automotive-truth.openQuestions` | product | human reader: "what a human would have to verify" | 6 | 6 |
+| `automotive-truth.openQuestions[]` | product | human reader: as above | 300 | 300 |
+| `hook-story-script.hook` | product | review surface: summary "Hook" | 300 | 300 |
+| `hook-story-script.storyBeats` | plumbing | handoff to stages 4–6 | 8 | 8 |
+| `hook-story-script.storyBeats[].beat` | plumbing | handoff to stages 4–6; not rendered | 400 | 1,200 (3×) |
+| `hook-story-script.script` | product | review surface: summary "Script" | 6,000 | 6,000 |
+| `hook-story-script.claimUse` | plumbing | handoff; sizes `SCRIPT_CLAIMS` | 12 | 12 |
+| `hook-story-script.claimUse[].paraphrase` | plumbing | binding gloss | 400 | 1,200 (3×) |
+| `hook-story-script.openQuestions` | product | human reader: "what a human would have to verify" | 6 | 6 |
+| `hook-story-script.openQuestions[]` | product | human reader: as above | 300 | 300 |
+| `production-direction.visualApproach` | product | filming: the sequence's one visual idea | 1,500 | 1,500 |
+| `production-direction.shots` | product | filming; review surface: summary "Shot list" | 10 | 10 |
+| `production-direction.shots[].subject` | product | filming | 300 | 300 |
+| `production-direction.shots[].action` | product | filming; review surface: summary "Shot list" | 400 | 400 |
+| `production-direction.shots[].composition` | product | filming | 400 | 400 |
+| `production-direction.shots[].continuityNote` | product | filming | 300 | 300 |
+| `production-direction.overlayText` | product | filming: on-screen wording a viewer reads | 10 | 10 |
+| `production-direction.overlayText[].text` | product | filming: on-screen wording a viewer reads | 200 | 200 |
+| `production-direction.productionRequirements` | product | filming; human reader: "what a human must provide" | 12 | 12 |
+| `production-direction.productionRequirements[].requirement` | product | filming; human reader: as above | 300 | 300 |
+| `production-direction.claimVisuals` | plumbing | handoff; id-to-shot binding | 12 | 12 |
+| `production-direction.claimVisuals[].directionSummary` | plumbing | binding gloss | 400 | 1,200 (3×) |
+| `production-direction.openQuestions` | product | human reader: "what a human must verify before production" | 6 | 6 |
+| `production-direction.openQuestions[]` | product | human reader: as above | 300 | 300 |
+| `packaging-adaptation.packages[].caption` | product | platform; review surface: summary "Captions" | per platform (2,200 / 2,200 / 1,500) | same |
+| `packaging-adaptation.packages[].hashtags` | product | platform; review surface: summary "Captions" | per platform (8–15 / ≤2 / 0) | same |
+| `packaging-adaptation.packages[].localKeywords` | product | platform: SEO copy governed by `skills/local-seo` | 6 | 6 |
+| `packaging-adaptation.packages[].localKeywords[]` | product | platform: as above | 120 | 120 |
+| `packaging-adaptation.packages[].openQuestions` | product | human reader: "what a human must decide" | 6 | 6 |
+| `packaging-adaptation.packages[].openQuestions[]` | product | human reader: as above | 300 | 300 |
+| `packaging-adaptation.claimUse` | plumbing | handoff; sizes `PLATFORM_CLAIMS` | 24 | 24 |
+| `packaging-adaptation.claimUse[].summary` | plumbing | binding gloss | 400 | 800 (2×) |
+| `final-critic.summary` | product | review surface: summary "Critic verdict" | 1,500 | 1,500 |
+| `final-critic.findings` | product | review surface: summary "Critic verdict" | 20 | 20 |
+| `final-critic.findings[].issue` | product | review surface: summary "Critic verdict" | 400 | 400 |
+| `final-critic.findings[].suggestedAction` | product | review surface: summary "Critic verdict" | 300 | 300 |
+| `final-critic.claimFindingUse` | plumbing | handoff; id-to-finding binding | 24 | 24 |
+| `final-critic.claimFindingUse[].summary` | plumbing | binding gloss | 400 | 1,000 (2.5×) |
+
+Totals: 30 product-bearing, 25 internal plumbing; 13 of the plumbing fields are character fields,
+and all 13 now carry a margin. Bounded values outside the table, and why: `goalChars` (2,000),
+`maxRequestedPlatforms` (3) and every `EVIDENCE_LIMITS` bound are caller or evidence **input**, not
+model output; the evidence-id strings a model echoes (`factId`, the id channels) are bounded at
+`EVIDENCE_LIMITS.idChars` but copy an existing id rather than author a length; and stage 5's
+`recommendedTime` is bounded at 16 by a closed `HH:MM ET` pattern — product-bearing ("a note for a
+human reviewer"), but a format, not a length a model aims at. All are unchanged.
+
+**The classification departs from the premise the work was framed on, and that is recorded, not
+reconciled.** The request's own measurement table grouped stages 1, 2 and 6 as "internal". Traced,
+they are not wholly internal: stage 2's `forbiddenClaims` and `openQuestions` name human reviewers
+as their readers, and stage 6's `summary`, `findings[].issue` and `findings[].suggestedAction` are
+rendered on the review surface. Those five stayed product-bearing and unchanged. Conversely,
+stages 3, 4 and 5 each carry plumbing — beats, paraphrases, direction summaries, claim-use
+summaries — which the "internal stages" framing left out.
+
+**Delivered.**
+
+- **`OUTPUT_FIELD_BOUNDS`** — the classification and its basis, per field, keyed
+  `<stage id>.<field token>`, in `payloadContract.ts` beside the limits, carrying each field's
+  enforced value, unit and class.
+- **Every internal-plumbing character field states a lower figure than it enforces.**
+  `STATED_FIELD_CEILINGS` grows from 1 entry to 13. No prompt changed; each still states its
+  original figure. Every plumbing field's response-schema `description` now reads through
+  `statedCeiling`, since a description is a model-facing channel.
+- **`CEILING_SLACK_MULTIPLIER` 1.25 → 2**, the declared minimum margin: comfortably clear of the
+  largest overshoot measured (1.29×).
+- **Margins sized from budget headroom, not a uniform multiplier.** Each stage takes the widest
+  margin its policy can afford while every policy keeps at least a fifth of its model's
+  128,000-token output cap unallocated (≤ 102,400):
+  - **3×** for stages 1 and 2 (`reasoning-heavy`), and for stages 3 and 4, which stay below stage 5
+    and so do not move the `reasoning-standard` budget at all;
+  - **2×** for stage 5, which *sets* the `reasoning-standard` budget — 2.5× would take it to
+    107,684;
+  - **2.5×** for stage 6 (`critic`) — 3× would take it to 110,606.
+  Three is the ceiling on purpose: past it, the budget rather than any measurement would be doing
+  the deciding.
+- **Per-run field measurement in `scripts/local/content-run.mjs`.** Every run — fake or live,
+  passing or failing — measures each bounded output field of every raw provider response against
+  its enforced limit and its stated figure, and writes `field-measurements.md` and
+  `field-measurements.json` to the run directory. It measures the raw response text rather than the
+  validated output, so a rejected response is measured too, and on failure it prints the fields
+  that went over. Sizes are UTF-8 bytes (every bound caps code units and bytes with one number,
+  and bytes are never fewer); stage 5's caption and hashtag count are measured per platform
+  against that platform's effective cap, the caption as the provider-visible text the validator
+  compares (`proposedProviderText`, now exported for exactly that purpose). No new flag, no mode.
+  It changes no validation outcome.
+
+**Every number changed, before → after.** Stated figures (the prompt) are unchanged in every row.
+
+| Limit | Field | Stated | Enforced before | Enforced after |
+|---|---|---:|---:|---:|
+| `STRATEGY_LIMITS.angleChars` | `angle` | 400 | 400 | 1,200 |
+| `STRATEGY_LIMITS.conceptChars` | `concept` | 1,200 | 1,500 | 3,600 |
+| `STRATEGY_LIMITS.rationaleChars` | `rationale` | 2,000 | 2,000 | 6,000 |
+| `STRATEGY_LIMITS.hypothesisChars` | `hypotheses[].statement` | 400 | 400 | 1,200 |
+| `STRATEGY_LIMITS.assumptionChars` | `assumptions[]` | 400 | 400 | 1,200 |
+| `TRUTH_FIELD_LIMITS.assessmentChars` | `assessment` | 2,000 | 2,000 | 6,000 |
+| `TRUTH_FIELD_LIMITS.restatementChars` | `allowedClaims[].restatement` | 400 | 400 | 1,200 |
+| `TRUTH_FIELD_LIMITS.caveatChars` | `requiredCaveats[]` | 300 | 300 | 900 |
+| `SCRIPT_FIELD_LIMITS.beatChars` | `storyBeats[].beat` | 400 | 400 | 1,200 |
+| `SCRIPT_FIELD_LIMITS.paraphraseChars` | `claimUse[].paraphrase` | 400 | 400 | 1,200 |
+| `DIRECTION_FIELD_LIMITS.directionSummaryChars` | `claimVisuals[].directionSummary` | 400 | 400 | 1,200 |
+| `PACKAGING_FIELD_LIMITS.summaryChars` | `claimUse[].summary` | 400 | 400 | 800 |
+| `CRITIC_FIELD_LIMITS.claimFindingSummaryChars` | `claimFindingUse[].summary` | 400 | 400 | 1,000 |
+| `CEILING_SLACK_MULTIPLIER` | — | — | 1.25 | 2 |
+
+**Derived consequences, recorded because they are derived and not chosen.**
+
+| Derived value | Before | After |
+|---|---:|---:|
+| `STRATEGY_OUTPUT` transport / contract | 33,022 / 17,122 | 66,022 / 33,622 |
+| `TRUTH_OUTPUT` transport / contract | 39,459 / 21,859 | 73,859 / 39,059 |
+| `SCRIPT_OUTPUT` transport / contract | 40,621 / 22,121 | 72,621 / 38,121 |
+| `DIRECTION_OUTPUT` transport / contract | 68,331 / 38,231 | 87,531 / 47,831 |
+| `PACKAGING_OUTPUT` transport / contract | 78,884 / 43,724 | 98,084 / 53,324 |
+| `CRITIC_OUTPUT` transport / contract | 72,206 / 42,306 | 101,006 / 56,706 |
+| `HANDOFF_GUARDS` stage 1 / 2 / 3 / 4 | 33,022 / 39,459 / 40,621 / 68,331 | 66,022 / 73,859 / 72,621 / 87,531 |
+| `HANDOFF_GUARDS.evidencePackChars` | 337,376 | 337,376 — unchanged |
+| `STAGE_ASSEMBLED_CEILINGS["strategy-concept"]` | 341,520 | 341,520 — unchanged |
+| `STAGE_ASSEMBLED_CEILINGS["automotive-truth"]` | 370,564 | 403,564 |
+| `STAGE_ASSEMBLED_CEILINGS["hook-story-script"]` | 105,630 | 173,030 |
+| `STAGE_ASSEMBLED_CEILINGS["production-direction"]` | 73,675 | 105,675 |
+| `STAGE_ASSEMBLED_CEILINGS["packaging-adaptation"]` | 142,289 | 193,489 |
+| `STAGE_ASSEMBLED_CEILINGS["final-critic"]` | 251,101 | 321,501 |
+| `MAX_PAYLOAD_CHARS` | 380,000 | 410,000 |
+| `POLICY_OUTPUT_TOKEN_FLOORS["reasoning-heavy"]` | 40,000 | **74,000** (cap 128,000) |
+| `POLICY_OUTPUT_TOKEN_FLOORS["reasoning-standard"]` | 79,000 | **99,000** (cap 128,000) |
+| `POLICY_OUTPUT_TOKEN_FLOORS.critic` | 73,000 | **102,000** (cap 128,000) |
+| `POLICY_STREAM_DEADLINE_MS` heavy / standard / critic | 35 / 67 / 62 min | 63 / 84 / 86 min |
+| CLI "estimated ceiling for one full six-stage run" | ~$6.81 | ~$9.54 |
+
+All three budgets stay under `POLICY_MODEL_OUTPUT_CAPS`, with 54,000 / 29,000 / 26,000 tokens of
+headroom. The budget is a `max_tokens` ceiling, not a spend: a real response is billed for what it
+emits, and the CLI's estimate is the rough worst case it has always printed.
+
+**Product-bearing fields — verified against the governing skill, and against the platform research
+the operator supplied on 2026-09-22.** No product-bearing value changed. Where a skill and the
+contract disagree, the skill wins and the discrepancy is a finding, recorded here and **not**
+reconciled.
+
+| Platform / field | Operator research | Skill | Contract | Verdict |
+|---|---|---|---|---|
+| Instagram caption | 2,200 | `platform-specs`: "up to 2,200" | `INSTAGRAM_CAPTION_MAX` 2,200; effective 2,200 | agree |
+| Instagram visible | ~125 before "more" | `platform-specs`: "first ~125 chars" — front-load | not a limit | agree |
+| Instagram hashtags | 30 permitted | `platform-specs`: 8–15, "not 30 generic tags" | 8–15 | agree — the skill is deliberately stricter than the platform, and the contract follows the skill |
+| Facebook post | 63,206 | `platform-specs`: no number ("long is allowed but keep it tight") | `FACEBOOK_TEXT_MAX` 63,206; stage 5 effective **2,200** | **finding 1** |
+| Facebook truncation | ~125–477 | not stated ("front-load value") | not a limit | **finding 2** (informational) |
+| Facebook hashtags | — | `platform-specs`: "few or none"; rejects "more than two" | ≤ 2 | agree |
+| GBP post | 1,500 | `platform-specs` 1,500; `local-seo` ~1,500 | `GBP_SUMMARY_MAX` 1,500; effective 1,500 | agree |
+| GBP visible | ~150 | not stated ("front-load the offer/tip") | not a limit | **finding 2** (informational) |
+| GBP business description / name | 750 / 125 | not stated | no field produces either | not applicable |
+| GBP hashtags | — | `platform-specs`, `local-seo`: none | 0 | agree |
+| GBP local keywords | — | `local-seo`: "work 1–2 local keyword phrases in naturally" | `maxLocalKeywords` **6**, on every platform | **finding 3** |
+| Stage 2, 3, 4, 6 product fields | — | `claim-boundaries`, `script-craft`, `production-craft`, `critique-discipline` state no length | as tabled above | no disagreement possible: the skills are silent on size by design |
+
+- **Finding 1 — Facebook's 2,200 is enforced but recorded in no skill.** `platform-specs` gives
+  Facebook no numeric limit and the legacy canonical builder still accepts 63,206, which matches the
+  operator's research. Stage 5's effective 2,200 is a pipeline narrowing (`pipelineCaptionChars`,
+  PR #54), stated in the stage 5 prompt and in `payloadContract.ts` but not in the skill that governs
+  platform format. This is not a contradiction — "keep it tight" points the same way — but the
+  number has no skill behind it. Unchanged.
+- **Finding 2 — the visible-before-truncation figures are recorded only for Instagram.** The
+  operator's Facebook (~125–477) and GBP (~150) figures appear nowhere in the repository. Nothing
+  enforces a visible length on any platform, and nothing should; the skill's instruction for both is
+  to front-load. Informational.
+- **Finding 3 — GBP local keywords: the skill says 1–2, the contract permits 6.** `local-seo`'s
+  GBP rule is "work 1–2 local keyword phrases in naturally", and the legacy
+  `agents/hashtag-seo-timing.md` says the same; stage 5 accepts up to 6 `localKeywords` on every
+  platform, GBP included. Stage 5 loads only `skills/adaptation-craft`, which states no number, and
+  the registry deliberately does not load `local-seo` for it, so the 1–2 rule never reaches that
+  model. **The skill wins: this is a discrepancy for a product decision, not a margin to adjust, and
+  it is not changed here.**
+- **Also noted, out of scope:** `platform-specs` and `local-seo` refer to a `hashtag-seo-timing`
+  *skill*; no such skill exists — it is `agents/hashtag-seo-timing.md`.
+
+**A latent defect in `CD0c`/`CD0d`, fixed because this change needs it.** Both split a key into
+stage and field at its **last** dot. With `concept` the only entry that never mattered; every
+nested token (`hypotheses[].statement`) would have been mis-split and reported as a key no prompt
+pairs. The split is now at the first dot — stage ids contain none. No other assertion was
+loosened.
+
+**Migrations / schema impact:** none. No SQL, no durable state.
+
+**Material design decisions.**
+
+- **Product-bearing limits get no margin — ever.** A product-bearing limit is a product decision,
+  and a hidden margin would silently widen it; `CD0f` fails if one is given.
+- **Only character fields get a margin, cardinalities do not.** The measured failure is a model
+  landing near a stated *length*. A count is discrete and has not been observed to overshoot, and
+  several counts (`maxIds`, `maxAllowedClaims`, the claim-use counts) also size the claim blocks the
+  next stage receives — widening one is an authority change, not slack.
+- **The review surface is the code, not a description of it.** `CD0g` reads `markdownSummary` and
+  fails if any plumbing field's token appears there. A plumbing field that starts being shown to a
+  person has become product-bearing by definition, and must be reclassified rather than given slack.
+
+**Material rejected alternatives.**
+
+- *A uniform multiplier.* Rejected, as instructed and on the arithmetic the request measured: 2×
+  across every field takes the floors to 75,000 / 150,000 / 133,000 — two of three over the cap —
+  and even 1.5× everywhere, which fits, spends margin on product fields that must have none.
+- *Stages 1, 2 and 6 at 2×, as framed.* Rejected on the trace, not the budget: it would have given
+  margins to five product-bearing fields (stage 2's forbidden claims and open questions, stage 6's
+  summary, issue and suggested action), and missed the plumbing in stages 3–5.
+- *Raising the stated figures.* Rejected for the reason PR #81 recorded: the stated figure is the
+  aim point, so raising it moves the aim and reproduces the same proportional overshoot above it.
+- *Reversing PR #81's refusal to generalize — on what evidence.* PR #81 rejected generalizing the
+  split across every limit as unevidenced: one measured field could not justify widening fifty-two
+  contracts. That is now reversed, deliberately and only for plumbing. There is now a second
+  measured field, `rationale`, which overshot by six times `concept`'s spread and showed that a
+  margin sized on one field's variance does not transfer; and the classification removes the
+  original objection, because the widened contracts are exactly the ones with no product decision
+  behind them. Product-bearing fields stay unwidened, which is the half of PR #81's reasoning that
+  still holds.
+- *A reserve assertion in the suite.* The one-fifth reserve is a sizing rule, not an invariant, and
+  asserting it would block a legitimate future product-bearing change. The invariant asserted is the
+  one the budget really has: every floor strictly below its model's cap (`CC19a`).
+
+**Automated validation.** `npm run build` and `npm run typecheck` clean. `npm run test:offline`
+**ALL PASS** on all nine suites — 1,560 checks: content-intelligence **1,057** (was 1,052), posting
+52, image 18, orchestrator 119, gate 56, API 51, render-identity one invariant pass, ownership/recovery
+112, interval monitor 94. New checks: `CD0e` (every bounded output field is classified at its
+validator's own value and unit, with a basis), `CD0f` (every plumbing character field has a margin
+and no product-bearing field does), `CD0g` (no plumbing field on the review surface), `CC19a`
+(every derived output-token floor strictly below its model's cap), and `CE6` (every run writes
+field measurements, on success and on failure, from the raw responses). `CF5` is generalized from
+`concept` to every declared stated figure: each description must state the stated figure and must
+not state the enforced one. `npm run test:payload-mutation` **ALL PASS — 346 mutations** (341
+before; the five new ones, `M342`–`M346`, are appended after every earlier group so no existing id
+moves). Also clean: `test:m1-readiness` (461 checks), simulated dry run, deployment-controller
+fixtures, `npm audit --omit=dev` (0 vulnerabilities), Markdown links, environment coverage (35
+variables), the credential/PII scan, and `git diff --check`.
+
+**Mutation-checked, each reverted.** In the harness: narrowing `rationaleChars` to 3,000 (1.5×)
+fails `CD0c`; widening stage 5's `summaryChars` to 3,000 pushes `reasoning-standard` past the cap and
+fails `CC19a` and `CC22`; giving `final-critic.summary` a stated figure fails `CD0f`; reclassifying
+`rationale` product-bearing while it keeps its margin fails `CD0f`; deleting `assessment`'s stated
+figure fails `CD0f` and `CD2`. By hand, outside the harness's captured paths: restoring `concept` to
+PR #81's 1,500 (1.25×) fails `CD0c`; pointing stage 1's `rationale` or stage 5's summary `description`
+at the enforced limit fails `CF5`; rendering `storyBeats` in `markdownSummary` fails `CD0g`; dropping
+the failure-path measurement fails `CE6`; deleting a classification entry fails `CD0e`.
+
+**CLI verified by hand, offline.** A fake run against a clearly labelled synthetic facts file wrote
+`field-measurements.md` with 55 rows. A fake run whose stage-1 `rationale` was forced to 6,187
+characters failed as it must (`"rationale" exceeds 6000 characters (actual 6187)`), wrote the
+measurements, printed `over: strategy-concept.rationale 6187/6000`, and still saved
+`rejected-responses.json`. No live call was made.
+
+**Production evidence:** none, and none is possible — no stage is enabled or reachable. **No live
+model call was made by this change.**
+
+**Rollback / recovery status:** no migration and no durable state. Reverting the commit restores
+every limit exactly; field-measurement files already written under `local-output/` are local run
+records and are not read back by anything.
+
+**Security and privacy implications.** No claim, tool, model id, thinking or effort configuration,
+approval rule, autonomy boundary, publishing instruction or prompt text changed.
+`additionalProperties: false`, the strict-JSON parse, `stageExecution.ts`'s single-request
+guarantee and its no-retry behaviour are untouched; no validator was removed or loosened other than
+by the enforced ceilings tabled above. The measurement files hold lengths and field names only —
+no response text — and live beside `rejected-responses.json` under the git-ignored `local-output/`.
+
+**Accepted limitations.**
+
+- **The margins are sized on two fields' measurements and a budget, not on a distribution.** A
+  response that exceeds even a 3× margin is still a discarded paid call. What changes is that it
+  now leaves a measurement behind.
+- **Product-bearing fields keep no slack, so they can still discard a paid call** — the hook at
+  301 characters, a critic summary at 1,501. That is the correct trade: those numbers are product
+  decisions, and the right response to an overshoot there is a product decision too, informed by
+  the measurements this change starts collecting.
+- **Worst-case input grew.** `MAX_PAYLOAD_CHARS` is now 410,000 characters. Nothing in the
+  repository compares an assembled input against a model's context window; that gap predates this
+  change (the evidence pack alone is 337,376) and is noted, not closed.
+- **The measurement reads bytes, not the validators' own verdict.** It reports a field over its
+  limit exactly as the validator would for length; it does not re-run any other validation rule.
+
+**Unresolved follow-ups.**
+
+- **The PR number and merge SHA above (blocking follow-up, mutable-identifier exception).**
+- **Finding 3, GBP local keywords (1–2 in the skill, 6 in the contract), awaits a product decision.**
+  Findings 1 and 2 are recorded for the same owner.
+- Whether the provider accepts and honours the five schemas for stages 2 through 6 — carried
+  forward, still open.
+- Whether the product-bearing ceilings are sized for real model output — still unmeasured, and
+  now measurable for free on every run.
+
+**Documents updated at completion:** [README](../README.md), [Architecture](ARCHITECTURE.md),
+[Testing](TESTING.md), [AI handoff](AI_HANDOFF.md) (the shared payload boundary and the three
+budgets), [Security and continuity](SECURITY_AND_CONTINUITY.md) (the shared payload boundary),
+[Status](STATUS.md) (two derived constants on one line of the PR #54 record, as above), and this
+file, including a forward pointer in the PR #81 record and a pointer in the local-CLI entry.
+Security and continuity's description of stage 1's prose as "length-bounded and not checked for
+meaning" remains exactly true.
 
 ## PR #57 — CC5 proposition-bound reconciliation and bounded closeout — `MERGED`
 
@@ -2703,6 +3083,11 @@ prove the pipeline is connected correctly, not that any particular piece of copy
 separate, explicitly authorized decision the business makes when it wants to spend real budget
 evaluating output quality; it requires its own real `config/automotive-facts.local.json` populated
 from manufacturer documentation or another checkable source first.
+
+**Later additions to this tool are recorded in their own entries, not here:** the paid-call
+preconditions and the rejected-response capture (*Paid-call preconditions*, above), and per-run
+field measurement — `field-measurements.md` / `.json` beside every run, fake or live, passing or
+failing (*Output-field classification*, above).
 
 **Documents updated with this entry:** `docs/ROADMAP.md` (this section) and `.gitignore` (excludes
 the operator-supplied automotive facts file and the tool's local output directory). `README.md` was

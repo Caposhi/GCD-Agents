@@ -112,7 +112,10 @@ import {
   invokeStage,
   parseStrictJsonObject,
 } from "./stageExecution.js";
-import { PACKAGING_FIELD_LIMITS, EVIDENCE_LIMITS, HANDOFF_GUARDS, PACKAGING_OUTPUT, isBoundedSerializableText } from "./payloadContract.js";
+import {
+  PACKAGING_FIELD_LIMITS, EVIDENCE_LIMITS, HANDOFF_GUARDS, PACKAGING_OUTPUT, isBoundedSerializableText,
+  statedCeiling,
+} from "./payloadContract.js";
 
 export const PACKAGING_ADAPTATION_STAGE = "packaging-adaptation" as const;
 
@@ -244,6 +247,10 @@ const ALLOWED_CLAIM_USE_FIELDS = ["platform", "factId", "summary"] as const;
  * The caption ceiling is per platform and is the smaller of the provider policy
  * and this pipeline's narrowing, so it cannot be one number in a description
  * here; the prompt states it per platform and the validator computes it.
+ *
+ * Internal-plumbing fields state `statedCeiling`, not the enforced limit: a
+ * `description` is a model-facing channel, so it states what the prompt states.
+ * See `STATED_FIELD_CEILINGS` in `payloadContract.ts`.
  */
 export const PACKAGING_ADAPTATION_RESPONSE_FORMAT = schemaObject({
   packages: schemaArray(
@@ -266,7 +273,10 @@ export const PACKAGING_ADAPTATION_RESPONSE_FORMAT = schemaObject({
     schemaObject({
       platform: schemaEnum(PACKAGING_PLATFORMS, "The platform whose caption relies on this claim"),
       factId: schemaString("An id from SCRIPT_CLAIMS ONLY"),
-      summary: schemaString("No recognizable URL syntax", PACKAGING_LIMITS.summaryChars),
+      summary: schemaString(
+        "No recognizable URL syntax",
+        statedCeiling("packaging-adaptation.claimUse[].summary", PACKAGING_LIMITS.summaryChars),
+      ),
     }),
     "Which used claim each caption relies on",
     PACKAGING_LIMITS.maxClaimUses,
@@ -416,7 +426,12 @@ function requireUrlFreeText(value: string, field: string): string {
   return value;
 }
 
-function proposedProviderText(caption: string, hashtags: string[]): string {
+/**
+ * The provider-visible text a package proposes: caption, then the canonical
+ * tags after a blank line. Exported so the local run's field measurement
+ * reports the same length this validator compares, not a second formula.
+ */
+export function proposedProviderText(caption: string, hashtags: string[]): string {
   return hashtags.length ? `${caption}\n\n${hashtags.join(" ")}` : caption;
 }
 
