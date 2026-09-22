@@ -900,16 +900,19 @@ clause on one line, correcting and re-tensing a derived repository constant insi
 record; **no production table, no live SHA, no M1→M2 interval record and no cursor was touched**,
 and this change still verifies no production state.
 
-## Disabled thinking and effort — the pairing a model rejects cannot be configured — `IMPLEMENTED`
+## Disabled thinking and effort — the pairing a model rejects cannot be configured — `MERGED`
 
-**State:** `IMPLEMENTED` on a branch; `MERGED` only on merge. **Not `DEPLOYED`, not `ENABLED`, not
+**State:** `MERGED` through PR #82 (reconciled 2026-09-22; recorded at implementation as "`IMPLEMENTED` on a branch; `MERGED` only on merge"). **Not `DEPLOYED`, not `ENABLED`, not
 `PRODUCTION-VALIDATED`.** All six stages remain `executionEnabled: false` and no production path
 reaches any of them. It authorizes no release, and the time-bounded partial-release interval
 prohibits any release of any service until **2026-09-24T18:52Z**. [Status](STATUS.md) is **not
 modified by this change at all** — no production table, no live SHA, no M1→M2 interval record, no
 cursor, and no other clause; nothing it states became stale, because no value it records moved.
 
-**PR / merge:** base `5e7e2f036e79192a8ebd05c702921988eee81088` (PR #81 merge). **PR number and
+**PR / merge:** base `5e7e2f036e79192a8ebd05c702921988eee81088` (PR #81 merge). **Closed 2026-09-22:**
+PR #82, merge `0c45c0a676db6b07ae7e34df76c980a854ee9d72`, whose ordered parents are that base
+`5e7e2f036e79192a8ebd05c702921988eee81088` then `d13fa79939521a594e20f531d1941532849214bc`,
+verified by direct Git inspection. The original text follows. **PR number and
 merge SHA are not knowable before merging** — recorded here as a **blocking follow-up** under the
 mutable-identifier exception in [`AGENTS.md`](../AGENTS.md), to be reconciled in the first change
 after merge.
@@ -1008,7 +1011,8 @@ behaviour are untouched.** No model id, no existing thinking policy and no token
 
 **Unresolved follow-ups.**
 
-- The PR number and merge SHA above (blocking follow-up, mutable-identifier exception).
+- ~~The PR number and merge SHA above (blocking follow-up, mutable-identifier exception).~~
+  **Closed** in the **PR / merge** line above: PR #82, merge `0c45c0a`.
 - **Wiring a declared effort through to `output_config.effort`** — `stageExecution.ts` and
   `sdk.ts`, both deliberately untouched here. Required before `POLICY_EFFORT` can carry a value
   that does anything.
@@ -1427,9 +1431,11 @@ As of 2026-09-18, the scheduler had completed one full daily cycle after migrati
 "no unrelated release may occur, of any service, for any reason."
 
 **`main`/production divergence.** The deployed API artifact is exact `A` =
-`d5015236672a02bf8f58d342625c32a4f5acc8a1`. `main` is ahead of `A` by documentation-only commits —
-the exact current `main` is a Git/GitHub lookup, not a field this file maintains: run
-`git rev-parse origin/main`. **"Deploy `main`" and "deploy `A`" are not the same instruction**, and
+`d5015236672a02bf8f58d342625c32a4f5acc8a1`. `main` is ahead of `A` by commits that are not
+documentation-only — they include `src/harness/` and `agents/` changes, among others — but nothing
+under `src/api`, `src/worker`, `src/scheduler`, `state/migrations` or `render.yaml` has changed
+since `A`, so none of the advance reaches a deployed service. The exact current `main` is a
+Git/GitHub lookup, not a field this file maintains: run `git rev-parse origin/main`. **"Deploy `main`" and "deploy `A`" are not the same instruction**, and
 any preflight must name which one it means. `main` must not be described as deployed.
 
 ### Prior verdict, superseded above — recorded for history
@@ -1473,6 +1479,18 @@ above records the monitoring condition as met for the extended interval, as scop
 records as an open follow-up that the `0 14 * * *` scheduled trigger has never fired. The rest of
 this record is preserved as written at implementation; where it says *not merged*, *never fired*
 or *unmet*, that was true then and is superseded by this update.
+
+**Same change: the expiry constant and its guard.** `INTERVAL_EXPIRY` in
+`scripts/ops/interval-monitor/expected.mjs` moves to the re-authorized `2026-10-22T18:52Z`. The
+offline assertion that bound it to [Status](STATUS.md) was containment (`STATUS_DOC.includes`),
+which cannot detect a stale constant once Status keeps superseded bounds as history — it passed with
+the constant still at `2026-09-24T18:52Z`. The claim below that editing any one value alone fails CI
+was therefore overstated for every containment check, and false for the expiry once a bound was
+superseded. The expiry check now binds to the *current* bound (the first `New bound:` line in the
+interval section, else the original `- Expiry:` line), a second check requires the original line to
+be marked superseded once re-authorized, and the suite reports **95 checks**. Five mutations, each
+reverted, confirm it; see [Testing](TESTING.md). The other `status` checks remain containment, and
+the suite comment now says so.
 
 **State:** `IMPLEMENTED` on a branch; `MERGED` only on merge. **Not `DEPLOYED`, not `ENABLED`, not
 `PRODUCTION-VALIDATED`, and explicitly not yet proof that the M1 exit conditions' monitoring
@@ -1677,6 +1695,8 @@ reported as fixed categories, never the driver's own message, which can carry co
   deployed or reaches a deployed service — but the wording is wrong. Both instances sit inside the
   M1→M2 interval record, which the instruction under which this change was made forbids editing, so
   neither is touched here. Correcting them needs its own authorization.
+  **Closed 2026-09-22** by the re-authorization change, which corrects both instances and the same
+  wording in the [README](../README.md).
 - **Worker and scheduler deploy observation** is not covered and needs a Render credential; not
   begun and not authorized.
 - Whether the 25-hour liveness bound is the right one has not been calibrated against more than the

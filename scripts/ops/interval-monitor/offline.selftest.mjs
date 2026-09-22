@@ -187,8 +187,54 @@ check(
 // --- status ----------------------------------------------------------------
 //
 // docs/STATUS.md is the authority; expected.mjs is its executable restatement.
-// Editing either alone fails here. This is the same shape as the CD/CF guards
-// that hold the stage prompts and their validators together.
+// This is the same shape as the CD/CF guards that hold the stage prompts and
+// their validators together, with one difference in strength worth stating.
+//
+// Most checks below are containment: the constant must appear somewhere in
+// Status. That fails when a constant is edited alone to a value Status does not
+// record. It does NOT fail when Status is edited and the old value survives
+// elsewhere in the file, and Status repeats several of these values.
+//
+// The interval expiry is bound more tightly, because Status deliberately keeps
+// superseded bounds as history, so containment would pass on a stale constant.
+// The constant must equal the CURRENT bound: the first `New bound: \`…\`.` line
+// in the M1→M2 interval section (re-authorizations are recorded ahead of the
+// bounds they supersede), or the original `- Expiry: \`…\`` line when no
+// re-authorization exists. Once one exists, the original line must be marked
+// superseded. What this does not check is that re-authorizations really are in
+// newest-first order; that placement convention is what it relies on.
+
+const INTERVAL_SECTION_HEADING = "### M1→M2 interval — owner, bound, and monitoring";
+const NEW_BOUND_LINE = /^New bound: `([^`]+)`\./gm;
+const ORIGINAL_EXPIRY_LINE = /^- Expiry: `([^`]+)`(.*)$/gm;
+
+/** The M1→M2 interval section of Status, up to the next level-2 or level-3 heading. */
+const intervalSection = (doc) => {
+  const start = doc.indexOf(`\n${INTERVAL_SECTION_HEADING}`);
+  if (start < 0) return null;
+  const body = doc.slice(start + 1);
+  const end = body.slice(INTERVAL_SECTION_HEADING.length).search(/\n#{2,3} /);
+  return end < 0 ? body : body.slice(0, INTERVAL_SECTION_HEADING.length + end);
+};
+
+/** The bounds the interval section records, in document order. */
+const recordedBounds = (doc) => {
+  const section = intervalSection(doc);
+  if (section === null) return null;
+  return {
+    reauthorized: [...section.matchAll(NEW_BOUND_LINE)].map((match) => match[1]),
+    original: [...section.matchAll(ORIGINAL_EXPIRY_LINE)]
+      .map((match) => ({ value: match[1], annotation: match[2] })),
+  };
+};
+
+/** The bound Status records as current, or null when it cannot be read unambiguously. */
+const currentBound = (bounds) => {
+  if (bounds === null || bounds.original.length !== 1) return null;
+  return bounds.reauthorized.length > 0 ? bounds.reauthorized[0] : bounds.original[0].value;
+};
+
+const STATUS_BOUNDS = recordedBounds(STATUS_DOC);
 
 check(
   "status",
@@ -202,8 +248,16 @@ check(
 );
 check(
   "status",
-  "the interval expiry matches the bound Status records",
-  STATUS_DOC.includes(INTERVAL_EXPIRY),
+  "the interval expiry is the current bound Status records, not a superseded one",
+  currentBound(STATUS_BOUNDS) === INTERVAL_EXPIRY,
+);
+check(
+  "status",
+  "once Status records a re-authorization, its original expiry line is marked superseded",
+  STATUS_BOUNDS !== null
+    && STATUS_BOUNDS.original.length === 1
+    && (STATUS_BOUNDS.reauthorized.length === 0
+      || /\bsuperseded\b/i.test(STATUS_BOUNDS.original[0].annotation)),
 );
 check(
   "status",
@@ -501,7 +555,7 @@ check(
 check(
   "drift",
   "an expired interval is reported without the monitor deciding anything",
-  describeInterval({ now: new Date("2026-10-01T00:00:00Z"), mainSha: null }).detail
+  describeInterval({ now: new Date(Date.parse(INTERVAL_EXPIRY) + 7 * 24 * 3600 * 1000), mainSha: null }).detail
     .includes("This monitor decides nothing"),
 );
 
