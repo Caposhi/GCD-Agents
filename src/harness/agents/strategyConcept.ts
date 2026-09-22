@@ -55,7 +55,9 @@ import {
   invokeStage,
   parseStrictJsonObject,
 } from "./stageExecution.js";
-import { STRATEGY_LIMITS, HANDOFF_GUARDS, isBoundedSerializableText } from "./payloadContract.js";
+import {
+  STRATEGY_LIMITS, HANDOFF_GUARDS, isBoundedSerializableText, statedCeiling,
+} from "./payloadContract.js";
 import {
   schemaArray, schemaEnum, schemaObject, schemaString,
 } from "./responseFormatKit.js";
@@ -98,10 +100,18 @@ export const HYPOTHESIS_BASES = ["creative", "causal"] as const;
  * It constrains shape only. `STRATEGY_LIMITS` ceilings appear in `description`
  * text because structured outputs do not support `maxLength` or `maxItems`;
  * they are enforced after the response arrives, exactly as before.
+ *
+ * A `description` is a model-facing channel, so it states the same figure the
+ * prompt states — `statedCeiling`, not the enforced limit. For `concept` those
+ * differ deliberately and the difference is not something the model is told;
+ * see `STATED_FIELD_CEILINGS` in `payloadContract.ts`.
  */
 export const STRATEGY_CONCEPT_RESPONSE_FORMAT = schemaObject({
   angle: schemaString("The strategic angle, one sentence", LIMITS.angleChars),
-  concept: schemaString("The content concept this angle produces", LIMITS.conceptChars),
+  concept: schemaString(
+    "The content concept this angle produces",
+    statedCeiling("strategy-concept.concept", LIMITS.conceptChars),
+  ),
   rationale: schemaString("Why this angle, referencing the evidence basis", LIMITS.rationaleChars),
   supportingFactIds: schemaArray(
     { type: "string" }, "Ids from allowedFacts ONLY", LIMITS.maxIds,

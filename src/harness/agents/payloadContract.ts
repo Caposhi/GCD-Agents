@@ -215,7 +215,12 @@ export const PROJECTED_EVIDENCE_STRING_CHARS =
 /** Stage 1 — strategy-concept. */
 export const STRATEGY_LIMITS = {
   angleChars: 400,
-  conceptChars: 1_200,
+  /**
+   * **Enforced ceiling, not the figure the prompt states.** See
+   * `STATED_FIELD_CEILINGS` immediately below: the prompt states 1,200 and the
+   * validator enforces 1,500. Do not reconcile these two numbers into one.
+   */
+  conceptChars: 1_500,
   rationaleChars: 2_000,
   hypothesisChars: 400,
   assumptionChars: 400,
@@ -224,6 +229,70 @@ export const STRATEGY_LIMITS = {
   maxAssumptions: 6,
   goalChars: 2_000,
 } as const;
+
+/**
+ * Fields whose prompt-stated figure is deliberately **lower** than the ceiling
+ * the validator enforces.
+ *
+ * **Why this exists — the measurement, not a preference.** Two authorized live
+ * runs on 2026-09-21 measured stage 1's `concept` against a stated and enforced
+ * ceiling of 1,200 characters:
+ *
+ *  - the earlier run returned **1,196** characters — four clear, and passed;
+ *  - the run at `20:25:34Z` returned **1,259** characters — fifty-nine over,
+ *    and the whole paid response was discarded by
+ *    `StageExecutionError: stage strategy-concept: "concept" exceeds 1200
+ *    characters (actual 1259)`.
+ *
+ * Read together those are not a model ignoring a ceiling. They are a model
+ * *aiming* at the stated number and landing within roughly ±5% of it — 99.7%
+ * and 104.9% of 1,200. The prompt's "a ceiling is not a quota" guidance does
+ * not stop that, and adding more such prose is the fourth restatement of an
+ * instruction that already exists twice.
+ *
+ * **Why not simply raise the number.** Because the number is the target. Moving
+ * a stated 1,200 to a stated 1,500 moves the aim point to 1,500 and reproduces
+ * the same proportional overshoot at ~1,575. The fix has to be a margin the
+ * model is never told about, so its aim point stays where it is while the
+ * enforced boundary sits outside the observed spread.
+ *
+ * **The margin.** `CEILING_SLACK_MULTIPLIER` is 1.25 — five times the ~5%
+ * spread these two runs measured, so ordinary variance cannot reach it while
+ * a genuinely unbounded response still fails. A derivation regression asserts
+ * every enforced limit here is at least the stated figure times that
+ * multiplier, so narrowing the margin fails the suite rather than passing
+ * quietly.
+ *
+ * **Keys are `<stage id>.<field token>`** — exactly the tokens the `CD2`/`CD3`
+ * prompt-drift assertions already pair against, so a second field joins by
+ * adding one entry here and nothing else. One field needs this today; the
+ * mechanism is deliberately not generalized to the other bounded fields, none
+ * of which has been measured against a live model.
+ *
+ * A future reader must not "tidy" the stated figure and the enforced ceiling
+ * back into one number. That is the defect this constant exists to hold open.
+ */
+export const STATED_FIELD_CEILINGS = {
+  "strategy-concept.concept": 1_200,
+} as const;
+
+/**
+ * The minimum ratio of enforced ceiling to stated figure for any field in
+ * `STATED_FIELD_CEILINGS`. See that constant for the measurements behind it.
+ */
+export const CEILING_SLACK_MULTIPLIER = 1.25;
+
+/**
+ * The figure a prompt — and any other model-facing channel, such as a response
+ * schema `description` — states for a bounded field.
+ *
+ * Defaults to the enforced limit, which is the case for every field except the
+ * ones `STATED_FIELD_CEILINGS` names. Callers pass the enforced value so a
+ * field that has no declared stated figure is unaffected by this mechanism.
+ */
+export function statedCeiling(key: string, enforced: number): number {
+  return (STATED_FIELD_CEILINGS as Record<string, number | undefined>)[key] ?? enforced;
+}
 
 /**
  * Stage 1 emits three independently bounded id channels — `supportingFactIds`,
