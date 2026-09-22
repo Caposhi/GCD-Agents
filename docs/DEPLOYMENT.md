@@ -99,6 +99,9 @@ The following configuration was verified present read-only on 2026-08-24. The se
 | `production` environment variable | `RENDER_SCHEDULER_SERVICE_ID` | `crn-d8ulb4rtqb8s73bdjctg` |
 | `production` environment variable | `RENDER_API_HEALTH_URL` | `https://gcd-social-api.onrender.com/healthz` |
 | Repository variable | `RENDER_DEPLOY_AUTOMATION_ENABLED` | `false` at last verification; a later cutover step sets exactly `true`, only after the ownership bootstrap and handoff proof and after immediate re-verification |
+| `monitoring` environment secret | `GCD_MONITOR_DATABASE_URL` | Read-only PostgreSQL role with `SELECT` on `_migrations` and four `brief_queue` columns only; used solely by the interval monitor; never print or commit it |
+
+The `monitoring` environment is separate from `production` and grants no deployment capability: it carries one read-only database credential for `.github/workflows/interval-monitor.yml`, which holds `contents: read` and `actions: read` and performs no write or release of any kind. It is restricted to `main`, which is why that workflow cannot be proven end to end before merge. See [Operations](OPERATIONS.md).
 
 The enable gate must be repository-scoped because the provenance job evaluates it before entering the protected environment; an environment-only gate is unavailable there and will fail closed. `RENDER_API_HEALTH_URL` cannot select another destination: the controller accepts only the exact reviewed value shown above. The API key is not an application runtime variable and must not be copied into Render service environments. Repository/environment variables are non-secret identifiers only.
 

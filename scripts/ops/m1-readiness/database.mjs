@@ -74,8 +74,20 @@ export const CONNECTION_ENV = "GCD_AUDIT_DATABASE_URL";
 /** Applied at startup AND verified afterwards. */
 const STARTUP_OPTIONS = "-c default_transaction_read_only=on";
 
-/** @param {string} connectionString */
-const newClient = (connectionString) =>
+/**
+ * The default `application_name`, so a connection this module opens is
+ * attributable in `pg_stat_activity` to the tool that opened it.
+ *
+ * Callers that are NOT the readiness runner pass their own. A second read-only
+ * operator tool reusing this boundary — `scripts/ops/interval-monitor/` does —
+ * must not appear in production connection listings as the readiness runner:
+ * an operator investigating a live session has to be able to tell which program
+ * it belongs to.
+ */
+export const DEFAULT_APPLICATION_NAME = "gcd-m1-readiness-runner";
+
+/** @param {string} connectionString @param {string} applicationName */
+const newClient = (connectionString, applicationName) =>
   new pg.Client({
     connectionString,
     connectionTimeoutMillis: DATABASE_CONNECT_MS,
@@ -86,7 +98,7 @@ const newClient = (connectionString) =>
     // deliberately NOT set: it would mask which side enforced the bound, and the
     // phase deadline in `runtime.mjs` already bounds the wait.
     options: STARTUP_OPTIONS,
-    application_name: "gcd-m1-readiness-runner",
+    application_name: applicationName,
   });
 
 /**
@@ -118,10 +130,15 @@ const newClient = (connectionString) =>
  * @param {import("./runtime.mjs").Runtime} input.runtime
  * @param {string} input.label
  * @param {number} input.totalMs
+ * @param {string} [input.applicationName] how this session identifies itself to
+ *   PostgreSQL; defaults to {@link DEFAULT_APPLICATION_NAME}
  * @param {(client: pg.Client) => Promise<T>} fn
  */
-export const withReadOnlySession = async ({ connectionString, runtime, label, totalMs }, fn) => {
-  const client = newClient(connectionString);
+export const withReadOnlySession = async (
+  { connectionString, runtime, label, totalMs, applicationName = DEFAULT_APPLICATION_NAME },
+  fn,
+) => {
+  const client = newClient(connectionString, applicationName);
   let torn = false;
   let sessionClosed = false;
 

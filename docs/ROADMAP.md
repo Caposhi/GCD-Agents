@@ -1229,7 +1229,7 @@ In its place, two preventive controls have held, with evidence:
   - Render native auto-deploy off on all three services (`gcd-social-api`, `gcd-social-worker`, `gcd-social-scheduler`) and `RENDER_DEPLOY_AUTOMATION_ENABLED` exactly `false`, both as of the 2026-09-18 verification — a dated observation, not current truth.
   - The `deploy-production` workflow has refused at its "Refuse while production automation is disabled" step on every `main` merge since the interval began: eight runs, run `35368071350` (run #33, 2026-09-18T16:22Z) through run `35448454979` (run #40, 2026-09-19T14:21Z), each failing at exactly that step.
 
-These are compensating controls, not the promised monitoring, and neither one checks the migration set or the API's live artifact/health on any cadence. A single read-only verification of the four checks below is scheduled before the 2026-09-24T18:52Z decision point, and the expiry decision requires it. The four checks that verification must cover:
+These are compensating controls, not the promised monitoring, and neither one checks the migration set or the API's live artifact/health on any cadence. **An implementation of the promised daily check now exists and is `IMPLEMENTED` — see [the interval monitor record](#m1m2-interval-monitoring--daily-read-only-drift-check--implemented) below. It does not by itself close this condition:** it is not merged, and it has never fired. A green pull request proves the monitor's logic and its agreement with this record; it does not prove that GitHub schedules the workflow, that the `monitoring` environment resolves its secret, or that the read-only role can read what it is granted. The condition stays **unmet** until a real firing is observed. A single read-only verification of the four checks below is scheduled before the 2026-09-24T18:52Z decision point, and the expiry decision requires it. The four checks that verification must cover:
 
   1. no new deploy on `gcd-social-api`, `gcd-social-worker`, or `gcd-social-scheduler`;
   2. the applied migration set is still exactly `001`–`007`, with no `008`;
@@ -1280,6 +1280,176 @@ real name, would have skipped it and **never applied migration 007**; filenames 
 NUL-delimited and compared byte for byte. And the failure path echoed a **server-chosen** SQLSTATE,
 so a custom `ERRCODE` reached operator logs; both scripts now emit only fixed categories defined in
 the script, and `UNKNOWN` for anything unrecognised.
+
+## M1→M2 interval monitoring — daily read-only drift check — `IMPLEMENTED`
+
+**State:** `IMPLEMENTED` on a branch; `MERGED` only on merge. **Not `DEPLOYED`, not `ENABLED`, not
+`PRODUCTION-VALIDATED`, and explicitly not yet proof that the M1 exit conditions' monitoring
+requirement is met.** It authorizes no release. The standing prohibition for the interval — *no
+unrelated release may occur, of any service, for any reason* — is in force until
+**2026-09-24T18:52Z** or its explicit re-authorization, and nothing here changes that.
+[Status](STATUS.md)'s production tables, live SHAs, M1→M2 interval record and current cursor are
+**untouched** by this change.
+
+**PR / merge:** based on `main` at `5e7e2f036e79192a8ebd05c702921988eee81088`. **PR number and merge
+SHA are not knowable before merging** — recorded here as a **blocking follow-up** under the
+mutable-identifier exception in [`AGENTS.md`](../AGENTS.md), to be reconciled in the first change
+after merge.
+
+**The defect this closes.** [Status](STATUS.md) records that the M1 exit conditions require this
+interval to be actively monitored, and that **the condition is unmet**: no daily automated check
+was ever established, and none ran on any day of the interval. The prior attempt was a Routine
+bound to the originating chat session. The session ended, the Routine went with it, and its single
+test firing produced a result nobody ever saw. Two failure modes, both structural: the monitor did
+not outlive its creator, and its output had no durable, inspectable home.
+
+**Delivered.** `.github/workflows/interval-monitor.yml`, a scheduled GitHub Actions workflow, plus
+`scripts/ops/interval-monitor/`.
+
+- **Triggers.** `schedule` at `0 14 * * *` UTC — after the production scheduler's `0 13 * * *` run,
+  so the day's `brief_queue` row exists when liveness is evaluated — and `workflow_dispatch`. There
+  is **no `pull_request` trigger**, so a fork's pull request can never reach the secret.
+- **Permissions.** `contents: read` and `actions: read`. Nothing else. No write of any kind.
+- **Secret.** `GCD_MONITOR_DATABASE_URL`, an **environment** secret on the `monitoring` GitHub
+  environment, which the job declares with `environment: monitoring`. It is a read-only PostgreSQL
+  role with `SELECT` on `_migrations` and on four columns of `brief_queue`. It is never echoed,
+  never placed in a URL or on a command line, and never included in any report.
+- **Five gating checks**, each evaluated independently with every result reported before the job
+  exits: the API's `/healthz` artifact and health against exact `A`; the applied migration set
+  against `001`–`007` with no `008`; `brief_queue` liveness within 25 hours; the
+  `RENDER_DEPLOY_AUTOMATION_ENABLED` gate as the exact string `false`; and the absence of any
+  `deploy-production` run on `main` concluding `success` since the interval began. A sixth item —
+  the current `main` SHA and the days remaining — is **informational and never gates**.
+- **One source of truth.** Every expected value lives in `scripts/ops/interval-monitor/expected.mjs`.
+  The workflow file carries **no** expected value, and the offline suite proves it carries no copy
+  of one. The seven migration filenames are re-exported from `scripts/ops/lib/migrationState.mjs`
+  rather than re-listed.
+- **An offline assertion that the source agrees with the record.** `npm run test:interval-monitor`,
+  now the ninth suite in `npm run test:offline`, asserts those constants against what
+  [Status](STATUS.md) records **and** against the workflow's schedule, environment, secret name,
+  trigger set and permission set. Editing any one of them alone fails CI. This is deliberately the
+  same shape as the `CD`/`CF` guards that hold the stage prompts and their validators together.
+
+**Material design decisions.**
+
+- **A workflow, not a scheduled assistant task.** It outlives every session and its run history is
+  durable and inspectable — the two properties the first attempt lacked. Actions runners also have
+  unrestricted outbound network; an assistant session in this environment reaches neither the
+  Render PostgreSQL host nor `gcd-social-api.onrender.com`, which was verified rather than assumed.
+- **Failure to check fails as loudly as drift.** Three states: `PASS`, `DRIFT` (checked, mismatched)
+  and `ERROR` (**not checked**). Both `DRIFT` and `ERROR` fail the job, `ERROR` outranks `DRIFT` in
+  the verdict, and an `ERROR` run's summary says explicitly that nothing was proven. `process.exitCode`
+  is set to 1 before any work and cleared only after the verdict is `PASS` **and** the result set is
+  proven to contain exactly the registered checks, so a check that vanished cannot narrow what "all
+  clear" covers.
+- **Reuse of the existing read-only database boundary.** The session runs through
+  `scripts/ops/m1-readiness/database.mjs` — `default_transaction_read_only`, `BEGIN TRANSACTION READ
+  ONLY`, both verified with `SHOW`, fixed statements, sanitized error categories. That module gained
+  one backward-compatible parameter, an optional `applicationName` defaulting to its existing value,
+  so the monitor appears in `pg_stat_activity` as `gcd-interval-monitor` rather than impersonating
+  the readiness runner.
+- **Client-side filtering of the workflow-run listing.** The GitHub API's `branch` and `status`
+  filters are deliberately unused: a server-side filter that silently over-restricted would hide a
+  breaching run and produce a false `PASS`. The listing is paged back past the interval start and
+  filtered from each run's own fields; failing to enumerate that far is an `ERROR`, not a `PASS`.
+
+**Material rejected alternatives.**
+
+- **A Routine or any session-bound schedule** — rejected: it is the exact mechanism that already
+  failed, for reasons that are structural rather than incidental.
+- **Relaxing the `monitoring` environment's branch restriction, or moving the secret to the
+  repository level, so the job could be proven from the branch** — rejected. It would widen the
+  credential's reach to buy a convenience, and the fail-closed design already treats an unreachable
+  secret as a loud failure.
+- **Failing the job once the interval expires** — rejected. Expiry is a decision point, not a cliff,
+  and the decision belongs to the named owner; a monitor that failed on the calendar would assert an
+  authority it does not have. It reports the remaining days and says whose call it is.
+- **Splitting the job so the checks needing no secret still run when the database is unreachable** —
+  rejected: partial monitoring reporting green is the defect this change exists to remove.
+- **Reusing the deployment controller's health code at run time** — rejected: a read-only observer
+  should not hold a reference to the module that performs releases. The agreement that matters —
+  that the monitor's health URL is exactly the one the controller accepts — is asserted at **test**
+  time by calling that controller's own `validateApiHealthUrl` on the constant.
+
+**Migrations / schema impact:** none. No migration is added, applied, or rolled back, and the
+monitor's role cannot write.
+
+**Automated validation.** `npm run build` and `npm run typecheck` clean. `npm run test:offline`
+**ALL PASS** across nine suites, the new one reporting **94 checks** (source 15, status 8, workflow
+23, drift 26, failclosed 12, report 10). **Ten deliberate mutations confirm the guard is
+load-bearing**, each reverted: artifact `A` edited in the constants only; the monitor cron edited in
+the constants only; the cron edited in the workflow only; a `pull_request` trigger added; a write
+permission added; the `environment: monitoring` line removed; artifact `A` hardcoded into the
+workflow; the interval expiry moved in the constants only; the interval expiry rewritten in
+[Status](STATUS.md) only; and the secret reference renamed. Every drift state the monitor exists to
+catch is exercised offline against fabricated observations, because none can be produced on demand
+in production.
+
+**Production evidence: none, and none is possible before merge.** The workflow's `schedule` fires
+only on the default branch, and its `monitoring` environment is restricted to `main`, so the job
+**cannot run at all from the pull-request branch**. **A green pull request does not prove this
+workflow works.** The first genuine end-to-end proof is a manual `workflow_dispatch` on `main`
+after merge.
+
+**Rollback / recovery status:** no migration and no durable state. Reverting the commit removes the
+workflow and the scripts and restores the previous `test:offline` suite list; nothing in production
+depends on it.
+
+**Security and privacy implications.** The change adds one credential reference and grants no new
+capability. No claim, tool, model id, thinking configuration, approval rule, autonomy boundary, or
+publishing instruction was touched, and the Phase-A approval gate and the self-improvement
+core-objective lock are untouched. `ci.yml` and `deploy-production.yml` are unmodified. The new
+workflow holds read-only permissions, has no `pull_request` trigger, performs no write to any
+system, and deploys nothing. Report values that originate outside this repository — the `/healthz`
+document, `_migrations` identifiers, GitHub run fields — are length-bounded, stripped of control
+characters and HTML-entity-escaped before reaching the rendered job summary. Database failures are
+reported as fixed categories, never the driver's own message, which can carry connection identity.
+
+**Accepted limitations.**
+
+- **The monitor observes; it does not verify every M1 exit check.** [Status](STATUS.md)'s first
+  listed check is *no new deploy on `gcd-social-api`, `gcd-social-worker`, or
+  `gcd-social-scheduler`*. This workflow has no Render credential, so it proves that only for the
+  **API**, and only indirectly, by observing that `/healthz` still reports exact `A`. **Worker and
+  scheduler deploys are not covered at all**, and scheduler liveness is inferred from
+  `brief_queue` rather than from the cron's own run record. Closing that needs a Render API
+  credential, which is a separate, separately authorized change.
+- **A green run is evidence for the day it ran.** It says nothing about the hours between runs, and
+  a drift that appears and is reverted inside one day is invisible to it.
+- **25 hours is a judgement.** It tolerates one hour of cron jitter or a single late run without
+  tolerating a missed day. A scheduler that runs but enqueues nothing — or that enqueues a brief
+  the worker never claims — passes this check.
+- **The `ERROR` path's real-world behaviour is untested.** It is proven offline against fabricated
+  failures; whether a real Render PostgreSQL timeout or a real expired credential lands in that path
+  rather than escaping as an unhandled rejection has not been observed.
+- **It notices; it does not remediate, and it must not.** Every response is an operator decision
+  under the standing prohibition.
+
+**Unresolved follow-ups.**
+
+- The PR number and merge SHA above (blocking follow-up, mutable-identifier exception).
+- **The first real firing is what proves this workflow — open until it is observed.** A manual
+  `workflow_dispatch` on `main` after merge is the first genuine end-to-end evidence: that GitHub
+  schedules the workflow, that `environment: monitoring` resolves `GCD_MONITOR_DATABASE_URL`, that
+  the read-only role can read `_migrations` and `brief_queue.created_at`, that `/healthz` and the
+  GitHub run listing are reachable from the runner, and that the job's verdict and summary render
+  as intended. Until that run is observed, the monitoring condition in [Status](STATUS.md) and in
+  the M1→M2 interval section above stays **unmet**, and neither this record nor a green pull request
+  may be read as closing it.
+- **[Status](STATUS.md) is deliberately not updated by this change**, by instruction: its production
+  tables, live SHAs, M1→M2 interval record and current cursor are untouched. Its Monitoring
+  paragraph therefore does not mention this implementation, while the corresponding paragraph in
+  this file now does. Reconciling the two — once the first firing has been observed, and only then
+  — is an open documentation follow-up.
+- **Worker and scheduler deploy observation** is not covered and needs a Render credential; not
+  begun and not authorized.
+- Whether the 25-hour liveness bound is the right one has not been calibrated against more than the
+  single post-007 cycle [Status](STATUS.md) records.
+
+**Documents updated at completion:** [Operations](OPERATIONS.md), [Testing](TESTING.md),
+[Environment](ENVIRONMENT.md), [Deployment control](DEPLOYMENT.md), [README](../README.md),
+[`AGENTS.md`](../AGENTS.md) (the offline-suite count, eight to nine), and this file.
+**[Status](STATUS.md) was deliberately not modified.**
 
 ## Post-MVP hardening backlog
 
