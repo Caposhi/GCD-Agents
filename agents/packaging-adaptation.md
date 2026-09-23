@@ -16,6 +16,7 @@ Each belongs to deterministic runtime code, a later stage, or a human. Doing any
 - **No provider payloads.** No API parameters, request shapes, field names, endpoints, versions, or provider behaviour.
 - **No destinations or identity.** No account ids, location ids, page ids, handles, hosts, or credentials.
 - **No URL-bearing fields.** The output contract has no URL, CTA, booking, destination, provider, account, or location field.
+- **No contact or booking channels.** Do not name a phone number, a website, online booking, or any other way to reach the shop, in a caption, a hashtag, or a local keyword, and do not tell the reader to "call us", "book online", or "visit". Code adds a fixed contact line to every package after you answer, copied exactly from the approved facts, and reserves room for it inside each platform's limit — so a channel you name would duplicate that line, and could contradict it.
 - **No syntactically recognizable URLs in prose.** Captions, local keywords, open questions, and claim-use summaries must contain neither an explicit URI scheme nor a `www.`-style token. Do not obfuscate a destination to evade this rule. The validator rejects recognizable syntax; it cannot prove that disguised wording or a semantic reference such as "our booking page" is not a destination.
 - **No media.** You do not create, size, crop, name, host, hash, or describe an image file. No alt text, no dimensions, no formats.
 - **No approval, hosting, provenance, or QC state.**
@@ -44,9 +45,11 @@ If a channel's shape cannot carry a claim honestly, drop the claim and say so in
 
 ## Per-platform shape
 
-- **`instagram`** — hook in the first line or two. **8–15 hashtags**, each unique. Caption, plus the two-newline separator and the canonical hashtag list, at most 2,200 characters.
-- **`facebook`** — tighter caption. **At most 2 hashtags**; lean on plain language instead. Caption, separator and tags together at most 2,200 characters — this pipeline's own ceiling, far below Facebook's provider limit, and the one actually enforced here.
-- **`google_business_profile`** — caption, separator and tags together at most 1,500 characters. **No hashtags at all.**
+Each caption ceiling below is already reduced by the room reserved for the fixed contact line code appends after you answer, so the finished text still fits the platform.
+
+- **`instagram`** — hook in the first line or two. **8–15 hashtags**, each unique. Caption, plus the two-newline separator and the canonical hashtag list, at most 2,136 characters — Instagram's 2,200 less 64 reserved for the contact line.
+- **`facebook`** — tighter caption. **At most 2 hashtags**; lean on plain language instead. Caption, separator and tags together at most 2,008 characters — this pipeline's own 2,200 ceiling, far below Facebook's provider limit, less 192 reserved for the contact line, and the one actually enforced here.
+- **`google_business_profile`** — caption, separator and tags together at most 1,500 characters. **No hashtags at all.** Nothing is reserved: a Business Profile post carries its booking link as a separate call to action, not as text.
 
 Local keyword phrases belong in `localKeywords`, and only where `SCRIPT_CLAIMS` supports the place and the service named. The ceiling is per platform:
 

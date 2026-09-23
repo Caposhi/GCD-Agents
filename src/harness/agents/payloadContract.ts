@@ -365,6 +365,76 @@ export const PACKAGING_FIELD_LIMITS = {
 } as const;
 
 /**
+ * The deterministic contact line — room reserved in each platform's
+ * provider-visible text for a line no model writes.
+ *
+ * On 2026-09-23 stage 1 planned a "book online or call" close, spent its twelve
+ * citation slots on other facts, and never cited the phone number or the booking
+ * link. Stage 3 wrote the close uncited, the critic flagged it, stage 5 dropped
+ * it, and every caption shipped with no way to book. The owner decided that
+ * contact details are attached **by code, never by a model**: they must match the
+ * approved data exactly (`skills/local-seo`, "NAP consistency"), and they should
+ * not compete for citation slots. `contactLine.ts` builds the line from the
+ * evidence pack's approved-facts phone and booking-link records after stage 5
+ * validates; this block only sizes the room it needs.
+ *
+ * Provider-visible text becomes caption + separator + hashtags + separator +
+ * contact text, and it must still fit each platform's existing limit, so the
+ * caption budget stage 5 is told and held to is that limit less this reserve.
+ * Each reserve covers the two-character separator plus the platform's contact
+ * text — in characters, and again in UTF-8 bytes — with headroom so a reformatted phone number or a longer booking link
+ * fails closed on a free check rather than silently eating caption room:
+ *
+ *  - `instagram` — 64. The line is "Call German Car Depot: " and the phone
+ *    number: 37 characters with today's phone, 39 with the separator.
+ *  - `facebook` — 192. The same, then " · Book online: " and the booking link:
+ *    130 characters today, 132 with the separator (133 UTF-8 bytes: "·" is two).
+ *  - `google_business_profile` — 0. Google Business Profile carries no contact
+ *    text; its booking link travels as a structured `BOOK` call to action, which
+ *    is not part of the 1,500-character summary.
+ *
+ * The platform keys are stage 5's own closed enum; a regression asserts they are
+ * exactly that enum, so a new platform cannot be added without a reserve.
+ * Changing a reserve moves stage 5's caption budget, the prompt that states it,
+ * and the response schema that describes it — the drift regressions fail until
+ * all three agree.
+ */
+export const CONTACT_LINE_RESERVE_CHARS = {
+  instagram: 64,
+  facebook: 192,
+  google_business_profile: 0,
+} as const;
+
+/**
+ * The separator placed before contact text: a blank line, the same two-newline
+ * separator that already precedes the hashtag list. Counted inside the reserve.
+ */
+export const CONTACT_LINE_SEPARATOR_CHARS = 2;
+
+/**
+ * The most contact text any one package carries: the widest reserve less its
+ * separator. What the critic's packaging ceiling counts per package. Each
+ * platform's own reserve is the tighter bound, and `contactLine.ts` holds the
+ * text plus its separator to it in characters **and** in UTF-8 bytes — every
+ * bounded string caps code units and bytes with one number, which is what lets
+ * this allowance stand for both. (The Facebook template's "·" is two bytes, so
+ * there bytes run one ahead of characters.)
+ */
+export const CONTACT_TEXT_MAX_CHARS =
+  Math.max(...Object.values(CONTACT_LINE_RESERVE_CHARS)) - CONTACT_LINE_SEPARATOR_CHARS;
+
+/**
+ * The longest booking link a structured Google Business Profile call to action
+ * may carry. Not provider-visible summary text, so it is not charged to any
+ * reserve; bounded so the critic's packaging block keeps a finite maximum. Far
+ * above today's 77-character link.
+ */
+export const CONTACT_CTA_URL_CHARS = 200;
+
+/** A contact line cites at most the phone record and the booking-link record. */
+export const CONTACT_LINE_MAX_SOURCE_FACTS = 2;
+
+/**
  * Stage 6 — final-critic, output fields only.
  *
  * `summaryChars`, `issueChars` and `suggestedActionChars` are rendered for the
@@ -1043,8 +1113,10 @@ export const DIRECTION_OUTPUT = contractCeiling(
  * platform's *effective* cap from above: the effective cap is the smaller of
  * the provider limit and the pipeline limit, so it can never exceed the
  * pipeline limit. Google Business Profile's 1,500 is over-approximated by 700
- * characters as a result — safe, and it keeps this module free of platform
- * vocabulary and of `packageMap.ts`'s posting-tool dependency. A derivation
+ * characters as a result — safe, and it keeps this derivation free of platform
+ * vocabulary and of `packageMap.ts`'s posting-tool dependency. The contact-line
+ * reserve (`CONTACT_LINE_RESERVE_CHARS`) lowers every caption budget further, so
+ * the over-approximation only widens. A derivation
  * regression asserts every platform's effective cap really is at or below
  * `pipelineCaptionChars`, so a provider-policy change cannot slip past it.
  *
@@ -1089,6 +1161,70 @@ export const PACKAGING_OUTPUT = contractCeiling(
     + PACKAGING_FIELD_LIMITS.pipelineCaptionChars // every hashtag token, jointly
     + PACKAGING_FIELD_LIMITS.maxLocalKeywords * PACKAGING_FIELD_LIMITS.localKeywordChars
     + PACKAGING_FIELD_LIMITS.maxOpenQuestions * PACKAGING_FIELD_LIMITS.openQuestionChars
+  )
+  + PACKAGING_FIELD_LIMITS.maxClaimUses
+    * (EVIDENCE_LIMITS.idChars + PACKAGING_FIELD_LIMITS.summaryChars),
+);
+
+/**
+ * Stage 5's output with the deterministic contact line attached to every package
+ * — the `PACKAGING_OUTPUT` block the critic receives.
+ *
+ * Not model output: nothing here moves a token budget, because stage 5's own
+ * response is still bounded by `PACKAGING_OUTPUT` above. It is the critic's
+ * *input*, so it sizes the critic's handoff guard and its assembled payload.
+ *
+ * Every package is counted with every contact field at once — text at the widest
+ * reserve less its separator, a structured call to action at
+ * `CONTACT_CTA_URL_CHARS`, and both source-fact ids — though no real platform
+ * carries both text and a call to action. Over-approximating is safe.
+ */
+export const CONTACTED_PACKAGING_OUTPUT = contractCeiling(
+  {
+    provisional: {
+      kind: "provisional_model_prose",
+      publishable: false,
+      verified: false,
+      executable: false,
+      packages: times(PACKAGING_FIELD_LIMITS.maxRequestedPlatforms, () => ({
+        platform: "google_business_profile",
+        caption: "",
+        captionVerified: false,
+        hashtags: times(PACKAGING_FIELD_LIMITS.maxHashtags, () => ""),
+        localKeywords: times(PACKAGING_FIELD_LIMITS.maxLocalKeywords, () => ""),
+        selectionVerified: false,
+        recommendedTime: "23:59 ET",
+        timingVerified: false,
+        schedulable: false,
+        openQuestions: times(PACKAGING_FIELD_LIMITS.maxOpenQuestions, () => ""),
+        contact: {
+          kind: "deterministic_contact",
+          text: "",
+          gbpCta: { actionType: "BOOK", url: "" },
+          sourceFactIds: times(CONTACT_LINE_MAX_SOURCE_FACTS, () => ""),
+        },
+      })),
+    },
+    claimUse: {
+      kind: "typed_platform_claim_use",
+      used: times(PACKAGING_FIELD_LIMITS.maxClaimUses, () => ({
+        kind: "evidence_bound_platform_claim_use",
+        platform: "google_business_profile",
+        factId: "",
+        factKind: "verified_automotive_fact",
+        provisionalSummary: "",
+        wordingVerified: false,
+      })),
+    },
+  },
+  PACKAGING_FIELD_LIMITS.maxRequestedPlatforms * (
+    PACKAGING_FIELD_LIMITS.pipelineCaptionChars // caption
+    + PACKAGING_FIELD_LIMITS.pipelineCaptionChars // every hashtag token, jointly
+    + PACKAGING_FIELD_LIMITS.maxLocalKeywords * PACKAGING_FIELD_LIMITS.localKeywordChars
+    + PACKAGING_FIELD_LIMITS.maxOpenQuestions * PACKAGING_FIELD_LIMITS.openQuestionChars
+    + CONTACT_TEXT_MAX_CHARS // contact text, at the widest reserve less its separator
+    + CONTACT_CTA_URL_CHARS
+    + CONTACT_LINE_MAX_SOURCE_FACTS * EVIDENCE_LIMITS.idChars
   )
   + PACKAGING_FIELD_LIMITS.maxClaimUses
     * (EVIDENCE_LIMITS.idChars + PACKAGING_FIELD_LIMITS.summaryChars),
@@ -1197,7 +1333,7 @@ export const STAGE_ASSEMBLED_CEILINGS: Record<string, number> = {
     "final-critic": assembledCeiling([
       { label: "SCRIPT_OUTPUT", bodyChars: SCRIPT_OUTPUT.transportChars },
       { label: "PRODUCTION_OUTPUT", bodyChars: DIRECTION_OUTPUT.transportChars },
-      { label: "PACKAGING_OUTPUT", bodyChars: PACKAGING_OUTPUT.transportChars },
+      { label: "PACKAGING_OUTPUT", bodyChars: CONTACTED_PACKAGING_OUTPUT.transportChars },
       { label: "REQUESTED_PLATFORMS", bodyChars: REQUESTED_PLATFORMS_BLOCK_CHARS },
       { label: "SCRIPT_CLAIMS", bodyChars: SCRIPT_CLAIMS_BLOCK_CHARS },
       { label: "PLATFORM_CLAIMS", bodyChars: PLATFORM_CLAIMS_BLOCK_CHARS },

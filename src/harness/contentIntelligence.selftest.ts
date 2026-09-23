@@ -13,7 +13,7 @@ import {
 import { readdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   checkSqlAuthority,
@@ -51,6 +51,13 @@ import {
   MAX_TOKENS_PER_UTF8_BYTE,
   OUTPUT_FIELD_BOUNDS,
   PACKAGING_OUTPUT,
+  CONTACTED_PACKAGING_OUTPUT,
+  CONTACT_LINE_RESERVE_CHARS,
+  CONTACT_LINE_SEPARATOR_CHARS,
+  CONTACT_CTA_URL_CHARS,
+  SCRIPT_CLAIMS_BLOCK_CHARS,
+  REQUESTED_PLATFORMS_BLOCK_CHARS,
+  assembledCeiling,
   PLATFORM_CLAIMS_BLOCK_CHARS,
   POLICY_OUTPUT_TOKEN_FLOORS,
   SCRIPT_OUTPUT,
@@ -209,6 +216,8 @@ import {
   GBP_LOCAL_KEYWORD_MAX,
   PLATFORM_LOCAL_KEYWORD_MAX,
   effectiveLocalKeywordMax,
+  effectiveCaptionBudget,
+  contactReserveChars,
   RECOMMENDED_TIME_PATTERN,
   assertPackagingPlatformBijection,
   executePackagingAdaptation,
@@ -218,6 +227,8 @@ import {
   scriptUsedClaimRecordsForPackaging,
   validatePackagingAdaptationOutput,
   validateRequestedPlatforms,
+  revalidatePackagingAdaptationOutput,
+  URL_SHAPED_TEXT_PATTERN,
 } from "./agents/packagingAdaptation.js";
 import type {
   PackagingAdaptationInvocation, PackagingAdaptationOutput, PackagingPlatform,
@@ -230,6 +241,7 @@ import {
   INSTAGRAM_CAPTION_MAX,
   INSTAGRAM_HASHTAG_MAX,
   INSTAGRAM_HASHTAG_MIN,
+  buildFinalPackage,
 } from "./packageMap.js";
 import {
   CRITIC_FINDING_CATEGORIES,
@@ -245,6 +257,20 @@ import {
   validateFinalCriticOutput,
 } from "./agents/finalCritic.js";
 import type { FinalCriticInvocation } from "./agents/finalCritic.js";
+import {
+  CONTACT_FACTS,
+  CONTACT_FACTS_BY_PLATFORM,
+  CONTACT_LINE_SEPARATOR,
+  ContactLineError,
+  assertContactFactsAvailable,
+  attachContactLines,
+  buildContactLine,
+  contactFactsRequired,
+  providerTextWithContact,
+  readContactValue,
+  revalidateContactedPackagingOutput,
+} from "./agents/contactLine.js";
+import type { ContactedPackagingOutput } from "./agents/contactLine.js";
 
 let failures = 0;
 function check(name: string, cond: boolean): void {
@@ -1051,9 +1077,9 @@ async function run(): Promise<void> {
       .filter((f) => f.endsWith(".ts")).sort();
     check("AF5. exactly six stage executors exist — strategy-concept, automotive-truth, hook-story-script, production-direction, packaging-adaptation, final-critic",
       agentModules.join()
-        === "automotiveTruth.ts,finalCritic.ts,hookStoryScript.ts,modelPolicy.ts,packagingAdaptation.ts,"
-          + "payloadContract.ts,productionDirection.ts,registry.ts,responseFormatKit.ts,stageExecution.ts,"
-          + "strategyConcept.ts");
+        === "automotiveTruth.ts,contactLine.ts,finalCritic.ts,hookStoryScript.ts,modelPolicy.ts,"
+          + "packagingAdaptation.ts,payloadContract.ts,productionDirection.ts,registry.ts,"
+          + "responseFormatKit.ts,stageExecution.ts,strategyConcept.ts");
     // `responseFormatKit.ts` is in that list and is deliberately NOT an
     // executor: it holds the builders each stage uses to construct its own
     // `output_config.format` schema, and imports nothing. The count that
@@ -1062,6 +1088,17 @@ async function run(): Promise<void> {
       !/invokeStage|executeStage|StageRunner/.test(
         await readFile(resolve(REPO_ROOT, "src/harness/agents/responseFormatKit.ts"), "utf8"))
         && targetStageDefinitions().length === TARGET_STAGE_IDS.length);
+    // `contactLine.ts` is also in that list and is also NOT an executor: it is
+    // the deterministic step that attaches the fixed contact line after stage 5.
+    // It makes no model call and has no runner.
+    {
+      const contactSource = await readFile(resolve(REPO_ROOT, "src/harness/agents/contactLine.ts"), "utf8");
+      const contactCode = contactSource.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+      check("AF5c. the contact-line step is deterministic code, not a seventh executor: no stage "
+        + "invocation, no runner, no model call",
+        !/invokeStage|executeStage|StageRunner|runAgent|messages\.(create|stream)|anthropic/i.test(contactCode)
+          && !TARGET_STAGE_IDS.some((id) => id === ("contact-line" as never)));
+    }
     const apiSource = await readFile(resolve(REPO_ROOT, "src/api/server.ts"), "utf8");
     check("AF6. no HTTP route reaches the executor",
       !/executeStrategyConcept|strategyConcept/.test(apiSource));
@@ -3316,8 +3353,13 @@ async function run(): Promise<void> {
       ...wellFormed.verified_business_fact, id: "biz-2", attribute: "hours",
       claim: "hours: open on weekdays",
     } as EvidenceRecord;
+    // The approved-facts phone and booking-link records, exactly as the adapter
+    // projects them from the checked-in file: the deterministic contact line the
+    // critic's packages carry is built from these and nothing else.
+    const contactFactRecords = first.records.filter((r) =>
+      r.id === CONTACT_FACTS.phone.id || r.id === CONTACT_FACTS.bookingUrl.id);
     const packPack = buildEvidencePack({
-      goal: "brake service content", records: [...mixed, packUnpermitted], now: NOW,
+      goal: "brake service content", records: [...mixed, packUnpermitted, ...contactFactRecords], now: NOW,
     });
     const truthForPackaging: AutomotiveTruthOutput = validateAutomotiveTruthOutput({
       assessment: "Two facts are citable for this concept; the performance signal establishes nothing.",
@@ -3870,7 +3912,10 @@ async function run(): Promise<void> {
       check("BO1. stage 5 refuses independently when the script bound no claims", refused);
       check("BO2. the refusal happens before any model call", unusedCalls.length === 0);
       check("BO3. authority is never widened back to stage 2, the pack, or stage 4 prose",
-        packPack.allowedFacts.length === 3
+        // Three tier facts plus the approved-facts phone and booking records the
+        // deterministic contact line reads; none of the extra two is citable here.
+        packPack.allowedFacts.length === 3 + contactFactRecords.length
+          && contactFactRecords.length === 2
           && truthForPackaging.constraints.allowed.length === 2
           && scriptUsedClaimRecordsForPackaging(noUse, truthForPackaging, packPack).length === 0
           && JSON.parse(renderPackagingScriptClaims(noUse, truthForPackaging, packPack)).length === 0);
@@ -4024,8 +4069,10 @@ async function run(): Promise<void> {
         })));
 
       const instagramTagText = IG_TAGS.join(" ");
+      // The limit is Instagram's caption budget: its provider limit less the
+      // contact-line reserve the fixed contact line is appended into.
       const exactInstagramCaption = "x".repeat(
-        INSTAGRAM_CAPTION_MAX - 2 - instagramTagText.length,
+        effectiveCaptionBudget("instagram") - 2 - instagramTagText.length,
       );
       check("BQ33e. Instagram caption plus separator and canonical tags one character over fails",
         await rejectsWithStageError(() => patchPackage(0, {
@@ -4035,7 +4082,9 @@ async function run(): Promise<void> {
         (await patchPackage(0, {
           caption: exactInstagramCaption, hashtags: IG_TAGS,
         })).output.provisional.packages[0]!.caption.length + 2 + instagramTagText.length
-          === INSTAGRAM_CAPTION_MAX);
+          === effectiveCaptionBudget("instagram")
+          && effectiveCaptionBudget("instagram")
+               === INSTAGRAM_CAPTION_MAX - CONTACT_LINE_RESERVE_CHARS.instagram);
 
       check("BQ34. a local keyword containing a hashtag fails",
         await rejectsWithStageError(() => patchPackage(2, { localKeywords: ["#brakes near me"] })));
@@ -4356,7 +4405,8 @@ async function run(): Promise<void> {
       truth = truthForPackaging,
       packOverride = packPack,
     ) => executeFinalCritic({
-      scriptOutput: script, directionOutput: direction, packagingOutput: packagingOut,
+      scriptOutput: script, directionOutput: direction,
+      packagingOutput: attachContactLines(packagingOut, packOverride),
       truthOutput: truth, evidencePack: packOverride, requestedPlatforms: platforms,
       runner: recordingRunner(text).runner,
     });
@@ -4368,7 +4418,7 @@ async function run(): Promise<void> {
     const typedCriticInvocation: FinalCriticInvocation = {
       scriptOutput: scriptForPackaging,
       directionOutput: directionForPackaging,
-      packagingOutput: packResult.output,
+      packagingOutput: attachContactLines(packResult.output, packPack),
       truthOutput: truthForPackaging,
       evidencePack: packPack,
       requestedPlatforms: ALL_PLATFORMS,
@@ -4444,8 +4494,9 @@ async function run(): Promise<void> {
         JSON.stringify(scriptBlock) === JSON.stringify(scriptForPackaging));
       check("BU3. the complete typed stage 4 output arrives in a separate block",
         JSON.stringify(productionBlock) === JSON.stringify(directionForPackaging));
-      check("BU4. the complete typed stage 5 output arrives in a separate block",
-        JSON.stringify(packagingBlock) === JSON.stringify(packResult.output));
+      check("BU4. the complete typed stage 5 output arrives in a separate block, each package "
+        + "carrying its deterministic contact line",
+        JSON.stringify(packagingBlock) === JSON.stringify(attachContactLines(packResult.output, packPack)));
       check("BU5. requested platforms arrive as bounded untrusted data in caller order",
         JSON.stringify(platformsBlock) === JSON.stringify(ALL_PLATFORMS));
       check("BU6. prior-stage handoffs are bounded, not unbounded pass-through",
@@ -4577,13 +4628,29 @@ async function run(): Promise<void> {
         bxCalls.push(request);
         return { text: okCritic };
       };
+      // Each package gets its correct contact line, built from the pack without
+      // validating anything else, so every refusal below is for the defect it
+      // names and never merely for a missing contact line.
+      const withContacts = (value: unknown): unknown => {
+        const v = value as { provisional?: { packages?: Array<{ platform?: string }> } } | undefined;
+        if (!v?.provisional || !Array.isArray(v.provisional.packages)) return value;
+        return {
+          ...v,
+          provisional: {
+            ...v.provisional,
+            packages: v.provisional.packages.map((pkg) => ({
+              ...pkg, contact: buildContactLine(pkg.platform as PackagingPlatform, packPack),
+            })),
+          },
+        };
+      };
       const withBadCriticPrior = (
         scriptOutput: unknown, directionOutput: unknown, packagingOutput: unknown, truthOutput: unknown,
         platforms: unknown = ALL_PLATFORMS,
       ) => executeFinalCritic({
         scriptOutput: scriptOutput as HookStoryScriptOutput,
         directionOutput: directionOutput as ProductionDirectionOutput,
-        packagingOutput: packagingOutput as PackagingAdaptationOutput,
+        packagingOutput: withContacts(packagingOutput) as ContactedPackagingOutput,
         truthOutput: truthOutput as AutomotiveTruthOutput,
         evidencePack: packPack,
         requestedPlatforms: platforms as PackagingPlatform[],
@@ -4649,7 +4716,7 @@ async function run(): Promise<void> {
       const rtResult = await executeFinalCritic({
         scriptOutput: roundTrip(scriptForPackaging),
         directionOutput: roundTrip(directionForPackaging),
-        packagingOutput: roundTrip(packResult.output),
+        packagingOutput: roundTrip(attachContactLines(packResult.output, packPack)),
         truthOutput: roundTrip(truthForPackaging),
         evidencePack: packPack, requestedPlatforms: ALL_PLATFORMS, runner: rtRunner,
       });
@@ -4685,7 +4752,7 @@ async function run(): Promise<void> {
       const overCapFacebookRaw = {
         packages: [{
           platform: "facebook",
-          caption: "f".repeat(PACKAGING_LIMITS.pipelineCaptionChars + 1),
+          caption: "f".repeat(effectiveCaptionBudget("facebook") + 1),
           hashtags: [],
           localKeywords: [],
           recommendedTime: "09:30 ET",
@@ -4708,11 +4775,15 @@ async function run(): Promise<void> {
         }
       }
       check("BX18. the pipeline caption cap really narrows Facebook's provider limit — the "
-        + "narrowing is enforced by Stage 5's validator, not described in a comment",
+        + "narrowing is enforced by Stage 5's validator, not described in a comment — and the "
+        + "contact-line reserve narrows it further, by name",
         FACEBOOK_TEXT_MAX > PACKAGING_LIMITS.pipelineCaptionChars
+          && effectiveCaptionBudget("facebook")
+               === PACKAGING_LIMITS.pipelineCaptionChars - CONTACT_LINE_RESERVE_CHARS.facebook
           && narrowingStage === "packaging-adaptation"
           && narrowingMessage.includes(
-               `"packages[0].caption" exceeds ${PACKAGING_LIMITS.pipelineCaptionChars} characters`));
+               `"packages[0].caption" exceeds ${effectiveCaptionBudget("facebook")} characters`)
+          && narrowingMessage.includes("CONTACT_LINE_RESERVE_CHARS.facebook"));
 
       // A caption at the full pipeline cap, made entirely of quotation marks:
       // valid under every Stage 5 caption, hashtag, URL and combined
@@ -4723,7 +4794,7 @@ async function run(): Promise<void> {
       const escapingRaw = {
         packages: [{
           platform: "facebook",
-          caption: '"'.repeat(PACKAGING_LIMITS.pipelineCaptionChars),
+          caption: '"'.repeat(effectiveCaptionBudget("facebook")),
           hashtags: [],
           localKeywords: [],
           recommendedTime: "09:30 ET",
@@ -4736,7 +4807,9 @@ async function run(): Promise<void> {
       const escapingPackaging = validatePackagingAdaptationOutput(
         escapingRaw, ["facebook"], scriptForPackaging, truthForPackaging, packPack,
       );
-      const escapingSerializedLength = JSON.stringify(escapingPackaging, null, 2).length;
+      // What the critic receives: the same package with its contact line.
+      const escapingContacted = attachContactLines(escapingPackaging, packPack);
+      const escapingSerializedLength = JSON.stringify(escapingContacted, null, 2).length;
       const facebookOnlyCritic = {
         ...validCriticOutput,
         findings: [{ ...validCriticOutput.findings[0]!, platform: "facebook" as const }],
@@ -4751,17 +4824,17 @@ async function run(): Promise<void> {
       try {
         escResult = await executeFinalCritic({
           scriptOutput: scriptForPackaging, directionOutput: directionForPackaging,
-          packagingOutput: escapingPackaging, truthOutput: truthForPackaging,
+          packagingOutput: escapingContacted, truthOutput: truthForPackaging,
           evidencePack: packPack, requestedPlatforms: ["facebook"], runner: escRunner,
         });
       } catch (error) {
         escRefusal = error instanceof Error ? error.message : String(error);
       }
-      check("BX19. Stage 5 accepts an all-quote caption at the full pipeline cap, and JSON "
+      check("BX19. Stage 5 accepts an all-quote caption at the full caption budget, and JSON "
         + "escaping doubles its serialized size",
         escapingPackaging.provisional.packages[0]!.caption.length
-            === PACKAGING_LIMITS.pipelineCaptionChars
-          && escapingSerializedLength > PACKAGING_LIMITS.pipelineCaptionChars * 2);
+            === effectiveCaptionBudget("facebook")
+          && escapingSerializedLength > effectiveCaptionBudget("facebook") * 2);
       check("BX20. that escaped Stage 5 output fits Stage 6's derived guard and reaches the "
         + "injected runner exactly once",
         escRefusal === ""
@@ -4771,9 +4844,9 @@ async function run(): Promise<void> {
       check("BX21. it is forwarded whole — no truncation, no rewriting", (() => {
         if (escRefusal !== "" || !escCalls.length) return false;
         const forwarded = JSON.parse(untrustedBlock(escCalls[0]!.prompt, "PACKAGING_OUTPUT"));
-        return JSON.stringify(forwarded) === JSON.stringify(escapingPackaging)
+        return JSON.stringify(forwarded) === JSON.stringify(escapingContacted)
           && forwarded.provisional.packages[0].caption.length
-               === PACKAGING_LIMITS.pipelineCaptionChars;
+               === effectiveCaptionBudget("facebook");
       })());
 
       // The whole assembled payload, not just this one block: the maximum a
@@ -4784,14 +4857,15 @@ async function run(): Promise<void> {
         + "boundary: the derived assembled ceiling is at or below it, and the guard on Stage "
         + "5's handoff is exactly Stage 5's own ceiling",
         STAGE_ASSEMBLED_CEILINGS["final-critic"]! <= MAX_PAYLOAD_CHARS
-          && FINAL_CRITIC_LIMITS.packagingOutputChars === PACKAGING_OUTPUT.transportChars
+          && FINAL_CRITIC_LIMITS.packagingOutputChars === CONTACTED_PACKAGING_OUTPUT.transportChars
           && FINAL_CRITIC_LIMITS.scriptOutputChars === SCRIPT_OUTPUT.transportChars
           && FINAL_CRITIC_LIMITS.directionOutputChars === DIRECTION_OUTPUT.transportChars);
 
       check("BX23. the ceiling is escaping-aware and mechanically derived from the one "
         + "authority, not a number written into this stage",
-        FINAL_CRITIC_LIMITS.packagingOutputChars === PACKAGING_OUTPUT.transportChars
-          && PACKAGING_OUTPUT.transportChars > PACKAGING_OUTPUT.contractChars
+        FINAL_CRITIC_LIMITS.packagingOutputChars === CONTACTED_PACKAGING_OUTPUT.transportChars
+          && CONTACTED_PACKAGING_OUTPUT.transportChars > CONTACTED_PACKAGING_OUTPUT.contractChars
+          && CONTACTED_PACKAGING_OUTPUT.transportChars > PACKAGING_OUTPUT.transportChars
           && /re-exported from the one\s+\* authority that derives it/.test(criticSource)
           && !/54,460|54460/.test(criticSource)
           && !/\bconservativePackagingOutputCeiling\b/.test(criticSource));
@@ -4839,7 +4913,7 @@ async function run(): Promise<void> {
       const framingOverhead = framedPrompt.length - SIX_BLOCKS.reduce(
         (total, label) => total + framedBody(label).length, 0);
 
-      const maximalClaimRecords = [...mixed, packUnpermitted].map((record) =>
+      const maximalClaimRecords = [...mixed, packUnpermitted, ...contactFactRecords].map((record) =>
         (record.id === "auto-1"
           ? { ...record, claim: "e".repeat(EVIDENCE_LIMITS.claimChars) }
           : record));
@@ -4894,7 +4968,7 @@ async function run(): Promise<void> {
       const maximalBodies: Record<(typeof SIX_BLOCKS)[number], string> = {
         SCRIPT_OUTPUT: JSON.stringify(maximalClaimScript, null, 2),
         PRODUCTION_OUTPUT: JSON.stringify(maximalClaimDirection, null, 2),
-        PACKAGING_OUTPUT: JSON.stringify(maximalClaimPackaging, null, 2),
+        PACKAGING_OUTPUT: JSON.stringify(attachContactLines(maximalClaimPackaging, maximalClaimPack), null, 2),
         REQUESTED_PLATFORMS: JSON.stringify(ALL_PLATFORMS, null, 2),
         SCRIPT_CLAIMS: renderPackagingScriptClaims(
           maximalClaimScript, maximalClaimTruth, maximalClaimPack),
@@ -4911,7 +4985,8 @@ async function run(): Promise<void> {
       try {
         await executeFinalCritic({
           scriptOutput: maximalClaimScript, directionOutput: maximalClaimDirection,
-          packagingOutput: maximalClaimPackaging, truthOutput: maximalClaimTruth,
+          packagingOutput: attachContactLines(maximalClaimPackaging, maximalClaimPack),
+          truthOutput: maximalClaimTruth,
           evidencePack: maximalClaimPack, requestedPlatforms: ALL_PLATFORMS,
           runner: async (request) => {
             maximalCalls.push(request);
@@ -4948,7 +5023,7 @@ async function run(): Promise<void> {
           && nominalPackagingAllowance > 0
           && nominalPackagingAllowance < MAX_PAYLOAD_CHARS
           && maximalPackagingAllowance > 0
-          && maximalPackagingAllowance >= PACKAGING_OUTPUT.transportChars
+          && maximalPackagingAllowance >= CONTACTED_PACKAGING_OUTPUT.transportChars
           && nominalPackagingAllowance !== maximalPackagingAllowance);
       check("BX28. the source states the dynamic relationship, claims no fixed envelope, and "
         + "records that these bounds are derived rather than production-validated",
@@ -5153,7 +5228,8 @@ async function run(): Promise<void> {
       const refusedCA = await rejectsWithStageError(() => executeFinalCritic({
         scriptOutput: noUseCA,
         directionOutput: noUseDirectionCA,
-        packagingOutput: noUsePackagingCA,
+        // Contact lines attach normally; the refusal is for the empty claim set.
+        packagingOutput: attachContactLines(noUsePackagingCA, packPack),
         truthOutput: truthForPackaging,
         evidencePack: packPack, requestedPlatforms: ALL_PLATFORMS, runner: countingUnusedCA,
       }));
@@ -5171,7 +5247,8 @@ async function run(): Promise<void> {
       const okCriticCB = JSON.stringify(validCriticOutput);
       const base6 = {
         scriptOutput: scriptForPackaging, directionOutput: directionForPackaging,
-        packagingOutput: packResult.output, truthOutput: truthForPackaging, evidencePack: packPack,
+        packagingOutput: attachContactLines(packResult.output, packPack),
+        truthOutput: truthForPackaging, evidencePack: packPack,
         requestedPlatforms: ALL_PLATFORMS,
       };
       check("CB1. a runner error fails closed",
@@ -5274,6 +5351,388 @@ async function run(): Promise<void> {
           && CRITIC_FINDING_PLATFORMS.join() === "instagram,facebook,google_business_profile,cross_platform"
           && CRITIC_FINDING_OWNERS.join()
             === "hook-story-script,production-direction,packaging-adaptation,human_review");
+    }
+
+    // --- CK. the deterministic contact line — attached by code, never by a model
+    //
+    // On 2026-09-23 stage 1 planned a "book online or call" close, spent its
+    // twelve citation slots elsewhere, and never cited the phone or the booking
+    // link. Stage 3 wrote the close uncited, the critic flagged it, stage 5
+    // dropped it, and every caption shipped with no way to book. The owner
+    // decided contact details are attached by code: copied byte for byte from
+    // the approved-facts records, outside the caption, never competing for a
+    // citation slot. These checks hold that decision in place.
+    {
+      const approvedJson = JSON.parse(rawFacts) as Record<string, unknown>;
+      const phone = String(approvedJson.phone);
+      const bookingUrl = String(approvedJson.bookingUrl);
+      const phoneRecord = contactFactRecords.find((r) => r.id === CONTACT_FACTS.phone.id)!;
+      const bookingRecord = contactFactRecords.find((r) => r.id === CONTACT_FACTS.bookingUrl.id)!;
+      const igLine = buildContactLine("instagram", packPack);
+      const fbLine = buildContactLine("facebook", packPack);
+      const gbpLine = buildContactLine("google_business_profile", packPack);
+      const lineByPlatform: Record<PackagingPlatform, typeof igLine> = {
+        instagram: igLine, facebook: fbLine, google_business_profile: gbpLine,
+      };
+
+      check("CK1. the owner-reviewed templates are used verbatim, with the phone and booking link "
+        + "copied byte for byte from the approved-facts records in the pack",
+        igLine.text === `Call German Car Depot: ${phone}`
+          && fbLine.text === `Call German Car Depot: ${phone} · Book online: ${bookingUrl}`
+          && readContactValue(packPack, "phone").value === phoneRecord.claim.slice("phone: ".length)
+          && readContactValue(packPack, "bookingUrl").value
+               === bookingRecord.claim.slice("bookingUrl: ".length)
+          && Buffer.from(readContactValue(packPack, "phone").value, "utf8")
+               .equals(Buffer.from(phone, "utf8"))
+          && Buffer.from(readContactValue(packPack, "bookingUrl").value, "utf8")
+               .equals(Buffer.from(bookingUrl, "utf8")));
+      check("CK2. every line is typed deterministic_contact and lists exactly the records it used",
+        [igLine, fbLine, gbpLine].every((line) => line.kind === "deterministic_contact")
+          && igLine.sourceFactIds.join() === CONTACT_FACTS.phone.id
+          && fbLine.sourceFactIds.join() === `${CONTACT_FACTS.phone.id},${CONTACT_FACTS.bookingUrl.id}`
+          && gbpLine.sourceFactIds.join() === CONTACT_FACTS.bookingUrl.id
+          && igLine.gbpCta === undefined && fbLine.gbpCta === undefined
+          && PACKAGING_PLATFORMS.every((platform) => lineByPlatform[platform].sourceFactIds.join()
+            === CONTACT_FACTS_BY_PLATFORM[platform].map((key) => CONTACT_FACTS[key].id).join()));
+
+      // The live path's rule, read and not changed: `ctaForGbp` in packageMap.ts
+      // labels the canonical booking destination BOOK. Built through the public
+      // package builder so the comparison is against its behaviour, not a copy.
+      const liveGbp = buildFinalPackage(
+        [{ platform: "gbp", lang: "en", body: "Brake fluid takes on moisture over time." }],
+        [], {}, [], { bookingUrl, activePlatforms: ["gbp"] },
+      ).providerPayloads.find((payload) => payload.platform === "gbp");
+      check("CK3. Google Business Profile carries no contact text and a BOOK call to action to the "
+        + "booking link — the same BOOK rule the live package builder applies",
+        gbpLine.text === null
+          && gbpLine.gbpCta?.actionType === "BOOK"
+          && gbpLine.gbpCta?.url === bookingUrl
+          && liveGbp?.gbp?.callToAction?.actionType === gbpLine.gbpCta?.actionType
+          && liveGbp?.gbp?.callToAction?.url === gbpLine.gbpCta?.url);
+
+      // Fail closed, for free, when a needed record is missing.
+      const packWithout = (id: string) => buildEvidencePack({
+        goal: "contact preflight",
+        records: [...mixed, packUnpermitted, ...contactFactRecords.filter((r) => r.id !== id)],
+        now: NOW,
+      });
+      const noPhone = packWithout(CONTACT_FACTS.phone.id);
+      const noBooking = packWithout(CONTACT_FACTS.bookingUrl.id);
+      const contactError = (fn: () => unknown): string => {
+        try { fn(); return ""; } catch (error) {
+          return error instanceof ContactLineError ? error.message : `WRONG TYPE: ${String(error)}`;
+        }
+      };
+      check("CK4. a missing phone record is a ContactLineError naming it, for every platform that needs it",
+        contactError(() => assertContactFactsAvailable(noPhone, ["instagram"])).includes(CONTACT_FACTS.phone.id)
+          && contactError(() => assertContactFactsAvailable(noPhone, ["facebook"])).includes(CONTACT_FACTS.phone.id)
+          && contactError(() => assertContactFactsAvailable(noPhone, ["google_business_profile"])) === "");
+      check("CK4a. a missing booking-link record is refused for Facebook and Google Business Profile, "
+        + "and Instagram — which does not need it — still builds",
+        contactError(() => assertContactFactsAvailable(noBooking, ["facebook"]))
+          .includes(CONTACT_FACTS.bookingUrl.id)
+          && contactError(() => assertContactFactsAvailable(noBooking, ["google_business_profile"]))
+            .includes(CONTACT_FACTS.bookingUrl.id)
+          && contactError(() => assertContactFactsAvailable(noBooking, ["instagram"])) === ""
+          && contactFactsRequired(["instagram"]).join() === "phone"
+          && contactFactsRequired([...PACKAGING_PLATFORMS]).join() === "phone,bookingUrl");
+      // A second, different phone claim conflicts with the first: the pack
+      // withholds both, and the contact line refuses rather than choosing one.
+      const conflictingPhone = {
+        ...phoneRecord, id: "approved-facts:phone-conflicting", claim: "phone: (000) 000-0000",
+      } as EvidenceRecord;
+      const conflicted = buildEvidencePack({
+        goal: "contact conflict", records: [...contactFactRecords, conflictingPhone], now: NOW,
+      });
+      check("CK4b. a conflicted phone record is not usable, so the contact line refuses instead of "
+        + "picking one",
+        conflicted.conflicts.length > 0
+          && contactError(() => buildContactLine("instagram", conflicted)).includes(CONTACT_FACTS.phone.id));
+
+      // Reserves, budgets, and the fit.
+      const platformMax = (platform: PackagingPlatform) => Math.min(
+        PLATFORM_PACKAGING_POLICY[platform].captionMax, PACKAGING_LIMITS.pipelineCaptionChars);
+      check("CK5. the contact reserve names exactly stage 5's platforms, Google Business Profile "
+        + "reserves nothing, and each caption budget is the platform limit less its reserve",
+        Object.keys(CONTACT_LINE_RESERVE_CHARS).sort().join() === [...PACKAGING_PLATFORMS].sort().join()
+          && CONTACT_LINE_RESERVE_CHARS.google_business_profile === 0
+          && CONTACT_LINE_SEPARATOR.length === CONTACT_LINE_SEPARATOR_CHARS
+          && PACKAGING_PLATFORMS.every((platform) =>
+            effectiveCaptionBudget(platform) === platformMax(platform) - CONTACT_LINE_RESERVE_CHARS[platform]
+              && contactReserveChars(platform) === CONTACT_LINE_RESERVE_CHARS[platform]));
+      check("CK5a. today's real contact lines fit inside their reserves, separator included, in "
+        + "characters and in UTF-8 bytes",
+        PACKAGING_PLATFORMS.every((platform) => {
+          const text = lineByPlatform[platform].text;
+          return text === null
+            ? CONTACT_LINE_RESERVE_CHARS[platform] === 0
+            : CONTACT_LINE_SEPARATOR_CHARS + text.length <= CONTACT_LINE_RESERVE_CHARS[platform]
+              && CONTACT_LINE_SEPARATOR_CHARS + Buffer.byteLength(text, "utf8")
+                <= CONTACT_LINE_RESERVE_CHARS[platform];
+        })
+          && (gbpLine.gbpCta?.url.length ?? Infinity) <= CONTACT_CTA_URL_CHARS);
+
+      // A caption at the exact budget, plus the real contact line, fits the
+      // platform's existing limit exactly as the reserve promises.
+      // Built inside a guard so a regression reports CK6 by name rather than
+      // aborting the suite.
+      const atBudgetRaw = {
+        ...validPackagingOutput,
+        packages: validPackagingOutput.packages.map((pkg) => {
+          const tagText = pkg.hashtags.length ? pkg.hashtags.join(" ").length + 2 : 0;
+          return { ...pkg,
+            caption: "x".repeat(effectiveCaptionBudget(pkg.platform as PackagingPlatform) - tagText) };
+        }),
+      };
+      let atBudget = packResult.output;
+      let atBudgetContacted = attachContactLines(packResult.output, packPack);
+      let atBudgetBuilt = false;
+      try {
+        atBudget = validatePackagingAdaptationOutput(
+          atBudgetRaw, ALL_PLATFORMS, scriptForPackaging, truthForPackaging, packPack);
+        atBudgetContacted = attachContactLines(atBudget, packPack);
+        atBudgetBuilt = true;
+      } catch { atBudgetBuilt = false; }
+      check("CK6. caption + separator + hashtags + separator + contact text stays within each "
+        + "platform's existing limit when the caption is at its full budget",
+        atBudgetBuilt && atBudgetContacted.provisional.packages.every((pkg) =>
+          providerTextWithContact(pkg.caption, pkg.hashtags, pkg.contact).length <= platformMax(pkg.platform)
+            && pkg.caption.length + (pkg.hashtags.length ? pkg.hashtags.join(" ").length + 2 : 0)
+                 === effectiveCaptionBudget(pkg.platform)));
+      const overBudget = (platform: PackagingPlatform): string => {
+        const index = ALL_PLATFORMS.indexOf(platform);
+        try {
+          validatePackagingAdaptationOutput({
+            ...validPackagingOutput,
+            packages: atBudget.provisional.packages.map((pkg, i) => ({
+              platform: pkg.platform, caption: i === index ? `${pkg.caption}x` : pkg.caption,
+              hashtags: pkg.hashtags, localKeywords: pkg.localKeywords,
+              recommendedTime: pkg.recommendedTime, openQuestions: pkg.openQuestions,
+            })),
+          }, ALL_PLATFORMS, scriptForPackaging, truthForPackaging, packPack);
+          return "";
+        } catch (error) {
+          return error instanceof StageExecutionError ? error.message : `WRONG TYPE: ${String(error)}`;
+        }
+      };
+      check("CK7. one character over the caption budget is refused, and the refusal names the "
+        + "contact-line reserve that caused it",
+        overBudget("instagram").includes("CONTACT_LINE_RESERVE_CHARS.instagram")
+          && overBudget("facebook").includes("CONTACT_LINE_RESERVE_CHARS.facebook")
+          && overBudget("google_business_profile").includes(`exceeds ${effectiveCaptionBudget("google_business_profile")}`)
+          && !overBudget("google_business_profile").includes("CONTACT_LINE_RESERVE_CHARS"));
+
+      // The reserve is a fail-closed bound on the contact text itself.
+      const phoneOfLength = (n: number) => buildEvidencePack({
+        goal: "reserve boundary",
+        records: [{ ...phoneRecord, claim: `phone: ${"9".repeat(n)}` } as EvidenceRecord, bookingRecord],
+        now: NOW,
+      });
+      const igFixed = "Call German Car Depot: ".length;
+      const igFits = CONTACT_LINE_RESERVE_CHARS.instagram - CONTACT_LINE_SEPARATOR_CHARS - igFixed;
+      check("CK8. a contact line exactly filling its reserve builds; one character more is a "
+        + "ContactLineError naming the reserve, never a trimmed value",
+        contactError(() => buildContactLine("instagram", phoneOfLength(igFits))) === ""
+          && contactError(() => buildContactLine("instagram", phoneOfLength(igFits + 1)))
+            .includes("CONTACT_LINE_RESERVE_CHARS.instagram"));
+
+      // Replay compatibility. A stage 5 output saved before the reserve existed,
+      // whose Instagram caption and tags fit the old 2,200 but not the new budget,
+      // is refused on revalidation — naming the reserve — and one under the
+      // budget still revalidates.
+      const savedBeforeReserve = JSON.parse(JSON.stringify(packResult.output)) as PackagingAdaptationOutput;
+      const igTagText = savedBeforeReserve.provisional.packages[0]!.hashtags.join(" ").length + 2;
+      savedBeforeReserve.provisional.packages[0]!.caption =
+        "y".repeat(effectiveCaptionBudget("instagram") - igTagText + 10);
+      const legacyLength = savedBeforeReserve.provisional.packages[0]!.caption.length + igTagText;
+      let replayRefusal = "";
+      try {
+        revalidatePackagingAdaptationOutput(savedBeforeReserve, scriptForPackaging, truthForPackaging, packPack);
+      } catch (error) {
+        replayRefusal = error instanceof StageExecutionError ? error.message : `WRONG TYPE: ${String(error)}`;
+      }
+      let underBudgetOk = false;
+      try {
+        underBudgetOk = revalidatePackagingAdaptationOutput(
+          JSON.parse(JSON.stringify(packResult.output)), scriptForPackaging, truthForPackaging, packPack,
+        ).provisional.packages.length === ALL_PLATFORMS.length;
+      } catch { underBudgetOk = false; }
+      check("CK9. a synthetic stage 5 package that was valid before the reserve, but no longer fits "
+        + "under it, is refused on replay with a message naming the reserve",
+        legacyLength <= INSTAGRAM_CAPTION_MAX && legacyLength > effectiveCaptionBudget("instagram")
+          && replayRefusal.includes("CONTACT_LINE_RESERVE_CHARS.instagram"));
+      check("CK9a. a stage 5 package that fits under the reserve still revalidates unchanged",
+        underBudgetOk);
+      // The same for a caption that fits the budget in characters but not in
+      // UTF-8 bytes — every bounded string caps both with one number — so a
+      // multibyte caption refused because of the reserve names it too.
+      const savedMultibyte = JSON.parse(JSON.stringify(packResult.output)) as PackagingAdaptationOutput;
+      const fbBudget = effectiveCaptionBudget("facebook");
+      // 100 two-byte characters plus 1,900 ASCII: 2,000 characters and 2,100
+      // UTF-8 bytes — within the old 2,200 on both counts, over the new budget
+      // in bytes only.
+      const multibyteCaption = `${"é".repeat(100)}${"a".repeat(1_900)}`;
+      savedMultibyte.provisional.packages[1]!.caption = multibyteCaption;
+      savedMultibyte.provisional.packages[1]!.hashtags = [];
+      let multibyteRefusal = "";
+      try {
+        revalidatePackagingAdaptationOutput(savedMultibyte, scriptForPackaging, truthForPackaging, packPack);
+      } catch (error) {
+        multibyteRefusal = error instanceof StageExecutionError ? error.message : `WRONG TYPE: ${String(error)}`;
+      }
+      check("CK9c. a saved caption within the budget in characters but over it in UTF-8 bytes is "
+        + "refused on replay, naming the reserve",
+        multibyteCaption.length <= fbBudget
+          && Buffer.byteLength(multibyteCaption, "utf8") > fbBudget
+          && Buffer.byteLength(multibyteCaption, "utf8") <= PACKAGING_LIMITS.pipelineCaptionChars
+          && multibyteRefusal.includes("UTF-8 bytes")
+          && multibyteRefusal.includes("CONTACT_LINE_RESERVE_CHARS.facebook"));
+      // Recorded in docs/ROADMAP.md: the 2026-09-23T17-07-15-470Z run measured
+      // caption+hashtag text of 1,375 (Instagram), 1,048 (Facebook) and 912
+      // (Google Business Profile) UTF-8 bytes. Bytes are never fewer than the
+      // characters the validator counts, so these still fit.
+      const run2 = { instagram: 1_375, facebook: 1_048, google_business_profile: 912 } as const;
+      check("CK9b. the 2026-09-23T17:07Z run's measured caption+hashtag sizes still fit the new budgets",
+        PACKAGING_PLATFORMS.every((platform) => run2[platform] <= effectiveCaptionBudget(platform)));
+
+      // The critic sees exactly the attached shape, and nothing else.
+      const criticCallsCK: StageRunnerRequest[] = [];
+      const countingCK: StageRunner = async (request) => {
+        criticCallsCK.push(request);
+        return { text: JSON.stringify(validCriticOutput) };
+      };
+      const criticWith = (packagingOutput: unknown) => executeFinalCritic({
+        scriptOutput: scriptForPackaging, directionOutput: directionForPackaging,
+        packagingOutput: packagingOutput as ContactedPackagingOutput, truthOutput: truthForPackaging,
+        evidencePack: packPack, requestedPlatforms: ALL_PLATFORMS, runner: countingCK,
+      });
+      const contacted = attachContactLines(packResult.output, packPack);
+      const tampered = JSON.parse(JSON.stringify(contacted)) as ContactedPackagingOutput;
+      tampered.provisional.packages[0]!.contact.text = "Call German Car Depot: (000) 000-0000";
+      const extraSource = JSON.parse(JSON.stringify(contacted)) as ContactedPackagingOutput;
+      extraSource.provisional.packages[0]!.contact.sourceFactIds.push(CONTACT_FACTS.bookingUrl.id);
+      const refusalOf = async (value: unknown): Promise<string> => {
+        try { await criticWith(value); return ""; } catch (error) {
+          return error instanceof StageExecutionError ? error.message : `WRONG TYPE: ${String(error)}`;
+        }
+      };
+      const plainRefusal = await refusalOf(packResult.output);
+      const tamperedRefusal = await refusalOf(tampered);
+      const extraRefusal = await refusalOf(extraSource);
+      check("CK10. the critic refuses a package with no contact line, an edited contact line, and a "
+        + "contact line with a widened source list — each before any model call",
+        plainRefusal.includes("carries no contact line")
+          && tamperedRefusal.includes("is not the contact line derived from")
+          && extraRefusal.includes("is not the contact line derived from")
+          && criticCallsCK.length === 0);
+      const roundTripped = await criticWith(JSON.parse(JSON.stringify(contacted)));
+      const forwardedCK = criticCallsCK.length === 1
+        ? JSON.parse(untrustedBlock(criticCallsCK[0]!.prompt, "PACKAGING_OUTPUT")) : undefined;
+      check("CK11. a correctly attached, JSON-round-tripped package reaches the critic once, and its "
+        + "PACKAGING_OUTPUT block carries each contact line exactly",
+        roundTripped.metadata.modelRequests === 1 && criticCallsCK.length === 1
+          && JSON.stringify(forwardedCK) === JSON.stringify(contacted)
+          && revalidateContactedPackagingOutput(
+            JSON.parse(JSON.stringify(contacted)), scriptForPackaging, truthForPackaging, packPack,
+            "final-critic",
+          ).provisional.packages.every((pkg, i) =>
+            JSON.stringify(pkg.contact) === JSON.stringify(contacted.provisional.packages[i]!.contact)));
+      check("CK12. contact text is not caption prose: the Facebook line carries the booking link "
+        + "and reaches the critic, while stage 5 still refuses a URL in model prose",
+        URL_SHAPED_TEXT_PATTERN.test(fbLine.text ?? "")
+          && JSON.stringify(forwardedCK ?? {}).includes(JSON.stringify(fbLine.text))
+          && await rejectsWithStageError(() => patchPackage(1, { caption: `Book at ${bookingUrl}` })));
+
+      // Derivation: the critic's input grew; stage 5's token budget did not.
+      const criticAssembled = assembledCeiling([
+        { label: "SCRIPT_OUTPUT", bodyChars: SCRIPT_OUTPUT.transportChars },
+        { label: "PRODUCTION_OUTPUT", bodyChars: DIRECTION_OUTPUT.transportChars },
+        { label: "PACKAGING_OUTPUT", bodyChars: CONTACTED_PACKAGING_OUTPUT.transportChars },
+        { label: "REQUESTED_PLATFORMS", bodyChars: REQUESTED_PLATFORMS_BLOCK_CHARS },
+        { label: "SCRIPT_CLAIMS", bodyChars: SCRIPT_CLAIMS_BLOCK_CHARS },
+        { label: "PLATFORM_CLAIMS", bodyChars: PLATFORM_CLAIMS_BLOCK_CHARS },
+      ]);
+      check("CK13. the critic's handoff guard and assembled ceiling are derived from the contacted "
+        + "shape, which strictly contains stage 5's; stage 5's own output ceiling is unchanged",
+        FINAL_CRITIC_LIMITS.packagingOutputChars === CONTACTED_PACKAGING_OUTPUT.transportChars
+          && CONTACTED_PACKAGING_OUTPUT.transportChars > PACKAGING_OUTPUT.transportChars
+          && STAGE_ASSEMBLED_CEILINGS["final-critic"] === criticAssembled
+          && criticAssembled <= MAX_PAYLOAD_CHARS
+          && JSON.stringify(atBudgetContacted, null, 2).length <= CONTACTED_PACKAGING_OUTPUT.transportChars);
+      // The contact allowance is really counted, at the escape factor, for every
+      // package: text at the widest reserve less its separator, the call-to-action
+      // link, and both source ids. A lower bound, keyed off the contract's own
+      // constants — not a restatement of the derivation's arithmetic.
+      const contactAllowancePerPackage = Math.max(...Object.values(CONTACT_LINE_RESERVE_CHARS))
+        - CONTACT_LINE_SEPARATOR_CHARS + CONTACT_CTA_URL_CHARS + 2 * EVIDENCE_LIMITS.idChars;
+      // The reserve bounds UTF-8 bytes as well as characters, because the
+      // payload derivation counts both. The Facebook template's "·" is two
+      // bytes, so a Facebook line fits its reserve one character short of full.
+      const fbFixedBytes = Buffer.byteLength("Call German Car Depot: ", "utf8")
+        + Buffer.byteLength(" · Book online: ", "utf8");
+      const fbPhoneFits = CONTACT_LINE_RESERVE_CHARS.facebook - CONTACT_LINE_SEPARATOR_CHARS - fbFixedBytes
+        - Buffer.byteLength(readContactValue(packPack, "bookingUrl").value, "utf8");
+      check("CK8a. a Facebook contact line exactly filling its reserve in UTF-8 bytes builds; one "
+        + "byte more is refused by name, even though it would still fit in characters",
+        contactError(() => buildContactLine("facebook", phoneOfLength(fbPhoneFits))) === ""
+          && contactError(() => buildContactLine("facebook", phoneOfLength(fbPhoneFits + 1)))
+            .includes("UTF-8 bytes")
+          && contactError(() => buildContactLine("facebook", phoneOfLength(fbPhoneFits + 1)))
+            .includes("CONTACT_LINE_RESERVE_CHARS.facebook"));
+      check("CK13b. the critic's packaging ceiling counts every contact field of every package at "
+        + "the escape factor",
+        CONTACTED_PACKAGING_OUTPUT.transportChars - PACKAGING_OUTPUT.transportChars
+          >= PACKAGING_LIMITS.maxRequestedPlatforms * contactAllowancePerPackage * MAX_JSON_ESCAPE_EXPANSION);
+      check("CK13a. the contact line is not model output, so no token budget is charged for it",
+        POLICY_OUTPUT_TOKEN_FLOORS["reasoning-standard"]!
+          >= minimumOutputTokens(PACKAGING_OUTPUT.transportChars)
+          && POLICY_OUTPUT_TOKEN_FLOORS["reasoning-standard"]!
+            < minimumOutputTokens(PACKAGING_OUTPUT.transportChars) + 10_000
+          && !/CONTACTED_PACKAGING_OUTPUT/.test(
+            (await readFile(resolve(REPO_ROOT, "src/harness/agents/modelPolicy.ts"), "utf8"))));
+
+      // The response schema, the prompt and the validator agree on each budget.
+      const captionDescription = String(((PACKAGING_ADAPTATION_RESPONSE_FORMAT as Record<string, any>)
+        .properties.packages.items.properties.caption.description));
+      check("CK14. stage 5's response schema states each platform's caption budget — the value the "
+        + "validator applies — and tells the model code appends the contact line",
+        PACKAGING_PLATFORMS.every((platform) => captionDescription.includes(
+          `at most ${effectiveCaptionBudget(platform).toLocaleString("en-US")} characters on ${platform}`))
+          && /code appends a fixed contact line/.test(captionDescription));
+
+      const promptText = async (file: string) => readFile(resolve(REPO_ROOT, file), "utf8");
+      const scriptPrompt = await promptText("agents/hook-story-script.md");
+      const packagingPromptCK = await promptText("agents/packaging-adaptation.md");
+      const criticPrompt = await promptText("agents/final-critic.md");
+      check("CK15. stages 3 and 5 are told not to name a contact or booking channel, because code "
+        + "adds a fixed contact line",
+        [scriptPrompt, packagingPromptCK].every((prompt) =>
+          prompt.includes("**No contact or booking channels.**")
+            && /phone number, a website, online booking/.test(prompt)
+            && /"call us"/.test(prompt) && /"visit"/.test(prompt)
+            && /Code adds a fixed contact line/.test(prompt)));
+      check("CK16. the critic is told the contact object is deterministic, copied from approved "
+        + "facts, not model-written, never an uncited implication — and what it may still raise",
+        criticPrompt.includes("## The `contact` object on each package")
+          && criticPrompt.includes("`deterministic_contact`")
+          && criticPrompt.includes("**It is not model writing.**")
+          && /copying the phone number and the booking link exactly from approved-facts records/.test(criticPrompt)
+          && /Do not flag a contact line, or the link inside it, as an `uncited_implication`/.test(criticPrompt)
+          && /inconsistent between platforms/.test(criticPrompt));
+
+      // Dormancy: the step is reachable from nothing deployed.
+      const contactReaches = /contactLine|attachContactLines|buildContactLine/;
+      const deployedPaths = [
+        "src/harness/contentIntelligence.ts", "src/api/server.ts", "src/worker/index.ts",
+        "src/scheduler/daily.ts", "src/harness/orchestrator.ts", "src/harness/publicationRunner.ts",
+        "src/harness/evidence/syncCli.ts", "src/harness/packageMap.ts",
+        "src/mcp/posting-tool/index.ts", "src/mcp/image-tool/index.ts",
+      ];
+      const deployedSources = await Promise.all(deployedPaths.map((path) =>
+        readFile(resolve(REPO_ROOT, path), "utf8")));
+      check("CK17. no route, worker, scheduler, orchestrator, publication, packaging or provider path "
+        + "reaches the contact-line step",
+        deployedSources.every((src) => !contactReaches.test(src)));
     }
   }
 
@@ -6270,12 +6729,16 @@ async function run(): Promise<void> {
     }, ccScript, ccTruth, ccPack);
 
     // Captions are built to the exact effective cap: the smaller of the
-    // provider's limit and the pipeline's, minus the canonical hashtag text the
-    // combined provider-visible rule counts alongside them.
+    // provider's limit and the pipeline's, less the contact-line reserve, minus
+    // the canonical hashtag text the combined provider-visible rule counts
+    // alongside them.
     const ccPlatformCaptionMax: Record<PackagingPlatform, number> = {
-      instagram: Math.min(INSTAGRAM_CAPTION_MAX, PACKAGING_LIMITS.pipelineCaptionChars),
-      facebook: Math.min(FACEBOOK_TEXT_MAX, PACKAGING_LIMITS.pipelineCaptionChars),
-      google_business_profile: Math.min(GBP_SUMMARY_MAX, PACKAGING_LIMITS.pipelineCaptionChars),
+      instagram: Math.min(INSTAGRAM_CAPTION_MAX, PACKAGING_LIMITS.pipelineCaptionChars)
+        - CONTACT_LINE_RESERVE_CHARS.instagram,
+      facebook: Math.min(FACEBOOK_TEXT_MAX, PACKAGING_LIMITS.pipelineCaptionChars)
+        - CONTACT_LINE_RESERVE_CHARS.facebook,
+      google_business_profile: Math.min(GBP_SUMMARY_MAX, PACKAGING_LIMITS.pipelineCaptionChars)
+        - CONTACT_LINE_RESERVE_CHARS.google_business_profile,
     };
     const ccPlatformHashtagMax: Record<PackagingPlatform, number> = {
       instagram: Math.min(INSTAGRAM_HASHTAG_MAX, PACKAGING_LIMITS.maxHashtags),
@@ -6325,12 +6788,22 @@ async function run(): Promise<void> {
     }, ALL_PLATFORMS, ccPackaging, ccScript, ccTruth, ccPack);
 
     const serialized = (value: unknown) => JSON.stringify(value, null, 2).length;
+    // What stage 6 receives: the maximal stage 5 output with contact lines built
+    // from the real approved-facts phone and booking records.
+    const ccContactPack = buildEvidencePack({
+      goal: "contact lines",
+      records: first.records.filter((r) =>
+        r.id === CONTACT_FACTS.phone.id || r.id === CONTACT_FACTS.bookingUrl.id),
+      now: NOW,
+    });
+    const ccPackagingContacted = attachContactLines(ccPackaging, ccContactPack);
     const MAXIMAL: Array<[string, unknown, { transportChars: number; contractChars: number }]> = [
       ["strategy-concept", ccStrategy, STRATEGY_OUTPUT],
       ["automotive-truth", ccTruth, TRUTH_OUTPUT],
       ["hook-story-script", ccScript, SCRIPT_OUTPUT],
       ["production-direction", ccDirection, DIRECTION_OUTPUT],
       ["packaging-adaptation", ccPackaging, PACKAGING_OUTPUT],
+      ["packaging-adaptation + contact lines", ccPackagingContacted, CONTACTED_PACKAGING_OUTPUT],
       ["final-critic", ccCritic, CRITIC_OUTPUT],
     ];
     const overCeiling = MAXIMAL
@@ -6366,8 +6839,10 @@ async function run(): Promise<void> {
         DIRECTION_OUTPUT.transportChars, serialized(ccDirection)],
       ["stage 4 → stage 6", FINAL_CRITIC_LIMITS.directionOutputChars,
         DIRECTION_OUTPUT.transportChars, serialized(ccDirection)],
+      // Stage 6 receives stage 5's output with the deterministic contact line
+      // attached, so the producer is stage 5 plus that step.
       ["stage 5 → stage 6", FINAL_CRITIC_LIMITS.packagingOutputChars,
-        PACKAGING_OUTPUT.transportChars, serialized(ccPackaging)],
+        CONTACTED_PACKAGING_OUTPUT.transportChars, serialized(ccPackagingContacted)],
     ];
     const brokenPairs = PAIRS
       .filter(([, guard, ceiling, actual]) => guard !== ceiling || actual > guard)
@@ -8046,9 +8521,11 @@ async function run(): Promise<void> {
     // `validatePackagingAdaptationOutput` computes it. It is stated in the
     // per-platform section rather than the ceilings block, so it is paired
     // against the platform name below instead.
+    // Less the contact-line reserve: the prompt states the caption budget the
+    // validator applies, which leaves room for the fixed contact line.
     const effectiveCaptionMax = (platform: PackagingPlatform): number => Math.min(
       PLATFORM_PACKAGING_POLICY[platform].captionMax, PACKAGING_LIMITS.pipelineCaptionChars,
-    );
+    ) - CONTACT_LINE_RESERVE_CHARS[platform];
     const effectiveHashtagMax = (platform: PackagingPlatform): number => Math.min(
       PLATFORM_PACKAGING_POLICY[platform].hashtagMax, PACKAGING_LIMITS.maxHashtags,
     );
@@ -8462,7 +8939,7 @@ async function run(): Promise<void> {
     // contact a provider. The automotive facts file is a clearly synthetic
     // fixture written to a temporary directory; nothing is committed.
     {
-      const replayBody = bodyOf("async function replayCritic(", "\nmain().catch(");
+      const replayBody = bodyOf("async function replayCritic(", "\nfunction reportFailure(");
       const inReplay = (needle: string): number => replayBody.indexOf(needle);
       const replayCost = inReplay('printCostCeiling(rt, [["final-critic", "critic"]]');
       const replayGuard = inReplay("await requireLiveConsent(args);");
@@ -8652,9 +9129,72 @@ async function run(): Promise<void> {
           "--out-dir", liveRuns, "--runner", "live", "--i-understand-this-costs-money"], "");
         check("CG10. the full run uses the same live guard: the cost flag alone is not enough",
           liveFull.status !== 0 && /live run cancelled/.test(liveFull.stderr) && dirsIn(liveRuns).length === 0);
+
+        // The deterministic contact line, as the full fake run above rendered it
+        // for the human reviewer, and the footer naming the runner that ran.
+        const approvedForCli = JSON.parse(readFileSync(resolve(REPO_ROOT, "config/approved-facts.json"), "utf8"));
+        const summaryText = existsSync(join(sourceDir, "summary.md"))
+          ? readFileSync(join(sourceDir, "summary.md"), "utf8") : "";
+        const contactFile = existsSync(join(sourceDir, "05b-contact-lines.json"))
+          ? JSON.parse(readFileSync(join(sourceDir, "05b-contact-lines.json"), "utf8")) : undefined;
+        check("CG11. a full run renders each platform's fixed contact line and Google Business "
+          + "Profile's BOOK call to action in summary.md, and records them in 05b-contact-lines.json",
+          summaryText.includes(`Call German Car Depot: ${approvedForCli.phone}\n`)
+            && summaryText.includes(
+              `Call German Car Depot: ${approvedForCli.phone} · Book online: ${approvedForCli.bookingUrl}`)
+            && summaryText.includes(`BOOK → ${approvedForCli.bookingUrl}`)
+            && contactFile?.packages?.length === 3
+            && contactFile.packages.every((p: any) => p.contact?.kind === "deterministic_contact"));
+        check("CG12. a fake run's summary footer names the fake runner",
+          summaryText.trimEnd().endsWith(
+            "_Fake-runner output. Not reviewed. Not publishable. Authorizes nothing._"));
+        const replayContact = existsSync(join(replayDir, "05b-contact-lines.json"))
+          ? JSON.parse(readFileSync(join(replayDir, "05b-contact-lines.json"), "utf8")) : undefined;
+        check("CG13. the critic-only replay applies the same contact step, so the critic sees the same "
+          + "package shape as in the full run",
+          JSON.stringify(replayContact?.packages) === JSON.stringify(contactFile?.packages)
+            && contactFile !== undefined);
       } finally {
         rmSync(work, { recursive: true, force: true });
       }
+    }
+
+    // The summary footer used to read "Fake-runner output" for every run,
+    // live ones included (found on the 2026-09-23T17:07Z live run). The CLI is
+    // imported here — importing runs nothing — so the live footer is exercised
+    // directly rather than inferred from source text.
+    {
+      const cliModule = await import(pathToFileURL(resolve(REPO_ROOT, "scripts/local/content-run.mjs")).href);
+      const minimalSummary = (runner: string) => cliModule.markdownSummary({
+        goal: "g", runner, timestamp: "2026-09-23T00:00:00.000Z",
+        script: { provisional: { hook: "h", script: "s" } },
+        direction: { provisional: { shots: [] } },
+        packaging: { provisional: { packages: [] } },
+        critic: { provisional: { verdict: "provisional_pass", summary: "s", findings: [] } },
+      }) as string;
+      const liveSummary = minimalSummary("live");
+      const fakeSummary = minimalSummary("fake");
+      check("CE8. the summary footer names the runner that actually ran — live runs no longer say "
+        + "fake — and keeps the same disclaimer for both",
+        liveSummary.trimEnd().endsWith("_Live-runner output. Not reviewed. Not publishable. Authorizes nothing._")
+          && !liveSummary.includes("Fake-runner")
+          && fakeSummary.trimEnd().endsWith("_Fake-runner output. Not reviewed. Not publishable. Authorizes nothing._")
+          && !fakeSummary.includes("Live-runner")
+          && !/_Fake-runner output\./.test(bodyOf("export function markdownSummary(", "\nasync function main(")));
+
+      const contactPreflight = inMain("rt.contact.assertContactFactsAvailable(pack, platforms);");
+      const replayBodyCE = bodyOf("async function replayCritic(", "\nfunction reportFailure(");
+      const replayContactPreflight = replayBodyCE.indexOf("rt.contact.assertContactFactsAvailable(pack, platforms);");
+      const replayAttach = replayBodyCE.indexOf("rt.contact.attachContactLines(packagingOutput, pack)");
+      const replayCostCE = replayBodyCE.indexOf('printCostCeiling(rt, [["final-critic", "critic"]]');
+      check("CE9. the contact-line records are checked before any spend in a full run and in a "
+        + "replay, and both hand the critic the attached packages",
+        contactPreflight > 0 && contactPreflight < costGate
+          && replayContactPreflight > 0 && replayAttach > replayContactPreflight && replayAttach < replayCostCE
+          && /packagingOutput: contacted,/.test(mainBody)
+          && /packagingOutput: contacted,/.test(replayBodyCE)
+          && mainBody.indexOf("rt.contact.attachContactLines(packaging.output, pack)")
+            > mainBody.indexOf('await writeStage("05-packaging-adaptation", packaging);'));
     }
 
     // --- CF. the provider is constrained to the shape, not merely asked ------
