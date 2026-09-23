@@ -25,7 +25,7 @@ These are not interchangeable and must not be collapsed into "done". `MERGED` in
 
 ### CTO-attested approved-facts expansion
 
-**State:** `IMPLEMENTED`. Not `MERGED`, not `DEPLOYED`, and not `PRODUCTION-VALIDATED`. Implemented on branch `codex/approved-cto-facts`; the PR number will be recorded after the PR is opened. A merge SHA does not yet exist.
+**State:** `IMPLEMENTED`. Not `MERGED`, not `DEPLOYED`, and not `PRODUCTION-VALIDATED`. Implemented on branch `codex/approved-cto-facts` and opened as [PR #86](https://github.com/Caposhi/GCD-Agents/pull/86). A merge SHA does not yet exist.
 
 **Authorization and delivered scope:** on 2026-09-23 the GCD CTO attested five business facts and authorized only their repository addition. `config/approved-facts.json` now contains the verbatim top-level string fields `oilChangeRecommendation`, `nextOilChangeAppointment`, `serviceRecords`, `vehicleHistoryReview`, and `engineOils`. Its `_note` preserves the existing rules while identifying those five fields as CTO-attested on 2026-09-23 and not website-sourced. The generic adapter already projects every eligible top-level string, so no parsing path changed; `engineOils` alone joins `parts` in the `automotive-capability` tag set. The adapter now deterministically produces 27 records.
 
@@ -45,7 +45,7 @@ These are not interchangeable and must not be collapsed into "done". `MERGED` in
 
 **Security and privacy:** the added text is business-owner-attested shop policy and inventory. It contains no token, webhook, OAuth material, approval secret, customer record, actual VIN, analytics export, or database data. The phrase “by VIN” describes a review practice; it does not add a vehicle identifier.
 
-**Accepted limitations and unresolved follow-ups:** these five facts rely on the named CTO attestation rather than website evidence. PR review and merge remain outstanding; deployment requires separate authorization; production validation does not exist; and a future `evidence:sync`, if desired, requires its own authorization and review. The PR identifier and eventual merge SHA are mutable identifiers to record when known.
+**Accepted limitations and unresolved follow-ups:** these five facts rely on the named CTO attestation rather than website evidence. PR #86 review and merge remain outstanding; deployment requires separate authorization; production validation does not exist; and a future `evidence:sync`, if desired, requires its own authorization and review. The eventual merge SHA is a mutable identifier to record when known.
 
 **Automated validation:** build and typecheck pass; all nine offline suites pass at 1,562 checks, including 1,059 content-intelligence checks; the simulated dry run passes without posting; deployment-controller fixtures pass; all 346 payload-contract mutations pass; `npm audit --omit=dev` reports zero vulnerabilities; Markdown validation passes for 61 files; environment coverage passes for 35 variables; the sensitive-content scan passes for 179 tracked text files; and AgentShield 1.4.0 exits zero at grade A/92 with no critical or high findings. Its six medium oversized-agent and six low unspecified-model findings are pre-existing and outside this diff, which changes no agent definition. Final whitespace and complete-diff review remain the pre-commit checks.
 
