@@ -1,6 +1,6 @@
 # GCD Content Intelligence roadmap
 
-Last reviewed: 2026-09-22.
+Last reviewed: 2026-09-23.
 
 This roadmap is the canonical unfinished-work sequence and the current-phase cursor. It orders work; it does not grant authority to deploy, migrate, call providers, change external configuration, or begin a phase. [Status](STATUS.md) records what is verified true now. Where this file and verified production evidence disagree, resolve the discrepancy rather than following this text. Roadmap continuity is binding — see [`AGENTS.md`](../AGENTS.md).
 
@@ -20,6 +20,36 @@ This roadmap is the canonical unfinished-work sequence and the current-phase cur
 | `SUPERSEDED` | Replaced by a different accepted design; kept for its rationale |
 
 These are not interchangeable and must not be collapsed into "done". `MERGED` in particular is not `DEPLOYED`.
+
+## Implemented repository change awaiting merge and rollout
+
+### CTO-attested approved-facts expansion
+
+**State:** `IMPLEMENTED`. Not `MERGED`, not `DEPLOYED`, and not `PRODUCTION-VALIDATED`. Implemented on branch `codex/approved-cto-facts`; the PR number will be recorded after the PR is opened. A merge SHA does not yet exist.
+
+**Authorization and delivered scope:** on 2026-09-23 the GCD CTO attested five business facts and authorized only their repository addition. `config/approved-facts.json` now contains the verbatim top-level string fields `oilChangeRecommendation`, `nextOilChangeAppointment`, `serviceRecords`, `vehicleHistoryReview`, and `engineOils`. Its `_note` preserves the existing rules while identifying those five fields as CTO-attested on 2026-09-23 and not website-sourced. The generic adapter already projects every eligible top-level string, so no parsing path changed; `engineOils` alone joins `parts` in the `automotive-capability` tag set. The adapter now deterministically produces 27 records.
+
+**Schema / migration impact:** none. No database command or evidence import was run. The durable `content_evidence` tables remain unchanged; `npm run evidence:sync` is still an explicit, separately authorized operator action rather than a release side effect.
+
+**Material design decisions:** keep the canonical JSON as the only runtime fact authority; preserve field-level provenance in its human note rather than falsely attributing owner-attested facts to the website; use the existing deterministic field-to-record projection; and classify the oil inventory as a business fact with an automotive-capability tag rather than changing its epistemic kind.
+
+**Rejected alternatives:** claiming the five facts came from `germancardepot.com` was rejected because it would be false. A one-off adapter branch was rejected because top-level strings are already projected correctly. Automatically importing the changed file into PostgreSQL was rejected because import is not part of this authorization and would alter external durable state.
+
+**Regression and pinned-fixture impact:** `J2` deliberately changes from a loose `> 5` assertion to the exact 27-record count. `J7` pins the five new deterministic record ids and proves they exist in both identical adaptations; `J8` proves `engineOils` carries the automotive-capability tag. No fixture or test pinned the previous file SHA; `K3` computes the SHA from the exact current bytes and remains dynamic. The affected empirical count/maximum commentary in `payloadContract.ts`, the local evaluation description here, and current test totals in [Testing](TESTING.md) are updated in the same change.
+
+**Rollout / production impact:** merging alone changes nothing live. The next production release carrying this commit will make the five new facts citable by the existing live copywriter and available to the existing brand-compliance critic as support for faithful claims. The same runtime brief is also visible to the existing image, hashtag/SEO/timing, and platform-formatter agents; no new URL is introduced, so CTA allowlisting is unchanged. The worker caches the checked-in facts after its first read, so the expanded set takes effect only in a new process running a release that contains the change. `skills/compliance-checklist` remains a checked-in rubric rather than an automatically injected runtime skill; the current critic prompt refers to it, but current orchestration injects the critic prompt and `brief.approvedFacts`, not the skill file. The operator-only adapter consumers (`evidence:sync` and the local evaluation CLI) will project 27 records when explicitly run. No deploy, migration, evidence import, provider request, approval action, or publication is authorized or performed by this change.
+
+**Replay compatibility:** a replay of the 2026-09-23 run must use the pre-change file from `git show e812ba4:config/approved-facts.json`, because that replay checks the file hash and refuses a mismatch. The current expanded file is not a valid input for reproducing that earlier run.
+
+**Rollback / recovery:** before deployment, closing or reverting the repository change restores the prior file. After a separately authorized deployment, an ordinary application rollback to a release containing the prior file restores the former runtime fact set. No schema or durable evidence rollback is required because this change performs no import.
+
+**Security and privacy:** the added text is business-owner-attested shop policy and inventory. It contains no token, webhook, OAuth material, approval secret, customer record, actual VIN, analytics export, or database data. The phrase “by VIN” describes a review practice; it does not add a vehicle identifier.
+
+**Accepted limitations and unresolved follow-ups:** these five facts rely on the named CTO attestation rather than website evidence. PR review and merge remain outstanding; deployment requires separate authorization; production validation does not exist; and a future `evidence:sync`, if desired, requires its own authorization and review. The PR identifier and eventual merge SHA are mutable identifiers to record when known.
+
+**Automated validation:** build and typecheck pass; all nine offline suites pass at 1,562 checks, including 1,059 content-intelligence checks; the simulated dry run passes without posting; deployment-controller fixtures pass; all 346 payload-contract mutations pass; `npm audit --omit=dev` reports zero vulnerabilities; Markdown validation passes for 61 files; environment coverage passes for 35 variables; the sensitive-content scan passes for 179 tracked text files; and AgentShield 1.4.0 exits zero at grade A/92 with no critical or high findings. Its six medium oversized-agent and six low unspecified-model findings are pre-existing and outside this diff, which changes no agent definition. Final whitespace and complete-diff review remain the pre-commit checks.
+
+**Documents updated with implementation:** `README.md`, `docs/ROADMAP.md`, `docs/STATUS.md`, and `docs/TESTING.md`. Each is reread in full before review.
 
 ## Completed / durable history
 
@@ -3035,7 +3065,7 @@ production system, no database, no scheduler, no worker, and no publishing path.
 (`strategy-concept` → `automotive-truth` → `hook-story-script` → `production-direction` →
 `packaging-adaptation` → `final-critic`) directly and in sequence, exactly as
 `src/harness/contentIntelligence.selftest.ts` already proves the wiring works, threading each
-stage's validated output into the next. It loads the 23 real business facts from
+stage's validated output into the next. It loads the 27 adapted business-fact records from
 `config/approved-facts.json` through the existing pure `adaptApprovedFactsFile` adapter (not
 reimplemented), and loads automotive facts from an operator-supplied, gitignored
 `config/automotive-facts.local.json` — never invented, never committed; a placeholder-marked

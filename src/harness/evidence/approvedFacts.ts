@@ -48,6 +48,7 @@ const AUTOMOTIVE_TAGGED_FIELDS: ReadonlySet<string> = new Set([
   "services",
   "diagnostics",
   "parts",
+  "engineOils",
 ]);
 
 export interface ApprovedFactsAdaptationInput {

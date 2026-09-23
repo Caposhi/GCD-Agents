@@ -454,15 +454,36 @@ async function run(): Promise<void> {
     .catch(() => readFile(resolve(REPO_ROOT, "config/approved-facts.json"), "utf8"));
   const first = adaptApprovedFactsFile(rawFacts, { reviewedAt: "2026-08-01T00:00:00Z", now: NOW });
   const second = adaptApprovedFactsFile(rawFacts, { reviewedAt: "2026-08-01T00:00:00Z", now: NOW });
+  const ctoAttestedFields = [
+    "oilChangeRecommendation",
+    "nextOilChangeAppointment",
+    "serviceRecords",
+    "vehicleHistoryReview",
+    "engineOils",
+  ] as const;
+  const ctoAttestedIds = [
+    "approved-facts:oilchangerecommendation",
+    "approved-facts:nextoilchangeappointment",
+    "approved-facts:servicerecords",
+    "approved-facts:vehiclehistoryreview",
+    "approved-facts:engineoils",
+  ];
   check("J1. adaptation is deterministic", JSON.stringify(first.records) === JSON.stringify(second.records));
-  check("J2. adaptation produces records", first.records.length > 5);
+  check("J2. adaptation produces the expected 27 records", first.records.length === 27);
   check("J3. every adapted record validates", first.records.every((r) => validateEvidenceRecord(r).ok));
   check("J4. adapted ids are derived from the field path",
     first.records.some((r) => r.id === approvedFactEvidenceId("warranty")));
-  check("J6. every adapted record carries its field as the attribute",
-    first.records.every((r) => typeof r.attribute === "string" && r.attribute.length > 0));
   check("J5. business facts are not mislabelled as automotive facts",
     first.records.every((r) => r.kind === "verified_business_fact"));
+  check("J6. every adapted record carries its field as the attribute",
+    first.records.every((r) => typeof r.attribute === "string" && r.attribute.length > 0));
+  check("J7. the five CTO-attested record ids exist and are deterministic",
+    JSON.stringify(ctoAttestedFields.map(approvedFactEvidenceId)) === JSON.stringify(ctoAttestedIds)
+      && ctoAttestedIds.every((id) => first.records.some((r) => r.id === id)
+        && second.records.some((r) => r.id === id)));
+  check("J8. engine oils are tagged as automotive capability",
+    first.records.some((r) => r.id === approvedFactEvidenceId("engineOils")
+      && r.tags.includes("automotive-capability")));
   check("K1. provenance survives adaptation",
     first.records.every((r) => (r.provenance ?? "").includes(first.contentSha256)));
   check("K2. sourceRef points at the file and field",

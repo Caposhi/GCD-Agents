@@ -1,5 +1,5 @@
 {
-  "_note": "Approved facts = the ONLY source the copywriter may cite and the critic checks claims against. No invented prices/hours/offers. Sourced from germancardepot.com. Public business info (incl. the public booking-widget link) — NO secrets/API tokens here.",
+  "_note": "Approved facts = the ONLY source the copywriter may cite and the critic checks claims against. No invented prices/hours/offers. Sourced from germancardepot.com except oilChangeRecommendation, nextOilChangeAppointment, serviceRecords, vehicleHistoryReview, and engineOils, which were attested by the GCD CTO on 2026-09-23 and are not sourced from the website. Public business info (incl. the public booking-widget link) — NO secrets/API tokens here.",
 
   "shop": "German Car Depot",
   "legalName": "German Car Depot LLC",
@@ -14,6 +14,11 @@
   "services": ["engine repair", "oil leak repair", "check-engine diagnostics", "brake service", "oil change", "cooling system service", "steering & suspension", "transmission service", "pre-purchase inspection"],
   "diagnostics": "Factory-grade diagnostics — ISTA/D (BMW) and XENTRY (Mercedes); fault codes traced before repair (\"test first, fix once\")",
   "parts": "Genuine OEM or OEM-quality parts, explained and approved upfront",
+  "oilChangeRecommendation": "German Car Depot's own general recommendation, given to every oil-change customer: change the engine oil every 5,000 miles or 6 months. This is GCD's shop recommendation, not a BMW or Mercedes-Benz requirement.",
+  "nextOilChangeAppointment": "After an oil change, GCD books a tentative appointment for the next oil change 6 months later.",
+  "serviceRecords": "GCD provides customers their service records on request.",
+  "vehicleHistoryReview": "Before recommending maintenance, GCD reviews the vehicle's available service-history report by VIN.",
+  "engineOils": "GCD's bulk engine oils are Liqui Moly Top Tec 6200 SAE 0W-20, Liqui Moly Special Tec LL SAE 5W-30 and Liqui Moly Leichtlauf High Tech SAE 5W-40, kept in gravity tanks refilled by GCD's Liqui Moly supplier. When a vehicle calls for a specification these three do not cover, GCD orders the Liqui Moly oil for that specification from its parts distributors.",
   "warranty": "3-Year / 36,000-Mile warranty on qualifying parts & labor",
   "perks": ["free rideshare on approved repairs", "loaner vehicles available (ask when booking)", "financing available — apply at the counter", "same-week appointments often available", "written estimate approved by you before any work begins"],
   "experience": "30+ years in Hollywood, FL; 25,000+ German & European vehicles repaired",
