@@ -21,6 +21,38 @@ This roadmap is the canonical unfinished-work sequence and the current-phase cur
 
 These are not interchangeable and must not be collapsed into "done". `MERGED` in particular is not `DEPLOYED`.
 
+## Implemented repository change awaiting merge and rollout
+
+### CTO-attested approved-facts expansion
+
+**State:** `IMPLEMENTED`. Not `MERGED`, not `DEPLOYED`, and not `PRODUCTION-VALIDATED`. Implemented on branch `codex/approved-cto-facts` and opened as [PR #86](https://github.com/Caposhi/GCD-Agents/pull/86). A merge SHA does not yet exist.
+
+**Authorization and delivered scope:** on 2026-09-23 the GCD CTO attested five business facts and authorized only their repository addition. `config/approved-facts.json` now contains the verbatim top-level string fields `oilChangeRecommendation`, `nextOilChangeAppointment`, `serviceRecords`, `vehicleHistoryReview`, and `engineOils`. Its `_note` preserves the existing rules while identifying those five fields as CTO-attested on 2026-09-23 and not website-sourced. The generic adapter already projects every eligible top-level string, so no parsing path changed; `engineOils` alone joins `parts` in the `automotive-capability` tag set. The adapter now deterministically produces 27 records.
+
+**CTO correction, 2026-09-23:** the first sentence of `engineOils` is unchanged. Its second sentence now says GCD special-orders an oil for an uncovered specification and chooses the Liqui Moly product where Liqui Moly offers one. The earlier sentence was false for vehicles whose specifications have no Liqui Moly US product, including BMW Longlife-14 FE+ and Longlife-22 FE++.
+
+**Schema / migration impact:** none. No database command or evidence import was run. The durable `content_evidence` tables remain unchanged; `npm run evidence:sync` is still an explicit, separately authorized operator action rather than a release side effect.
+
+**Material design decisions:** keep the canonical JSON as the only runtime fact authority; preserve field-level provenance in its human note rather than falsely attributing owner-attested facts to the website; use the existing deterministic field-to-record projection; and classify the oil inventory as a business fact with an automotive-capability tag rather than changing its epistemic kind.
+
+**Rejected alternatives:** claiming the five facts came from `germancardepot.com` was rejected because it would be false. A one-off adapter branch was rejected because top-level strings are already projected correctly. Automatically importing the changed file into PostgreSQL was rejected because import is not part of this authorization and would alter external durable state.
+
+**Regression and pinned-fixture impact:** `J2` deliberately changes from a loose `> 5` assertion to the exact 27-record count. `J7` pins the five new deterministic record ids and proves they exist in both identical adaptations; `J8` proves `engineOils` carries the automotive-capability tag. No fixture or test pinned the previous file SHA; `K3` computes the SHA from the exact current bytes and remains dynamic. The affected empirical count/maximum commentary in `payloadContract.ts`, the local evaluation description here, and current test totals in [Testing](TESTING.md) are updated in the same change.
+
+**Rollout / production impact:** merging alone changes nothing live. The next production release carrying this commit will make the five new facts citable by the existing live copywriter and available to the existing brand-compliance critic as support for faithful claims. The same runtime brief is also visible to the existing image, hashtag/SEO/timing, and platform-formatter agents; no new URL is introduced, so CTA allowlisting is unchanged. The worker caches the checked-in facts after its first read, so the expanded set takes effect only in a new process running a release that contains the change. `skills/compliance-checklist` remains a checked-in rubric rather than an automatically injected runtime skill; the current critic prompt refers to it, but current orchestration injects the critic prompt and `brief.approvedFacts`, not the skill file. The operator-only adapter consumers (`evidence:sync` and the local evaluation CLI) will project 27 records when explicitly run. No deploy, migration, evidence import, provider request, approval action, or publication is authorized or performed by this change.
+
+**Replay compatibility:** a replay of the 2026-09-23 run must use the pre-change file from `git show e812ba4:config/approved-facts.json`, because that replay checks the file hash and refuses a mismatch. The current expanded file is not a valid input for reproducing that earlier run.
+
+**Rollback / recovery:** before deployment, closing or reverting the repository change restores the prior file. After a separately authorized deployment, an ordinary application rollback to a release containing the prior file restores the former runtime fact set. No schema or durable evidence rollback is required because this change performs no import.
+
+**Security and privacy:** the added text is business-owner-attested shop policy and inventory. It contains no token, webhook, OAuth material, approval secret, customer record, actual VIN, analytics export, or database data. The phrase “by VIN” describes a review practice; it does not add a vehicle identifier.
+
+**Accepted limitations and unresolved follow-ups:** these five facts rely on the named CTO attestation rather than website evidence. PR #86 review and merge remain outstanding; deployment requires separate authorization; production validation does not exist; and a future `evidence:sync`, if desired, requires its own authorization and review. The eventual merge SHA is a mutable identifier to record when known.
+
+**Automated validation:** build and typecheck pass; all nine offline suites pass at 1,597 checks, including 1,094 content-intelligence checks; the simulated dry run passes without posting; deployment-controller fixtures pass; all 355 payload-contract mutations pass; `npm audit --omit=dev` reports zero vulnerabilities; Markdown validation passes for 63 files; environment coverage passes for 35 variables; the sensitive-content scan passes for 181 tracked text files; and AgentShield 1.4.0 exits zero at grade A/92 with no critical or high findings. Its six medium oversized-agent and six low unspecified-model findings are pre-existing and outside this diff, which changes no agent definition. Final whitespace and complete-diff review remain the pre-commit checks.
+
+**Documents updated with implementation:** `README.md`, `docs/ROADMAP.md`, `docs/STATUS.md`, and `docs/TESTING.md`. Each is reread in full before review.
+
 ## Completed / durable history
 
 ### Phase 0A — Integrity Hardening
@@ -1433,10 +1465,10 @@ file, including a forward pointer in the PR #81 record and a pointer in the loca
 Security and continuity's description of stage 1's prose as "length-bounded and not checked for
 meaning" remains exactly true.
 
-## Critic on Claude Opus 5.5, reviewer-only issue margin, stop-reason handling, GBP keyword cap, critic-only replay — `IMPLEMENTED`
+## Critic on Claude Opus 5.5, reviewer-only issue margin, stop-reason handling, GBP keyword cap, critic-only replay — `MERGED`
 
-**State:** `IMPLEMENTED` on branch `claude/kind-tesla-vcltww`, opened as a pull request; `MERGED`
-only on merge, and **never `DEPLOYED` by this change**: no deployed code path resolves the `critic`
+**State:** `MERGED` through PR #87 at `dcde85baeaa3f2422f0499cb694c40eb5bb18e8f`.
+It remains **not `DEPLOYED` and not `PRODUCTION-VALIDATED`**: no deployed code path resolves the `critic`
 policy. All six stages remain `executionEnabled: false` and no production path reaches any of them.
 The `critic` policy runs only from the operator-local CLI. It authorizes no release; the
 partial-release interval in [Status](STATUS.md) (current bound `2026-10-22T18:52Z`) still prohibits
@@ -1444,10 +1476,9 @@ any release of any service. The deployed legacy path — `runAgent`, `runVision`
 `LEGACY_DEFAULT_MODEL`, `agents/brand-compliance-critic.md`, `orchestrator.ts` and `agentLoop.ts`
 — is untouched; that is Lane S work.
 
-**PR / merge:** base `e812ba4007070caf06a51736599b787290612e89` (PR #85 merge; `origin/main` had
-not moved from the SHA the instruction named). **The PR number and merge SHA are not knowable
-before merging** — recorded here as a **blocking follow-up** under the mutable-identifier exception
-in [`AGENTS.md`](../AGENTS.md), to be reconciled in the first change after merge.
+**PR / merge:** PR #87, base `e812ba4007070caf06a51736599b787290612e89`, reviewed head
+`d9e3145666ea9d77c3e870801f1441244c913c0d`, merge
+`dcde85baeaa3f2422f0499cb694c40eb5bb18e8f`; the merge parents are that base then that reviewed head.
 
 **The evidence — the 2026-09-23 six-stage run.** The first authorized live run to reach stage 6
 produced three findings this change acts on:
@@ -1532,6 +1563,10 @@ produced three findings this change acts on:
   sha256 of the automotive facts file, and a sha256 of the evidence-pack projection. For a run that
   predates it, the replay prints that the automotive file's identity cannot be proven and requires
   the word `UNPROVEN` typed at the prompt.
+
+**Pre-PR #87 replay prerequisite:** runs created before PR #87 have no `run-meta.json`, and a run
+that failed has no `summary.md`; replaying one therefore requires the original goal to be passed on
+the command line. This is a recorded compatibility prerequisite, not a code change in this follow-up.
 
 **Every derived number, before → after.**
 
@@ -1637,7 +1672,8 @@ changed; the Phase-A approval gate and the live `brand-compliance-critic` are un
 
 **Unresolved follow-ups.**
 
-- **Blocking:** the PR number and merge SHA above (mutable-identifier exception).
+- ~~**Blocking:** the PR number and merge SHA above (mutable-identifier exception).~~ **Closed:**
+  PR #87 and merge `dcde85b` are recorded above.
 - Tune `POLICY_EFFORT.critic` and `THINKING_RESERVE_TOKENS` from measured critic-only replays of
   the 2026-09-23 run.
 - Findings 1 and 2 of the output-field classification record remain open for the same owner.
@@ -1666,6 +1702,15 @@ Their findings are aggregated **deterministically**, with no model-written merge
 **Acceptance test:** a replay of the 2026-09-23 run (`--replay-critic`) must flag all three of: the
 "both manufacturers say … not a direct read of your oil" misattribution; the uncited
 estimate-approval claim; and the make/service GBP keywords.
+
+**Acceptance-fixture finding, 2026-09-23:** the first `--replay-critic` attempt against
+`local-output/content-intelligence/2026-09-23T12-22-23-782Z` refused before any model call with
+`packages[2].localKeywords exceeds 2 entries`. The saved stage-5 output carries three Google
+Business Profile keywords, which were legal when produced and are invalid under PR #87's cap of
+two; refusal is correct fail-closed behavior. This 2026-09-23 fixture therefore no longer
+revalidates under the current contract. The acceptance test needs either a fixture produced under
+the current contract or a replay that revalidates against the contract of the commit that produced
+the run. That choice remains open and is not made here.
 
 ## Open — decide stage 1 `maxIds` (12) after the next complete run — `OPEN`
 
@@ -3297,7 +3342,7 @@ production system, no database, no scheduler, no worker, and no publishing path.
 (`strategy-concept` → `automotive-truth` → `hook-story-script` → `production-direction` →
 `packaging-adaptation` → `final-critic`) directly and in sequence, exactly as
 `src/harness/contentIntelligence.selftest.ts` already proves the wiring works, threading each
-stage's validated output into the next. It loads the 23 real business facts from
+stage's validated output into the next. It loads the 27 adapted business-fact records from
 `config/approved-facts.json` through the existing pure `adaptApprovedFactsFile` adapter (not
 reimplemented), and loads automotive facts from an operator-supplied, gitignored
 `config/automotive-facts.local.json` — never invented, never committed; a placeholder-marked

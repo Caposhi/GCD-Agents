@@ -138,10 +138,10 @@ export function isBoundedSerializableText(value: string, max: number): boolean {
  *     empty, so no existing row constrains any bound. The audit rules a
  *     compatibility problem out; it does not by itself justify a number.
  *  2. **The existing product contract.** The only evidence source in the
- *     repository today is `config/approved-facts.json`, whose 22 adapted
- *     records measure: claim 228 characters at most, subject 16, attribute 12,
- *     id 27, sourceRef 39, provenance 122, reviewedBy 18, at most 3 tags of at
- *     most 21 characters, and detail serializing to at most 107 characters.
+ *     repository today is `config/approved-facts.json`, whose 27 adapted
+ *     records measure: claim 481 characters at most, subject 16, attribute 24,
+ *     id 39, sourceRef 51, provenance 122, reviewedBy 18, at most 3 tags of at
+ *     most 21 characters, and detail serializing to at most 119 characters.
  *  3. **Worst-case payload requirements.** A claim is restated downstream into
  *     a restatement, paraphrased into a paraphrase and summarized into a
  *     claim-use summary, each *stated* to the model at 400 characters (their
@@ -151,7 +151,7 @@ export function isBoundedSerializableText(value: string, max: number): boolean {
  *     anyway, and each claim is projected once per citing stage — and, at Stage
  *     6, once per platform that binds it.
  *
- * `claimChars` at 1,000 is therefore roughly four times the largest real claim
+ * `claimChars` at 1,000 is therefore roughly twice the largest real claim
  * and two and a half times the figure a restatement is asked to fit, with
  * headroom for research claims that run longer than business facts. Every other bound is set
  * an order of magnitude above its observed maximum, because none of them
@@ -180,8 +180,8 @@ export const EVIDENCE_LIMITS = {
    * both stages.
    *
    * This bounds the pack *in total*, across every classified section and every
-   * unusable list — not per section. Production holds 22 adapted records today;
-   * 64 is nearly three times that, and a brief needing more evidence than 64
+   * unusable list — not per section. The checked-in source holds 27 adapted
+   * records today; 64 is more than twice that, and a brief needing more than 64
    * classified records needs a narrower brief, not a larger payload.
    */
   maxProjectedRecords: 64,
