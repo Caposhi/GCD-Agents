@@ -4,7 +4,7 @@
  *
  * A regression that cannot fail is decoration. This script proves each
  * load-bearing derivation in `src/harness/agents/payloadContract.ts` and the
- * related repository-authority controls is actually load-bearing across twelve
+ * related repository-authority controls is actually load-bearing across sixteen
  * captured paths: it applies one focused mutation in a disposable no-Git copy,
  * rebuilds there, runs the Content Intelligence offline suite, and
  * requires the NAMED check that owns that derivation to fail. Then it restores
@@ -121,6 +121,15 @@
  * manifest source pin together, proving legitimate reviewed evolution remains
  * possible without an English allowlist.
  *
+ * The last group covers the deterministic contact line attached to every stage 5
+ * package: the contact-line reserve in stage 5's caption budget and in its
+ * prompt, the critic's refusal of a missing or edited contact line, byte-exact
+ * copying and the owner-reviewed template, the fail-closed missing-record
+ * check, the critic's packaging ceiling, the local CLI's footer, contact
+ * handoff and free preflight, and the two prompt rules. Those targets add the
+ * contact module, the CLI and two prompts to the captured paths; the CLI and
+ * prompts are read at runtime and need no rebuild.
+ *
  * It is offline and deterministic: no network, no database, no provider, no
  * credential. The authoritative checkout is read-only after a disposable copy
  * is prepared. Catchable signals clean that copy when possible; SIGKILL may
@@ -164,6 +173,12 @@ const ROLLBACK = "state/rollback/007_evidence_bounds_rollback.sql";
 // at runtime from `src/`, so mutating it needs no rebuild.
 const SQL_AUTHORITY = "src/harness/sqlAuthority.json";
 const SQL_AUTHORITY_SOURCE = "src/harness/sqlAuthority.ts";
+// The deterministic contact line and the surfaces that must agree with it.
+// The CLI and the prompts are read at runtime, so mutating them needs no rebuild.
+const CONTACT_LINE = "src/harness/agents/contactLine.ts";
+const CONTENT_RUN_CLI = "scripts/local/content-run.mjs";
+const PACKAGING_PROMPT = "agents/packaging-adaptation.md";
+const CRITIC_PROMPT = "agents/final-critic.md";
 
 /**
  * Each mutation names the derivation it breaks, the single edit that breaks it,
@@ -3131,8 +3146,117 @@ const CRITIC_POLICY_MUTATIONS = [
   },
 ];
 
+// The deterministic contact line: attached by code after stage 5, copied byte
+// for byte from the approved-facts records, with room reserved for it in each
+// platform's limit. Appended after every earlier group so no existing mutation
+// id moves.
+const CONTACT_LINE_MUTATIONS = [
+  {
+    name: "stage 5's validator stops subtracting the contact-line reserve from the caption budget",
+    file: PACKAGING,
+    from: "    const captionBudget = captionMax - contactReserve;",
+    to: "    const captionBudget = captionMax;",
+    expect: ["BX18.", "CK7.", "CK9."],
+  },
+  {
+    name: "a contact reserve moves in the contract while the prompt keeps the old caption budget",
+    file: PAYLOAD,
+    from: "  facebook: 192,",
+    to: "  facebook: 133,",
+    expect: ["CD6 (facebook).", "CD3 (packaging-adaptation)."],
+  },
+  {
+    name: "the critic's packaging ceiling stops counting the call-to-action link",
+    file: PAYLOAD,
+    from: "    + CONTACT_CTA_URL_CHARS\n",
+    to: "",
+    expect: ["CK13b."],
+  },
+  {
+    name: "the critic stops comparing a supplied contact line with the one rebuilt from the pack",
+    file: CONTACT_LINE,
+    from: "    if (canonicalJson(suppliedContacts[index]) !== canonicalJson(pkg.contact)) {",
+    to: "    if (false && canonicalJson(suppliedContacts[index]) !== canonicalJson(pkg.contact)) {",
+    expect: ["CK10.", "CK11."],
+  },
+  {
+    name: "the critic stops requiring a contact line on every package",
+    file: CONTACT_LINE,
+    from: '    if (!("contact" in (entry as Record<string, unknown>))) {',
+    to: "    if (false) {",
+    expect: ["CK10."],
+  },
+  {
+    name: "a contact value is normalized instead of copied byte for byte",
+    file: CONTACT_LINE,
+    from: "  const value = record!.claim.slice(prefix.length);",
+    to: '  const value = record!.claim.slice(prefix.length).replace(/[()]/g, "");',
+    expect: ["CK1.", "CG11."],
+  },
+  {
+    name: "the Instagram template drifts from the owner-reviewed wording",
+    file: CONTACT_LINE,
+    from: "text: `Call German Car Depot: ${values.phone}`, sourceFactIds };",
+    to: "text: `Call us: ${values.phone}`, sourceFactIds };",
+    expect: ["CK1.", "CG11."],
+  },
+  {
+    name: "a missing contact record no longer fails closed with a named error",
+    file: CONTACT_LINE,
+    from: "  if (!record) {\n    fail(",
+    to: "  if (false) {\n    fail(",
+    expect: ["CK4.", "CK4a."],
+  },
+  {
+    name: "the summary footer is hardcoded to the fake runner again",
+    file: CONTENT_RUN_CLI,
+    from: '  lines.push("", "---", summaryFooter(runner));',
+    to: '  lines.push("", "---", "_Fake-runner output. Not reviewed. Not publishable. Authorizes nothing._");',
+    expect: ["CE8."],
+  },
+  {
+    name: "the full run hands the critic stage 5's output without its contact lines",
+    file: CONTENT_RUN_CLI,
+    from: "    scriptOutput: script.output, directionOutput: direction.output, packagingOutput: contacted,",
+    to: "    scriptOutput: script.output, directionOutput: direction.output, packagingOutput: packaging.output,",
+    expect: ["CG1.", "CE9."],
+  },
+  {
+    name: "the full run no longer checks the contact records before any spend",
+    file: CONTENT_RUN_CLI,
+    from: "  // are in the pack already built, so check now, for free.\n"
+      + "  rt.contact.assertContactFactsAvailable(pack, platforms);\n",
+    to: "",
+    expect: ["CE9."],
+  },
+  {
+    name: "stage 5's prompt no longer tells the model not to name a contact or booking channel",
+    file: PACKAGING_PROMPT,
+    from: "- **No contact or booking channels.** Do not name a phone number, a website, online booking, "
+      + "or any other way to reach the shop, in a caption,",
+    to: "- Do not name any other way to reach the shop, in a caption,",
+    expect: ["CK15."],
+  },
+  {
+    name: "the critic's prompt no longer says a contact line is never an uncited implication",
+    file: CRITIC_PROMPT,
+    from: "Do not flag a contact line, or the link inside it, as an `uncited_implication` or a "
+      + "`claim_fidelity` problem, and do not suggest a stage rewrite it — no stage wrote it. ",
+    to: "",
+    expect: ["CK16."],
+  },
+  {
+    name: "a caption refused on UTF-8 bytes under the reserve-lowered budget no longer names the reserve",
+    file: PACKAGING,
+    from: "    fail(`\"${field}\" exceeds ${max} UTF-8 bytes or contains non-serializable text${note}`);",
+    to: "    fail(`\"${field}\" exceeds ${max} UTF-8 bytes or contains non-serializable text`);",
+    expect: ["CK9c."],
+  },
+];
+
 const MUTATIONS = [
   ...LEGACY_MUTATIONS, ...RAW_IDENTITY_MUTATIONS, ...FIELD_MARGIN_MUTATIONS, ...CRITIC_POLICY_MUTATIONS,
+  ...CONTACT_LINE_MUTATIONS,
 ];
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");

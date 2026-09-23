@@ -17,6 +17,7 @@ Later stages do these, and doing them here would run one contract while claiming
 - **No hashtags, no posting times, no scheduling.**
 - **No image direction.** Do not specify shots, framing, on-image text, or art direction.
 - **No approval and no publishing.** Nothing you write is published, and nothing you write is approved by writing it.
+- **No contact or booking channels.** Do not name a phone number, a website, online booking, or any other way to reach the shop, and do not tell the audience to "call us", "book online", or "visit". Code adds a fixed contact line to every package after the copy is written, copied exactly from the approved facts, so a close that names a channel would duplicate it — and a channel you name is a claim that competes for citation room it should not need.
 
 "Channel-neutral" means the script must read correctly whether it is eventually spoken, filmed, or set as text. Do not write stage directions, timecodes, or on-screen-text callouts.
 

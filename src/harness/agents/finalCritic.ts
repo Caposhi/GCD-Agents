@@ -80,7 +80,12 @@
  *
  * The model receives exactly six bounded, labelled untrusted blocks:
  * `SCRIPT_OUTPUT`, `PRODUCTION_OUTPUT`, `PACKAGING_OUTPUT`,
- * `REQUESTED_PLATFORMS`, `SCRIPT_CLAIMS`, and `PLATFORM_CLAIMS`. The complete
+ * `REQUESTED_PLATFORMS`, `SCRIPT_CLAIMS`, and `PLATFORM_CLAIMS`.
+ * `PACKAGING_OUTPUT` is stage 5's output with the deterministic contact line
+ * `contactLine.ts` attaches to every package — copied from the approved-facts
+ * phone and booking-link records, never written by a model. The critic rebuilds
+ * each line from the pack and refuses a package whose line is missing or
+ * differs, so it always sees the same package shape. The complete
  * pack, stage 2's provisional prose, stage 2's wider whitelist, raw
  * references, `config/approved-facts.json`, active environment
  * configuration, provider/account/location configuration, image or media
@@ -174,7 +179,6 @@ import {
   PACKAGING_PLATFORMS,
   PLATFORM_PACKAGING_POLICY,
   packagingClaimRecords,
-  revalidatePackagingAdaptationOutput,
   scriptUsedClaimRecordsForPackaging,
   renderPackagingScriptClaims,
   validateRequestedPlatforms,
@@ -188,15 +192,23 @@ import {
   parseStrictJsonObject,
 } from "./stageExecution.js";
 import {
-  CRITIC_FIELD_LIMITS, EVIDENCE_LIMITS, HANDOFF_GUARDS, PACKAGING_OUTPUT, isBoundedSerializableText,
+  CRITIC_FIELD_LIMITS, EVIDENCE_LIMITS, HANDOFF_GUARDS, CONTACTED_PACKAGING_OUTPUT, isBoundedSerializableText,
   statedCeiling,
 } from "./payloadContract.js";
+import type { ContactedPackagingOutput } from "./contactLine.js";
+import { revalidateContactedPackagingOutput } from "./contactLine.js";
 
 export const FINAL_CRITIC_STAGE = "final-critic" as const;
 
 /**
  * The serialized ceiling on a Stage 5 handoff, re-exported from the one
  * authority that derives it.
+ *
+ * The handoff is stage 5's output with the deterministic contact line attached
+ * to every package (`contactLine.ts`), so the ceiling is
+ * `CONTACTED_PACKAGING_OUTPUT` — stage 5's own `PACKAGING_OUTPUT` plus the
+ * contact fields. The contact line is not model output, so stage 5's token
+ * budget does not move; only this guard and this stage's assembled payload do.
  *
  * This stage used to derive its own, with its own escape multiplier and its own
  * hand-chosen skeleton and short-field allowances. That derivation was correct
@@ -206,7 +218,7 @@ export const FINAL_CRITIC_STAGE = "final-critic" as const;
  * from a shape witness of the Stage 5 contract rather than from fixed
  * allowances.
  */
-export const PACKAGING_OUTPUT_SERIALIZED_CEILING = PACKAGING_OUTPUT.transportChars;
+export const PACKAGING_OUTPUT_SERIALIZED_CEILING = CONTACTED_PACKAGING_OUTPUT.transportChars;
 
 /**
  * Bounds on the model's output and on the prior-stage values it is shown.
@@ -215,7 +227,8 @@ export const PACKAGING_OUTPUT_SERIALIZED_CEILING = PACKAGING_OUTPUT.transportCha
  * stage's own derived ceiling, re-exported from `payloadContract.ts`:
  * `scriptOutputChars` is `SCRIPT_OUTPUT.transportChars`,
  * `directionOutputChars` is `DIRECTION_OUTPUT.transportChars`, and
- * `packagingOutputChars` is `PACKAGING_OUTPUT.transportChars`. Equality, not
+ * `packagingOutputChars` is `CONTACTED_PACKAGING_OUTPUT.transportChars` — stage 5
+ * plus its deterministic contact lines. Equality, not
  * mere sufficiency, is what the derivation regressions assert: a guard set
  * above its producer's ceiling would hide a future contract change instead of
  * failing on it, and a guard set below it would refuse a structurally valid
@@ -454,8 +467,13 @@ export interface FinalCriticInvocation {
   scriptOutput: HookStoryScriptOutput;
   /** The complete typed output from stage 4. Creative context only. */
   directionOutput: ProductionDirectionOutput;
-  /** The complete typed output from stage 5. What this stage actually critiques. */
-  packagingOutput: PackagingAdaptationOutput;
+  /**
+   * The complete typed output from stage 5, with the deterministic contact line
+   * attached to every package by `attachContactLines(...)`. What this stage
+   * actually critiques. Every contact line is rebuilt from the pack and must
+   * match exactly; a package without one is refused.
+   */
+  packagingOutput: ContactedPackagingOutput;
   /**
    * The complete typed output from stage 2.
    *
@@ -860,7 +878,13 @@ export async function executeFinalCritic(
     invocation.directionOutput, scriptOutput, truthOutput, pack,
     FINAL_CRITIC_STAGE, "directionOutput",
   );
-  const packagingOutput = revalidatePackagingAdaptationOutput(
+  // Stage 5 is revalidated through its own revalidator
+  // (`revalidatePackagingAdaptationOutput`, called inside
+  // `revalidateContactedPackagingOutput`), and every contact line
+  // is rebuilt from the approved-facts records in this pack and must match the
+  // one supplied: the critic always sees the same package shape, and never a
+  // contact line a model — or anyone — edited.
+  const packagingOutput = revalidateContactedPackagingOutput(
     invocation.packagingOutput, scriptOutput, truthOutput, pack,
     FINAL_CRITIC_STAGE, "packagingOutput",
   );

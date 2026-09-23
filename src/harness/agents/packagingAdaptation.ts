@@ -59,7 +59,10 @@
  *  - Exactly one package per requested platform, in the requested order.
  *  - Captions contain no hashtag token; canonical tags live only in the separate
  *    array, and proposed provider-visible caption-plus-tag length is enforced
- *    deterministically against the imported production constants.
+ *    deterministically against the imported production constants, less the
+ *    contact-line reserve (`CONTACT_LINE_RESERVE_CHARS`): code appends a fixed
+ *    contact line after this stage validates (`contactLine.ts`), and the whole
+ *    text must still fit the platform.
  *  - Dedicated URL-bearing fields are structurally absent, and recognizable URL
  *    syntax is rejected from every model-authored prose channel. Obfuscated or
  *    semantic destination references are not claimed detectable.
@@ -114,7 +117,7 @@ import {
 } from "./stageExecution.js";
 import {
   PACKAGING_FIELD_LIMITS, EVIDENCE_LIMITS, HANDOFF_GUARDS, PACKAGING_OUTPUT, isBoundedSerializableText,
-  statedCeiling,
+  statedCeiling, CONTACT_LINE_RESERVE_CHARS,
 } from "./payloadContract.js";
 
 export const PACKAGING_ADAPTATION_STAGE = "packaging-adaptation" as const;
@@ -237,6 +240,29 @@ export const PLATFORM_LOCAL_KEYWORD_MAX: Record<PackagingPlatform, number> = {
   google_business_profile: GBP_LOCAL_KEYWORD_MAX,
 };
 
+/**
+ * The room reserved on `platform` for the deterministic contact line.
+ *
+ * Code, not a model, appends that line after this stage validates (see
+ * `contactLine.ts`), so the caption budget below is the platform's limit less
+ * this reserve. Read from `CONTACT_LINE_RESERVE_CHARS` in `payloadContract.ts`.
+ */
+export function contactReserveChars(platform: PackagingPlatform): number {
+  return CONTACT_LINE_RESERVE_CHARS[platform];
+}
+
+/**
+ * The largest caption-plus-separator-plus-hashtags text the validator accepts on
+ * `platform`: the smaller of the provider limit and the pipeline limit, less the
+ * contact-line reserve. Exported so the prompt drift checks, the response schema
+ * and the local run's field measurement all read the one number this validator
+ * applies.
+ */
+export function effectiveCaptionBudget(platform: PackagingPlatform): number {
+  return Math.min(PLATFORM_PACKAGING_POLICY[platform].captionMax, PACKAGING_LIMITS.pipelineCaptionChars)
+    - contactReserveChars(platform);
+}
+
 /** The local keyword cap the validator applies on `platform`. */
 export function effectiveLocalKeywordMax(platform: PackagingPlatform): number {
   return Math.min(PLATFORM_LOCAL_KEYWORD_MAX[platform], PACKAGING_FIELD_LIMITS.maxLocalKeywords);
@@ -289,7 +315,14 @@ export const PACKAGING_ADAPTATION_RESPONSE_FORMAT = schemaObject({
   packages: schemaArray(
     schemaObject({
       platform: schemaEnum(PACKAGING_PLATFORMS, "Exactly one package per requested platform, in order"),
-      caption: schemaString("No hashtag tokens; no recognizable URL syntax; per-platform ceiling"),
+      caption: schemaString(
+        "No hashtag tokens; no recognizable URL syntax; no contact or booking channel "
+          + "(code appends a fixed contact line); caption plus separator plus hashtags, per-platform "
+          + "ceiling: "
+          + PACKAGING_PLATFORMS
+            .map((platform) => `at most ${effectiveCaptionBudget(platform).toLocaleString("en-US")} characters on ${platform}`)
+            .join(", "),
+      ),
       hashtags: schemaArray({ type: "string" }, '"#token" form; [] where the platform allows none'),
       localKeywords: schemaArray(
         { type: "string" },
@@ -416,17 +449,17 @@ const fail = (message: string): never => {
   throw new StageExecutionError(PACKAGING_ADAPTATION_STAGE, message);
 };
 
-function requireBoundedString(value: unknown, field: string, max: number): string {
+function requireBoundedString(value: unknown, field: string, max: number, note = ""): string {
   if (typeof value !== "string") fail(`"${field}" must be a string`);
   const text = (value as string).trim();
   if (!text) fail(`"${field}" must not be empty`);
   // Reports the measurement, not only the bound: a paid response dies here.
-  if (text.length > max) fail(`"${field}" exceeds ${max} characters (actual ${text.length})`);
+  if (text.length > max) fail(`"${field}" exceeds ${max} characters (actual ${text.length})${note}`);
   // Serializable text only. Control characters and unpaired surrogates are the
   // only things JSON.stringify expands sixfold; the shared helper also enforces
   // the UTF-8 byte allowance used by the worst-case token proof.
   if (!isBoundedSerializableText(text, max)) {
-    fail(`"${field}" exceeds ${max} UTF-8 bytes or contains non-serializable text`);
+    fail(`"${field}" exceeds ${max} UTF-8 bytes or contains non-serializable text${note}`);
   }
   return text;
 }
@@ -589,9 +622,20 @@ export function validatePackagingAdaptationOutput(
     // bound rather than a comment: a provider-policy change cannot widen it.
     const captionMax = Math.min(policy.captionMax, PACKAGING_LIMITS.pipelineCaptionChars);
     const hashtagMax = Math.min(policy.hashtagMax, PACKAGING_LIMITS.maxHashtags);
+    // Code appends a fixed contact line after this stage validates (see
+    // `contactLine.ts`), so the caption budget is the platform limit less the
+    // room reserved for it. A rejection that the reserve caused says so, by
+    // name: a stage 5 output saved before the reserve existed can be refused on
+    // replay for exactly this reason, and the operator must be able to tell.
+    const contactReserve = contactReserveChars(platform);
+    const captionBudget = captionMax - contactReserve;
+    const reserveNote = contactReserve > 0
+      ? ` — the ${captionMax}-character platform limit less the ${contactReserve}-character `
+        + `contact-line reserve CONTACT_LINE_RESERVE_CHARS.${platform}`
+      : "";
 
     const caption = requireUrlFreeText(
-      requireBoundedString(obj.caption, `packages[${index}].caption`, captionMax),
+      requireBoundedString(obj.caption, `packages[${index}].caption`, captionBudget, reserveNote),
       `packages[${index}].caption`,
     );
     if (hashtagTokens(caption).length) {
@@ -625,10 +669,10 @@ export function validatePackagingAdaptationOutput(
     });
 
     const providerText = proposedProviderText(caption, hashtags);
-    if (providerText.length > captionMax) {
+    if (providerText.length > captionBudget) {
       fail(
-        `${platform} proposed provider-visible text exceeds ${captionMax} characters `
-        + "after appending canonical hashtags",
+        `${platform} proposed provider-visible text exceeds ${captionBudget} characters `
+        + `after appending canonical hashtags (actual ${providerText.length})${reserveNote}`,
       );
     }
 

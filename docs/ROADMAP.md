@@ -21,11 +21,101 @@ This roadmap is the canonical unfinished-work sequence and the current-phase cur
 
 These are not interchangeable and must not be collapsed into "done". `MERGED` in particular is not `DEPLOYED`.
 
-## Implemented repository change awaiting merge and rollout
+## Implemented repository change awaiting merge
+
+### Deterministic contact line for stage 5 packages, plus follow-ups from the first complete six-stage run — `IMPLEMENTED`
+
+**State:** `IMPLEMENTED` on branch `claude/kind-curie-5i5r6i`, based on `main` at `72535d5cc7f184efe8d9763030e70a75e727595b` (the PR #86 merge). **Not `MERGED`, not `DEPLOYED`, not `ENABLED`, not `PRODUCTION-VALIDATED`.** All six stages remain `executionEnabled: false` and no production path reaches any of them; the change is dormant stage code, three stage prompts, and the operator-local CLI. It authorizes no release; the partial-release interval in [Status](STATUS.md) (current bound `2026-10-22T18:52Z`) still prohibits any release of any service. No deployed legacy path changed: `src/harness/packageMap.ts`, `orchestrator.ts`, `runAgent`, `runVision`, `agents/brand-compliance-critic.md` and the worker, API and scheduler are untouched.
+
+**PR / merge:** opened as a pull request from `claude/kind-curie-5i5r6i` into `main`. **The PR number and merge SHA are not knowable before merging** — recorded here as a **blocking follow-up** under the mutable-identifier exception in [`AGENTS.md`](../AGENTS.md), to be reconciled in the first change after merge.
+
+**The defect — measured, on both complete runs.** In both six-stage runs of 2026-09-23, stage 1 planned a call to action ("book online or call") but spent all twelve of its citation slots on other facts and never cited `approved-facts:phone` or `approved-facts:bookingurl`. Stage 3 then wrote "Book online or give us a call" with no citation; the Opus 5.5 critic correctly flagged it as an uncited implication; and stage 5 correctly dropped it — so every caption shipped with no way to book. Every stage behaved as designed. The design had no place for a contact line.
+
+**Owner decision, 2026-09-23.** (a) Keep `STRATEGY_LIMITS.maxIds` at 12 — see the decided item below. (b) Attach contact details **by code, never by a model**: contact details must match the approved data exactly (`skills/local-seo`, "NAP consistency"), and they should not compete for citation slots.
+
+**Delivered.**
+
+- **`src/harness/agents/contactLine.ts`** — a deterministic step that runs after stage 5 validates and before the critic. For each package it adds a typed `contact` object, `{ kind: "deterministic_contact", text, gbpCta?, sourceFactIds }`. **No model writes or edits any part of it.** Values are copied byte for byte from the evidence pack's `approved-facts:phone` and `approved-facts:bookingurl` records — the substring after the record's `"<field>: "` prefix, which the approved-facts adapter writes from the checked-in file — and `sourceFactIds` lists exactly the records used. A needed record that is absent, not a usable `verified_business_fact` (conflicted, stale or inactive records are not in `allowedFacts`), or whose value does not read back as one clean line (or, for the booking link, plain HTTPS) is a `ContactLineError` before any paid call.
+- **Owner-reviewed templates, used verbatim:** Instagram `Call German Car Depot: {phone}`; Facebook `Call German Car Depot: {phone} · Book online: {bookingUrl}`; Google Business Profile no text and `gbpCta = { actionType: "BOOK", url: {bookingUrl} }`, mirroring the BOOK rule `ctaForGbp` applies in `packageMap.ts` — which was read and not changed, and against whose public `buildFinalPackage` behaviour a regression checks the mirror.
+- **Rendered from `config/approved-facts.json` today:** Instagram text `Call German Car Depot: (954) 921-1515` (37 characters); Facebook text `Call German Car Depot: (954) 921-1515 · Book online: ` followed by the checked-in booking-widget link (130 characters, 131 UTF-8 bytes); Google Business Profile `BOOK` to that same link (77 characters).
+- **A named contact reserve per platform.** `CONTACT_LINE_RESERVE_CHARS` in `payloadContract.ts` — Instagram 64, Facebook 192, Google Business Profile 0 — covers the two-character separator plus the contact text, in characters and again in UTF-8 bytes. Provider-visible text becomes caption + separator + hashtags + separator + contact text, and stays within each platform's existing limit, because stage 5's caption budget is lowered by the reserve: `effectiveCaptionBudget()` in `packagingAdaptation.ts` is the one number the validator applies, the prompt states, the response schema describes, and the local CLI's field measurement reports. A caption refused because of the reserve names it (`… less the N-character contact-line reserve CONTACT_LINE_RESERVE_CHARS.<platform>`). A contact line longer than its reserve fails closed rather than being trimmed.
+- **Contact text is not caption prose.** It sits outside the caption, so stage 5's recognizable-URL ban keeps applying to model prose only; the Facebook line legitimately carries the booking link.
+- **The critic always sees the contacted shape.** `executeFinalCritic` now takes the contacted packaging output. `revalidateContactedPackagingOutput` requires a `contact` on every package, revalidates the stage 5 part through stage 5's own revalidator (so the reserve-lowered budget is re-checked), rebuilds every contact line from the pack, and refuses any line that differs — all before any model call. Its `PACKAGING_OUTPUT` block carries the contact objects.
+- **Prompts.** `agents/hook-story-script.md` and `agents/packaging-adaptation.md` gain one rule: do not name a contact or booking channel (phone, website, online booking, "call us", "visit"), because code adds a fixed contact line. `agents/packaging-adaptation.md` states the lowered caption budgets. `agents/final-critic.md` gains a section stating that `contact` is deterministic, copied from approved facts, not model-written, and must not be flagged as an uncited implication — while it may still raise, for example, contact lines inconsistent between platforms, or a caption that also names a contact channel. Nothing else in those prompts changed.
+- **`scripts/local/content-run.mjs`.** The same step runs in full runs and in `--replay-critic`: every record the requested platforms' contact lines need is checked before the cost gate (a full run) or the spend guard (a replay); the lines are attached after stage 5, written to `05b-contact-lines.json`, and the critic receives the attached packages. `summary.md` renders each platform's contact line and Google Business Profile's call to action beside its caption. The stage 5 file stays exactly what stage 5 returned, so a replay revalidates it and attaches afresh rather than trusting a saved copy.
+- **Summary footer bug (follow-up a).** The footer said "_Fake-runner output. Not reviewed. Not publishable. Authorizes nothing._" even for live runs, including the 2026-09-23T17:07Z one. It now names the runner that ran — `_Live-runner output. …_` or `_Fake-runner output. …_` — keeping "Not reviewed. Not publishable. Authorizes nothing." for both. The CLI now runs `main()` only when executed as a script, so the suite imports it and exercises the footer for both runners.
+
+**Limits and budgets, before → after.** Stated figures for every other field are unchanged.
+
+| Value | Before | After |
+|---|---:|---:|
+| `CONTACT_LINE_RESERVE_CHARS` Instagram / Facebook / GBP | — | 64 / 192 / 0 |
+| Stage 5 caption budget (caption + separator + hashtags) Instagram | 2,200 | **2,136** |
+| Stage 5 caption budget Facebook (`Math.min(63,206, 2,200)` less reserve) | 2,200 | **2,008** |
+| Stage 5 caption budget Google Business Profile | 1,500 | 1,500 — unchanged |
+| Provider-visible limit (caption + tags + contact) Instagram / Facebook / GBP | 2,200 / 2,200 / 1,500 | 2,200 / 2,200 / 1,500 — unchanged |
+| `CONTACT_CTA_URL_CHARS` (GBP call-to-action link) | — | 200 |
+| `PACKAGING_OUTPUT` transport / contract (stage 5's own response) | 98,084 / 53,324 | 98,084 / 53,324 — unchanged |
+| `CONTACTED_PACKAGING_OUTPUT` transport / contract (the critic's `PACKAGING_OUTPUT` block) | — | 103,604 / 56,474 |
+| `FINAL_CRITIC_LIMITS.packagingOutputChars` | 98,084 | **103,604** |
+| `STAGE_ASSEMBLED_CEILINGS["final-critic"]` | 321,501 | **327,021** |
+| Other five assembled ceilings | 341,520 / 403,564 / 173,030 / 105,675 / 193,489 | unchanged |
+| `MAX_PAYLOAD_CHARS` | 410,000 | 410,000 — unchanged (still set by `automotive-truth`) |
+| `reasoning-heavy` floor / `max_tokens` / stream deadline | 74,000 / 74,000 / 63 min | unchanged |
+| `reasoning-standard` floor / `max_tokens` / stream deadline | 99,000 / 99,000 / 84 min | unchanged |
+| `critic` floor / `max_tokens` / stream deadline | 110,000 / 128,000 / 108 min | unchanged |
+| CLI ceiling estimate: full run / critic-only replay | ~$11.28 / ~$2.97 | unchanged |
+
+No token budget moves because the contact line is not model output: stage 5's response is still bounded by `PACKAGING_OUTPUT`, and the critic's output contract is unchanged. The critic's input grows by 5,520 characters at the worst case — three packages, each counted with contact text at the widest reserve less its separator, a 200-character call-to-action link and two source-fact ids, at the escape factor, plus their skeleton — and its assembled ceiling stays below `MAX_PAYLOAD_CHARS`.
+
+**Replay compatibility.** A stage 5 output that was valid before this change still revalidates, unless its caption and hashtags no longer fit under the new budget, in which case the replay refuses with a message naming `CONTACT_LINE_RESERVE_CHARS.<platform>`; an offline regression proves both halves with a synthetic package (`CK9`, `CK9a`), and the same for a caption that fits in characters but not in UTF-8 bytes (`CK9c`). **Run `2026-09-23T17-07-15-470Z` measured caption+hashtag text of 1,375 (Instagram), 1,048 (Facebook) and 912 (Google Business Profile) UTF-8 bytes. All three still fit** — under 2,136, 2,008 and 1,500 respectively; the validator counts characters, which are never more than bytes (`CK9b`). That run's own outputs live only in the operator's local-output folder, so its replay is not exercised here, and the replay's other fail-closed checks — approved-facts identity, automotive-facts identity, pack fingerprint — are unchanged by this change and not re-verified.
+
+**Migrations / schema impact:** none. No SQL, no durable state.
+
+**Material design decisions.**
+
+- **Code, not a model, owns contact details.** A model paraphrasing a record cannot guarantee NAP consistency; copying the record's bytes can. It also takes contact details out of the citation budget, which is what starved them.
+- **The contact line lives outside stage 5's output.** Stage 5's validated output and its saved file are unchanged in shape, so outputs saved before this change still revalidate, and the critic's `PACKAGING_OUTPUT` is the only place the contacted shape exists.
+- **The critic rebuilds, never trusts.** A supplied contact line is compared with one rebuilt from the same pack; a missing, edited, or widened line is refused before any model call.
+- **The reserve is a named constant, and it bounds characters and bytes.** Platform limits count characters; the payload derivation counts bytes too, and the Facebook template's "·" is two bytes — so the reserve holds both. Reserves carry headroom (Instagram needs 39 of 64, Facebook 133 bytes of 192) so a reformatted phone number or a longer link fails a free check rather than silently eating caption room, and a change to a reserve fails the prompt drift checks until the prompt moves with it.
+- **Google Business Profile reserves nothing.** Its booking link travels as a structured `BOOK` call to action, not as summary text.
+
+**Material rejected alternatives.**
+
+- **A model-written call to action.** Rejected: it is exactly what failed on both runs — the close went uncited, was correctly flagged, and was correctly dropped — and a model cannot guarantee the exact approved phone and link.
+- **Citing the contact facts through stages 1–3.** Rejected: contact records would compete with the claims the piece is about for the twelve citation slots stage 1 has and the twelve permitted claims stage 2 has — the competition that dropped them — and every stage would have to preserve them faithfully for no editorial reason.
+- **Raising `maxIds` / `maxAllowedClaims` to 16 so the contact facts fit.** Rejected; see the decided `maxIds` item below.
+- **Having stage 5 append the line inside the caption.** Rejected: the caption is model prose under the URL ban and is never checked for faithfulness, so the line could be altered, and the ban would have to be weakened for the booking link.
+- **Saving the contact line into stage 5's output.** Rejected: it would change stage 5's contract and make every previously saved stage 5 output fail revalidation.
+
+**Production evidence:** none, and none is possible — no stage is enabled or reachable. **No live model call was made by this change.**
+
+**Rollback / recovery:** revert the commit. No migration, no durable state; `05b-contact-lines.json` files written under `local-output/` are local run records never read back.
+
+**Security and privacy implications.** The contact line carries only public business contact details already in `config/approved-facts.json` — its `_note` records the booking-widget link as public — and adds no credential, token, customer data, or new data flow. It adds no provider, publishing, scheduling, or approval surface: no provider payload is built, and the package stays provisional, unverified, non-publishable and non-executable. The Phase-A approval gate and the live `brand-compliance-critic` are untouched. The prompt edits add a restriction to stages 3 and 5 and a scoped instruction to the critic; no tool, model id, thinking or effort setting, capability, or autonomy boundary changed.
+
+**Accepted limitations.**
+
+- **A model can still name a contact channel.** The stage 3 and 5 prompts forbid it and the critic may flag it, but no deterministic check detects "call us" in prose.
+- **The reserve narrows every Instagram and Facebook caption** by 64 and 192 characters, whether or not the line needs all of it.
+- **The line is fixed.** It varies by platform only; a piece that should carry no contact line, or a different one, needs a reviewed change.
+- **The Google Business Profile call to action is review metadata only.** Nothing here builds or sends a GBP payload; the live path's own `ctaForGbp` is unchanged and separate.
+
+**Unresolved follow-ups.**
+
+- **Blocking:** the PR number and merge SHA above (mutable-identifier exception).
+- The narrow critic panel, which the owner decided on 2026-09-23 to build next, after this change — see its entry below.
+- The evidence pack's 64-record cap — see the new open item below.
+
+**Automated validation (on the head that was pushed).** Build and typecheck clean. `npm run test:offline` **ALL PASS** on all nine suites — **1,629 checks** (1,597 before): posting 52, image 18, orchestrator 119, gate 56, API 51, render-identity one invariant pass, ownership/recovery 112, content-intelligence **1,126** (was 1,094), interval monitor 94. The 32 new checks are `AF5c`, `CK1`–`CK17` (with `CK4a`, `CK4b`, `CK5a`, `CK8a`, `CK9a`, `CK9b`, `CK9c`, `CK13a`, `CK13b`), `CE8`, `CE9` and `CG11`–`CG13`; `BX18`–`BX23`, `BU4`, `BO3`, `BQ33e`/`BQ33f`, `CC11`/`CC13`, `CD6` and `CE7` were updated to the contacted shape and the lowered budgets, not loosened. `npm run test:payload-mutation` **ALL PASS — 369 mutations** (355 before; 367 prohibited, 2 coordinated-authority updates): the fourteen new ones, `M356`–`M369`, are appended after every earlier group so no existing id moves, and the harness now captures sixteen paths. Also clean: simulated dry run; deployment-controller fixtures; `npm audit --omit=dev` (0 vulnerabilities); Markdown links (61 files); environment coverage (35 variables); the sensitive-content scan (180 files — manual triage: the only phone number in the diff is GCD's public business number, already committed in `config/approved-facts.json`, and two `(000) 000-0000` values are synthetic test fixtures; the booking link is not written into any document); AgentShield 1.4.0 at grade A/92 with zero critical or high findings — its six medium oversized-agent and six low unspecified-model findings are the same classes and counts as before this change, though three of the oversized prompts grew by the rules added here; and `git diff --check`. **Two defects were found in review and fixed before push.** First, found by the new mutations: the contact text's UTF-8 byte bound was folded into the character check, so a Facebook line one byte over its reserve ("·" is two bytes) was refused with a message reporting only a character count that fit — an unexplained refusal; the reserve now bounds characters and bytes as two explicit checks, each with its own message (`CK8a`). Second, found in self-review: a saved caption within the new budget in characters but over it in UTF-8 bytes was refused on replay without naming the reserve; the byte-bound message now names it too (`CK9c`, `M369`). The CLI was also driven by hand in fake mode against a synthetic automotive-facts file: `summary.md` showed all three contact renderings and the fake-runner footer, and `05b-contact-lines.json` matched. **No live model call was made.**
+
+**Documents updated with implementation:** [README](../README.md), [Status](STATUS.md) (PR #86 recorded as merged, and a phase row for this change), [Architecture](ARCHITECTURE.md), [Testing](TESTING.md), [AI handoff](AI_HANDOFF.md) (including a pre-existing stale clause that still called the critic-policy change unmerged, now recorded as `MERGED` through PR #87), [Security and continuity](SECURITY_AND_CONTINUITY.md), this file, `agents/hook-story-script.md`, `agents/packaging-adaptation.md`, and `agents/final-critic.md`. Each was reread in full.
+
+## Merged repository change awaiting rollout
 
 ### CTO-attested approved-facts expansion
 
-**State:** `IMPLEMENTED`. Not `MERGED`, not `DEPLOYED`, and not `PRODUCTION-VALIDATED`. Implemented on branch `codex/approved-cto-facts` and opened as [PR #86](https://github.com/Caposhi/GCD-Agents/pull/86). A merge SHA does not yet exist.
+**State:** `MERGED` through [PR #86](https://github.com/Caposhi/GCD-Agents/pull/86) at `72535d5cc7f184efe8d9763030e70a75e727595b` (recorded 2026-09-23). **Not `DEPLOYED`, and not `PRODUCTION-VALIDATED`**: the live worker at `R` does not carry it. Implemented on branch `codex/approved-cto-facts`. The rest of this record is preserved as written at implementation; where it says review and merge remain outstanding, this line supersedes it.
 
 **Authorization and delivered scope:** on 2026-09-23 the GCD CTO attested five business facts and authorized only their repository addition. `config/approved-facts.json` now contains the verbatim top-level string fields `oilChangeRecommendation`, `nextOilChangeAppointment`, `serviceRecords`, `vehicleHistoryReview`, and `engineOils`. Its `_note` preserves the existing rules while identifying those five fields as CTO-attested on 2026-09-23 and not website-sourced. The generic adapter already projects every eligible top-level string, so no parsing path changed; `engineOils` alone joins `parts` in the `automotive-capability` tag set. The adapter now deterministically produces 27 records.
 
@@ -1687,7 +1777,9 @@ as the dated snapshot it is), [Security and continuity](SECURITY_AND_CONTINUITY.
 
 ## Planned — narrow critic panel — `PLANNED`
 
-**State:** `PLANNED`. Not begun, not authorized.
+**State:** `PLANNED`. Not begun. **Owner decision, 2026-09-23: build it next**, after the
+deterministic contact-line change recorded at the top of this file. That decision orders the work;
+the implementation still needs its own authorized change.
 
 Replace the single critic with four narrow reviewers, each with its own contract:
 
@@ -1699,7 +1791,31 @@ Replace the single critic with four narrow reviewers, each with its own contract
 
 Their findings are aggregated **deterministically**, with no model-written merged summary.
 
-**Acceptance test:** a replay of the 2026-09-23 run (`--replay-critic`) must flag all three of: the
+**The single Opus 5.5 critic's result on run `2026-09-23T17-07-15-470Z`** — the second complete
+six-stage run, and the first with the critic on `claude-opus-5-5` (cost $0.209; 23,526 input and
+5,746 output tokens). Against the pre-registered list it caught **4 of 4**:
+
+1. the "to stay covered" warranty line (blocking);
+2. the make/service keywords;
+3. the uncited "Book online or give us a call";
+4. "both say … normal driving".
+
+It also caught **3 more**:
+
+5. Google Business Profile makes BMW claims with no BMW record bound on GBP (blocking);
+6. Facebook's "BMW agrees" drops BMW's hedge and scope;
+7. the shot-2 overlay uses BMW's "stop-and-go" over the Mercedes page.
+
+For comparison, the Sonnet 5 critic on the earlier run caught 1 of 3.
+
+**Acceptance test — current.** That run carries `run-meta.json`, so it is replayable with
+`--replay-critic`, and it is the panel's acceptance fixture: **the panel must catch at least those
+seven.** The fixture's own outputs live only in the operator's `local-output/` folder; they are not
+in this repository, and the test cannot run from a fresh checkout. Its stage 5 caption+hashtag
+sizes fit the contact-line budgets (see the contact-line record's replay-compatibility note).
+
+**Acceptance test — as first written, superseded by the fixture above and preserved as history:** a
+replay of the 2026-09-23 run (`--replay-critic`) must flag all three of: the
 "both manufacturers say … not a direct read of your oil" misattribution; the uncited
 estimate-approval claim; and the make/service GBP keywords.
 
@@ -1710,15 +1826,49 @@ Business Profile keywords, which were legal when produced and are invalid under 
 two; refusal is correct fail-closed behavior. This 2026-09-23 fixture therefore no longer
 revalidates under the current contract. The acceptance test needs either a fixture produced under
 the current contract or a replay that revalidates against the contract of the commit that produced
-the run. That choice remains open and is not made here.
+the run. That choice remains open and is not made here. **Superseded 2026-09-23:** run
+`2026-09-23T17-07-15-470Z`, produced under the current contract, is the fixture now.
 
-## Open — decide stage 1 `maxIds` (12) after the next complete run — `OPEN`
+## Decided — stage 1 `maxIds` stays 12 — `DECIDED`
 
-On 2026-09-23 `supportingFactIds` was 12 of 12. The facts the close needed —
-`approved-facts:perks`, `approved-facts:phone`, `approved-facts:bookingurl` — went uncited, and 5 of
-stage 2's 12 allowed facts went unused downstream. The code treats widening an id channel as an
-**authority change, not slack** (see the output-field classification record): `maxIds` sizes what
-later stages may cite. Decide after the next complete run, on its measurements, not before.
+**Decided 2026-09-23 by the owner: keep `STRATEGY_LIMITS.maxIds` at 12.** This closes the item
+previously recorded here as *Open — decide stage 1 `maxIds` (12) after the next complete run*,
+whose text is preserved below.
+
+**Evidence.**
+
+- **Run 1:** stage 1 used 12 of 12; the call-to-action facts went uncited; 5 of stage 2's 12 allowed
+  facts went unused downstream.
+- **Run 2 (`2026-09-23T17-07-15-470Z`):** stage 1 used 12 of 12; stage 2 permitted 12 of 12, and said
+  it "dropped … only for the ceiling"; stage 3 used 10 of the 12; stage 5 used 22 of its 24
+  claim-use bindings.
+- **Raising stage 1 or stage 2 only moves the bottleneck.** Stage 3 already used fewer than it was
+  permitted, and stage 5 sat near its own ceiling; a wider stage 1 would hand downstream stages more
+  than they spend.
+- **The missing call to action is fixed structurally**, by the deterministic contact line recorded
+  at the top of this file: contact details no longer compete for citation slots.
+
+**Rejected alternative: raising `maxIds` and `maxAllowedClaims` to 16.** The code treats widening
+an id channel as an authority change, not slack — `maxIds` sizes what later stages may cite — and the
+measurements above show the extra room would not be used where the defect was; the defect was the
+contact facts competing for slots at all.
+
+*Preserved as written before the decision:* On 2026-09-23 `supportingFactIds` was 12 of 12. The
+facts the close needed — `approved-facts:perks`, `approved-facts:phone`, `approved-facts:bookingurl`
+— went uncited, and 5 of stage 2's 12 allowed facts went unused downstream. The code treats widening
+an id channel as an **authority change, not slack** (see the output-field classification record):
+`maxIds` sizes what later stages may cite. Decide after the next complete run, on its measurements,
+not before.
+
+## Open — the evidence pack is at its 64-record cap — `OPEN`
+
+**Observed 2026-09-23:** the operator's evidence pack held **64 records — 37 local automotive facts
+and 27 approved facts — exactly `EVIDENCE_LIMITS.maxProjectedRecords` (64).** `buildEvidencePack`
+refuses a pack of more than 64 records, and the local CLI passes no subject or tag scope, so it
+projects every record it loads. **The next fact added to either file will be refused** until the
+CLI scopes the pack to the brief or the cap changes. Which of those to do — and, for a cap change,
+its derivation review, since the cap sizes the `EVIDENCE` block and the stage 1 and 2 payloads — is
+**open, and not decided here.**
 
 ## Model lineage — Claude Opus 5 is now legacy
 
@@ -3394,8 +3544,12 @@ from manufacturer documentation or another checkable source first.
 **Later additions to this tool are recorded in their own entries, not here:** the paid-call
 preconditions and the rejected-response capture (*Paid-call preconditions*, above), per-run
 field measurement — `field-measurements.md` / `.json` beside every run, fake or live, passing or
-failing (*Output-field classification*, above) — and `run-meta.json` fingerprints, the typed `LIVE`
-confirmation and the critic-only `--replay-critic` mode (*Critic on Claude Opus 5.5*, above).
+failing (*Output-field classification*, above) — `run-meta.json` fingerprints, the typed `LIVE`
+confirmation and the critic-only `--replay-critic` mode (*Critic on Claude Opus 5.5*, above), and
+the deterministic contact line — its free preflight, `05b-contact-lines.json`, the contacted
+packages the critic receives, the contact lines in `summary.md` — and the runner-named summary
+footer (*Deterministic contact line*, at the top of this file). Since that change the CLI runs
+`main()` only when executed as a script, so importing it runs nothing.
 
 **Documents updated with this entry:** `docs/ROADMAP.md` (this section) and `.gitignore` (excludes
 the operator-supplied automotive facts file and the tool's local output directory). `README.md` was

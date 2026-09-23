@@ -14,6 +14,13 @@
  *   production-direction -> packaging-adaptation -> final-critic
  * with each stage's validated output passed into the next.
  *
+ * After stage 5 validates, a deterministic step attaches each package's fixed
+ * contact line — copied byte for byte from the evidence pack's approved-facts
+ * phone and booking-link records, never written by a model — and the critic
+ * receives the contacted packages, in a full run and in `--replay-critic` alike.
+ * Every record a contact line needs is checked before the cost gate, so a
+ * missing phone record costs nothing. See `src/harness/agents/contactLine.ts`.
+ *
  * Every run writes `run-meta.json` beside its stage files: the goal, the run's
  * instant, the attributed review time, and sha256 fingerprints of
  * config/approved-facts.json, of the automotive facts file, and of the evidence
@@ -416,9 +423,10 @@ async function loadRuntime() {
   const critic = await import(resolve(DIST_HARNESS, "agents/finalCritic.js"));
   const modelPolicy = await import(resolve(DIST_HARNESS, "agents/modelPolicy.js"));
   const payloadContract = await import(resolve(DIST_HARNESS, "agents/payloadContract.js"));
+  const contact = await import(resolve(DIST_HARNESS, "agents/contactLine.js"));
   return {
     approved, packModule, registryModule, stageExecution, strategy, truth, script, direction,
-    packaging, critic, modelPolicy, payloadContract,
+    packaging, critic, modelPolicy, payloadContract, contact,
   };
 }
 
@@ -522,8 +530,10 @@ async function buildRunEvidence(rt, args) {
  */
 function createRunRecorder(rt, runDir) {
   const { OUTPUT_FIELD_BOUNDS, statedCeiling } = rt.payloadContract;
-  const { PLATFORM_PACKAGING_POLICY, PACKAGING_LIMITS, proposedProviderText, effectiveLocalKeywordMax } =
-    rt.packaging;
+  const {
+    PLATFORM_PACKAGING_POLICY, PACKAGING_LIMITS, proposedProviderText, effectiveLocalKeywordMax,
+    effectiveCaptionBudget,
+  } = rt.packaging;
   // Validation runs after the provider returns, and one rejection ends the run
   // with no retry — so a response that fails a size ceiling is a response the
   // operator has already paid for. Record every raw response as it arrives; on
@@ -537,9 +547,11 @@ function createRunRecorder(rt, runDir) {
   const writeMeasurements = () => {
     const rows = measureFields(transcript, {
       bounds: OUTPUT_FIELD_BOUNDS, statedCeiling, providerText: proposedProviderText,
-      // The same `Math.min` the stage 5 validator applies.
+      // The same caps the stage 5 validator applies: the caption budget is the
+      // smaller of the provider and pipeline limits, less the contact-line
+      // reserve that the deterministic contact line is appended into.
       platformCaps: (platform) => ({
-        caption: Math.min(PLATFORM_PACKAGING_POLICY[platform]?.captionMax ?? 0, PACKAGING_LIMITS.pipelineCaptionChars),
+        caption: PLATFORM_PACKAGING_POLICY[platform] ? effectiveCaptionBudget(platform) : 0,
         hashtags: Math.min(PLATFORM_PACKAGING_POLICY[platform]?.hashtagMax ?? 0, PACKAGING_LIMITS.maxHashtags),
         localKeywords: PLATFORM_PACKAGING_POLICY[platform] ? effectiveLocalKeywordMax(platform) : 0,
       }),
@@ -669,7 +681,23 @@ function measurementTable(rows) {
   return `${lines.join("\n")}\n`;
 }
 
-function markdownSummary({ goal, runner, timestamp, script, direction, packaging, critic }) {
+/**
+ * The summary footer names the runner that actually produced the run. It used to
+ * say "Fake-runner output" for every run, live ones included (found on the
+ * 2026-09-23T17:07Z live run). The disclaimer after it holds for both runners.
+ */
+export function summaryFooter(runner) {
+  const label = runner === "live" ? "Live" : runner === "fake" ? "Fake" : String(runner);
+  return `_${label}-runner output. Not reviewed. Not publishable. Authorizes nothing._`;
+}
+
+/**
+ * The human review surface. `packaging` is stage 5's output with the
+ * deterministic contact line attached to every package; each platform's contact
+ * line and Google Business Profile's call to action are rendered beside its
+ * caption, labelled as code-attached rather than model-written.
+ */
+export function markdownSummary({ goal, runner, timestamp, script, direction, packaging, critic }) {
   const lines = [];
   lines.push(`# Content Intelligence local run`, "");
   lines.push(`- Goal: ${goal}`);
@@ -685,13 +713,21 @@ function markdownSummary({ goal, runner, timestamp, script, direction, packaging
   packaging.provisional.packages.forEach((pkg) => {
     lines.push(`### ${pkg.platform}`, "", pkg.caption, "");
     if (pkg.hashtags.length) lines.push(pkg.hashtags.join(" "), "");
+    const contact = pkg.contact;
+    if (contact?.text) {
+      lines.push(`Contact line (fixed, attached by code from approved facts): ${contact.text}`, "");
+    }
+    if (contact?.gbpCta) {
+      lines.push(`Call to action (fixed, attached by code from approved facts): `
+        + `${contact.gbpCta.actionType} → ${contact.gbpCta.url}`, "");
+    }
   });
   lines.push("## Critic verdict", "");
   lines.push(`**${critic.provisional.verdict}** — ${critic.provisional.summary}`, "");
   critic.provisional.findings.forEach((f) => {
     lines.push(`- [${f.severity}/${f.owner}] ${f.issue} — ${f.suggestedAction}`);
   });
-  lines.push("", "---", "_Fake-runner output. Not reviewed. Not publishable. Authorizes nothing._");
+  lines.push("", "---", summaryFooter(runner));
   return lines.join("\n");
 }
 
@@ -744,6 +780,11 @@ async function main() {
       + `after paying for the stages before it:\n  - ${unmet.join("\n  - ")}`,
     );
   }
+
+  // The deterministic contact line needs the approved-facts phone and booking
+  // records; without them the critic would refuse after five paid stages. Both
+  // are in the pack already built, so check now, for free.
+  rt.contact.assertContactFactsAvailable(pack, platforms);
 
   if (args.runner === "live") {
     printCostCeiling(rt, ALL_STAGE_POLICIES, "one full six-stage run");
@@ -817,25 +858,44 @@ async function main() {
   });
   await writeStage("05-packaging-adaptation", packaging);
 
+  // Deterministic, not a model call: attach each package's fixed contact line
+  // from the approved-facts records. Stage 5's saved file stays exactly what
+  // stage 5 returned, so a later replay revalidates it and attaches afresh.
+  const contacted = rt.contact.attachContactLines(packaging.output, pack);
+  await writeContactLines(runDir, contacted);
+
   console.log("Running stage 6/6: final-critic");
   const critic = await rt.critic.executeFinalCritic({
-    scriptOutput: script.output, directionOutput: direction.output, packagingOutput: packaging.output,
+    scriptOutput: script.output, directionOutput: direction.output, packagingOutput: contacted,
     truthOutput: truth.output, evidencePack: pack, requestedPlatforms: platforms, registry,
-    runner: runnerFor("final-critic", () => fake.finalCritic(packaging.output, platforms)),
+    runner: runnerFor("final-critic", () => fake.finalCritic(contacted, platforms)),
   });
   await writeStage("06-final-critic", critic);
 
   const summaryMd = markdownSummary({
     goal: args.goal, runner: args.runner, timestamp: new Date(now).toISOString(),
-    script: script.output, direction: direction.output, packaging: packaging.output, critic: critic.output,
+    script: script.output, direction: direction.output, packaging: contacted, critic: critic.output,
   });
   await writeFile(resolve(runDir, "summary.md"), summaryMd, "utf8");
   const measured = writeMeasurements();
 
-  console.log(`\nDone. Wrote 6 stage JSON files, run-meta.json, summary.md and field-measurements.md to: ${runDir}`);
+  console.log(`\nDone. Wrote 6 stage JSON files, 05b-contact-lines.json, run-meta.json, summary.md and field-measurements.md to: ${runDir}`);
   console.log(`Measured ${measured.length} field(s); largest share of a stated figure: `
     + `${Math.max(0, ...measured.map((r) => r.pctOfStated ?? 0))}%`);
   console.log(`Critic verdict: ${critic.output.provisional.verdict}`);
+}
+
+/**
+ * Record each package's deterministic contact line beside the stage files. A
+ * record for the operator, never read back: a replay rebuilds the lines from the
+ * pack rather than trusting a saved copy.
+ */
+async function writeContactLines(dir, contacted) {
+  await writeFile(resolve(dir, "05b-contact-lines.json"), JSON.stringify({
+    schema: "gcd-content-contact-lines/1",
+    note: "Attached by code from approved-facts records after stage 5 validated. Not model-written.",
+    packages: contacted.provisional.packages.map((pkg) => ({ platform: pkg.platform, contact: pkg.contact })),
+  }, null, 2), "utf8");
 }
 
 /** Read one saved stage file from a run directory, or fail naming it. */
@@ -998,6 +1058,12 @@ async function replayCritic(rt, args) {
   }
   console.log("Every saved prior output revalidated through its owning stage's validator.");
 
+  // The same deterministic step a full run applies, so the critic sees the same
+  // package shape either way. Free, and before the spend guard.
+  rt.contact.assertContactFactsAvailable(pack, platforms);
+  const contacted = rt.contact.attachContactLines(packagingOutput, pack);
+  console.log("Contact lines attached from the approved-facts phone and booking records.");
+
   const registry = new AgentRegistry();
   await registry.verifyAllAssets();
 
@@ -1027,32 +1093,36 @@ async function replayCritic(rt, args) {
     evidencePackFingerprintChecked: Boolean(meta?.evidencePackSha256),
   }, null, 2), "utf8");
 
+  await writeContactLines(replayDir, contacted);
+
   const { transcript, writeMeasurements } = createRunRecorder(rt, replayDir);
   failureContext = { runDir: replayDir, transcript, writeMeasurements };
   const fake = buildFakeStageResponses(goal, pack);
   const runner = recordingRunner(transcript, "final-critic", args.runner === "live"
     ? createAnthropicStageRunner()
     : async () => ({
-      text: JSON.stringify(fake.finalCritic(packagingOutput, platforms)),
+      text: JSON.stringify(fake.finalCritic(contacted, platforms)),
       totalCostUsd: 0, usage: { input_tokens: 0, output_tokens: 0 },
     }));
 
-  console.log("Running final-critic only, against the saved stage 2-5 outputs");
+  console.log("Running final-critic only, against the saved stage 2-5 outputs and fresh contact lines");
   const critic = await rt.critic.executeFinalCritic({
-    scriptOutput, directionOutput, packagingOutput, truthOutput, evidencePack: pack,
+    scriptOutput, directionOutput, packagingOutput: contacted, truthOutput, evidencePack: pack,
     requestedPlatforms: platforms, registry, runner,
   });
   await writeFile(resolve(replayDir, "06-final-critic.json"), JSON.stringify(critic, null, 2), "utf8");
   writeMeasurements();
-  console.log(`\nDone. Wrote 06-final-critic.json, replay-meta.json and field-measurements.md to: ${replayDir}`);
+  console.log(`\nDone. Wrote 06-final-critic.json, 05b-contact-lines.json, replay-meta.json and field-measurements.md to: ${replayDir}`);
   console.log(`The source run at ${sourceDir} was not modified.`);
   console.log(`Critic verdict: ${critic.output.provisional.verdict}`);
 }
 
-main().catch((err) => {
-  // Whatever went wrong, anything the provider already returned was billed.
-  // Write it out before reporting the failure so the operator keeps what they
-  // bought and can see exactly what the model produced.
+/**
+ * Whatever went wrong, anything the provider already returned was billed. Write
+ * it out before reporting the failure so the operator keeps what they bought and
+ * can see exactly what the model produced.
+ */
+function reportFailure(err) {
   if (failureContext?.transcript?.length) {
     try {
       const over = failureContext.writeMeasurements().filter((r) => r.over);
@@ -1079,10 +1149,26 @@ main().catch((err) => {
     if (Array.isArray(err.issues)) for (const i of err.issues) console.error(`  - ${i}`);
   } else if (err?.name === "StageExecutionError") {
     console.error(`${err.name}: ${err.message}`);
-  } else if (["StageOutputTruncatedError", "StageRefusalError", "StageUnexpectedStopError"].includes(err?.name)) {
+  } else if (["StageOutputTruncatedError", "StageRefusalError", "StageUnexpectedStopError", "ContactLineError"]
+    .includes(err?.name)) {
     console.error(`${err.name}: ${err.message}`);
   } else {
     console.error(err?.stack ?? String(err));
   }
   process.exit(1);
-});
+}
+
+/**
+ * Run only when executed as a script. Importing this module — the offline suite
+ * does, to exercise `markdownSummary` and `summaryFooter` directly — defines the
+ * functions and runs nothing.
+ */
+function isEntryPoint() {
+  try {
+    return Boolean(process.argv[1]) && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+  } catch {
+    return false;
+  }
+}
+
+if (isEntryPoint()) main().catch(reportFailure);
