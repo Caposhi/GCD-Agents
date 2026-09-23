@@ -45,6 +45,8 @@ import {
   runAgentWithMessageCreator,
 } from "./sdk.js";
 import { mediaUrlMatchesContentSha256 } from "../mcp/posting-tool/validation.js";
+import { modelBearingPolicies, resolveModelPolicy } from "./agents/modelPolicy.js";
+import { readFileSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 
 /** True when fn throws — used to assert a policy fails closed. */
@@ -530,15 +532,32 @@ async function run(): Promise<void> {
 
     // Every id this change introduces needs a price row, or the cost meter
     // reports `undefined` and a run's spend silently stops being counted.
+    //
+    // Extended to every id a Content Intelligence stage policy resolves to —
+    // `claude-opus-5-5` for the critic included — and to the local CLI's own
+    // estimate table, which mirrors `PRICE` because `PRICE` is not exported.
+    const stageIds = [...new Set(modelBearingPolicies().map((policy) => resolveModelPolicy(policy).model))];
+    const cliSource = readFileSync(new URL("../../scripts/local/content-run.mjs", import.meta.url), "utf8");
+    const cliPriceTable = /const PRICE = \{([\s\S]*?)\n\};/.exec(cliSource)?.[1] ?? "";
     check(
-      "MR7. both introduced ids are priced (cost meter never reports undefined)",
+      "MR7. every id this module or a stage policy sends is priced, in sdk.ts and in the local "
+        + "CLI's estimate table (cost meter never reports undefined)",
       legacyModelPriceUsdPerMTok("claude-sonnet-5")?.in === 2
         && legacyModelPriceUsdPerMTok("claude-sonnet-5")?.out === 10
         && legacyModelPriceUsdPerMTok("claude-haiku-4-5")?.in === 1
         && legacyModelPriceUsdPerMTok("claude-haiku-4-5")?.out === 5
         // Still-referenced and still-valid ids keep their rows.
         && legacyModelPriceUsdPerMTok("claude-sonnet-4-6")?.in === 3
-        && legacyModelPriceUsdPerMTok("claude-haiku-4-5-20251001")?.in === 1,
+        && legacyModelPriceUsdPerMTok("claude-haiku-4-5-20251001")?.in === 1
+        // The critic's Opus 5.5 at its published $4 / $20 per MTok.
+        && legacyModelPriceUsdPerMTok("claude-opus-5-5")?.in === 4
+        && legacyModelPriceUsdPerMTok("claude-opus-5-5")?.out === 20
+        && stageIds.includes("claude-opus-5-5")
+        && stageIds.every((id) => legacyModelPriceUsdPerMTok(id) !== undefined)
+        && stageIds.every((id) => {
+             const price = legacyModelPriceUsdPerMTok(id)!;
+             return cliPriceTable.includes(`"${id}": { in: ${price.in}, out: ${price.out} }`);
+           }),
     );
   }
 

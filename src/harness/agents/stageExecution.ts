@@ -40,7 +40,11 @@
 import { runStageAgent } from "../sdk.js";
 import { EvidencePack, assertUsableEvidencePack } from "../evidence/pack.js";
 import { AgentRegistry, AgentStageId, ResolvedStageAsset } from "./registry.js";
-import { resolveModelPolicy, type StageThinkingPolicy } from "./modelPolicy.js";
+import {
+  resolveModelPolicy,
+  type StageEffortLevel,
+  type StageThinkingPolicy,
+} from "./modelPolicy.js";
 import { MAX_INSTRUCTION_CHARS, MAX_PAYLOAD_CHARS } from "./payloadContract.js";
 
 /**
@@ -78,8 +82,16 @@ export interface StageRunnerRequest {
   prompt: string;
   model: string;
   maxTokens: number;
-  /** Explicit: hidden thinking must not consume the visible JSON allowance. */
+  /**
+   * Explicit, from the policy. Disabled keeps hidden thinking out of the visible
+   * JSON allowance; adaptive (the `critic` policy) shares that allowance.
+   */
   thinking: StageThinkingPolicy;
+  /**
+   * The policy's declared `output_config.effort`, from `POLICY_EFFORT` only.
+   * Absent when the policy declares none, in which case no `effort` is sent.
+   */
+  effort?: StageEffortLevel;
   /** JSON Schema the provider constrains the response to, when the stage declares one. */
   responseFormatSchema?: Record<string, unknown>;
 }
@@ -113,6 +125,7 @@ export function createAnthropicStageRunner(run: AgentRunner = runStageAgent): St
     model: request.model,
     maxTokens: request.maxTokens,
     thinking: request.thinking,
+    ...(request.effort !== undefined ? { effort: request.effort } : {}),
     ...(request.responseFormatSchema ? { responseFormatSchema: request.responseFormatSchema } : {}),
   });
 }
@@ -316,6 +329,7 @@ export async function invokeStage(invocation: StageInvocation): Promise<StageInv
       model: resolved.model,
       maxTokens: resolved.maxTokens,
       thinking: resolved.thinking,
+      ...(resolved.effort !== undefined ? { effort: resolved.effort } : {}),
       ...(invocation.responseFormatSchema
         ? { responseFormatSchema: invocation.responseFormatSchema }
         : {}),

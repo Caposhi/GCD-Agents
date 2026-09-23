@@ -1,6 +1,6 @@
 # GCD Content Intelligence roadmap
 
-Last reviewed: 2026-09-22.
+Last reviewed: 2026-09-23.
 
 This roadmap is the canonical unfinished-work sequence and the current-phase cursor. It orders work; it does not grant authority to deploy, migrate, call providers, change external configuration, or begin a phase. [Status](STATUS.md) records what is verified true now. Where this file and verified production evidence disagree, resolve the discrepancy rather than following this text. Roadmap continuity is binding — see [`AGENTS.md`](../AGENTS.md).
 
@@ -1047,10 +1047,11 @@ thinking remains exactly true. [Environment](ENVIRONMENT.md) and [Operations](OP
 reviewed and need no change — the former's `MANAGER_MODEL` note describes the **legacy** path's
 thinking resolution, which this change does not touch, and the latter describes no model policy.
 
-## Output-field classification — product limits kept, internal-plumbing limits given hidden margins — `IMPLEMENTED`
+## Output-field classification — product limits kept, internal-plumbing limits given hidden margins — `MERGED`
 
-**State:** `IMPLEMENTED` on branch `claude/upbeat-heisenberg-qmitew`, opened as a draft pull
-request; `MERGED` only on merge. **Not `DEPLOYED`, not `ENABLED`, not `PRODUCTION-VALIDATED`.** All
+**State:** `MERGED` through PR #85 (reconciled 2026-09-23; recorded at implementation as
+"`IMPLEMENTED` on branch `claude/upbeat-heisenberg-qmitew` … `MERGED` only on merge"). **Not
+`DEPLOYED`, not `ENABLED`, not `PRODUCTION-VALIDATED`.** All
 six stages remain `executionEnabled: false` and no production path reaches any of them. It
 authorizes no release; the partial-release interval recorded in [Status](STATUS.md) (current bound
 `2026-10-22T18:52Z`) still prohibits any release of any service. [Status](STATUS.md)'s production
@@ -1059,9 +1060,14 @@ constants inside the PR #54 record on one line — the `MAX_PAYLOAD_CHARS` figur
 the three output budgets — because this change makes both stale.
 
 **PR / merge:** base `32e265cf6ce230efac0791ff0712ee71842fbd03` (PR #84 merge; `origin/main` had not
-moved from the SHA the instruction named). **The PR number and merge SHA are not knowable before
-merging** — recorded here as a **blocking follow-up** under the mutable-identifier exception in
-[`AGENTS.md`](../AGENTS.md), to be reconciled in the first change after merge.
+moved from the SHA the instruction named). **Closed 2026-09-23:** PR #85, merge
+`e812ba4007070caf06a51736599b787290612e89`, whose ordered parents are that base
+`32e265cf6ce230efac0791ff0712ee71842fbd03` then the reviewed head
+`d92a18b630f30f07ed89335fbb37c03e5e81471f`, verified by direct Git inspection
+(`git rev-list --parents -n 1 e812ba4`). The original text follows. **The PR number and merge SHA
+are not knowable before merging** — recorded here as a **blocking follow-up** under the
+mutable-identifier exception in [`AGENTS.md`](../AGENTS.md), to be reconciled in the first change
+after merge.
 
 **The defect — measured, and about to recur.** Authorized live runs paid for a stage-1 Opus 5 call
 and discarded it on a character ceiling that was both stated and enforced:
@@ -1403,9 +1409,17 @@ no response text — and live beside `rejected-responses.json` under the git-ign
 
 **Unresolved follow-ups.**
 
-- **The PR number and merge SHA above (blocking follow-up, mutable-identifier exception).**
-- **Finding 3, GBP local keywords (1–2 in the skill, 6 in the contract), awaits a product decision.**
-  Findings 1 and 2 are recorded for the same owner.
+- ~~The PR number and merge SHA above (blocking follow-up, mutable-identifier exception).~~
+  **Closed** in the **PR / merge** line above: PR #85, merge `e812ba4`.
+- ~~Finding 3, GBP local keywords (1–2 in the skill, 6 in the contract), awaits a product decision.~~
+  **Decided and implemented** in the record immediately below: Google Business Profile is capped at
+  two local keywords, Instagram and Facebook stay at six. Findings 1 and 2 remain recorded for the
+  same owner.
+- **Amended narrowly by the record immediately below.** This record's rule that product-bearing
+  fields get no margin — "ever" — now carries one listed exception: a field whose sole reader is the
+  internal human reviewer, with no platform or provider consumer (`REVIEWER_ONLY_MARGIN_FIELDS`,
+  exactly `final-critic.findings[].issue`). The critic's policy also moved; the `critic` rows in the
+  tables above describe the state at PR #85's merge.
 - Whether the provider accepts and honours the five schemas for stages 2 through 6 — carried
   forward, still open.
 - Whether the product-bearing ceilings are sized for real model output — still unmeasured, and
@@ -1418,6 +1432,254 @@ budgets), [Security and continuity](SECURITY_AND_CONTINUITY.md) (the shared payl
 file, including a forward pointer in the PR #81 record and a pointer in the local-CLI entry.
 Security and continuity's description of stage 1's prose as "length-bounded and not checked for
 meaning" remains exactly true.
+
+## Critic on Claude Opus 5.5, reviewer-only issue margin, stop-reason handling, GBP keyword cap, critic-only replay — `IMPLEMENTED`
+
+**State:** `IMPLEMENTED` on branch `claude/kind-tesla-vcltww`, opened as a pull request; `MERGED`
+only on merge, and **never `DEPLOYED` by this change**: no deployed code path resolves the `critic`
+policy. All six stages remain `executionEnabled: false` and no production path reaches any of them.
+The `critic` policy runs only from the operator-local CLI. It authorizes no release; the
+partial-release interval in [Status](STATUS.md) (current bound `2026-10-22T18:52Z`) still prohibits
+any release of any service. The deployed legacy path — `runAgent`, `runVision`, `collect()`,
+`LEGACY_DEFAULT_MODEL`, `agents/brand-compliance-critic.md`, `orchestrator.ts` and `agentLoop.ts`
+— is untouched; that is Lane S work.
+
+**PR / merge:** base `e812ba4007070caf06a51736599b787290612e89` (PR #85 merge; `origin/main` had
+not moved from the SHA the instruction named). **The PR number and merge SHA are not knowable
+before merging** — recorded here as a **blocking follow-up** under the mutable-identifier exception
+in [`AGENTS.md`](../AGENTS.md), to be reconciled in the first change after merge.
+
+**The evidence — the 2026-09-23 six-stage run.** The first authorized live run to reach stage 6
+produced three findings this change acts on:
+
+1. **The critic's `issue` field.** It wrote findings of 419 and 397 characters against a stated and
+   enforced 400. The 419-character finding was its only blocking finding, and it was correct; the
+   whole stage was discarded for 19 characters. `summary` and `suggestedAction` measured at 55% and
+   67% of their ceilings and are not changed.
+2. **The critic's model.** The Sonnet 5 critic, thinking disabled, missed the most serious defect
+   in the package — the stage-3 misattribution recorded under the *Narrow critic panel* entry
+   below. The owner chose Claude Opus 5.5 for the critic.
+3. **Google Business Profile local keywords.** `skills/local-seo/SKILL.md` says "work 1–2 local
+   keyword phrases in"; stage 5 accepted six on every platform and returned three for GBP — finding
+   3 of the output-field classification record below, now decided.
+
+**Delivered.**
+
+- **`issue` — stated 400, enforced 600.** `CRITIC_FIELD_LIMITS.issueChars` 400 → 600;
+  `"final-critic.findings[].issue": 400` added to `STATED_FIELD_CEILINGS`; `agents/final-critic.md`
+  still states 400 and was not edited; the schema `description` reads through `statedCeiling`.
+- **The PR #85 rule, amended narrowly.** PR #85 held that a product-bearing field states exactly
+  what it enforces. That stands, with one listed exception: a product-bearing field may carry a
+  margin only if its **sole reader is the internal human reviewer** and it has **no platform or
+  provider consumer**. Text sent to a platform never gets one. `REVIEWER_ONLY_MARGIN_FIELDS` in
+  `payloadContract.ts` is that list, with its own minimum `REVIEWER_ONLY_SLACK_MULTIPLIER` (1.5×). The
+  regression that forbids product-bearing stated figures (`CD0f`) is kept, not deleted: it now
+  exempts the allow-list, and `CD0f2` asserts the allow-list is exactly
+  `{"final-critic.findings[].issue"}`.
+- **The critic on `claude-opus-5-5`, adaptive thinking, effort `high`.**
+  `POLICY_MODELS.critic = "claude-opus-5-5"`; `StageThinkingPolicy` widened to
+  `{type: "disabled"} | {type: "adaptive"}`; `POLICY_THINKING.critic = {type: "adaptive"}`;
+  `POLICY_EFFORT.critic = "high"`, set explicitly because the model's own default is `medium`, and
+  commented as a starting point to tune from measured replays. `reasoning-heavy` (Opus 5) and
+  `reasoning-standard` (Sonnet 5) are unchanged, thinking still disabled, no effort declared.
+- **`MODELS_REQUIRING_THINKING = {"claude-opus-5-5"}`**, beside
+  `MODELS_REJECTING_DISABLED_THINKING_ABOVE_HIGH` and commented the same way: the quoted documented
+  source, and the rule that adding an id requires a documented provider source. The single
+  resolve-time invariant now also throws `ModelPolicyError` when thinking is `disabled` on a model
+  in this set, before anything is billed. The existing high-effort guard is intact. The rule is
+  written once, as `thinkingEffortViolation()`, and enforced in two places: `resolveModelPolicy()`,
+  and the stage request builder in `sdk.ts` — which also closes the residual gap PR #82 recorded,
+  that an effort set anywhere but `POLICY_EFFORT` would skip the guard.
+- **Effort reaches the wire.** The PR #82 follow-up is closed for the stage path:
+  `POLICY_EFFORT` → `resolveModelPolicy` → `invokeStage` → `StageRunnerRequest.effort` →
+  `createAnthropicStageRunner` → `runStageAgent` → `output_config.effort`. `effort` exists only on the
+  new `StageRunOptions`, not on the legacy `AgentRunOptions`, so no legacy request can carry it; the
+  stage builder adds it on top of the unchanged shared `buildRequest`.
+- **The critic's budget is its model's cap.** Thinking tokens count against `max_tokens`, so
+  `POLICY_MAX_TOKENS.critic = POLICY_MODEL_OUTPUT_CAPS.critic` (128,000). A named
+  `THINKING_RESERVE_TOKENS` (16,000) — **labelled a heuristic, not a guarantee** — must remain
+  between the critic's contract floor and that cap (`CC19b`).
+- **No false visible-output guarantee.** `ResolvedModelPolicy` is now a union:
+  `visibleOutputTokens` exists, equal to `maxTokens`, only when thinking is disabled. The adaptive
+  branch has none, and every comment claiming a guarantee for all policies was rewritten.
+- **Stop-reason handling, stage path only.** In `runStageAgentWithStreamOpener`, before `collect()`
+  reads any content: `"max_tokens"` → `StageOutputTruncatedError` (model, `max_tokens`, usage);
+  `"refusal"` → `StageRefusalError` (`stop_details.category` and `explanation`, guarded because
+  `stop_details` may be `null`); anything else but `"end_turn"` → `StageUnexpectedStopError`. Each
+  carries the provider's complete message, and the local CLI saves it to `rejected-responses.json`
+  exactly as it saves a response a validator rejected. `collect()` is unchanged.
+- **No fallback, anywhere.** No `fallbacks` parameter, no server-side-fallback beta, no refusal
+  middleware. A fallback silently answers with a different model; a refusal must be a visible
+  failure. `CH7` fails if any appears in `sdk.ts`.
+- **GBP local keywords — at most 2.** `PLATFORM_LOCAL_KEYWORD_MAX` in `packagingAdaptation.ts`:
+  `google_business_profile` 2 (`GBP_LOCAL_KEYWORD_MAX`), Instagram and Facebook unchanged at 6. The
+  effective cap is `Math.min(platform, PACKAGING_FIELD_LIMITS.maxLocalKeywords)`, like hashtags.
+  `agents/packaging-adaptation.md` states the per-platform figure; `CD7a` pairs each platform's
+  prompt line with the validator's value. The derivation still counts every package at the
+  pipeline ceiling of 6, so **no budget moves** — the narrower platform is over-approximated, which
+  is safe.
+- **Critic-only replay.** `node scripts/local/content-run.mjs --replay-critic <run-dir>` runs only
+  `final-critic` against a run directory's saved stage 1–5 outputs. Free fake runner by default;
+  live only after `--i-understand-this-costs-money` **and** the word `LIVE` typed at the prompt —
+  the same shared guard a full live run now uses. It writes a new sibling directory
+  (`<run>-critic-replay-<timestamp>`) and never writes to the source run. It fails closed, before
+  any model call, unless `config/approved-facts.json` has the sha256 the run recorded (from
+  `run-meta.json`, or, for older runs, the per-asset sha256 in every stage's metadata —
+  `917eff30…c86c44c` for the 2026-09-23 run); the automotive facts file matches the run's recorded
+  fingerprint; the rebuilt pack's projection fingerprint matches; and every saved prior output
+  revalidates through its owning stage's own validator. **Every full run now writes
+  `run-meta.json`** — goal, instant, attributed review time, platforms, the approved-facts sha256, a
+  sha256 of the automotive facts file, and a sha256 of the evidence-pack projection. For a run that
+  predates it, the replay prints that the automotive file's identity cannot be proven and requires
+  the word `UNPROVEN` typed at the prompt.
+
+**Every derived number, before → after.**
+
+| Value | Before | After |
+|---|---:|---:|
+| `CRITIC_FIELD_LIMITS.issueChars` (enforced) | 400 | **600** |
+| `final-critic.findings[].issue` stated figure | 400 | 400 — unchanged |
+| `CRITIC_OUTPUT` transport / contract | 101,006 / 56,706 | 109,006 / 60,706 |
+| `PACKAGING_OUTPUT` transport / contract | 98,084 / 53,324 | 98,084 / 53,324 — unchanged |
+| `STAGE_ASSEMBLED_CEILINGS` (all six) | 341,520 / 403,564 / 173,030 / 105,675 / 193,489 / 321,501 | unchanged |
+| `MAX_PAYLOAD_CHARS` | 410,000 | 410,000 — unchanged |
+| `reasoning-heavy` floor / `max_tokens` / stream deadline | 74,000 / 74,000 / 63 min | unchanged |
+| `reasoning-standard` floor / `max_tokens` / stream deadline | 99,000 / 99,000 / 84 min | unchanged |
+| `critic` floor / `max_tokens` / stream deadline | 102,000 / 102,000 / 86 min | **110,000 / 128,000 / 108 min** |
+| `critic` model / thinking / effort | `claude-sonnet-5` / disabled / none | **`claude-opus-5-5` / adaptive / `high`** |
+| `critic` headroom under cap for thinking | 26,000 (unused: thinking was disabled) | 18,000 at the contract floor; reserve required: 16,000 |
+| GBP `localKeywords` maximum | 6 | **2** (Instagram, Facebook: 6) |
+| CLI ceiling for one full six-stage run | ~$9.54 | ~$11.28 |
+| CLI ceiling for one critic-only replay | — | ~$2.97 |
+
+The critic's stream deadline is now derived from the `max_tokens` its request sends (128,000),
+not from its floor (which would give 93 minutes): the deadline must cover what the request may
+actually stream. `POLICY_STREAM_DEADLINE_MS` moved from `payloadContract.ts` to `modelPolicy.ts`
+for that reason. The critic's floor, 110,000, exceeds the one-fifth-reserve sizing rule PR #85
+applied (≤ 102,400); that rule sized plumbing margins for thinking-disabled budgets and is
+superseded for the critic by `THINKING_RESERVE_TOKENS`, which bounds the same headroom directly.
+
+**Material design decision — reversing "thinking disabled = visible-output guarantee", for the
+critic only.** PR #54 disabled thinking on every stage so that `max_tokens` was exactly the
+visible budget. Claude Opus 5.5 cannot run that way — disabled thinking is a 400 at every effort
+— so choosing it for the critic means giving up that guarantee for the critic. The other two
+policies keep it. Rejected alternatives:
+
+- *(a) Keep Sonnet 5 with thinking disabled.* It keeps the guarantee, but it missed the most
+  serious defect in the 2026-09-23 package.
+- *(b) Opus 5 with thinking disabled.* It keeps the guarantee — Opus 5 accepts disabled thinking at
+  effort `high` or below — but Opus 5 is now the legacy Opus, and the owner chose Opus 5.5.
+- *Server-side or middleware refusal fallbacks.* Rejected: a fallback answers silently with a
+  different model, which a stage whose metadata records its model must not do.
+
+**What the reference says — quoted from the `claude-api` skill, `shared/model-migration.md` →
+"Migrating to Claude Opus 5.5".**
+
+- Thinking: "On Claude Opus 5.5 thinking is **always on**: `{"type": "disabled"}` and `{"type":
+  "enabled", "budget_tokens": N}` both return a 400 `invalid_request_error` at every effort level".
+- Effort: "The API default is `medium` (Claude Opus 5 and earlier Opus models default to `high`), so
+  a request that omits `effort` now runs one level lower than it did. **Set `effort` explicitly**".
+- `max_tokens`: "**Size `max_tokens` for the thinking as well as the reply.** Thinking counts toward
+  `max_tokens` even though its text isn't returned under the default `display`, so a limit sized for
+  a no-thinking route cuts replies off."
+- Refusals: "A classifier decline arrives as a normal HTTP 200 with `stop_reason: "refusal"` and a
+  `stop_details` object naming the category (`"cyber"`, `"bio"`, `"reasoning_extraction"`, ...)";
+  and "a prompt that pushes the model to reproduce its internal reasoning in the response can be
+  **declined** with `stop_details.category: "reasoning_extraction"`".
+- The same section recommends shipping a fallback opt-in; that advice is **deliberately not
+  followed**, for the reason above.
+
+**`agents/final-critic.md` audit.** No line tells the model not to think or reason, so nothing was
+deleted. No line asks it to reproduce its reasoning in the answer, so no line is flagged as a
+`reasoning_extraction` risk. The three lines nearest either rule, and why neither applies: line 22 ("No
+semantic truth-checking you cannot back up") limits claims, not thinking; line 58 ("No prose before
+or after it, no markdown fence, no commentary") constrains the output shape; line 105 ("say in
+`summary` that you ran out of room") asks for a fact about the review, not its reasoning. The file
+is unchanged.
+
+**Migrations / schema impact:** none.
+
+**Automated validation.** Build and typecheck clean; `npm run test:offline` ALL PASS on all nine
+suites — 1,595 checks (1,560 before): content-intelligence **1,092** (was 1,057), posting 52,
+image 18, orchestrator 119, gate 56, API 51, render-identity one invariant pass, ownership/recovery
+112, interval monitor 94. `npm run test:payload-mutation` **ALL PASS — 355 mutations** (346 before),
+the nine new ones (`M347`–`M355`) appended after every earlier group so no existing id moves, each
+reported by name, and the authoritative checkout's bytes and Git status unchanged throughout. New checks: `CC19b` (thinking
+reserve), `CD0f2` (allow-list), `CD7a` (per-platform keywords), `BQ36a`/`BQ36b` (GBP cap, others
+unchanged), `CI1`–`CI8` (critic model, thinking, effort on the wire, re-sited invariant, pricing),
+`CH1`–`CH8` (every stop reason; legacy request and `collect()` unchanged), `CE7` and `CG1`–`CG10`
+(replay ordering, and the real CLI driven offline through every refusal). `MR7` in the orchestrator
+suite now covers every id a stage policy resolves to, `claude-opus-5-5` included, in `sdk.ts` and in
+the CLI's estimate table.
+
+**Production evidence:** none, and none is possible — no stage is enabled or reachable. **No live
+model call was made by this change.**
+
+**Rollback / recovery:** revert the commit. No migration and no durable state; `run-meta.json`
+and replay directories already written under `local-output/` are local run records.
+
+**Security and privacy implications.** The critic now thinks; its thinking is billed as output and
+bounded only by `max_tokens`. Refusals surface as named failures rather than being answered by
+another model. The replay reads only operator-local files and writes only a new directory. The
+full live run gains a typed `LIVE` confirmation — a behaviour change for a spend path, which only
+makes spending harder. No claim, tool, approval rule, autonomy boundary or publishing instruction
+changed; the Phase-A approval gate and the live `brand-compliance-critic` are untouched.
+
+**Accepted limitations.**
+
+- **The critic has no visible-output guarantee.** If it thinks past the reserve and writes a
+  maximal answer, the response stops at `max_tokens` and the stage fails closed.
+- **`THINKING_RESERVE_TOKENS` and effort `high` are unmeasured starting points.**
+- **A replay of a run that predates `run-meta.json` proves less**: the automotive file's identity
+  and the pack projection cannot be checked, only confirmed and revalidated.
+- **Opus 5.5's own refusal behaviour on this critic prompt is untested.** The broader classifier set
+  (`bio`, `reasoning_extraction`) could decline a benign critique; that is now a visible failure.
+
+**Unresolved follow-ups.**
+
+- **Blocking:** the PR number and merge SHA above (mutable-identifier exception).
+- Tune `POLICY_EFFORT.critic` and `THINKING_RESERVE_TOKENS` from measured critic-only replays of
+  the 2026-09-23 run.
+- Findings 1 and 2 of the output-field classification record remain open for the same owner.
+
+**Documents updated at completion:** [README](../README.md), [Status](STATUS.md) (the stage
+policy sentence inside the PR #54 record, and the dated three-budget clause beside it),
+[Environment](ENVIRONMENT.md), [Architecture](ARCHITECTURE.md), [Testing](TESTING.md),
+[AI handoff](AI_HANDOFF.md) (including a pre-existing stale "zero commits after `A`" clause, re-tensed
+as the dated snapshot it is), [Security and continuity](SECURITY_AND_CONTINUITY.md),
+`agents/packaging-adaptation.md`, and this file.
+
+## Planned — narrow critic panel — `PLANNED`
+
+**State:** `PLANNED`. Not begun, not authorized.
+
+Replace the single critic with four narrow reviewers, each with its own contract:
+
+- **evidence-fidelity** — receives stage 2's `requiredCaveats` and `forbiddenClaims` as
+  reviewer-only input;
+- **platform & local**;
+- **voice & craft**;
+- **production coherence**.
+
+Their findings are aggregated **deterministically**, with no model-written merged summary.
+
+**Acceptance test:** a replay of the 2026-09-23 run (`--replay-critic`) must flag all three of: the
+"both manufacturers say … not a direct read of your oil" misattribution; the uncited
+estimate-approval claim; and the make/service GBP keywords.
+
+## Open — decide stage 1 `maxIds` (12) after the next complete run — `OPEN`
+
+On 2026-09-23 `supportingFactIds` was 12 of 12. The facts the close needed —
+`approved-facts:perks`, `approved-facts:phone`, `approved-facts:bookingurl` — went uncited, and 5 of
+stage 2's 12 allowed facts went unused downstream. The code treats widening an id channel as an
+**authority change, not slack** (see the output-field classification record): `maxIds` sizes what
+later stages may cite. Decide after the next complete run, on its measurements, not before.
+
+## Model lineage — Claude Opus 5 is now legacy
+
+Claude Opus 5.5 succeeds Claude Opus 5 in the Opus line. Opus 5 remains served and still backs
+`reasoning-heavy` (stages 1 and 2), unchanged; the legacy path's pins are unchanged. New Opus-tier
+work should name Opus 5.5 explicitly.
 
 ## PR #57 — CC5 proposition-bound reconciliation and bounded closeout — `MERGED`
 
@@ -2983,7 +3245,7 @@ live application state is now established `APPLIED`, independently verified via 
 **Last merged slice: the payload-contract reconciliation, `MERGED` through PR #54** (merge `0c13ab1af9c7ca796a1d48ed37207715a47166e4`), recorded in its own section above. Before it, Phase 0B.6 — the dormant `final-critic` stage executor — was `MERGED` through PR #52; see its dedicated section for the full record and durable identifiers. The reconciliation that gates production wiring is therefore **satisfied in repository state**: it is present on `main`, and it is not established as deployed, not enabled, and not production-validated. Deployment-authority work remains an independent track and must not be combined with any of this. **The separately reviewed production-wiring design is accepted and `MERGED` through PR #56** (merge `53e2c2bb6115e457670c1f99956d11a1a54530cd`), recorded in its own section above, and is **`UNIMPLEMENTED`** — authorizing neither implementation nor operations. **No implementation PR (P1–P8) exists. M1 was performed 2026-09-17 and independently verified 2026-09-18; no other operator milestone (M2–M7) has been performed** — see the active product cursor above. Not a new phase number, and no production wiring, deployment, enablement, migration application, or production validation has occurred.
 
 Separately, the six stage prompts now state the output limits their own validators enforce —
-`IMPLEMENTED` on a branch, recorded in its own section above. That is a correctness fix to checked-in
+`MERGED` through PR #78, recorded in its own section above. That is a correctness fix to checked-in
 prompt text found by a local evaluation run; it moves no cursor, enables no stage, and authorizes
 nothing.
 
@@ -3085,9 +3347,10 @@ evaluating output quality; it requires its own real `config/automotive-facts.loc
 from manufacturer documentation or another checkable source first.
 
 **Later additions to this tool are recorded in their own entries, not here:** the paid-call
-preconditions and the rejected-response capture (*Paid-call preconditions*, above), and per-run
+preconditions and the rejected-response capture (*Paid-call preconditions*, above), per-run
 field measurement — `field-measurements.md` / `.json` beside every run, fake or live, passing or
-failing (*Output-field classification*, above).
+failing (*Output-field classification*, above) — and `run-meta.json` fingerprints, the typed `LIVE`
+confirmation and the critic-only `--replay-critic` mode (*Critic on Claude Opus 5.5*, above).
 
 **Documents updated with this entry:** `docs/ROADMAP.md` (this section) and `.gitignore` (excludes
 the operator-supplied automotive facts file and the tool's local output directory). `README.md` was

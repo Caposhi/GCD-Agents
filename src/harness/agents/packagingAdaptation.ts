@@ -209,6 +209,39 @@ export const PLATFORM_PACKAGING_POLICY: Record<PackagingPlatform, PlatformPackag
   },
 };
 
+/**
+ * Local keyword phrases Google Business Profile may carry: **two**.
+ *
+ * Not a provider limit, so it does not live in `packageMap.ts` with the numbers
+ * above. It is the product rule `skills/local-seo/SKILL.md` states for Google
+ * Business Profile — "work 1–2 local keyword phrases in naturally" — and which
+ * `agents/hashtag-seo-timing.md` repeats. Stage 5 loads neither file, so before
+ * this constant the rule never reached this stage, and stage 5 accepted six on
+ * every platform. On 2026-09-23 it returned three for GBP. This narrows GBP
+ * only; Instagram and Facebook keep the pipeline ceiling.
+ */
+export const GBP_LOCAL_KEYWORD_MAX = 2;
+
+/**
+ * The most local keyword phrases one package may carry, per platform.
+ *
+ * The effective cap is the smaller of this and
+ * `PACKAGING_FIELD_LIMITS.maxLocalKeywords`, exactly as the hashtag cap is taken
+ * against `maxHashtags`. The pipeline ceiling stays the value the payload
+ * derivation counts for every package, so narrowing one platform over-
+ * approximates that platform in the derivation — safe — and no budget moves.
+ */
+export const PLATFORM_LOCAL_KEYWORD_MAX: Record<PackagingPlatform, number> = {
+  instagram: PACKAGING_FIELD_LIMITS.maxLocalKeywords,
+  facebook: PACKAGING_FIELD_LIMITS.maxLocalKeywords,
+  google_business_profile: GBP_LOCAL_KEYWORD_MAX,
+};
+
+/** The local keyword cap the validator applies on `platform`. */
+export function effectiveLocalKeywordMax(platform: PackagingPlatform): number {
+  return Math.min(PLATFORM_LOCAL_KEYWORD_MAX[platform], PACKAGING_FIELD_LIMITS.maxLocalKeywords);
+}
+
 /** Bounds on the model's output and on the prior-stage values it is shown. */
 export const PACKAGING_LIMITS = {
   ...PACKAGING_FIELD_LIMITS,
@@ -259,8 +292,11 @@ export const PACKAGING_ADAPTATION_RESPONSE_FORMAT = schemaObject({
       caption: schemaString("No hashtag tokens; no recognizable URL syntax; per-platform ceiling"),
       hashtags: schemaArray({ type: "string" }, '"#token" form; [] where the platform allows none'),
       localKeywords: schemaArray(
-        { type: "string" }, "Plain phrases; no hashtags or recognizable URL syntax",
-        PACKAGING_LIMITS.maxLocalKeywords,
+        { type: "string" },
+        "Plain phrases; no hashtags or recognizable URL syntax; per-platform ceiling: "
+          + PACKAGING_PLATFORMS
+            .map((platform) => `at most ${effectiveLocalKeywordMax(platform)} entries on ${platform}`)
+            .join(", "),
       ),
       recommendedTime: schemaString('"HH:MM ET", review metadata only'),
       openQuestions: schemaArray(
@@ -598,7 +634,7 @@ export function validatePackagingAdaptationOutput(
 
     const localKeywords = requireBoundedStringArray(
       obj.localKeywords, `packages[${index}].localKeywords`,
-      PACKAGING_LIMITS.maxLocalKeywords, PACKAGING_LIMITS.localKeywordChars,
+      effectiveLocalKeywordMax(platform), PACKAGING_LIMITS.localKeywordChars,
     );
     for (const keyword of localKeywords) {
       if (hashtagTokens(keyword).length) {

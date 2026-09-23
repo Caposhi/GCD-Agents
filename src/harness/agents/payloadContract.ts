@@ -338,6 +338,13 @@ export const PACKAGING_FIELD_LIMITS = {
   localKeywordChars: 120,
   summaryChars: 800,
   openQuestionChars: 300,
+  /**
+   * The pipeline ceiling on local keyword phrases per package. Per platform the
+   * effective cap may be lower — Google Business Profile's is two, from
+   * `skills/local-seo` (`PLATFORM_LOCAL_KEYWORD_MAX` in `packagingAdaptation.ts`).
+   * The derivation counts every package at this ceiling, which over-
+   * approximates the narrower platform and moves no budget.
+   */
   maxLocalKeywords: 6,
   maxOpenQuestions: 6,
   maxClaimUses: 24,
@@ -361,13 +368,23 @@ export const PACKAGING_FIELD_LIMITS = {
  * Stage 6 — final-critic, output fields only.
  *
  * `summaryChars`, `issueChars` and `suggestedActionChars` are rendered for the
- * human reviewer and are product-bearing and unchanged. Only
+ * human reviewer and are product-bearing. `summaryChars` and
+ * `suggestedActionChars` state exactly what they enforce.
+ *
+ * `issueChars` is the one product-bearing field that carries a margin: the
+ * prompt states 400 and the validator enforces 600. Its sole reader is the
+ * internal human reviewer — no platform or provider ever receives it — which is
+ * the narrow condition `REVIEWER_ONLY_MARGIN_FIELDS` records. On 2026-09-23 the
+ * critic wrote findings of 419 and 397 characters against 400; the 419-character
+ * one was its only blocking finding, and it was correct, and the whole stage
+ * was discarded for 19 characters.
+ *
  * `claimFindingSummaryChars` is internal plumbing, at two and a half times its
- * stated figure — the most the `critic` budget's headroom allows.
+ * stated figure.
  */
 export const CRITIC_FIELD_LIMITS = {
   summaryChars: 1_500,
-  issueChars: 400,
+  issueChars: 600,
   suggestedActionChars: 300,
   claimFindingSummaryChars: 1_000,
   maxFindings: 20,
@@ -389,9 +406,12 @@ export const CRITIC_FIELD_LIMITS = {
  *    payload, or a filming instruction. Its limit is a product decision — some
  *    are platform maxima from `packageMap.ts`, and `skills/platform-specs` is in
  *    places deliberately stricter than the platform (Instagram permits 30
- *    hashtags; the skill specifies 8–15). **These limits are not margins, and a
- *    margin is never added to one.** A product-bearing limit states exactly what
- *    it enforces.
+ *    hashtags; the skill specifies 8–15). **These limits are not margins.** A
+ *    product-bearing limit states exactly what it enforces — with one narrow,
+ *    listed exception: a field whose *sole* reader is the internal human
+ *    reviewer, and which has no platform or provider consumer, may carry a
+ *    margin (`REVIEWER_ONLY_MARGIN_FIELDS`). Text sent to a platform never
+ *    gets one.
  *  - **Internal plumbing.** A stage explaining itself, or a handoff to the next
  *    stage. No customer, platform or reviewer sees it, so no research specifies
  *    its length — `skills/script-craft` says in terms that it is "craft only"
@@ -523,7 +543,7 @@ export const OUTPUT_FIELD_BOUNDS: Readonly<Record<string, OutputFieldBound>> = {
   // skills/local-seo.
   "packaging-adaptation.packages[].caption": product(S5.pipelineCaptionChars, "characters", "platform: provider-visible text; review surface: summary.md \"Captions\""),
   "packaging-adaptation.packages[].hashtags": product(S5.maxHashtags, "entries", "platform: provider-visible text; review surface: summary.md \"Captions\""),
-  "packaging-adaptation.packages[].localKeywords": product(S5.maxLocalKeywords, "entries", "platform: SEO copy governed by skills/local-seo"),
+  "packaging-adaptation.packages[].localKeywords": product(S5.maxLocalKeywords, "entries", "platform: SEO copy governed by skills/local-seo; per platform, this is the pipeline ceiling (Google Business Profile is narrower)"),
   "packaging-adaptation.packages[].localKeywords[]": product(S5.localKeywordChars, "characters", "platform: SEO copy governed by skills/local-seo"),
   "packaging-adaptation.packages[].openQuestions": product(S5.maxOpenQuestions, "entries", "human reader: \"what a human must decide\""),
   "packaging-adaptation.packages[].openQuestions[]": product(S5.openQuestionChars, "characters", "human reader: \"what a human must decide\""),
@@ -533,15 +553,17 @@ export const OUTPUT_FIELD_BOUNDS: Readonly<Record<string, OutputFieldBound>> = {
   // Stage 6. Governed by skills/critique-discipline, which sets no length.
   "final-critic.summary": product(S6.summaryChars, "characters", "review surface: summary.md \"Critic verdict\""),
   "final-critic.findings": product(S6.maxFindings, "entries", "review surface: summary.md \"Critic verdict\""),
-  "final-critic.findings[].issue": product(S6.issueChars, "characters", "review surface: summary.md \"Critic verdict\""),
+  "final-critic.findings[].issue": product(S6.issueChars, "characters", "review surface: summary.md \"Critic verdict\"; sole reader the internal human reviewer, no platform or provider consumer"),
   "final-critic.findings[].suggestedAction": product(S6.suggestedActionChars, "characters", "review surface: summary.md \"Critic verdict\""),
   "final-critic.claimFindingUse": plumbing(S6.maxClaimFindingUses, "entries", "handoff; id-to-finding binding"),
   "final-critic.claimFindingUse[].summary": plumbing(S6.claimFindingSummaryChars, "characters", "binding gloss; claim text is read back from the record"),
 };
 
 /**
- * The figure the prompt states for each internal-plumbing character field —
- * deliberately **lower** than the ceiling its validator enforces.
+ * The figure the prompt states for each internal-plumbing character field, and
+ * for the one reviewer-only product-bearing field in
+ * `REVIEWER_ONLY_MARGIN_FIELDS` — deliberately **lower** than the ceiling its
+ * validator enforces.
  *
  * **Why — the measurements, not a preference.** Authorized live runs measured
  * stage 1 against stated figures that were also the enforced ceilings:
@@ -575,17 +597,22 @@ export const OUTPUT_FIELD_BOUNDS: Readonly<Record<string, OutputFieldBound>> = {
  *    not move the `reasoning-standard` budget at all.
  *  - **2×** — stage 5, which *sets* the `reasoning-standard` budget (99,000); 2.5×
  *    would reach 107,684.
- *  - **2.5×** — stage 6 (`critic`, 102,000); 3× would reach 110,606.
+ *  - **2.5×** — stage 6 (`critic`); sized at PR #85, when the critic ran with
+ *    thinking disabled and its floor was 102,000 (3× would have reached 110,606).
+ *    The critic now runs with adaptive thinking and `max_tokens` at its model's
+ *    cap, so its floor is bounded instead by `THINKING_RESERVE_TOKENS` in
+ *    `modelPolicy.ts`: the floor must leave that reserve under the cap.
  *
  * `CEILING_SLACK_MULTIPLIER` is the declared minimum under all three: 2×, well
  * clear of the largest overshoot yet measured (1.29×). The largest margin is 3×
  * because beyond that the budget, not the data, would be deciding.
  *
  * Every key must name an `internal-plumbing` character field in
- * `OUTPUT_FIELD_BOUNDS`; a regression fails if a product-bearing field is
- * given one, or a plumbing character field is left without one. A future reader
- * must not "tidy" a stated figure and its enforced ceiling back into one
- * number: that is the defect this table exists to hold open.
+ * `OUTPUT_FIELD_BOUNDS`, or a field listed in `REVIEWER_ONLY_MARGIN_FIELDS`; a
+ * regression fails if any other product-bearing field is given one, or a
+ * plumbing character field is left without one. A future reader must not
+ * "tidy" a stated figure and its enforced ceiling back into one number: that is
+ * the defect this table exists to hold open.
  */
 export const STATED_FIELD_CEILINGS = {
   "strategy-concept.angle": 400,
@@ -601,6 +628,7 @@ export const STATED_FIELD_CEILINGS = {
   "production-direction.claimVisuals[].directionSummary": 400,
   "packaging-adaptation.claimUse[].summary": 400,
   "final-critic.claimFindingUse[].summary": 400,
+  "final-critic.findings[].issue": 400,
 } as const;
 
 /**
@@ -610,11 +638,40 @@ export const STATED_FIELD_CEILINGS = {
 export const CEILING_SLACK_MULTIPLIER = 2;
 
 /**
+ * The product-bearing fields allowed a hidden margin — **exactly one**.
+ *
+ * The rule PR #85 set, that every product-bearing field states exactly what it
+ * enforces, is amended here and only here. A product-bearing field may carry a
+ * margin only if its **sole reader is the internal human reviewer** and it has
+ * **no platform or provider consumer**. Text that is sent to a platform never
+ * gets one: a caption, a hashtag, a local keyword, on-screen wording or a shot
+ * instruction is a product decision the platform or the crew acts on, and a
+ * margin would silently widen it.
+ *
+ * `final-critic.findings[].issue` qualifies: it is rendered only in the local
+ * review summary, and nothing downstream sends it anywhere. The margin is 1.5×
+ * (stated 400, enforced 600), against a measured 1.05× overshoot (419).
+ *
+ * A regression asserts this set is exactly `{"final-critic.findings[].issue"}`.
+ * Adding a field is a product decision and must change that regression too.
+ */
+export const REVIEWER_ONLY_MARGIN_FIELDS: ReadonlySet<string> = new Set([
+  "final-critic.findings[].issue",
+]);
+
+/**
+ * The minimum enforced-to-stated ratio for a `REVIEWER_ONLY_MARGIN_FIELDS`
+ * entry. Lower than `CEILING_SLACK_MULTIPLIER` on purpose: the field is still
+ * product-bearing, so its margin covers measured variance and nothing more.
+ */
+export const REVIEWER_ONLY_SLACK_MULTIPLIER = 1.5;
+
+/**
  * The figure a prompt — and any other model-facing channel, such as a response
  * schema `description` — states for a bounded field.
  *
  * Defaults to the enforced limit, which is the case for every product-bearing
- * field. Callers pass the enforced value so a field with no declared stated
+ * field except the reviewer-only ones in `REVIEWER_ONLY_MARGIN_FIELDS`. Callers pass the enforced value so a field with no declared stated
  * figure is unaffected by this mechanism.
  */
 export function statedCeiling(key: string, enforced: number): number {
@@ -1287,9 +1344,10 @@ export const STAGE_REQUEST_SETUP_TIMEOUT_MS = 60_000;
  * return — from opening the request to the last event of the final message.
  *
  * The 90-second non-streaming budget this replaces could not carry the output
- * contracts it was paired with: at the derived per-policy budgets — 74,000
- * tokens for `reasoning-heavy`, 99,000 for `reasoning-standard`, 102,000 for
- * `critic` — a contract-valid maximum response cannot be generated in 90
+ * contracts it was paired with: at the per-policy budgets — 74,000
+ * tokens for `reasoning-heavy`, 99,000 for `reasoning-standard`, 128,000 for
+ * `critic` (its model's whole output cap, because the critic thinks and its
+ * thinking shares `max_tokens`) — a contract-valid maximum response cannot be generated in 90
  * seconds by any model, so the timeout, not the contract, decided what the
  * pipeline could produce. Deriving the bound from the declared maximum is what
  * makes the limit, the deadline, the tests and the documentation describe one
@@ -1319,14 +1377,8 @@ export function stageStreamDeadlineMs(maxOutputTokens: number): number {
   return Math.ceil((generationMs + STAGE_REQUEST_OVERHEAD_MS) / 60_000) * 60_000;
 }
 
-/**
- * The per-policy stream deadlines, derived from the per-policy output budgets.
- *
- * Exported so a regression can assert the deadline a stage actually arms is the
- * one its own budget implies, rather than a constant that happens to agree.
- */
-export const POLICY_STREAM_DEADLINE_MS: Record<string, number> = Object.fromEntries(
-  Object.entries(POLICY_OUTPUT_TOKEN_FLOORS).map(
-    ([policy, tokens]) => [policy, stageStreamDeadlineMs(tokens)],
-  ),
-);
+// The per-policy stream deadlines live in `modelPolicy.ts` as
+// `POLICY_STREAM_DEADLINE_MS`, derived from the `max_tokens` each policy's
+// request actually sends. They moved there when the critic's budget stopped
+// being its contract floor: this module holds no model knowledge, and the floor
+// no longer determines the deadline the critic arms.

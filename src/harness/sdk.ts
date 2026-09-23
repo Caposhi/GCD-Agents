@@ -10,7 +10,12 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import { config } from "./config.js";
-import type { StageThinkingPolicy } from "./agents/modelPolicy.js";
+import {
+  ModelPolicyError,
+  thinkingEffortViolation,
+  type StageEffortLevel,
+  type StageThinkingPolicy,
+} from "./agents/modelPolicy.js";
 import {
   STAGE_REQUEST_MAX_RETRIES,
   STAGE_REQUEST_SETUP_TIMEOUT_MS,
@@ -30,6 +35,9 @@ const PRICE: Record<string, { in: number; out: number }> = {
   // here its cost meter would silently report undefined. Additive only — no
   // existing model's price and no existing call site changes.
   "claude-opus-5": { in: 5, out: 25 },
+  // The Content Intelligence `critic` policy resolves to Opus 5.5. Additive
+  // only, like the Opus 5 row above — no legacy call site sends this id.
+  "claude-opus-5-5": { in: 4, out: 20 },
   "claude-opus-4-8": { in: 5, out: 25 },
   "claude-sonnet-5": { in: 2, out: 10 },
   "claude-sonnet-4-6": { in: 3, out: 15 },
@@ -161,8 +169,8 @@ const THINKING_ON_OMISSION = new Set<string>(["claude-sonnet-5"]);
 /**
  * The thinking configuration a legacy request actually sends.
  *
- * An explicit caller value always wins — Content Intelligence stages set
- * `{type: "disabled"}` themselves and are unaffected by this rule. Otherwise a
+ * An explicit caller value always wins — Content Intelligence stages set their
+ * thinking themselves, through `modelPolicy.ts`, and are unaffected by this rule. Otherwise a
  * model that would think by omission is pinned thinking-off, which preserves
  * the behaviour every legacy caller has today, and a model that would not think
  * by omission still sends no `thinking` key at all, which keeps those requests
@@ -231,7 +239,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
 /**
  * The Content Intelligence stage request boundary.
  *
- * Three things differ from the legacy path, and each is a correction rather
+ * Four things differ from the legacy path, and each is a correction rather
  * than a preference:
  *
  *  - **Retries are disabled** (`STAGE_REQUEST_MAX_RETRIES`). The SDK default of
@@ -254,10 +262,165 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
  *    before the stream is consumed, aborting it if the deadline passes, cleared
  *    in a `finally` on both success and failure.
  *
+ *  - **A response must finish its turn.** `stop_reason` is checked before any
+ *    content is read: `max_tokens`, `refusal` and every other reason but
+ *    `end_turn` raise a named error carrying the complete provider message.
+ *    There is no fallback to another model. `collect()`, which the legacy path
+ *    shares, is unchanged.
+ *
  * A streaming request is still exactly one request: `messages.stream` opens one
  * HTTP connection and, with retries disabled, never opens a second. The
  * deadline aborts that one connection; it never opens another.
  */
+
+/**
+ * A stage request's options: the legacy text options plus a declared effort.
+ *
+ * `effort` exists **only here**, not on `AgentRunOptions`, so no legacy caller
+ * can set it and the legacy request stays byte-identical. Stage callers take it
+ * from `resolveModelPolicy`, which reads it from `POLICY_EFFORT` — the one
+ * place an effort is declared — and `buildStageRequest` re-checks the same
+ * thinking/effort invariant where the request is actually built.
+ */
+export interface StageRunOptions extends AgentRunOptions {
+  /** Sent as `output_config.effort`. Omitted: no `effort` key is sent at all. */
+  effort?: StageEffortLevel;
+}
+
+/**
+ * The exact stage request: the legacy request, plus `output_config.effort` when
+ * the stage declares one.
+ *
+ * Built on top of `buildRequest` rather than inside it, so the shared builder —
+ * and with it every legacy request — is untouched. Throws the same
+ * `ModelPolicyError` `resolveModelPolicy` throws for a pairing the model
+ * rejects, before any stream is opened: a caller that bypassed the policy table
+ * still cannot send a knowable 400.
+ */
+function buildStageRequest(opts: StageRunOptions): {
+  model: string;
+  request: Anthropic.MessageCreateParamsNonStreaming;
+} {
+  const { model, request } = buildRequest(opts);
+  if (request.thinking && (request.thinking.type === "disabled" || request.thinking.type === "adaptive")) {
+    const violation = thinkingEffortViolation(model, request.thinking, opts.effort);
+    if (violation) throw new ModelPolicyError(`stage request: ${violation}`);
+  }
+  if (opts.effort === undefined) return { model, request };
+  return {
+    model,
+    request: {
+      ...request,
+      output_config: { ...(request.output_config ?? {}), effort: opts.effort },
+    },
+  };
+}
+
+/**
+ * A stage response truncated at `max_tokens`.
+ *
+ * Structured output cut off mid-object cannot validate, so without this the
+ * failure would surface as "output was not strict JSON" — true, and useless.
+ * Named here with the model, the budget and the usage, so the operator can see
+ * whether thinking or the answer consumed the budget.
+ */
+export class StageOutputTruncatedError extends Error {
+  readonly model: string;
+  readonly maxTokens: number;
+  readonly usage: Record<string, number> | undefined;
+  /** The provider's complete response, kept so the caller can save what it paid for. */
+  readonly response: Anthropic.Message;
+  constructor(model: string, maxTokens: number, response: Anthropic.Message) {
+    const usage = usageOf(response);
+    super(
+      `stage response from ${model} stopped at max_tokens (${maxTokens}) before completing; `
+      + `usage ${JSON.stringify(usage ?? {})}`,
+    );
+    this.name = "StageOutputTruncatedError";
+    this.model = model;
+    this.maxTokens = maxTokens;
+    this.usage = usage;
+    this.response = response;
+  }
+}
+
+/**
+ * A stage request the model declined (`stop_reason: "refusal"`).
+ *
+ * **A visible failure, never a fallback.** No `fallbacks` parameter and no
+ * fallback middleware is used anywhere in the stage path: a fallback answers
+ * silently with a different model, and a stage whose model identity is recorded
+ * in its metadata must not be served by another. `stop_details` is guarded
+ * because it may be `null`.
+ */
+export class StageRefusalError extends Error {
+  readonly model: string;
+  readonly category: string | null;
+  readonly explanation: string | null;
+  readonly response: Anthropic.Message;
+  constructor(model: string, response: Anthropic.Message) {
+    const details = response.stop_details ?? null;
+    const category = details?.category ?? null;
+    const explanation = details?.explanation ?? null;
+    super(
+      `stage request to ${model} was refused (stop_reason "refusal"; category `
+      + `${category === null ? "not reported" : `"${category}"`}; explanation `
+      + `${explanation === null ? "not reported" : JSON.stringify(explanation)})`,
+    );
+    this.name = "StageRefusalError";
+    this.model = model;
+    this.category = category;
+    this.explanation = explanation;
+    this.response = response;
+  }
+}
+
+/**
+ * A stage response that ended for any reason other than `end_turn`, `max_tokens`
+ * or `refusal` — `stop_sequence`, `tool_use`, `pause_turn`, or a value this SDK
+ * does not know. A stage sends no stop sequence and registers no tool, so none
+ * of those is a completed answer, and none is treated as one.
+ */
+export class StageUnexpectedStopError extends Error {
+  readonly model: string;
+  readonly stopReason: string | null;
+  readonly response: Anthropic.Message;
+  constructor(model: string, response: Anthropic.Message) {
+    const stopReason = (response.stop_reason as string | null | undefined) ?? null;
+    super(
+      `stage response from ${model} ended with stop_reason `
+      + `${stopReason === null ? "null" : `"${stopReason}"`}, not "end_turn"`,
+    );
+    this.name = "StageUnexpectedStopError";
+    this.model = model;
+    this.stopReason = stopReason;
+    this.response = response;
+  }
+}
+
+/**
+ * Refuse a stage response that did not finish its turn.
+ *
+ * Stage path only. `collect()` is shared with the deployed legacy path and is
+ * deliberately not changed: a legacy response is still collected exactly as
+ * before, whatever its stop reason.
+ */
+function assertStageResponseComplete(
+  response: Anthropic.Message,
+  model: string,
+  maxTokens: number,
+): void {
+  switch (response.stop_reason) {
+    case "end_turn":
+      return;
+    case "max_tokens":
+      throw new StageOutputTruncatedError(model, maxTokens, response);
+    case "refusal":
+      throw new StageRefusalError(model, response);
+    default:
+      throw new StageUnexpectedStopError(model, response);
+  }
+}
 
 /** The complete set of SDK request options a stage request sends. */
 export interface StageRequestOptions {
@@ -338,11 +501,11 @@ export function stageRequestOptionsFor(maxOutputTokens: number): StageRequestOpt
 }
 
 export async function runStageAgentWithStreamOpener(
-  opts: AgentRunOptions,
+  opts: StageRunOptions,
   openStream: StageStreamOpener,
   timers: StageTimers = REAL_TIMERS,
 ): Promise<AgentRunResult> {
-  const { model, request } = buildRequest(opts);
+  const { model, request } = buildStageRequest(opts);
   const options = stageRequestOptionsFor(request.max_tokens);
 
   // Opened once. The deadline aborts this stream; it never opens another.
@@ -354,7 +517,11 @@ export async function runStageAgentWithStreamOpener(
   }, options.streamDeadlineMs);
 
   try {
-    return collect(await stream.finalMessage(), model);
+    const response = await stream.finalMessage();
+    // Checked before `collect()` reads any content: a truncated, refused or
+    // otherwise unfinished response is a named failure, never stage output.
+    assertStageResponseComplete(response, model, request.max_tokens);
+    return collect(response, model);
   } catch (error) {
     // A deadline abort surfaces from the SDK as a generic user-abort error.
     // Naming it here is what makes the failure legible instead of looking like
@@ -368,7 +535,7 @@ export async function runStageAgentWithStreamOpener(
   }
 }
 
-export async function runStageAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
+export async function runStageAgent(opts: StageRunOptions): Promise<AgentRunResult> {
   return runStageAgentWithStreamOpener(opts, (request, options) => {
     const stream = getClient().messages.stream(request, {
       timeout: options.requestSetupTimeoutMs,
@@ -420,6 +587,19 @@ export async function runVision(opts: VisionRunOptions): Promise<AgentRunResult>
     LEGACY_REQUEST_OPTIONS,
   );
   return collect(res, model);
+}
+
+/** Usage in the shape `collect()` reports it, for the stage error classes. */
+function usageOf(res: Anthropic.Message): Record<string, number> | undefined {
+  const u = res.usage;
+  return u
+    ? {
+        input_tokens: u.input_tokens,
+        output_tokens: u.output_tokens,
+        cache_read_input_tokens: (u as any).cache_read_input_tokens ?? 0,
+        cache_creation_input_tokens: (u as any).cache_creation_input_tokens ?? 0,
+      }
+    : undefined;
 }
 
 function collect(res: Anthropic.Message, model: string): AgentRunResult {

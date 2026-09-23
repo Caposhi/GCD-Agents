@@ -319,9 +319,10 @@ const ALLOWED_CLAIM_FINDING_FIELDS = [
 /**
  * The JSON Schema sent as `output_config.format` for this stage. Shape only.
  *
- * Internal-plumbing fields state `statedCeiling`, not the enforced limit: a
- * `description` is a model-facing channel, so it states what the prompt states.
- * See `STATED_FIELD_CEILINGS` in `payloadContract.ts`.
+ * Internal-plumbing fields, and the reviewer-only `issue` field, state
+ * `statedCeiling`, not the enforced limit: a `description` is a model-facing
+ * channel, so it states what the prompt states. See `STATED_FIELD_CEILINGS` and
+ * `REVIEWER_ONLY_MARGIN_FIELDS` in `payloadContract.ts`.
  */
 export const FINAL_CRITIC_RESPONSE_FORMAT = schemaObject({
   verdict: schemaEnum(CRITIC_VERDICTS, "The provisional, non-approving verdict"),
@@ -332,7 +333,10 @@ export const FINAL_CRITIC_RESPONSE_FORMAT = schemaObject({
       category: schemaEnum(CRITIC_FINDING_CATEGORIES, "What kind of finding"),
       platform: schemaEnum(CRITIC_FINDING_PLATFORMS, "Which platform, or cross_platform"),
       owner: schemaEnum(CRITIC_FINDING_OWNERS, "Which stage or human must act"),
-      issue: schemaString("No recognizable URL syntax", FINAL_CRITIC_LIMITS.issueChars),
+      issue: schemaString(
+        "No recognizable URL syntax",
+        statedCeiling("final-critic.findings[].issue", FINAL_CRITIC_LIMITS.issueChars),
+      ),
       suggestedAction: schemaString("No recognizable URL syntax", FINAL_CRITIC_LIMITS.suggestedActionChars),
     }),
     "An empty findings array and a calm summary are a complete, correct answer",
