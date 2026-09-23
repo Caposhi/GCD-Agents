@@ -3062,7 +3062,78 @@ const FIELD_MARGIN_MUTATIONS = [
   },
 ];
 
-const MUTATIONS = [...LEGACY_MUTATIONS, ...RAW_IDENTITY_MUTATIONS, ...FIELD_MARGIN_MUTATIONS];
+// The critic on Claude Opus 5.5, the reviewer-only margin, stop-reason
+// handling and the Google Business Profile keyword cap. Appended after every
+// earlier group so no existing mutation id moves.
+const CRITIC_POLICY_MUTATIONS = [
+  {
+    name: "the model-keyed rule that some models reject disabled thinking at every effort is dropped",
+    file: MODEL_POLICY,
+    from: '  if (thinking.type === "disabled" && MODELS_REQUIRING_THINKING.has(model)) {',
+    to: '  if (false && thinking.type === "disabled" && MODELS_REQUIRING_THINKING.has(model)) {',
+    expect: ["CI3.", "CI4.", "CI6."],
+  },
+  {
+    name: "the critic's declared effort is validated and then silently not sent",
+    file: STAGE_EXECUTION,
+    from: "      ...(resolved.effort !== undefined ? { effort: resolved.effort } : {}),",
+    to: "",
+    expect: ["CI5."],
+  },
+  {
+    name: "the critic's budget falls back to its contract floor, leaving no room for thinking",
+    file: MODEL_POLICY,
+    from: "  critic: POLICY_MODEL_OUTPUT_CAPS.critic,\n};",
+    to: "  critic: POLICY_OUTPUT_TOKEN_FLOORS.critic!,\n};",
+    expect: ["CC19.", "CC21.", "CI1.", "CI5."],
+  },
+  {
+    name: "the thinking reserve grows past the critic's headroom under its cap",
+    file: MODEL_POLICY,
+    from: "export const THINKING_RESERVE_TOKENS = 16_000;",
+    to: "export const THINKING_RESERVE_TOKENS = 20_000;",
+    expect: ["CC19.", "CC19b."],
+  },
+  {
+    name: "the stage path stops checking stop_reason before reading content",
+    file: SDK,
+    from: "    assertStageResponseComplete(response, model, request.max_tokens);\n",
+    to: "",
+    expect: ["CH1.", "CH2.", "CH3.", "CH4.", "CH6."],
+  },
+  {
+    name: "a refusal is no longer named as a refusal",
+    file: SDK,
+    from: '    case "refusal":\n      throw new StageRefusalError(model, response);\n',
+    to: "",
+    expect: ["CH2.", "CH3.", "CH6."],
+  },
+  {
+    name: "the reviewer-only margin allow-list is widened to a second product-bearing field",
+    file: PAYLOAD,
+    from: '  "final-critic.findings[].issue",\n]);',
+    to: '  "final-critic.findings[].issue",\n  "final-critic.summary",\n]);',
+    expect: ["CD0f2."],
+  },
+  {
+    name: "the critic issue margin is collapsed back onto its stated figure",
+    file: PAYLOAD,
+    from: "  issueChars: 600,",
+    to: "  issueChars: 400,",
+    expect: ["CD0c."],
+  },
+  {
+    name: "Google Business Profile's local keyword cap is widened back to the pipeline ceiling",
+    file: PACKAGING,
+    from: "  google_business_profile: GBP_LOCAL_KEYWORD_MAX,\n};",
+    to: "  google_business_profile: PACKAGING_FIELD_LIMITS.maxLocalKeywords,\n};",
+    expect: ["BQ36a.", "CD7a (google_business_profile)."],
+  },
+];
+
+const MUTATIONS = [
+  ...LEGACY_MUTATIONS, ...RAW_IDENTITY_MUTATIONS, ...FIELD_MARGIN_MUTATIONS, ...CRITIC_POLICY_MUTATIONS,
+];
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const decodeUtf8Strict = (bytes) => new TextDecoder("utf-8", { fatal: true }).decode(bytes);
