@@ -21,13 +21,16 @@
  *
  * ## What it guarantees
  *
- *  - **Byte-exact values.** The phone number and the booking link are copied out
- *    of the evidence pack's own `approved-facts:phone` and
- *    `approved-facts:bookingurl` records — the substring after the record's
- *    `"<field>: "` prefix, which the approved-facts adapter writes from the
- *    checked-in file — and never retyped, reformatted, or normalized.
+ *  - **Byte-exact values.** The shop name, the phone number and the booking
+ *    link are copied out of the evidence pack's own `approved-facts:shop`,
+ *    `approved-facts:phone` and `approved-facts:bookingurl` records — the
+ *    substring after the record's `"<field>: "` prefix, which the approved-facts
+ *    adapter writes from the checked-in file — and never retyped, reformatted,
+ *    or normalized. No part of any line is typed into this module: the shop
+ *    name used to be, and now comes from the `shop` record on the same terms as
+ *    the phone number.
  *  - **Exact provenance.** `sourceFactIds` lists exactly the records a line
- *    used: the phone record, the booking-link record, or both.
+ *    used, in the order the template uses them.
  *  - **Fail closed, for free.** A needed record that is absent, not a verified
  *    business fact, or not usable in the pack (conflicted, stale, inactive) is a
  *    `ContactLineError` before any paid call. So is a value that does not read
@@ -42,12 +45,15 @@
  *
  * ## Templates — reviewed by the owner on 2026-09-23, used verbatim
  *
- *  - `instagram` — `Call German Car Depot: {phone}`
- *  - `facebook` — `Call German Car Depot: {phone} · Book online: {bookingUrl}`
+ *  - `instagram` — `Call {shop}: {phone}`
+ *  - `facebook` — `Call {shop}: {phone} · Book online: {bookingUrl}`
  *  - `google_business_profile` — no text; a structured call to action
  *    `{ actionType: "BOOK", url: {bookingUrl} }`, mirroring the rule
  *    `ctaForGbp` in `packageMap.ts` applies to the live path: the canonical
  *    booking destination always means `BOOK`. That module is read, not changed.
+ *
+ * With today's `config/approved-facts.json`, `{shop}` is "German Car Depot", so
+ * the rendered lines read exactly as the owner reviewed them.
  *
  * ## What it is not
  *
@@ -89,6 +95,7 @@ import {
 
 /** The approved-facts records a contact line may be built from, and nothing else. */
 export const CONTACT_FACTS = {
+  shop: { id: "approved-facts:shop", field: "shop" },
   phone: { id: "approved-facts:phone", field: "phone" },
   bookingUrl: { id: "approved-facts:bookingurl", field: "bookingUrl" },
 } as const;
@@ -102,8 +109,8 @@ export const GBP_CONTACT_ACTION_TYPE = "BOOK" satisfies GbpActionType;
 
 /** Which records each platform's line needs, in the order they are cited. */
 export const CONTACT_FACTS_BY_PLATFORM: Record<PackagingPlatform, readonly ContactFactKey[]> = {
-  instagram: ["phone"],
-  facebook: ["phone", "bookingUrl"],
+  instagram: ["shop", "phone"],
+  facebook: ["shop", "phone", "bookingUrl"],
   google_business_profile: ["bookingUrl"],
 };
 
@@ -231,12 +238,12 @@ export function buildContactLine(platform: PackagingPlatform, pack: EvidencePack
   let line: ContactLine;
   switch (platform) {
     case "instagram":
-      line = { kind: "deterministic_contact", text: `Call German Car Depot: ${values.phone}`, sourceFactIds };
+      line = { kind: "deterministic_contact", text: `Call ${values.shop}: ${values.phone}`, sourceFactIds };
       break;
     case "facebook":
       line = {
         kind: "deterministic_contact",
-        text: `Call German Car Depot: ${values.phone} · Book online: ${values.bookingUrl}`,
+        text: `Call ${values.shop}: ${values.phone} · Book online: ${values.bookingUrl}`,
         sourceFactIds,
       };
       break;

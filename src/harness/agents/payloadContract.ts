@@ -375,8 +375,8 @@ export const PACKAGING_FIELD_LIMITS = {
  * contact details are attached **by code, never by a model**: they must match the
  * approved data exactly (`skills/local-seo`, "NAP consistency"), and they should
  * not compete for citation slots. `contactLine.ts` builds the line from the
- * evidence pack's approved-facts phone and booking-link records after stage 5
- * validates; this block only sizes the room it needs.
+ * evidence pack's approved-facts shop-name, phone and booking-link records after
+ * stage 5 validates; this block only sizes the room it needs.
  *
  * Provider-visible text becomes caption + separator + hashtags + separator +
  * contact text, and it must still fit each platform's existing limit, so the
@@ -385,8 +385,9 @@ export const PACKAGING_FIELD_LIMITS = {
  * text — in characters, and again in UTF-8 bytes — with headroom so a reformatted phone number or a longer booking link
  * fails closed on a free check rather than silently eating caption room:
  *
- *  - `instagram` — 64. The line is "Call German Car Depot: " and the phone
- *    number: 37 characters with today's phone, 39 with the separator.
+ *  - `instagram` — 64. The line is "Call ", the shop name, ": " and the phone
+ *    number — "Call German Car Depot: " and the phone with today's records: 37
+ *    characters, 39 with the separator.
  *  - `facebook` — 192. The same, then " · Book online: " and the booking link:
  *    130 characters today, 132 with the separator (133 UTF-8 bytes: "·" is two).
  *  - `google_business_profile` — 0. Google Business Profile carries no contact
@@ -431,8 +432,13 @@ export const CONTACT_TEXT_MAX_CHARS =
  */
 export const CONTACT_CTA_URL_CHARS = 200;
 
-/** A contact line cites at most the phone record and the booking-link record. */
-export const CONTACT_LINE_MAX_SOURCE_FACTS = 2;
+/**
+ * A contact line cites at most three records: the shop-name record (its text
+ * names the shop), the phone record and the booking-link record. Facebook's line
+ * uses all three; Instagram's uses the shop name and the phone; Google Business
+ * Profile's structured call to action uses the booking link alone.
+ */
+export const CONTACT_LINE_MAX_SOURCE_FACTS = 3;
 
 /**
  * Stage 6 — final-critic, output fields only.
@@ -460,6 +466,89 @@ export const CRITIC_FIELD_LIMITS = {
   maxFindings: 20,
   maxClaimFindingUses: 24,
 } as const;
+
+/** The figure every critic lens prompt states for `findings[].issue` (enforced 600). */
+const CRITIC_STATED_ISSUE_CHARS = 400;
+/** The figure a claim-binding lens prompt states for `claimFindingUse[].summary` (enforced 1,000). */
+const CRITIC_STATED_CLAIM_FINDING_SUMMARY_CHARS = 400;
+
+/**
+ * The critic panel: stage 6 reviews through four narrow lenses, in this order.
+ *
+ * `final-critic` is still one registered stage. Its executor sends one model
+ * request per lens — four, concurrently, no retries — and aggregates the four
+ * validated answers deterministically in TypeScript. Each lens has its own
+ * prompt, its own input projection, its own finding categories and its own
+ * output contract, so each is bounded and budgeted on its own.
+ *
+ * The order is the order findings are aggregated in.
+ */
+export const CRITIC_LENSES = [
+  "evidence-fidelity",
+  "platform-and-local",
+  "voice-and-craft",
+  "production-coherence",
+] as const;
+export type CriticLens = (typeof CRITIC_LENSES)[number];
+
+/**
+ * Whether a lens's contract carries `claimFindingUse`.
+ *
+ * Only a lens shown `PLATFORM_CLAIMS` can bind a finding to a claim stage 5
+ * bound. The voice and production lenses are shown no claim block, so their
+ * contract has no field through which to cite one.
+ */
+export const CRITIC_LENS_BINDS_CLAIMS: Readonly<Record<CriticLens, boolean>> = {
+  "evidence-fidelity": true,
+  "platform-and-local": true,
+  "voice-and-craft": false,
+  "production-coherence": false,
+};
+
+/** One lens's output-field limits. `claimFindingUse` is null when the lens binds no claim. */
+export interface CriticLensFieldLimits {
+  readonly summaryChars: number;
+  readonly issueChars: number;
+  readonly suggestedActionChars: number;
+  readonly maxFindings: number;
+  readonly claimFindingUse: { readonly maxEntries: number; readonly summaryChars: number } | null;
+}
+
+/**
+ * Each lens's own output-field limits.
+ *
+ * Every lens instantiates the same per-field figures the single critic had —
+ * `CRITIC_FIELD_LIMITS` — so no product decision moved when the critic was
+ * split: a lens summary, issue and suggested action are exactly as long as the
+ * single critic's, and a lens may carry as many findings as the single critic
+ * could. They are declared per lens so each lens has its own contract, its own
+ * classification rows and its own token floor, and so a later change to one
+ * lens is a change to that lens alone.
+ */
+export const CRITIC_LENS_FIELD_LIMITS: Readonly<Record<CriticLens, CriticLensFieldLimits>> = Object.fromEntries(
+  CRITIC_LENSES.map((lens) => [lens, {
+    summaryChars: CRITIC_FIELD_LIMITS.summaryChars,
+    issueChars: CRITIC_FIELD_LIMITS.issueChars,
+    suggestedActionChars: CRITIC_FIELD_LIMITS.suggestedActionChars,
+    maxFindings: CRITIC_FIELD_LIMITS.maxFindings,
+    claimFindingUse: CRITIC_LENS_BINDS_CLAIMS[lens]
+      ? {
+        maxEntries: CRITIC_FIELD_LIMITS.maxClaimFindingUses,
+        summaryChars: CRITIC_FIELD_LIMITS.claimFindingSummaryChars,
+      }
+      : null,
+  } satisfies CriticLensFieldLimits]),
+) as Record<CriticLens, CriticLensFieldLimits>;
+
+/**
+ * The specification id a lens's bounded fields are keyed under in
+ * `OUTPUT_FIELD_BOUNDS` and `STATED_FIELD_CEILINGS`: `final-critic:<lens>`.
+ * Stage ids contain no colon and no dot, so `<spec id>.<field token>` still
+ * splits at its first dot.
+ */
+export function criticLensSpecId(lens: CriticLens): string {
+  return `final-critic:${lens}`;
+}
 
 // ---------------------------------------------------------------------------
 // Field classification — which limits are product decisions, and which are not
@@ -556,7 +645,6 @@ const S2 = TRUTH_FIELD_LIMITS;
 const S3 = SCRIPT_FIELD_LIMITS;
 const S4 = DIRECTION_FIELD_LIMITS;
 const S5 = PACKAGING_FIELD_LIMITS;
-const S6 = CRITIC_FIELD_LIMITS;
 
 export const OUTPUT_FIELD_BOUNDS: Readonly<Record<string, OutputFieldBound>> = {
   // Stage 1. The prompt: "recorded as provisional strategy material … passed to
@@ -578,8 +666,8 @@ export const OUTPUT_FIELD_BOUNDS: Readonly<Record<string, OutputFieldBound>> = {
   "automotive-truth.allowedClaims[].restatement": plumbing(S2.restatementChars, "characters", "binding gloss; claim text is read back from the record"),
   "automotive-truth.forbiddenClaims": product(S2.maxForbiddenClaims, "entries", "human reader: \"tells later stages and human reviewers\""),
   "automotive-truth.forbiddenClaims[].claim": product(S2.forbiddenClaimChars, "characters", "human reader: \"tells later stages and human reviewers\""),
-  "automotive-truth.requiredCaveats": plumbing(S2.maxCaveats, "entries", "handoff to stage 3; no human reader named"),
-  "automotive-truth.requiredCaveats[]": plumbing(S2.caveatChars, "characters", "handoff to stage 3; no human reader named"),
+  "automotive-truth.requiredCaveats": plumbing(S2.maxCaveats, "entries", "handoff to stage 3 and to the critic's evidence-fidelity lens (reviewer-only input); no human reader named"),
+  "automotive-truth.requiredCaveats[]": plumbing(S2.caveatChars, "characters", "handoff to stage 3 and to the critic's evidence-fidelity lens (reviewer-only input); no human reader named"),
   "automotive-truth.openQuestions": product(S2.maxOpenQuestions, "entries", "human reader: \"what a human would have to verify\""),
   "automotive-truth.openQuestions[]": product(S2.openQuestionChars, "characters", "human reader: \"what a human would have to verify\""),
 
@@ -620,13 +708,26 @@ export const OUTPUT_FIELD_BOUNDS: Readonly<Record<string, OutputFieldBound>> = {
   "packaging-adaptation.claimUse": plumbing(S5.maxClaimUses, "entries", "handoff; sizes PLATFORM_CLAIMS for stage 6"),
   "packaging-adaptation.claimUse[].summary": plumbing(S5.summaryChars, "characters", "binding gloss; claim text is read back from the record"),
 
-  // Stage 6. Governed by skills/critique-discipline, which sets no length.
-  "final-critic.summary": product(S6.summaryChars, "characters", "review surface: summary.md \"Critic verdict\""),
-  "final-critic.findings": product(S6.maxFindings, "entries", "review surface: summary.md \"Critic verdict\""),
-  "final-critic.findings[].issue": product(S6.issueChars, "characters", "review surface: summary.md \"Critic verdict\"; sole reader the internal human reviewer, no platform or provider consumer"),
-  "final-critic.findings[].suggestedAction": product(S6.suggestedActionChars, "characters", "review surface: summary.md \"Critic verdict\""),
-  "final-critic.claimFindingUse": plumbing(S6.maxClaimFindingUses, "entries", "handoff; id-to-finding binding"),
-  "final-critic.claimFindingUse[].summary": plumbing(S6.claimFindingSummaryChars, "characters", "binding gloss; claim text is read back from the record"),
+  // Stage 6, one set of rows per lens. Governed by skills/critique-discipline,
+  // which sets no length. A lens's summary is rendered, attributed to its lens;
+  // the panel's own summary is deterministic code, not model output.
+  ...Object.fromEntries(CRITIC_LENSES.flatMap((lens) => {
+    const spec = criticLensSpecId(lens);
+    const limits = CRITIC_LENS_FIELD_LIMITS[lens];
+    const rows: Array<[string, OutputFieldBound]> = [
+      [`${spec}.summary`, product(limits.summaryChars, "characters", "review surface: summary.md \"Critic panel\", attributed to its lens")],
+      [`${spec}.findings`, product(limits.maxFindings, "entries", "review surface: summary.md \"Critic panel\", grouped by lens")],
+      [`${spec}.findings[].issue`, product(limits.issueChars, "characters", "review surface: summary.md \"Critic panel\"; sole reader the internal human reviewer, no platform or provider consumer")],
+      [`${spec}.findings[].suggestedAction`, product(limits.suggestedActionChars, "characters", "review surface: summary.md \"Critic panel\"")],
+    ];
+    if (limits.claimFindingUse) {
+      rows.push(
+        [`${spec}.claimFindingUse`, plumbing(limits.claimFindingUse.maxEntries, "entries", "handoff; id-to-finding binding")],
+        [`${spec}.claimFindingUse[].summary`, plumbing(limits.claimFindingUse.summaryChars, "characters", "binding gloss; claim text is read back from the record")],
+      );
+    }
+    return rows;
+  })),
 };
 
 /**
@@ -684,7 +785,7 @@ export const OUTPUT_FIELD_BOUNDS: Readonly<Record<string, OutputFieldBound>> = {
  * "tidy" a stated figure and its enforced ceiling back into one number: that is
  * the defect this table exists to hold open.
  */
-export const STATED_FIELD_CEILINGS = {
+export const STATED_FIELD_CEILINGS: Readonly<Record<string, number>> = {
   "strategy-concept.angle": 400,
   "strategy-concept.concept": 1_200,
   "strategy-concept.rationale": 2_000,
@@ -697,9 +798,16 @@ export const STATED_FIELD_CEILINGS = {
   "hook-story-script.claimUse[].paraphrase": 400,
   "production-direction.claimVisuals[].directionSummary": 400,
   "packaging-adaptation.claimUse[].summary": 400,
-  "final-critic.claimFindingUse[].summary": 400,
-  "final-critic.findings[].issue": 400,
-} as const;
+  // Stage 6, per lens: every lens states the single critic's figures — 400 for
+  // an issue (reviewer-only margin, enforced 600) and, on the two lenses that
+  // bind claims, 400 for a claim-finding summary (plumbing, enforced 1,000).
+  ...Object.fromEntries(CRITIC_LENSES.flatMap((lens) => [
+    [`${criticLensSpecId(lens)}.findings[].issue`, CRITIC_STATED_ISSUE_CHARS],
+    ...(CRITIC_LENS_BINDS_CLAIMS[lens]
+      ? [[`${criticLensSpecId(lens)}.claimFindingUse[].summary`, CRITIC_STATED_CLAIM_FINDING_SUMMARY_CHARS]]
+      : []),
+  ])),
+};
 
 /**
  * The minimum ratio of enforced ceiling to stated figure for every field in
@@ -708,7 +816,8 @@ export const STATED_FIELD_CEILINGS = {
 export const CEILING_SLACK_MULTIPLIER = 2;
 
 /**
- * The product-bearing fields allowed a hidden margin — **exactly one**.
+ * The product-bearing fields allowed a hidden margin — **exactly one field,
+ * `findings[].issue`, on each of the four critic lenses**.
  *
  * The rule PR #85 set, that every product-bearing field states exactly what it
  * enforces, is amended here and only here. A product-bearing field may carry a
@@ -718,16 +827,19 @@ export const CEILING_SLACK_MULTIPLIER = 2;
  * instruction is a product decision the platform or the crew acts on, and a
  * margin would silently widen it.
  *
- * `final-critic.findings[].issue` qualifies: it is rendered only in the local
+ * A critic finding's `issue` qualifies: it is rendered only in the local
  * review summary, and nothing downstream sends it anywhere. The margin is 1.5×
- * (stated 400, enforced 600), against a measured 1.05× overshoot (419).
+ * (stated 400, enforced 600), against a measured 1.05× overshoot (419). When
+ * the single critic became a panel of four lenses, the one field became one
+ * field per lens — the same field, with the same reader, split four ways — so
+ * the set names each lens's `findings[].issue` and nothing else.
  *
- * A regression asserts this set is exactly `{"final-critic.findings[].issue"}`.
+ * A regression asserts this set is exactly the four lenses' `findings[].issue`.
  * Adding a field is a product decision and must change that regression too.
  */
-export const REVIEWER_ONLY_MARGIN_FIELDS: ReadonlySet<string> = new Set([
-  "final-critic.findings[].issue",
-]);
+export const REVIEWER_ONLY_MARGIN_FIELDS: ReadonlySet<string> = new Set(
+  CRITIC_LENSES.map((lens) => `${criticLensSpecId(lens)}.findings[].issue`),
+);
 
 /**
  * The minimum enforced-to-stated ratio for a `REVIEWER_ONLY_MARGIN_FIELDS`
@@ -1230,11 +1342,30 @@ export const CONTACTED_PACKAGING_OUTPUT = contractCeiling(
     * (EVIDENCE_LIMITS.idChars + PACKAGING_FIELD_LIMITS.summaryChars),
 );
 
-/** Stage 6 — `FinalCriticOutput`. Never a handoff; bounded for the budget proof. */
-export const CRITIC_OUTPUT = contractCeiling(
-  {
+/**
+ * Stage 6 — one critic lens's validated output. Never a handoff; bounded for the
+ * budget proof, once per lens.
+ *
+ * The critic is a panel of four lenses, each a separate model request with its
+ * own contract, so each lens's response is bounded — and its token floor derived
+ * — on its own. The panel's aggregated `FinalCriticOutput` is not model output:
+ * code builds it from the four validated lens outputs, so it needs no token
+ * budget.
+ *
+ * The witness is the *validated* lens output, which carries everything the raw
+ * response does plus the brands and the `lens` attribution the validator adds,
+ * so it bounds the raw response from above. Every finding is witnessed with the
+ * longest category any lens can emit (`hashtag_keyword_relevance`) and the
+ * largest two-digit finding index, so no lens's real shape can exceed its own
+ * witness.
+ */
+function criticLensOutputWitness(lens: CriticLens) {
+  const limits = CRITIC_LENS_FIELD_LIMITS[lens];
+  return {
+    lens,
     provisional: {
-      kind: "provisional_critic_assessment",
+      kind: "provisional_critic_lens_assessment",
+      lens,
       authoritative: false,
       approvalGranted: false,
       publishable: false,
@@ -1242,7 +1373,8 @@ export const CRITIC_OUTPUT = contractCeiling(
       productionValidated: false,
       verdict: "needs_human_review",
       summary: "",
-      findings: times(CRITIC_FIELD_LIMITS.maxFindings, () => ({
+      findings: times(limits.maxFindings, () => ({
+        lens,
         severity: "blocking",
         category: "hashtag_keyword_relevance",
         platform: "google_business_profile",
@@ -1254,9 +1386,10 @@ export const CRITIC_OUTPUT = contractCeiling(
     },
     claimFindingUse: {
       kind: "typed_critic_claim_use",
-      used: times(CRITIC_FIELD_LIMITS.maxClaimFindingUses, () => ({
+      used: times(limits.claimFindingUse?.maxEntries ?? 0, () => ({
         kind: "evidence_bound_critic_claim_use",
-        findingIndex: 0,
+        lens,
+        findingIndex: limits.maxFindings - 1,
         platform: "google_business_profile",
         factId: "",
         factKind: "verified_automotive_fact",
@@ -1264,12 +1397,121 @@ export const CRITIC_OUTPUT = contractCeiling(
         authoritative: false,
       })),
     },
+  };
+}
+
+export const CRITIC_LENS_OUTPUTS: Readonly<Record<CriticLens, ContractCeiling>> = Object.fromEntries(
+  CRITIC_LENSES.map((lens) => {
+    const limits = CRITIC_LENS_FIELD_LIMITS[lens];
+    return [lens, contractCeiling(
+      criticLensOutputWitness(lens),
+      limits.summaryChars
+        + limits.maxFindings * (limits.issueChars + limits.suggestedActionChars)
+        + (limits.claimFindingUse
+          ? limits.claimFindingUse.maxEntries * (EVIDENCE_LIMITS.idChars + limits.claimFindingUse.summaryChars)
+          : 0),
+    )];
+  }),
+) as Record<CriticLens, ContractCeiling>;
+
+// ---------------------------------------------------------------------------
+// Stage 6 lens inputs — the narrower projections each critic lens is shown
+// ---------------------------------------------------------------------------
+
+/**
+ * The evidence-fidelity lens's `SCRIPT_COPY`: stage 3's hook, ordered beats and
+ * script — the words a claim can hide in — without its claim-use glosses or
+ * open questions.
+ */
+export const SCRIPT_COPY_BLOCK_CHARS = serializedCeiling(
+  {
+    hook: "",
+    storyBeats: times(SCRIPT_FIELD_LIMITS.maxBeats, () => ({ beat: "", role: "closing" })),
+    script: "",
   },
-  CRITIC_FIELD_LIMITS.summaryChars
-    + CRITIC_FIELD_LIMITS.maxFindings
-      * (CRITIC_FIELD_LIMITS.issueChars + CRITIC_FIELD_LIMITS.suggestedActionChars)
-    + CRITIC_FIELD_LIMITS.maxClaimFindingUses
-      * (EVIDENCE_LIMITS.idChars + CRITIC_FIELD_LIMITS.claimFindingSummaryChars),
+  SCRIPT_FIELD_LIMITS.hookChars
+    + SCRIPT_FIELD_LIMITS.maxBeats * SCRIPT_FIELD_LIMITS.beatChars
+    + SCRIPT_FIELD_LIMITS.scriptChars,
+);
+
+/**
+ * The evidence-fidelity lens's `OVERLAY_TEXT`: stage 4's on-screen wording, each
+ * entry with the shot it sits on and that shot's subject — overlay wording
+ * attributes a claim to whatever is on screen, so the lens needs to know what
+ * that is. Nothing else of stage 4 is shown.
+ */
+export const OVERLAY_TEXT_BLOCK_CHARS = serializedCeiling(
+  times(DIRECTION_FIELD_LIMITS.maxOverlayText, () => ({
+    shotIndex: DIRECTION_FIELD_LIMITS.maxShots - 1,
+    role: "clarification",
+    shotSubject: "",
+    text: "",
+  })),
+  DIRECTION_FIELD_LIMITS.maxOverlayText
+    * (DIRECTION_FIELD_LIMITS.subjectChars + DIRECTION_FIELD_LIMITS.overlayTextChars),
+);
+
+/**
+ * The evidence-fidelity lens's `PACKAGING_COPY`: every package's caption,
+ * hashtags, local keywords and deterministic contact line — the provider-facing
+ * text — without timing, open questions or stage 5's claim-use glosses.
+ */
+export const PACKAGING_COPY_BLOCK_CHARS = serializedCeiling(
+  times(PACKAGING_FIELD_LIMITS.maxRequestedPlatforms, () => ({
+    platform: "google_business_profile",
+    caption: "",
+    hashtags: times(PACKAGING_FIELD_LIMITS.maxHashtags, () => ""),
+    localKeywords: times(PACKAGING_FIELD_LIMITS.maxLocalKeywords, () => ""),
+    contact: {
+      kind: "deterministic_contact",
+      text: "",
+      gbpCta: { actionType: "BOOK", url: "" },
+      sourceFactIds: times(CONTACT_LINE_MAX_SOURCE_FACTS, () => ""),
+    },
+  })),
+  PACKAGING_FIELD_LIMITS.maxRequestedPlatforms * (
+    PACKAGING_FIELD_LIMITS.pipelineCaptionChars // caption
+    + PACKAGING_FIELD_LIMITS.pipelineCaptionChars // every hashtag token, jointly
+    + PACKAGING_FIELD_LIMITS.maxLocalKeywords * PACKAGING_FIELD_LIMITS.localKeywordChars
+    + CONTACT_TEXT_MAX_CHARS
+    + CONTACT_CTA_URL_CHARS
+    + CONTACT_LINE_MAX_SOURCE_FACTS * EVIDENCE_LIMITS.idChars
+  ),
+);
+
+/**
+ * The evidence-fidelity lens's `REQUIRED_CAVEATS`: stage 2's caveat list.
+ *
+ * **Reviewer-only.** Stage 2's caveats are withheld from every writing stage —
+ * stages 4 and 5 never see stage 2's prose, so they cannot reach for a claim
+ * stage 3 did not use. A reviewer writes no copy: showing it the caveats lets it
+ * check that the copy kept them, and gives it nothing it could put into a
+ * caption. Stage 2's assessment and restatements stay withheld here too.
+ */
+export const REQUIRED_CAVEATS_BLOCK_CHARS = serializedCeiling(
+  times(TRUTH_FIELD_LIMITS.maxCaveats, () => ""),
+  TRUTH_FIELD_LIMITS.maxCaveats * TRUTH_FIELD_LIMITS.caveatChars,
+);
+
+/** The evidence-fidelity lens's `FORBIDDEN_CLAIMS`: stage 2's forbidden-claim list. Reviewer-only, as above. */
+export const FORBIDDEN_CLAIMS_BLOCK_CHARS = serializedCeiling(
+  times(TRUTH_FIELD_LIMITS.maxForbiddenClaims, () => ({ claim: "", reason: "outside_evidence_scope" })),
+  TRUTH_FIELD_LIMITS.maxForbiddenClaims * TRUTH_FIELD_LIMITS.forbiddenClaimChars,
+);
+
+/** The voice-and-craft lens's `COPY`: the hook, the script and each platform's caption. */
+export const VOICE_COPY_BLOCK_CHARS = serializedCeiling(
+  {
+    hook: "",
+    script: "",
+    captions: times(PACKAGING_FIELD_LIMITS.maxRequestedPlatforms, () => ({
+      platform: "google_business_profile",
+      caption: "",
+    })),
+  },
+  SCRIPT_FIELD_LIMITS.hookChars
+    + SCRIPT_FIELD_LIMITS.scriptChars
+    + PACKAGING_FIELD_LIMITS.maxRequestedPlatforms * PACKAGING_FIELD_LIMITS.pipelineCaptionChars,
 );
 
 // ---------------------------------------------------------------------------
@@ -1303,8 +1545,44 @@ export const HANDOFF_GUARDS = {
 // ---------------------------------------------------------------------------
 
 /**
+ * The blocks each critic lens is sent, in order, at their maximum body sizes.
+ * The executor renders exactly these labels in exactly this order; a regression
+ * compares the two against a real assembled prompt per lens.
+ */
+export const CRITIC_LENS_BLOCKS: Readonly<Record<CriticLens, ReadonlyArray<{ label: string; bodyChars: number }>>> = {
+  "evidence-fidelity": [
+    { label: "SCRIPT_COPY", bodyChars: SCRIPT_COPY_BLOCK_CHARS },
+    { label: "OVERLAY_TEXT", bodyChars: OVERLAY_TEXT_BLOCK_CHARS },
+    { label: "PACKAGING_COPY", bodyChars: PACKAGING_COPY_BLOCK_CHARS },
+    { label: "SCRIPT_CLAIMS", bodyChars: SCRIPT_CLAIMS_BLOCK_CHARS },
+    { label: "PLATFORM_CLAIMS", bodyChars: PLATFORM_CLAIMS_BLOCK_CHARS },
+    { label: "REQUIRED_CAVEATS", bodyChars: REQUIRED_CAVEATS_BLOCK_CHARS },
+    { label: "FORBIDDEN_CLAIMS", bodyChars: FORBIDDEN_CLAIMS_BLOCK_CHARS },
+  ],
+  "platform-and-local": [
+    { label: "PACKAGING_OUTPUT", bodyChars: CONTACTED_PACKAGING_OUTPUT.transportChars },
+    { label: "REQUESTED_PLATFORMS", bodyChars: REQUESTED_PLATFORMS_BLOCK_CHARS },
+    { label: "PLATFORM_CLAIMS", bodyChars: PLATFORM_CLAIMS_BLOCK_CHARS },
+  ],
+  "voice-and-craft": [
+    { label: "COPY", bodyChars: VOICE_COPY_BLOCK_CHARS },
+  ],
+  "production-coherence": [
+    { label: "SCRIPT_OUTPUT", bodyChars: SCRIPT_OUTPUT.transportChars },
+    { label: "PRODUCTION_OUTPUT", bodyChars: DIRECTION_OUTPUT.transportChars },
+    { label: "PACKAGING_OUTPUT", bodyChars: CONTACTED_PACKAGING_OUTPUT.transportChars },
+  ],
+};
+
+/** Each critic lens's assembled payload at its maximum. */
+export const CRITIC_LENS_ASSEMBLED_CEILINGS: Readonly<Record<CriticLens, number>> = Object.fromEntries(
+  CRITIC_LENSES.map((lens) => [lens, assembledCeiling(CRITIC_LENS_BLOCKS[lens])]),
+) as Record<CriticLens, number>;
+
+/**
  * Every stage's assembled payload at its maximum, derived from the blocks each
- * one actually sends.
+ * one actually sends. `final-critic` sends one request per lens, so its entry is
+ * the largest of its four lens payloads.
  */
 export const STAGE_ASSEMBLED_CEILINGS: Record<string, number> = {
     "strategy-concept": assembledCeiling([
@@ -1330,14 +1608,7 @@ export const STAGE_ASSEMBLED_CEILINGS: Record<string, number> = {
       { label: "REQUESTED_PLATFORMS", bodyChars: REQUESTED_PLATFORMS_BLOCK_CHARS },
       { label: "SCRIPT_CLAIMS", bodyChars: SCRIPT_CLAIMS_BLOCK_CHARS },
     ]),
-    "final-critic": assembledCeiling([
-      { label: "SCRIPT_OUTPUT", bodyChars: SCRIPT_OUTPUT.transportChars },
-      { label: "PRODUCTION_OUTPUT", bodyChars: DIRECTION_OUTPUT.transportChars },
-      { label: "PACKAGING_OUTPUT", bodyChars: CONTACTED_PACKAGING_OUTPUT.transportChars },
-      { label: "REQUESTED_PLATFORMS", bodyChars: REQUESTED_PLATFORMS_BLOCK_CHARS },
-      { label: "SCRIPT_CLAIMS", bodyChars: SCRIPT_CLAIMS_BLOCK_CHARS },
-      { label: "PLATFORM_CLAIMS", bodyChars: PLATFORM_CLAIMS_BLOCK_CHARS },
-    ]),
+    "final-critic": Math.max(...CRITIC_LENSES.map((lens) => CRITIC_LENS_ASSEMBLED_CEILINGS[lens])),
 };
 
 /**
@@ -1384,6 +1655,18 @@ export function minimumOutputTokens(transportBytes: number): number {
 }
 
 /**
+ * Each critic lens's own output-token floor: the lossless worst case of its own
+ * contract, rounded up to a whole thousand. Every lens request carries the
+ * `critic` policy's `max_tokens`, and `modelPolicy.ts` requires each lens floor
+ * to leave `THINKING_RESERVE_TOKENS` under that cap, lens by lens.
+ */
+export const CRITIC_LENS_OUTPUT_TOKEN_FLOORS: Readonly<Record<CriticLens, number>> = Object.fromEntries(
+  CRITIC_LENSES.map((lens) => [
+    lens, Math.ceil(minimumOutputTokens(CRITIC_LENS_OUTPUTS[lens].transportChars) / 1_000) * 1_000,
+  ]),
+) as Record<CriticLens, number>;
+
+/**
  * The output-token floor each model policy must offer, derived from the stages
  * that resolve through it.
  *
@@ -1408,8 +1691,9 @@ export const POLICY_OUTPUT_TOKEN_FLOORS: Record<string, number> = (() => {
       minimumOutputTokens(DIRECTION_OUTPUT.transportChars),
       minimumOutputTokens(PACKAGING_OUTPUT.transportChars),
     )),
-    // Stage 6.
-    critic: ceil(minimumOutputTokens(CRITIC_OUTPUT.transportChars)),
+    // Stage 6: every lens request resolves through `critic` and sends the same
+    // `max_tokens`, so the policy floor is the largest lens floor.
+    critic: Math.max(...CRITIC_LENSES.map((lens) => CRITIC_LENS_OUTPUT_TOKEN_FLOORS[lens])),
   };
 })();
 

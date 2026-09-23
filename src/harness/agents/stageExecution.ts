@@ -11,6 +11,9 @@
  *    "repair the JSON" round trip. A reasoning stage that silently retries turns
  *    one budgeted decision into an unbounded spend, and a repair pass is a
  *    second chance for the model to talk itself into an unsupported claim.
+ *    `final-critic` is the one stage that invokes this boundary more than once
+ *    per execution: exactly once per critic lens, four lenses, each invocation
+ *    still exactly one request with no retry.
  *  - **No tools are registered.** The underlying `runStageAgent` boundary
  *    registers none, and nothing here adds any. A stage may only use capabilities the
  *    registry declared, and the only declared capability in this slice is the
@@ -94,6 +97,13 @@ export interface StageRunnerRequest {
   effort?: StageEffortLevel;
   /** JSON Schema the provider constrains the response to, when the stage declares one. */
   responseFormatSchema?: Record<string, unknown>;
+  /**
+   * The critic-panel lens this request serves, when the stage is `final-critic`.
+   * A label for the caller's own record-keeping (the local CLI tags each saved
+   * response with it). Never sent to the provider: `createAnthropicStageRunner`
+   * does not forward it.
+   */
+  lens?: string;
 }
 
 export interface StageRunnerResult {
@@ -185,6 +195,20 @@ export interface StageInvocation {
    * constant.
    */
   responseFormatSchema?: Record<string, unknown>;
+  /**
+   * The declared prompt and skill assets that reach the instruction channel for
+   * this request, when a stage declares more than one prompt.
+   *
+   * `final-critic` declares one prompt per critic lens and the skills each lens
+   * uses; each lens request names exactly its own. Every listed path must be a
+   * declared prompt or skill of the stage, at least one must be a prompt, and a
+   * declared prompt or skill not listed is recorded as `omitted`. A stage that
+   * declares more than one prompt must pass this — concatenating every lens's
+   * prompt into one request would run four contracts while claiming one.
+   */
+  instructionAssets?: readonly string[];
+  /** The critic-panel lens this request serves; passed to the runner as a label only. */
+  lens?: string;
 }
 
 export interface StageInvocationResult {
@@ -283,6 +307,27 @@ export async function invokeStage(invocation: StageInvocation): Promise<StageInv
     throw new StageExecutionError(stage, "has no prompt asset and cannot be executed");
   }
 
+  // A lens-scoped request names the exact instruction assets it uses. Only
+  // declared prompts and skills qualify; anything else is a configuration error,
+  // raised before any request exists.
+  const selected = invocation.instructionAssets ? new Set(invocation.instructionAssets) : undefined;
+  if (selected) {
+    const declared = new Set(assets.filter((a) => a.role !== "reference").map((a) => a.path));
+    const undeclared = [...selected].filter((path) => !declared.has(path));
+    if (undeclared.length) {
+      throw new StageExecutionError(
+        stage, `instruction assets are not declared prompts or skills of this stage: ${undeclared.join(", ")}`,
+      );
+    }
+    if (!assets.some((a) => a.role === "prompt" && selected.has(a.path))) {
+      throw new StageExecutionError(stage, "the selected instruction assets include no prompt");
+    }
+  } else if (assets.filter((a) => a.role === "prompt").length > 1) {
+    throw new StageExecutionError(
+      stage, "declares more than one prompt, so each request must name its instruction assets",
+    );
+  }
+
   const referenceChannel = invocation.referenceChannel ?? "omit";
 
   // Prompts and skills define *how* the stage works, so they belong in the
@@ -292,7 +337,10 @@ export async function invokeStage(invocation: StageInvocation): Promise<StageInv
   const assetUses: StageAssetUse[] = [];
   for (const asset of assets) {
     let channel: AssetChannel;
-    if (asset.role === "prompt") {
+    if (selected && asset.role !== "reference" && !selected.has(asset.path)) {
+      // Declared by the stage, used by a different lens.
+      channel = "omitted";
+    } else if (asset.role === "prompt") {
       instructionParts.push(asset.text);
       channel = "instruction";
     } else if (asset.role === "skill") {
@@ -333,6 +381,7 @@ export async function invokeStage(invocation: StageInvocation): Promise<StageInv
       ...(invocation.responseFormatSchema
         ? { responseFormatSchema: invocation.responseFormatSchema }
         : {}),
+      ...(invocation.lens !== undefined ? { lens: invocation.lens } : {}),
     });
   } catch (err) {
     // The message may carry provider text; it is surfaced to the caller as an

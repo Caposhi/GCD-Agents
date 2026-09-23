@@ -53,10 +53,11 @@ export const POLICY_MODEL_OUTPUT_CAPS: Record<Exclude<ModelPolicy, "deterministi
  *
  * **A heuristic, not a guarantee.** Thinking tokens count against `max_tokens`,
  * and the API offers no way to cap thinking separately from the visible answer:
- * on Claude Opus 5.5 effort is the only control. A regression requires the
- * critic's contract-derived output floor to sit at or below
- * `POLICY_MODEL_OUTPUT_CAPS.critic - THINKING_RESERVE_TOKENS`, so a contract that
- * grows into the room thinking needs fails the suite. It cannot make a response
+ * on Claude Opus 5.5 effort is the only control. The critic is a panel of four
+ * lens requests, each carrying this policy's `max_tokens`; a regression requires
+ * every lens's contract-derived output floor (`CRITIC_LENS_OUTPUT_TOKEN_FLOORS`)
+ * to sit at or below `POLICY_MODEL_OUTPUT_CAPS.critic - THINKING_RESERVE_TOKENS`,
+ * so a lens contract that grows into the room thinking needs fails the suite. It cannot make a response
  * fit: if the model thinks for more than the reserve *and* writes a maximal
  * answer, the response is truncated at `max_tokens`, and the stage fails closed
  * with `StageOutputTruncatedError`.
