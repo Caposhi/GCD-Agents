@@ -18,7 +18,7 @@
   "nextOilChangeAppointment": "After an oil change, GCD books a tentative appointment for the next oil change 6 months later.",
   "serviceRecords": "GCD provides customers their service records on request.",
   "vehicleHistoryReview": "Before recommending maintenance, GCD reviews the vehicle's available service-history report by VIN.",
-  "engineOils": "GCD's bulk engine oils are Liqui Moly Top Tec 6200 SAE 0W-20, Liqui Moly Special Tec LL SAE 5W-30 and Liqui Moly Leichtlauf High Tech SAE 5W-40, kept in gravity tanks refilled by GCD's Liqui Moly supplier. When a vehicle calls for a specification these three do not cover, GCD orders the Liqui Moly oil for that specification from its parts distributors.",
+  "engineOils": "GCD's bulk engine oils are Liqui Moly Top Tec 6200 SAE 0W-20, Liqui Moly Special Tec LL SAE 5W-30 and Liqui Moly Leichtlauf High Tech SAE 5W-40, kept in gravity tanks refilled by GCD's Liqui Moly supplier. When a vehicle calls for a specification these three do not cover, GCD special-orders an oil for that specification from its parts distributors, choosing the Liqui Moly product for that specification where Liqui Moly offers one, in the quantity the vehicle needs.",
   "warranty": "3-Year / 36,000-Mile warranty on qualifying parts & labor",
   "perks": ["free rideshare on approved repairs", "loaner vehicles available (ask when booking)", "financing available — apply at the counter", "same-week appointments often available", "written estimate approved by you before any work begins"],
   "experience": "30+ years in Hollywood, FL; 25,000+ German & European vehicles repaired",

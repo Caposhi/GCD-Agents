@@ -48,7 +48,11 @@ If a channel's shape cannot carry a claim honestly, drop the claim and say so in
 - **`facebook`** — tighter caption. **At most 2 hashtags**; lean on plain language instead. Caption, separator and tags together at most 2,200 characters — this pipeline's own ceiling, far below Facebook's provider limit, and the one actually enforced here.
 - **`google_business_profile`** — caption, separator and tags together at most 1,500 characters. **No hashtags at all.**
 
-Local keyword phrases belong in `localKeywords`, and only where `SCRIPT_CLAIMS` supports the place and the service named.
+Local keyword phrases belong in `localKeywords`, and only where `SCRIPT_CLAIMS` supports the place and the service named. The ceiling is per platform:
+
+- `instagram` — `localKeywords` at most 6 entries.
+- `facebook` — `localKeywords` at most 6 entries.
+- `google_business_profile` — `localKeywords` at most 2 entries. Work one or two local phrases in naturally; a Business Profile post is not a keyword list.
 
 The caption itself must contain **no hashtag token on any platform**. Every canonical hashtag belongs only in the dedicated `hashtags` array, where it can be counted and checked. Hashtags must be single tokens beginning with `#`, containing only letters, digits, or underscores. Uniqueness is case-insensitive.
 
@@ -69,7 +73,8 @@ Return **exactly one JSON object** and nothing else. No prose before or after it
                                          // per-platform ceiling as set out above
       "hashtags": string[],              // "#token" form; [] where the platform allows none
       "localKeywords": string[],         // plain phrases; no hashtags or recognizable URL syntax;
-                                         // at most 6 entries, each at most 120 characters
+                                         // per-platform entry ceiling as set out above;
+                                         // each at most 120 characters
       "recommendedTime": string,         // "HH:MM ET", review metadata only
       "openQuestions": string[]          // what a human must decide; no recognizable URL syntax;
                                          // at most 6 entries, each at most 300 characters
@@ -93,7 +98,7 @@ Rules the validator enforces, so satisfying them is not optional:
 - **`recommendedTime` must be `HH:MM ET`.** It is review metadata. It is not a date, not a timestamp, and cannot become a scheduler instruction.
 - **Size ceilings the validator enforces.** Every string is non-empty, and each bound below is checked *after* you answer. One entry or one character over and the whole response is discarded — there is no retry, no repair pass, and no partial credit.
   - `packages[].caption` — the per-platform ceiling in "Per-platform shape" above, measured on the caption plus the separator plus the canonical tags
-  - `packages[].localKeywords` — at most 6 entries
+  - `packages[].localKeywords` — the per-platform entry ceiling in "Per-platform shape" above
   - `packages[].localKeywords[]` — at most 120 characters
   - `packages[].openQuestions` — at most 6 entries
   - `packages[].openQuestions[]` — at most 300 characters

@@ -14,20 +14,37 @@
  *   production-direction -> packaging-adaptation -> final-critic
  * with each stage's validated output passed into the next.
  *
+ * Every run writes `run-meta.json` beside its stage files: the goal, the run's
+ * instant, the attributed review time, and sha256 fingerprints of
+ * config/approved-facts.json, of the automotive facts file, and of the evidence
+ * pack projection — what a later `--replay-critic` needs to prove it rebuilt the
+ * same evidence.
+ *
  * Requires `npm run build` first (this script imports the compiled `dist/`
  * output, the same way `npm run test:offline` and the other `scripts/*.mjs`
  * tools in this repository do).
  *
  * Usage:
  *   node scripts/local/content-run.mjs "<goal text>" [options]
+ *   node scripts/local/content-run.mjs --replay-critic <run-dir> ["<goal text>"] [options]
  *
  * Options:
  *   --runner fake|live         Default "fake": canned responses, no network,
  *                              no cost. "live" calls the real Anthropic API
  *                              through the production stage boundary and
- *                              REQUIRES --i-understand-this-costs-money.
+ *                              REQUIRES --i-understand-this-costs-money, then
+ *                              the word LIVE typed at the prompt.
  *   --i-understand-this-costs-money
  *                              Required to use --runner live.
+ *   --replay-critic <run-dir>  Run ONLY final-critic against an existing run
+ *                              directory's saved stage 1-5 outputs. Writes to a
+ *                              new sibling directory and never touches the
+ *                              source run. Refuses unless the rebuilt evidence
+ *                              matches the run's recorded fingerprints, and
+ *                              revalidates every saved output before any model
+ *                              call. The goal is read from the run's
+ *                              run-meta.json when present, else from its
+ *                              summary.md, else from the positional argument.
  *   --automotive-facts <path> Default config/automotive-facts.local.json.
  *   --platforms a,b,c          Default instagram,facebook,google_business_profile.
  *   --out-dir <path>           Default local-output/content-intelligence.
@@ -36,9 +53,11 @@
  *   -h, --help
  */
 
-import { existsSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, readdirSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, relative, resolve } from "node:path";
+import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -55,9 +74,13 @@ let failureContext = null;
 function usage() {
   console.log(`Usage: node scripts/local/content-run.mjs "<goal text>" [options]
 
+       node scripts/local/content-run.mjs --replay-critic <run-dir> ["<goal text>"] [options]
+
 Options:
-  --runner fake|live               Default "fake". "live" requires --i-understand-this-costs-money.
+  --runner fake|live               Default "fake". "live" requires --i-understand-this-costs-money,
+                                   then typing LIVE at the prompt.
   --i-understand-this-costs-money  Required to use --runner live.
+  --replay-critic <run-dir>        Run only final-critic against a saved run; writes a new sibling directory.
   --automotive-facts <path>        Default config/automotive-facts.local.json
   --platforms a,b,c                Default instagram,facebook,google_business_profile
   --out-dir <path>                 Default local-output/content-intelligence
@@ -75,6 +98,8 @@ function parseArgs(argv) {
     platforms: undefined,
     outDir: resolve(REPO_ROOT, "local-output/content-intelligence"),
     reviewedAt: new Date().toISOString(),
+    reviewedAtExplicit: false,
+    replayCritic: undefined,
     help: false,
   };
   const rest = [...argv];
@@ -86,7 +111,8 @@ function parseArgs(argv) {
     if (token === "--automotive-facts") { args.automotiveFactsPath = resolve(process.cwd(), rest.shift()); continue; }
     if (token === "--platforms") { args.platforms = (rest.shift() ?? "").split(",").map((p) => p.trim()).filter(Boolean); continue; }
     if (token === "--out-dir") { args.outDir = resolve(process.cwd(), rest.shift()); continue; }
-    if (token === "--reviewed-at") { args.reviewedAt = rest.shift(); continue; }
+    if (token === "--reviewed-at") { args.reviewedAt = rest.shift(); args.reviewedAtExplicit = true; continue; }
+    if (token === "--replay-critic") { args.replayCritic = resolve(process.cwd(), rest.shift() ?? ""); continue; }
     if (token.startsWith("--")) { throw new Error(`unknown option: ${token}`); }
     if (args.goal === undefined) { args.goal = token; continue; }
     throw new Error(`unexpected extra argument: ${token}`);
@@ -315,6 +341,262 @@ function buildFakeStageResponses(goal, pack) {
   };
 }
 
+/** sha256 of exact file bytes — the same digest the registry records per asset. */
+function sha256OfBytes(bytes) {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+/** sha256 of a file's bytes, or null when the file does not exist. */
+async function fileFingerprint(path) {
+  if (!existsSync(path)) return null;
+  return sha256OfBytes(await readFile(path));
+}
+
+/** A repository-relative path where possible, so a record does not name a home directory. */
+function displayPath(path) {
+  const rel = relative(REPO_ROOT, path);
+  return rel && !rel.startsWith("..") ? rel : path;
+}
+
+/**
+ * Read one line from stdin after printing `question`.
+ *
+ * Works for a terminal and for piped input alike; end of input reads as an
+ * empty answer, which every caller treats as a refusal.
+ */
+function askLine(question) {
+  return new Promise((resolveAnswer) => {
+    const rl = createInterface({ input: process.stdin, output: process.stderr, terminal: false });
+    let answered = false;
+    process.stderr.write(question);
+    rl.once("line", (line) => { answered = true; rl.close(); resolveAnswer(line.trim()); });
+    rl.once("close", () => { if (!answered) resolveAnswer(""); });
+  });
+}
+
+/**
+ * The spend guard, shared by the full run and the critic-only replay so the
+ * two cannot drift apart: the explicit cost flag, then the exact word LIVE
+ * typed at the prompt. Either missing refuses before any request is built.
+ */
+async function requireLiveConsent(args) {
+  if (!args.understandsCost) {
+    throw new Error('--runner live requires --i-understand-this-costs-money (this makes real, billed Anthropic API calls)');
+  }
+  const typed = await askLine("Type LIVE to make real, billed model calls (anything else cancels): ");
+  if (typed !== "LIVE") {
+    throw new Error(`live run cancelled: expected the exact word LIVE, received ${JSON.stringify(typed)}`);
+  }
+  console.log("Proceeding with LIVE model calls — this will incur real cost.");
+}
+
+/**
+ * The run timestamp a run directory's name encodes. `main` names each run
+ * `new Date(now).toISOString()` with ":" and "." replaced by "-", so the
+ * original instant is recoverable exactly for runs that predate run-meta.json.
+ */
+function nowFromRunDirName(name) {
+  const m = /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z$/.exec(name);
+  if (!m) return undefined;
+  const ms = Date.parse(`${m[1]}T${m[2]}:${m[3]}:${m[4]}.${m[5]}Z`);
+  return Number.isFinite(ms) ? ms : undefined;
+}
+
+/** The compiled modules this CLI drives. Imported once, after `requireDist`. */
+async function loadRuntime() {
+  const approved = await import(resolve(DIST_HARNESS, "evidence/approvedFacts.js"));
+  const packModule = await import(resolve(DIST_HARNESS, "evidence/pack.js"));
+  const registryModule = await import(resolve(DIST_HARNESS, "agents/registry.js"));
+  const stageExecution = await import(resolve(DIST_HARNESS, "agents/stageExecution.js"));
+  const strategy = await import(resolve(DIST_HARNESS, "agents/strategyConcept.js"));
+  const truth = await import(resolve(DIST_HARNESS, "agents/automotiveTruth.js"));
+  const script = await import(resolve(DIST_HARNESS, "agents/hookStoryScript.js"));
+  const direction = await import(resolve(DIST_HARNESS, "agents/productionDirection.js"));
+  const packaging = await import(resolve(DIST_HARNESS, "agents/packagingAdaptation.js"));
+  const critic = await import(resolve(DIST_HARNESS, "agents/finalCritic.js"));
+  const modelPolicy = await import(resolve(DIST_HARNESS, "agents/modelPolicy.js"));
+  const payloadContract = await import(resolve(DIST_HARNESS, "agents/payloadContract.js"));
+  return {
+    approved, packModule, registryModule, stageExecution, strategy, truth, script, direction,
+    packaging, critic, modelPolicy, payloadContract,
+  };
+}
+
+/**
+ * Rough, non-billing-accurate prices for the cost-ceiling estimate. Mirrors
+ * `PRICE` in src/harness/sdk.ts, which is not exported; an offline regression
+ * asserts every model a stage policy resolves to has a row here.
+ */
+const PRICE = {
+  "claude-opus-5": { in: 5, out: 25 },
+  "claude-opus-5-5": { in: 4, out: 20 },
+  "claude-sonnet-5": { in: 2, out: 10 },
+  "claude-sonnet-4-6": { in: 3, out: 15 },
+};
+
+/** Print the rough ceiling for the given stages; returns the total. */
+function printCostCeiling(rt, stagePolicies, label) {
+  const { resolveModelPolicy, modelBearingPolicies, POLICY_MAX_TOKENS } = rt.modelPolicy;
+  const { MAX_PAYLOAD_CHARS } = rt.payloadContract;
+  // Worst-case output tokens per stage (the one number this pipeline derives
+  // and bounds) plus a ~4-chars-per-token estimate of the largest input this
+  // pipeline would assemble. For a thinking policy the output ceiling includes
+  // the thinking tokens, because they are billed as output and count against
+  // the same `max_tokens`.
+  let total = 0;
+  console.log("Estimated ceiling cost per stage (rough, not billing-accurate):");
+  for (const [stage, policy] of stagePolicies) {
+    const resolved = resolveModelPolicy(policy);
+    const price = PRICE[resolved.model];
+    const inputTokensEstimate = Math.ceil(MAX_PAYLOAD_CHARS / 4);
+    const cost = price ? (inputTokensEstimate * price.in + resolved.maxTokens * price.out) / 1e6 : undefined;
+    total += cost ?? 0;
+    console.log(`  ${stage.padEnd(22)} ${resolved.model.padEnd(20)} out<=${resolved.maxTokens} tokens  ~$${cost?.toFixed(2) ?? "?"}`);
+  }
+  console.log(`Estimated ceiling for ${label}: ~$${total.toFixed(2)}`);
+  console.log(`(policies checked: ${modelBearingPolicies().join(", ")}; POLICY_MAX_TOKENS=${JSON.stringify(POLICY_MAX_TOKENS)})`);
+  return total;
+}
+
+const ALL_STAGE_POLICIES = [
+  ["strategy-concept", "reasoning-heavy"], ["automotive-truth", "reasoning-heavy"],
+  ["hook-story-script", "reasoning-standard"], ["production-direction", "reasoning-standard"],
+  ["packaging-adaptation", "reasoning-standard"], ["final-critic", "critic"],
+];
+
+/**
+ * Build and validate the evidence pack exactly as a full run does, and return
+ * the fingerprints a later replay needs to prove it rebuilt the same pack.
+ */
+async function buildRunEvidence(rt, args) {
+  const { goal, now, reviewedAt, automotiveFactsPath } = args;
+  const approvedFactsPath = resolve(REPO_ROOT, "config/approved-facts.json");
+  const approvedFactsBytes = await readFile(approvedFactsPath);
+  const { records: businessRecords } = rt.approved.adaptApprovedFactsFile(approvedFactsBytes.toString("utf8"), {
+    reviewedAt, now,
+  });
+  const { records: automotiveRecords, warning } = await loadAutomotiveFacts(automotiveFactsPath, now);
+  if (warning) {
+    // A live run must never buy a stage against an evidence pack the operator
+    // did not mean to send. On 2026-09-21 this was a warning: the run scrolled
+    // past it, billed a full Opus 5 stage-1 call, and the pack it reasoned over
+    // held zero automotive facts. Nothing about that was recoverable after the
+    // fact, and everything needed to prevent it was already known here, for
+    // free, before the first request.
+    if (args.runner === "live") {
+      throw new Error(
+        `${warning}\n  Refusing to start a LIVE run against an incomplete evidence pack. `
+        + "Re-run with --runner fake to inspect the pack at no cost, or pass "
+        + "--automotive-facts <path> to point at the file you meant.",
+      );
+    }
+    console.warn(`warning: ${warning}`);
+  }
+
+  const pack = rt.packModule.assertUsableEvidencePack(rt.packModule.buildEvidencePack({
+    goal,
+    records: [...businessRecords, ...automotiveRecords],
+    now,
+  }));
+  return {
+    pack,
+    fingerprints: {
+      approvedFacts: { path: displayPath(approvedFactsPath), sha256: sha256OfBytes(approvedFactsBytes) },
+      automotiveFacts: {
+        path: displayPath(automotiveFactsPath),
+        present: existsSync(automotiveFactsPath),
+        sha256: await fileFingerprint(automotiveFactsPath),
+      },
+      // The exact projection a stage model is shown. It excludes review and
+      // creation timestamps, so it is stable for the same facts and the same
+      // freshness instant.
+      evidencePackSha256: createHash("sha256")
+        .update(rt.packModule.renderEvidencePackForStage(pack), "utf8").digest("hex"),
+    },
+  };
+}
+
+/**
+ * The run's record-keeping: a transcript of every raw provider response, and
+ * the field measurements. Shared by the full run and the replay.
+ */
+function createRunRecorder(rt, runDir) {
+  const { OUTPUT_FIELD_BOUNDS, statedCeiling } = rt.payloadContract;
+  const { PLATFORM_PACKAGING_POLICY, PACKAGING_LIMITS, proposedProviderText, effectiveLocalKeywordMax } =
+    rt.packaging;
+  // Validation runs after the provider returns, and one rejection ends the run
+  // with no retry — so a response that fails a size ceiling is a response the
+  // operator has already paid for. Record every raw response as it arrives; on
+  // failure the catch handler writes them next to the run. This changes no
+  // validation outcome: a rejected payload is still rejected, and nothing
+  // recorded here is ever read back as stage output.
+  const transcript = [];
+  // Every run, fake or live, passing or failing, measures what it received, so
+  // the next field that outgrows its limit arrives as data rather than as
+  // another paid round trip.
+  const writeMeasurements = () => {
+    const rows = measureFields(transcript, {
+      bounds: OUTPUT_FIELD_BOUNDS, statedCeiling, providerText: proposedProviderText,
+      // The same `Math.min` the stage 5 validator applies.
+      platformCaps: (platform) => ({
+        caption: Math.min(PLATFORM_PACKAGING_POLICY[platform]?.captionMax ?? 0, PACKAGING_LIMITS.pipelineCaptionChars),
+        hashtags: Math.min(PLATFORM_PACKAGING_POLICY[platform]?.hashtagMax ?? 0, PACKAGING_LIMITS.maxHashtags),
+        localKeywords: PLATFORM_PACKAGING_POLICY[platform] ? effectiveLocalKeywordMax(platform) : 0,
+      }),
+    });
+    writeFileSync(resolve(runDir, "field-measurements.json"), JSON.stringify(rows, null, 2), "utf8");
+    writeFileSync(resolve(runDir, "field-measurements.md"), measurementTable(rows), "utf8");
+    return rows;
+  };
+  return { transcript, writeMeasurements };
+}
+
+/**
+ * Wrap a stage runner so every response — and every response a stop-reason
+ * error carries — is recorded before anything else happens to it.
+ *
+ * The stage boundary refuses a response that stopped at `max_tokens`, was
+ * refused, or ended for any other reason than `end_turn`, and raises a named
+ * error carrying the provider's complete message. That message was billed, so
+ * it is saved exactly like a response a validator rejected.
+ */
+function recordingRunner(transcript, stage, inner) {
+  return async (...callArgs) => {
+    let response;
+    try {
+      response = await inner(...callArgs);
+    } catch (error) {
+      const message = error?.response;
+      if (message && typeof message === "object") {
+        const text = Array.isArray(message.content)
+          ? message.content.filter((b) => b?.type === "text").map((b) => b.text).join("")
+          : null;
+        transcript.push({
+          stage,
+          receivedAt: new Date().toISOString(),
+          failure: error?.name ?? "Error",
+          stopReason: message.stop_reason ?? null,
+          stopDetails: message.stop_details ?? null,
+          chars: typeof text === "string" ? text.length : null,
+          usage: message.usage ?? null,
+          text,
+          rawResponse: message,
+        });
+      }
+      throw error;
+    }
+    transcript.push({
+      stage,
+      receivedAt: new Date().toISOString(),
+      chars: typeof response?.text === "string" ? response.text.length : null,
+      usage: response?.usage ?? null,
+      totalCostUsd: response?.totalCostUsd ?? null,
+      text: response?.text ?? null,
+    });
+    return response;
+  };
+}
+
 /**
  * Every output field's observed size against its limit, for every response the
  * run received — accepted or rejected, fake or live.
@@ -326,7 +608,8 @@ function buildFakeStageResponses(goal, pack) {
  * binding size is UTF-8 bytes — every bound caps code units and bytes with one
  * number, and bytes are never fewer. Stage 5's caption and hashtag count are
  * measured per platform — the caption as the provider-visible text the
- * validator compares — against that platform's effective cap. Read-only:
+ * validator compares — against that platform's effective cap, and so is the
+ * local keyword count. Read-only:
  * nothing here changes a validation outcome.
  */
 function measureFields(transcript, { bounds, statedCeiling, platformCaps, providerText }) {
@@ -353,7 +636,8 @@ function measureFields(transcript, { bounds, statedCeiling, platformCaps, provid
       const key = `${stage}.${path}`;
       const bound = bounds[key];
       if (!bound || key === "packaging-adaptation.packages[].caption"
-        || key === "packaging-adaptation.packages[].hashtags") continue;
+        || key === "packaging-adaptation.packages[].hashtags"
+        || key === "packaging-adaptation.packages[].localKeywords") continue;
       row(stage, path, observed, bound.enforced, statedCeiling(key, bound.enforced), bound.class);
     }
     for (const pkg of (stage === "packaging-adaptation" && Array.isArray(raw?.packages) ? raw.packages : [])) {
@@ -363,6 +647,10 @@ function measureFields(transcript, { bounds, statedCeiling, platformCaps, provid
       row(stage, `packages[${pkg.platform}].caption+hashtags`, bytes(providerText(pkg.caption, tags)),
         caps.caption, caps.caption, "product-bearing");
       row(stage, `packages[${pkg.platform}].hashtags`, tags.length, caps.hashtags, caps.hashtags, "product-bearing");
+      if (Array.isArray(pkg.localKeywords)) {
+        row(stage, `packages[${pkg.platform}].localKeywords`, pkg.localKeywords.length,
+          caps.localKeywords, caps.localKeywords, "product-bearing");
+      }
     }
   }
   return rows;
@@ -409,33 +697,18 @@ function markdownSummary({ goal, runner, timestamp, script, direction, packaging
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  if (args.help || !args.goal) { usage(); process.exit(args.help ? 0 : 1); }
+  if (args.help || (!args.goal && !args.replayCritic)) { usage(); process.exit(args.help ? 0 : 1); }
   if (args.runner !== "fake" && args.runner !== "live") {
     throw new Error(`--runner must be "fake" or "live", got: ${args.runner}`);
   }
 
   requireDist();
+  const rt = await loadRuntime();
+  if (args.replayCritic) return replayCritic(rt, args);
 
-  const { adaptApprovedFactsFile } = await import(resolve(DIST_HARNESS, "evidence/approvedFacts.js"));
-  const { buildEvidencePack, assertUsableEvidencePack, EvidencePackBoundsError } =
-    await import(resolve(DIST_HARNESS, "evidence/pack.js"));
-  const { EvidenceValidationError } = await import(resolve(DIST_HARNESS, "evidence/contract.js"));
-  const { AgentRegistry, TARGET_STAGE_IDS } = await import(resolve(DIST_HARNESS, "agents/registry.js"));
-  const { StageExecutionError, createAnthropicStageRunner } =
-    await import(resolve(DIST_HARNESS, "agents/stageExecution.js"));
-  const { executeStrategyConcept } = await import(resolve(DIST_HARNESS, "agents/strategyConcept.js"));
-  const { executeAutomotiveTruth } = await import(resolve(DIST_HARNESS, "agents/automotiveTruth.js"));
-  const { executeHookStoryScript } = await import(resolve(DIST_HARNESS, "agents/hookStoryScript.js"));
-  const { executeProductionDirection } = await import(resolve(DIST_HARNESS, "agents/productionDirection.js"));
-  const {
-    executePackagingAdaptation, PACKAGING_PLATFORMS, PLATFORM_PACKAGING_POLICY, PACKAGING_LIMITS,
-    proposedProviderText,
-  } = await import(resolve(DIST_HARNESS, "agents/packagingAdaptation.js"));
-  const { executeFinalCritic } = await import(resolve(DIST_HARNESS, "agents/finalCritic.js"));
-  const { resolveModelPolicy, modelBearingPolicies, POLICY_MAX_TOKENS } =
-    await import(resolve(DIST_HARNESS, "agents/modelPolicy.js"));
-  const { MAX_PAYLOAD_CHARS, OUTPUT_FIELD_BOUNDS, statedCeiling } =
-    await import(resolve(DIST_HARNESS, "agents/payloadContract.js"));
+  const { AgentRegistry, TARGET_STAGE_IDS } = rt.registryModule;
+  const { createAnthropicStageRunner } = rt.stageExecution;
+  const { PACKAGING_PLATFORMS } = rt.packaging;
 
   const platforms = args.platforms ?? [...PACKAGING_PLATFORMS];
   for (const p of platforms) {
@@ -443,33 +716,10 @@ async function main() {
   }
 
   const now = Date.now();
-  const approvedFactsRaw = await readFile(resolve(REPO_ROOT, "config/approved-facts.json"), "utf8");
-  const { records: businessRecords } = adaptApprovedFactsFile(approvedFactsRaw, {
-    reviewedAt: args.reviewedAt, now,
+  const { pack, fingerprints } = await buildRunEvidence(rt, {
+    goal: args.goal, now, reviewedAt: args.reviewedAt,
+    automotiveFactsPath: args.automotiveFactsPath, runner: args.runner,
   });
-  const { records: automotiveRecords, warning } = await loadAutomotiveFacts(args.automotiveFactsPath, now);
-  if (warning) {
-    // A live run must never buy a stage against an evidence pack the operator
-    // did not mean to send. On 2026-09-21 this was a warning: the run scrolled
-    // past it, billed a full Opus 5 stage-1 call, and the pack it reasoned over
-    // held zero automotive facts. Nothing about that was recoverable after the
-    // fact, and everything needed to prevent it was already known here, for
-    // free, before the first request.
-    if (args.runner === "live") {
-      throw new Error(
-        `${warning}\n  Refusing to start a LIVE run against an incomplete evidence pack. `
-        + "Re-run with --runner fake to inspect the pack at no cost, or pass "
-        + "--automotive-facts <path> to point at the file you meant.",
-      );
-    }
-    console.warn(`warning: ${warning}`);
-  }
-
-  const pack = assertUsableEvidencePack(buildEvidencePack({
-    goal: args.goal,
-    records: [...businessRecords, ...automotiveRecords],
-    now,
-  }));
   console.log(`Evidence pack built: ${JSON.stringify(pack.counts)}`);
 
   const registry = new AgentRegistry();
@@ -496,33 +746,8 @@ async function main() {
   }
 
   if (args.runner === "live") {
-    // Rough, non-billing-accurate ceiling: worst-case output tokens per stage
-    // (the one number this pipeline actually derives and bounds) plus a
-    // ~4-chars-per-token estimate of the largest input this pipeline would
-    // assemble. Mirrors src/harness/sdk.ts's own "not billing-accurate" price
-    // table; kept local here because that table is not exported.
-    const PRICE = { "claude-opus-5": { in: 5, out: 25 }, "claude-sonnet-5": { in: 2, out: 10 }, "claude-sonnet-4-6": { in: 3, out: 15 } };
-    const STAGE_POLICIES = [
-      ["strategy-concept", "reasoning-heavy"], ["automotive-truth", "reasoning-heavy"],
-      ["hook-story-script", "reasoning-standard"], ["production-direction", "reasoning-standard"],
-      ["packaging-adaptation", "reasoning-standard"], ["final-critic", "critic"],
-    ];
-    let total = 0;
-    console.log("Estimated ceiling cost per stage (rough, not billing-accurate):");
-    for (const [stage, policy] of STAGE_POLICIES) {
-      const resolved = resolveModelPolicy(policy);
-      const price = PRICE[resolved.model];
-      const inputTokensEstimate = Math.ceil(MAX_PAYLOAD_CHARS / 4);
-      const cost = price ? (inputTokensEstimate * price.in + resolved.maxTokens * price.out) / 1e6 : undefined;
-      total += cost ?? 0;
-      console.log(`  ${stage.padEnd(22)} ${resolved.model.padEnd(20)} out<=${resolved.maxTokens} tokens  ~$${cost?.toFixed(2) ?? "?"}`);
-    }
-    console.log(`Estimated ceiling for one full six-stage run: ~$${total.toFixed(2)}`);
-    console.log(`(policies checked: ${modelBearingPolicies().join(", ")}; POLICY_MAX_TOKENS=${JSON.stringify(POLICY_MAX_TOKENS)})`);
-    if (!args.understandsCost) {
-      throw new Error('--runner live requires --i-understand-this-costs-money (this makes real, billed Anthropic API calls)');
-    }
-    console.log("Proceeding with LIVE model calls — this will incur real cost.");
+    printCostCeiling(rt, ALL_STAGE_POLICIES, "one full six-stage run");
+    await requireLiveConsent(args);
   }
 
   const runner = args.runner === "live"
@@ -534,82 +759,58 @@ async function main() {
   await mkdir(runDir, { recursive: true });
   const writeStage = (name, payload) => writeFile(resolve(runDir, `${name}.json`), JSON.stringify(payload, null, 2), "utf8");
 
-  // Validation runs after the provider returns, and one rejection ends the run
-  // with no retry — so a response that fails a size ceiling is a response the
-  // operator has already paid for. Discarding it outright, as this CLI did
-  // until now, throws away both the money and the only evidence of what the
-  // model actually produced. Record every raw response as it arrives; on
-  // failure the catch handler writes them next to the run. This changes no
-  // validation outcome: a rejected payload is still rejected, and nothing
-  // recorded here is ever read back as stage output.
-  const transcript = [];
-  // Every run, fake or live, passing or failing, measures what it received, so
-  // the next field that outgrows its limit arrives as data rather than as
-  // another paid round trip.
-  const writeMeasurements = () => {
-    const rows = measureFields(transcript, {
-      bounds: OUTPUT_FIELD_BOUNDS, statedCeiling, providerText: proposedProviderText,
-      // The same `Math.min` the stage 5 validator applies.
-      platformCaps: (platform) => ({
-        caption: Math.min(PLATFORM_PACKAGING_POLICY[platform]?.captionMax ?? 0, PACKAGING_LIMITS.pipelineCaptionChars),
-        hashtags: Math.min(PLATFORM_PACKAGING_POLICY[platform]?.hashtagMax ?? 0, PACKAGING_LIMITS.maxHashtags),
-      }),
-    });
-    writeFileSync(resolve(runDir, "field-measurements.json"), JSON.stringify(rows, null, 2), "utf8");
-    writeFileSync(resolve(runDir, "field-measurements.md"), measurementTable(rows), "utf8");
-    return rows;
-  };
+  // What a later critic-only replay needs to prove it rebuilt this run's
+  // evidence: the exact instant, the review time attributed to the business
+  // facts, and a fingerprint of both facts files and of the pack projection.
+  await writeFile(resolve(runDir, "run-meta.json"), JSON.stringify({
+    schema: "gcd-content-run-meta/1",
+    goal: args.goal,
+    runner: args.runner,
+    platforms,
+    now,
+    nowIso: new Date(now).toISOString(),
+    reviewedAt: args.reviewedAt,
+    ...fingerprints,
+  }, null, 2), "utf8");
+
+  const { transcript, writeMeasurements } = createRunRecorder(rt, runDir);
   failureContext = { runDir, transcript, writeMeasurements };
 
   const fake = buildFakeStageResponses(args.goal, pack);
-  const runnerFor = (stage, buildResponse) => {
-    const inner = args.runner === "live"
-      ? runner
-      : async () => ({ text: JSON.stringify(buildResponse()), totalCostUsd: 0, usage: { input_tokens: 0, output_tokens: 0 } });
-    return async (...callArgs) => {
-      const response = await inner(...callArgs);
-      transcript.push({
-        stage,
-        receivedAt: new Date().toISOString(),
-        chars: typeof response?.text === "string" ? response.text.length : null,
-        usage: response?.usage ?? null,
-        totalCostUsd: response?.totalCostUsd ?? null,
-        text: response?.text ?? null,
-      });
-      return response;
-    };
-  };
+  const runnerFor = (stage, buildResponse) => recordingRunner(transcript, stage, args.runner === "live"
+    ? runner
+    : async () => ({ text: JSON.stringify(buildResponse()), totalCostUsd: 0, usage: { input_tokens: 0, output_tokens: 0 } }));
 
   console.log("Running stage 1/6: strategy-concept");
-  const strategy = await executeStrategyConcept({
+  const strategy = await rt.strategy.executeStrategyConcept({
     goal: args.goal, evidencePack: pack, registry,
     runner: runnerFor("strategy-concept", () => fake.strategyConcept()),
   });
   await writeStage("01-strategy-concept", strategy);
 
   console.log("Running stage 2/6: automotive-truth");
-  const truth = await executeAutomotiveTruth({
+  const truth = await rt.truth.executeAutomotiveTruth({
     strategyOutput: strategy.output, evidencePack: pack, registry,
     runner: runnerFor("automotive-truth", () => fake.automotiveTruth()),
   });
   await writeStage("02-automotive-truth", truth);
 
   console.log("Running stage 3/6: hook-story-script");
-  const script = await executeHookStoryScript({
+  const script = await rt.script.executeHookStoryScript({
     strategyOutput: strategy.output, truthOutput: truth.output, evidencePack: pack, registry,
     runner: runnerFor("hook-story-script", () => fake.hookStoryScript(truth.output)),
   });
   await writeStage("03-hook-story-script", script);
 
   console.log("Running stage 4/6: production-direction");
-  const direction = await executeProductionDirection({
+  const direction = await rt.direction.executeProductionDirection({
     scriptOutput: script.output, truthOutput: truth.output, evidencePack: pack, registry,
     runner: runnerFor("production-direction", () => fake.productionDirection(script.output)),
   });
   await writeStage("04-production-direction", direction);
 
   console.log("Running stage 5/6: packaging-adaptation");
-  const packaging = await executePackagingAdaptation({
+  const packaging = await rt.packaging.executePackagingAdaptation({
     scriptOutput: script.output, directionOutput: direction.output, truthOutput: truth.output,
     evidencePack: pack, requestedPlatforms: platforms, registry,
     runner: runnerFor("packaging-adaptation", () => fake.packagingAdaptation(script.output, platforms)),
@@ -617,7 +818,7 @@ async function main() {
   await writeStage("05-packaging-adaptation", packaging);
 
   console.log("Running stage 6/6: final-critic");
-  const critic = await executeFinalCritic({
+  const critic = await rt.critic.executeFinalCritic({
     scriptOutput: script.output, directionOutput: direction.output, packagingOutput: packaging.output,
     truthOutput: truth.output, evidencePack: pack, requestedPlatforms: platforms, registry,
     runner: runnerFor("final-critic", () => fake.finalCritic(packaging.output, platforms)),
@@ -631,9 +832,220 @@ async function main() {
   await writeFile(resolve(runDir, "summary.md"), summaryMd, "utf8");
   const measured = writeMeasurements();
 
-  console.log(`\nDone. Wrote 6 stage JSON files, summary.md and field-measurements.md to: ${runDir}`);
+  console.log(`\nDone. Wrote 6 stage JSON files, run-meta.json, summary.md and field-measurements.md to: ${runDir}`);
   console.log(`Measured ${measured.length} field(s); largest share of a stated figure: `
     + `${Math.max(0, ...measured.map((r) => r.pctOfStated ?? 0))}%`);
+  console.log(`Critic verdict: ${critic.output.provisional.verdict}`);
+}
+
+/** Read one saved stage file from a run directory, or fail naming it. */
+async function readSavedStage(runDir, name) {
+  const path = resolve(runDir, `${name}.json`);
+  if (!existsSync(path)) throw new Error(`replay source is missing ${name}.json in ${runDir}`);
+  const parsed = JSON.parse(await readFile(path, "utf8"));
+  if (!parsed || typeof parsed !== "object" || !("output" in parsed)) {
+    throw new Error(`${name}.json in ${runDir} has no "output" — not a saved stage result`);
+  }
+  return parsed;
+}
+
+/**
+ * Run ONLY final-critic against an existing run's saved stage outputs.
+ *
+ * Fail-closed order, and why: every check below is free, so all of them run
+ * before the spend guard and before any request exists.
+ *
+ *  1. The saved stage files load, and the source run is left untouched: output
+ *     goes to a new sibling directory that must not already exist.
+ *  2. `config/approved-facts.json` is byte-identical to the file the run used,
+ *     by the sha256 the run recorded (run-meta.json, or — for runs that predate
+ *     it — the per-asset sha256 every stage's metadata carries). Refused on any
+ *     mismatch, or if no digest was recorded at all.
+ *  3. The automotive facts file matches the run's recorded fingerprint. A run
+ *     that predates the fingerprint cannot prove it; that is printed as a
+ *     warning and requires typed confirmation.
+ *  4. The evidence pack is rebuilt at the run's own instant, and, where the run
+ *     recorded one, its projection fingerprint must match.
+ *  5. Every saved prior output is revalidated through its owning stage's own
+ *     validator against the rebuilt pack.
+ *  6. Only then the cost ceiling and the same live guard a full run uses.
+ */
+async function replayCritic(rt, args) {
+  const { AgentRegistry } = rt.registryModule;
+  const { createAnthropicStageRunner } = rt.stageExecution;
+  const sourceDir = args.replayCritic;
+  if (!existsSync(sourceDir)) throw new Error(`replay source run directory not found: ${sourceDir}`);
+
+  const metaPath = resolve(sourceDir, "run-meta.json");
+  const meta = existsSync(metaPath) ? JSON.parse(await readFile(metaPath, "utf8")) : undefined;
+  const saved = {
+    strategy: await readSavedStage(sourceDir, "01-strategy-concept"),
+    truth: await readSavedStage(sourceDir, "02-automotive-truth"),
+    script: await readSavedStage(sourceDir, "03-hook-story-script"),
+    direction: await readSavedStage(sourceDir, "04-production-direction"),
+    packaging: await readSavedStage(sourceDir, "05-packaging-adaptation"),
+  };
+
+  // --- the run's goal, instant and attributed review time -----------------
+  let goal = meta?.goal;
+  if (!goal) {
+    const summaryPath = resolve(sourceDir, "summary.md");
+    if (existsSync(summaryPath)) {
+      goal = /^- Goal: (.*)$/m.exec(await readFile(summaryPath, "utf8"))?.[1]?.trim();
+    }
+  }
+  goal = goal || args.goal;
+  if (!goal) {
+    throw new Error("the source run records no goal (no run-meta.json and no summary.md); pass it as the positional argument");
+  }
+  if (meta?.goal && args.goal && args.goal !== meta.goal) {
+    throw new Error("the goal given on the command line differs from the one the source run recorded");
+  }
+  const now = typeof meta?.now === "number" ? meta.now : nowFromRunDirName(basename(sourceDir));
+  if (now === undefined) {
+    throw new Error("cannot establish the source run's instant: no run-meta.json and the directory name is not a run timestamp");
+  }
+  const reviewedAt = meta?.reviewedAt ?? (args.reviewedAtExplicit ? args.reviewedAt : new Date(now).toISOString());
+
+  // --- 2. approved-facts identity ---------------------------------------
+  const recordedApproved = new Set();
+  if (meta?.approvedFacts?.sha256) recordedApproved.add(meta.approvedFacts.sha256);
+  for (const stage of Object.values(saved)) {
+    for (const asset of stage?.metadata?.assets ?? []) {
+      if (asset?.path === "config/approved-facts.json" && typeof asset.sha256 === "string") {
+        recordedApproved.add(asset.sha256);
+      }
+    }
+  }
+  const currentApproved = await fileFingerprint(resolve(REPO_ROOT, "config/approved-facts.json"));
+  if (recordedApproved.size === 0) {
+    throw new Error("the source run records no sha256 of config/approved-facts.json, so the replay cannot prove it rebuilt the same evidence");
+  }
+  if (recordedApproved.size > 1) {
+    throw new Error(`the source run records conflicting approved-facts digests: ${[...recordedApproved].join(", ")}`);
+  }
+  const [expectedApproved] = recordedApproved;
+  if (currentApproved !== expectedApproved) {
+    throw new Error(
+      `config/approved-facts.json has changed since the source run: recorded ${expectedApproved}, `
+      + `now ${currentApproved}. Refusing: the rebuilt evidence pack would not be the one the run used.`,
+    );
+  }
+  console.log(`approved-facts.json matches the source run: sha256 ${currentApproved}`);
+
+  // --- 3. automotive facts identity -------------------------------------
+  const currentAutomotive = await fileFingerprint(args.automotiveFactsPath);
+  let automotiveIdentity;
+  if (meta?.automotiveFacts && "sha256" in meta.automotiveFacts) {
+    if (currentAutomotive !== meta.automotiveFacts.sha256) {
+      throw new Error(
+        `the automotive facts file ${displayPath(args.automotiveFactsPath)} does not match the source run: `
+        + `recorded ${meta.automotiveFacts.sha256 ?? "absent"}, now ${currentAutomotive ?? "absent"}. `
+        + "Refusing: the rebuilt evidence pack would not be the one the run used.",
+      );
+    }
+    automotiveIdentity = "matched";
+    console.log(`automotive facts match the source run: sha256 ${currentAutomotive ?? "(file absent in both)"}`);
+  } else {
+    console.warn(
+      "WARNING: the source run predates the automotive-facts fingerprint, so the identity of "
+      + `${displayPath(args.automotiveFactsPath)} (now sha256 ${currentAutomotive ?? "absent"}) cannot be proven `
+      + "to be the file the run used. Revalidation below still requires every saved fact id to bind to it.",
+    );
+    const typed = await askLine("Type UNPROVEN to continue with an unproven automotive facts file (anything else cancels): ");
+    if (typed !== "UNPROVEN") {
+      throw new Error(`replay cancelled: the automotive facts file's identity cannot be proven and was not confirmed (received ${JSON.stringify(typed)})`);
+    }
+    automotiveIdentity = "unproven-confirmed";
+  }
+
+  // --- 4. the rebuilt pack ------------------------------------------------
+  const { pack, fingerprints } = await buildRunEvidence(rt, {
+    goal, now, reviewedAt, automotiveFactsPath: args.automotiveFactsPath, runner: args.runner,
+  });
+  if (meta?.evidencePackSha256 && meta.evidencePackSha256 !== fingerprints.evidencePackSha256) {
+    throw new Error(
+      `the rebuilt evidence pack does not match the source run: recorded ${meta.evidencePackSha256}, `
+      + `rebuilt ${fingerprints.evidencePackSha256}. Refusing.`,
+    );
+  }
+  console.log(`Evidence pack rebuilt at the source run's instant ${new Date(now).toISOString()}: ${JSON.stringify(pack.counts)}`);
+
+  // --- 5. revalidate every saved prior output ---------------------------
+  // Stage 1 is not an input to the critic, but it is a saved prior output, so
+  // it is revalidated too — through its own validator, rebuilt from its saved
+  // typed form exactly as automotive-truth rebuilds it.
+  const s1 = saved.strategy.output;
+  rt.strategy.validateStrategyConceptOutput({
+    angle: s1?.provisional?.angle,
+    concept: s1?.provisional?.concept,
+    rationale: s1?.provisional?.rationale,
+    hypotheses: s1?.provisional?.hypotheses,
+    assumptions: s1?.provisional?.assumptions,
+    supportingFactIds: s1?.evidence?.supportingFactIds,
+    observationIds: s1?.evidence?.observationIds,
+    performanceSignalIds: s1?.evidence?.performanceSignalIds,
+  }, pack);
+  const truthOutput = rt.truth.revalidateAutomotiveTruthOutput(saved.truth.output, pack);
+  const scriptOutput = rt.script.revalidateHookStoryScriptOutput(saved.script.output, truthOutput, pack);
+  const directionOutput = rt.direction.revalidateProductionDirectionOutput(
+    saved.direction.output, scriptOutput, truthOutput, pack);
+  const packagingOutput = rt.packaging.revalidatePackagingAdaptationOutput(
+    saved.packaging.output, scriptOutput, truthOutput, pack);
+  const platforms = packagingOutput.provisional.packages.map((p) => p.platform);
+  if (Array.isArray(meta?.platforms) && meta.platforms.join() !== platforms.join()) {
+    throw new Error(`saved stage 5 packages (${platforms.join(",")}) differ from the run's recorded platforms (${meta.platforms.join(",")})`);
+  }
+  console.log("Every saved prior output revalidated through its owning stage's validator.");
+
+  const registry = new AgentRegistry();
+  await registry.verifyAllAssets();
+
+  // --- 6. the spend guard --------------------------------------------------
+  if (args.runner === "live") {
+    printCostCeiling(rt, [["final-critic", "critic"]], "one critic-only replay");
+    await requireLiveConsent(args);
+  }
+
+  const replayedAt = new Date();
+  const replayDir = resolve(dirname(sourceDir),
+    `${basename(sourceDir)}-critic-replay-${replayedAt.toISOString().replace(/[:.]/g, "-")}`);
+  if (existsSync(replayDir)) throw new Error(`refusing to overwrite an existing directory: ${replayDir}`);
+  await mkdir(replayDir, { recursive: false });
+  await writeFile(resolve(replayDir, "replay-meta.json"), JSON.stringify({
+    schema: "gcd-content-critic-replay/1",
+    sourceRunDir: displayPath(sourceDir),
+    replayedAt: replayedAt.toISOString(),
+    runner: args.runner,
+    goal,
+    sourceNow: now,
+    reviewedAt,
+    platforms,
+    approvedFactsSha256: currentApproved,
+    automotiveFacts: { ...fingerprints.automotiveFacts, identity: automotiveIdentity },
+    evidencePackSha256: fingerprints.evidencePackSha256,
+    evidencePackFingerprintChecked: Boolean(meta?.evidencePackSha256),
+  }, null, 2), "utf8");
+
+  const { transcript, writeMeasurements } = createRunRecorder(rt, replayDir);
+  failureContext = { runDir: replayDir, transcript, writeMeasurements };
+  const fake = buildFakeStageResponses(goal, pack);
+  const runner = recordingRunner(transcript, "final-critic", args.runner === "live"
+    ? createAnthropicStageRunner()
+    : async () => ({
+      text: JSON.stringify(fake.finalCritic(packagingOutput, platforms)),
+      totalCostUsd: 0, usage: { input_tokens: 0, output_tokens: 0 },
+    }));
+
+  console.log("Running final-critic only, against the saved stage 2-5 outputs");
+  const critic = await rt.critic.executeFinalCritic({
+    scriptOutput, directionOutput, packagingOutput, truthOutput, evidencePack: pack,
+    requestedPlatforms: platforms, registry, runner,
+  });
+  await writeFile(resolve(replayDir, "06-final-critic.json"), JSON.stringify(critic, null, 2), "utf8");
+  writeMeasurements();
+  console.log(`\nDone. Wrote 06-final-critic.json, replay-meta.json and field-measurements.md to: ${replayDir}`);
+  console.log(`The source run at ${sourceDir} was not modified.`);
   console.log(`Critic verdict: ${critic.output.provisional.verdict}`);
 }
 
@@ -666,6 +1078,8 @@ main().catch((err) => {
     console.error(`${err.name}: ${err.message}`);
     if (Array.isArray(err.issues)) for (const i of err.issues) console.error(`  - ${i}`);
   } else if (err?.name === "StageExecutionError") {
+    console.error(`${err.name}: ${err.message}`);
+  } else if (["StageOutputTruncatedError", "StageRefusalError", "StageUnexpectedStopError"].includes(err?.name)) {
     console.error(`${err.name}: ${err.message}`);
   } else {
     console.error(err?.stack ?? String(err));

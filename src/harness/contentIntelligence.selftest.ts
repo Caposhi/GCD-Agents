@@ -4,8 +4,11 @@
  * Run: npm run build && npm run test:content-intelligence
  */
 
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
-  copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync,
+  copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync,
+  symlinkSync, writeFileSync,
 } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -55,7 +58,8 @@ import {
   STATED_FIELD_CEILINGS,
   STRATEGY_ID_CHANNELS,
   MIN_OUTPUT_TOKENS_PER_SECOND,
-  POLICY_STREAM_DEADLINE_MS,
+  REVIEWER_ONLY_MARGIN_FIELDS,
+  REVIEWER_ONLY_SLACK_MULTIPLIER,
   STAGE_REQUEST_MAX_RETRIES,
   STAGE_REQUEST_SETUP_TIMEOUT_MS,
   STRATEGY_OUTPUT,
@@ -99,11 +103,15 @@ import {
   EFFORT_LEVELS,
   MAX_EFFORT_WITH_THINKING_DISABLED,
   MODELS_REJECTING_DISABLED_THINKING_ABOVE_HIGH,
+  MODELS_REQUIRING_THINKING,
   ModelPolicyError,
   POLICY_EFFORT,
   POLICY_MAX_TOKENS,
   POLICY_MODEL_OUTPUT_CAPS,
+  POLICY_STREAM_DEADLINE_MS,
   POLICY_THINKING,
+  THINKING_RESERVE_TOKENS,
+  thinkingEffortViolation,
   type StageEffortLevel,
   type StageThinkingPolicy,
   modelBearingPolicies,
@@ -137,7 +145,11 @@ import {
 } from "./agents/finalCritic.js";
 import { groupDigits } from "./agents/responseFormatKit.js";
 import {
+  StageOutputTruncatedError,
+  StageRefusalError,
   StageStreamDeadlineError,
+  StageUnexpectedStopError,
+  legacyModelPriceUsdPerMTok,
   runAgentWithMessageCreator,
   runStageAgentWithStreamOpener,
 } from "./sdk.js";
@@ -194,6 +206,9 @@ import {
   PACKAGING_PLATFORM_PRODUCTION_ID,
   PRODUCTION_PLATFORM_PACKAGING_ID,
   PLATFORM_PACKAGING_POLICY,
+  GBP_LOCAL_KEYWORD_MAX,
+  PLATFORM_LOCAL_KEYWORD_MAX,
+  effectiveLocalKeywordMax,
   RECOMMENDED_TIME_PATTERN,
   assertPackagingPlatformBijection,
   executePackagingAdaptation,
@@ -4041,6 +4056,29 @@ async function run(): Promise<void> {
       check("BQ36. too many local keywords fail",
         await rejectsWithStageError(() => patchPackage(2, {
           localKeywords: Array.from({ length: PACKAGING_LIMITS.maxLocalKeywords + 1 }, () => "k") })));
+      // Google Business Profile's cap is the skill's "1–2 local keyword
+      // phrases", narrower than the pipeline ceiling the other platforms keep.
+      // Package 2 is GBP and package 0 is Instagram in this fixture.
+      const keywords = (n: number): string[] => Array.from({ length: n }, (_, i) => `keyword ${i}`);
+      check("BQ36a. Google Business Profile refuses one local keyword over its own cap, even "
+        + "though the pipeline ceiling would allow it",
+        GBP_LOCAL_KEYWORD_MAX < PACKAGING_LIMITS.maxLocalKeywords
+          && await rejectsWithStageError(() => patchPackage(2, {
+            localKeywords: keywords(GBP_LOCAL_KEYWORD_MAX + 1) })));
+      let gbpAtCap = false;
+      let instagramAtPipelineCap = false;
+      try { await patchPackage(2, { localKeywords: keywords(GBP_LOCAL_KEYWORD_MAX) }); gbpAtCap = true; } catch { /* reported below */ }
+      try {
+        await patchPackage(0, { localKeywords: keywords(effectiveLocalKeywordMax("instagram")) });
+        instagramAtPipelineCap = true;
+      } catch { /* reported below */ }
+      check("BQ36b. Google Business Profile accepts exactly its cap, and Instagram still accepts "
+        + "the full pipeline ceiling — the change narrows one platform and widens nothing",
+        gbpAtCap && instagramAtPipelineCap
+          && effectiveLocalKeywordMax("google_business_profile") === GBP_LOCAL_KEYWORD_MAX
+          && effectiveLocalKeywordMax("instagram") === PACKAGING_LIMITS.maxLocalKeywords
+          && effectiveLocalKeywordMax("facebook") === PACKAGING_LIMITS.maxLocalKeywords
+          && Object.values(PLATFORM_LOCAL_KEYWORD_MAX).every((n) => n <= PACKAGING_LIMITS.maxLocalKeywords));
 
       check("BQ37. a recommended time that is a timestamp fails",
         await rejectsWithStageError(() => patchPackage(0, { recommendedTime: "2026-09-01T09:30:00Z" })));
@@ -4344,7 +4382,7 @@ async function run(): Promise<void> {
     check("BT2. exactly one model request is made",
       criticCalls.length === 1 && criticResult.metadata.modelRequests === 1);
     check("BT3. bounded model identity and usage metadata are returned",
-      criticResult.metadata.model === "claude-sonnet-5"
+      criticResult.metadata.model === resolveModelPolicy("critic").model
         && criticResult.metadata.modelPolicy === "critic"
         && criticResult.metadata.usage?.output_tokens === 80
         && typeof criticResult.metadata.totalCostUsd === "number");
@@ -6254,7 +6292,7 @@ async function run(): Promise<void> {
           platform,
           caption: "W".repeat(ccPlatformCaptionMax[platform] - joined),
           hashtags: tags,
-          localKeywords: Array.from({ length: PACKAGING_LIMITS.maxLocalKeywords }, (_, i) =>
+          localKeywords: Array.from({ length: effectiveLocalKeywordMax(platform) }, (_, i) =>
             `${"k".repeat(PACKAGING_LIMITS.localKeywordChars - 3)}${String(i).padStart(3, "0")}`),
           recommendedTime: "23:59 ET",
           openQuestions: Array.from({ length: PACKAGING_LIMITS.maxOpenQuestions },
@@ -6401,9 +6439,16 @@ async function run(): Promise<void> {
       ["packaging-adaptation", "reasoning-standard", PACKAGING_OUTPUT],
       ["final-critic", "critic", CRITIC_OUTPUT],
     ];
+    // A thinking-disabled policy guarantees its whole budget to visible output.
+    // A thinking policy guarantees nothing; the most it can be credited with is
+    // its budget less the thinking reserve, which is what CC19b bounds.
+    const visibleCredit = (policy: keyof typeof POLICY_MAX_TOKENS): number => {
+      const resolved = resolveModelPolicy(policy);
+      return resolved.visibleOutputTokens ?? resolved.maxTokens - THINKING_RESERVE_TOKENS;
+    };
     const shortBudgets = BUDGETS
       .filter(([, policy, ceiling]) =>
-        resolveModelPolicy(policy as keyof typeof POLICY_MAX_TOKENS).visibleOutputTokens
+        visibleCredit(policy as keyof typeof POLICY_MAX_TOKENS)
           < minimumOutputTokens(ceiling.transportChars))
       .map(([stage, policy, ceiling]) =>
         `${stage}/${policy}: budget=${POLICY_MAX_TOKENS[policy as keyof typeof POLICY_MAX_TOKENS]} `
@@ -6423,28 +6468,53 @@ async function run(): Promise<void> {
       overCap.length === 0
         && Object.keys(POLICY_OUTPUT_TOKEN_FLOORS).sort().join()
              === Object.keys(POLICY_MODEL_OUTPUT_CAPS).sort().join());
+    // The critic thinks, and its thinking shares `max_tokens`. Its contract
+    // floor must leave the named reserve under its model's cap, so a contract
+    // that grows into the room thinking needs fails here rather than at run
+    // time as a truncated response. The reserve is a heuristic, and the
+    // comment beside it must say so.
+    {
+      const modelPolicySource = await readFile(
+        resolve(REPO_ROOT, "src/harness/agents/modelPolicy.ts"), "utf8");
+      const thinkingPolicies = modelBearingPolicies()
+        .filter((policy) => POLICY_THINKING[policy as keyof typeof POLICY_THINKING].type !== "disabled");
+      check("CC19b. every thinking policy's contract floor is at most its model's output cap "
+        + "minus THINKING_RESERVE_TOKENS, and the reserve is labelled a heuristic, not a guarantee",
+        thinkingPolicies.length > 0
+          && thinkingPolicies.every((policy) => {
+               const key = policy as keyof typeof POLICY_MODEL_OUTPUT_CAPS;
+               return POLICY_OUTPUT_TOKEN_FLOORS[key]! <= POLICY_MODEL_OUTPUT_CAPS[key] - THINKING_RESERVE_TOKENS;
+             })
+          && THINKING_RESERVE_TOKENS > 0
+          && /\*\*A heuristic, not a guarantee\.\*\*/.test(modelPolicySource));
+    }
     check("CC20. every registered stage's declared policy is one of the three budgeted "
       + "policies, so no stage can be added without a budget",
       targetStageDefinitions().every((d) =>
         BUDGETS.some(([stage, policy]) => stage === d.id && policy === d.modelPolicy)));
-    check("CC21. the budgets are derived from the contracts, not chosen — each policy's "
-      + "budget is the rounded-up maximum of the stages that use it",
+    check("CC21. the budgets are derived, not chosen — a thinking-disabled policy's budget is "
+      + "the rounded-up maximum of the stages that use it, and a thinking policy's is its "
+      + "model's whole output cap, because its thinking shares it",
       POLICY_MAX_TOKENS["reasoning-heavy"] === POLICY_OUTPUT_TOKEN_FLOORS["reasoning-heavy"]
         && POLICY_MAX_TOKENS["reasoning-standard"] === POLICY_OUTPUT_TOKEN_FLOORS["reasoning-standard"]
-        && POLICY_MAX_TOKENS.critic === POLICY_OUTPUT_TOKEN_FLOORS.critic
+        && POLICY_MAX_TOKENS.critic === POLICY_MODEL_OUTPUT_CAPS.critic
+        && POLICY_THINKING.critic.type === "adaptive"
         && /POLICY_OUTPUT_TOKEN_FLOORS/.test(
              await readFile(resolve(REPO_ROOT, "src/harness/agents/modelPolicy.ts"), "utf8")));
     check("CC22. every derived budget uses the serialized byte worst case and remains within "
-      + "the documented centralized model output cap, with hidden thinking disabled",
+      + "the documented centralized model output cap; a visible-output guarantee is claimed "
+      + "exactly when thinking is disabled, and never under adaptive thinking",
       Number(MAX_TOKENS_PER_UTF8_BYTE) === 1
         && minimumOutputTokens(3) === 3
         && minimumOutputTokens(4) === 4
-        && Object.values(POLICY_THINKING).every((thinking) => thinking.type === "disabled")
         && modelBearingPolicies().every((policy) => {
              const resolved = resolveModelPolicy(policy);
-             return resolved.visibleOutputTokens === resolved.maxTokens
-               && resolved.thinking.type === "disabled";
+             return resolved.thinking.type === "disabled"
+               ? resolved.visibleOutputTokens === resolved.maxTokens
+               : !("visibleOutputTokens" in resolved);
            })
+        && POLICY_THINKING["reasoning-heavy"].type === "disabled"
+        && POLICY_THINKING["reasoning-standard"].type === "disabled"
         && Object.entries(POLICY_MAX_TOKENS).every(([policy, budget]) =>
              budget <= POLICY_MODEL_OUTPUT_CAPS[policy as keyof typeof POLICY_MODEL_OUTPUT_CAPS]));
 
@@ -6494,12 +6564,22 @@ async function run(): Promise<void> {
         }
       };
 
-      check("CC22a. the configuration as it stands resolves cleanly for every policy, "
-        + "declaring no effort — the guard is dormant, not merely satisfied",
-        modelBearingPolicies().every((policy) =>
-          POLICY_EFFORT[policy as keyof typeof POLICY_EFFORT] === undefined
-            && resolveModelPolicy(policy).effort === undefined)
-          && Object.keys(POLICY_EFFORT).length === 0
+      // Snapshots, so every mutation below can be proved restored.
+      const effortBefore = JSON.stringify(POLICY_EFFORT);
+      const thinkingBefore = JSON.stringify(POLICY_THINKING);
+      check("CC22a. the configuration as it stands resolves cleanly for every policy; the "
+        + "policies on a restricted model declare no effort, and the only declared effort is "
+        + "the critic's explicit \"high\"",
+        modelBearingPolicies().every((policy) => {
+          try {
+            return resolveModelPolicy(policy).effort
+              === POLICY_EFFORT[policy as keyof typeof POLICY_EFFORT];
+          } catch {
+            return false;
+          }
+        })
+          && restricted.every((policy) => POLICY_EFFORT[policy as keyof typeof POLICY_EFFORT] === undefined)
+          && effortBefore === JSON.stringify({ critic: "high" })
           && restricted.length > 0 && unrestricted.length > 0 && aboveLimit.length > 0);
 
       check("CC22b. a policy on a restricted model throws at resolve time at every effort "
@@ -6564,6 +6644,7 @@ async function run(): Promise<void> {
           return {
             finalMessage: async () => ({
               content: [{ type: "text", text: "{}" }],
+              stop_reason: "end_turn",
               usage: { input_tokens: 1, output_tokens: 1 },
             }) as never,
             abort: () => {},
@@ -6577,9 +6658,8 @@ async function run(): Promise<void> {
           && !("effort" in ((effortProbeRequest.output_config as Record<string, unknown>
                | undefined) ?? {}))
           && !("effort" in effortProbeRequest)
-          && modelBearingPolicies().every((policy) =>
-               POLICY_EFFORT[policy as keyof typeof POLICY_EFFORT] === undefined
-                 && POLICY_THINKING[policy as keyof typeof POLICY_THINKING].type === "disabled"));
+          && JSON.stringify(POLICY_EFFORT) === effortBefore
+          && JSON.stringify(POLICY_THINKING) === thinkingBefore);
 
       check("CC22g. the restriction is recorded against model ids, not policy names, and "
         + "names its source and the exact rule, so repointing a policy carries it",
@@ -6589,6 +6669,281 @@ async function run(): Promise<void> {
           && /documented provider source/.test(modelPolicySource)
           && [...MODELS_REJECTING_DISABLED_THINKING_ABOVE_HIGH].every((id) =>
                modelBearingPolicies().some((policy) => resolveModelPolicy(policy).model === id)));
+    }
+
+    // --- CI. the critic runs Claude Opus 5.5 with adaptive thinking ---------
+    //
+    // Claude Opus 5.5 rejects disabled thinking at every effort level, and its
+    // own effort default is `medium`. Both facts are knowable offline, so both
+    // are enforced before a request exists.
+    {
+      const modelPolicySource = await readFile(
+        resolve(REPO_ROOT, "src/harness/agents/modelPolicy.ts"), "utf8");
+      const critic = resolveModelPolicy("critic");
+      check("CI1. the critic policy resolves to claude-opus-5-5 with adaptive thinking, an "
+        + "explicit effort of \"high\", and max_tokens at the model's whole output cap; the other "
+        + "two policies keep their models and their disabled thinking",
+        critic.model === "claude-opus-5-5" && critic.thinking.type === "adaptive"
+          && critic.effort === "high" && critic.maxTokens === POLICY_MODEL_OUTPUT_CAPS.critic
+          && !("visibleOutputTokens" in critic)
+          && resolveModelPolicy("reasoning-heavy").model === "claude-opus-5"
+          && resolveModelPolicy("reasoning-heavy").thinking.type === "disabled"
+          && resolveModelPolicy("reasoning-standard").model === "claude-sonnet-5"
+          && resolveModelPolicy("reasoning-standard").thinking.type === "disabled");
+      check("CI2. the models that require thinking are recorded by id, with the documented rule "
+        + "quoted and the rule that adding an id needs a documented provider source",
+        [...MODELS_REQUIRING_THINKING].join() === "claude-opus-5-5"
+          && /thinking can't be disabled/.test(modelPolicySource)
+          && /at every effort\s+\* level/.test(modelPolicySource)
+          && /Adding any model here requires a documented provider source/.test(modelPolicySource));
+
+      // Disabling the critic's thinking must throw at resolve time at every
+      // effort, including none declared.
+      const thinkingBefore = POLICY_THINKING.critic;
+      const effortBefore = POLICY_EFFORT.critic;
+      let everyEffortThrows = true;
+      try {
+        POLICY_THINKING.critic = { type: "disabled" };
+        for (const level of [undefined, ...EFFORT_LEVELS]) {
+          if (level === undefined) delete POLICY_EFFORT.critic; else POLICY_EFFORT.critic = level;
+          try {
+            resolveModelPolicy("critic");
+            everyEffortThrows = false;
+          } catch (err) {
+            if (!(err instanceof ModelPolicyError) || !/every effort level/.test((err as Error).message)) {
+              everyEffortThrows = false;
+            }
+          }
+        }
+      } finally {
+        POLICY_THINKING.critic = thinkingBefore;
+        if (effortBefore === undefined) delete POLICY_EFFORT.critic; else POLICY_EFFORT.critic = effortBefore;
+      }
+      check("CI3. disabling thinking on a model that requires it throws ModelPolicyError at resolve "
+        + "time at every effort level, including none, before anything is billed — and the tables "
+        + "were restored",
+        everyEffortThrows && POLICY_THINKING.critic.type === "adaptive" && POLICY_EFFORT.critic === "high");
+      check("CI4. the existing high-effort guard is intact beside it: disabled thinking on Opus 5 "
+        + "is refused above high and accepted at high, and adaptive thinking on Opus 5.5 is accepted "
+        + "at every effort",
+        thinkingEffortViolation("claude-opus-5", { type: "disabled" }, "xhigh") !== undefined
+          && thinkingEffortViolation("claude-opus-5", { type: "disabled" }, "high") === undefined
+          && EFFORT_LEVELS.every((level) =>
+               thinkingEffortViolation("claude-opus-5-5", { type: "adaptive" }, level) === undefined)
+          && thinkingEffortViolation("claude-opus-5-5", { type: "disabled" }, undefined) !== undefined);
+
+      // The exact critic request, through the real invocation path: registry,
+      // policy resolution, the production runner factory, and the stage SDK
+      // builder. Only the stream is injected.
+      let criticRunnerRequest: Record<string, unknown> | undefined;
+      let criticSdkRequest: Record<string, unknown> | undefined;
+      let criticSdkOptions: StageRequestOptions | undefined;
+      const criticProduction = createAnthropicStageRunner((opts) =>
+        runStageAgentWithStreamOpener(opts, (request, options) => {
+          criticSdkRequest = request as unknown as Record<string, unknown>;
+          criticSdkOptions = options;
+          return {
+            finalMessage: async () => ({
+              content: [{ type: "text", text: "{}" }],
+              stop_reason: "end_turn",
+              usage: { input_tokens: 1, output_tokens: 1 },
+            }) as never,
+            abort: () => {},
+          };
+        }));
+      await invokeStage({
+        stage: "final-critic",
+        registry: new AgentRegistry(),
+        dataBlocks: [{ label: "PROBE", body: "offline" }],
+        responseFormatSchema: FINAL_CRITIC_RESPONSE_FORMAT,
+        runner: async (request) => {
+          criticRunnerRequest = request as unknown as Record<string, unknown>;
+          return criticProduction(request);
+        },
+      });
+      const outputConfig = (criticSdkRequest?.output_config ?? {}) as Record<string, unknown>;
+      check("CI5. the critic's exact wire request carries model claude-opus-5-5, thinking "
+        + "{type: \"adaptive\"}, output_config.effort \"high\" beside its response schema, max_tokens "
+        + "128,000, no retries, the deadline its own budget implies, and no fallbacks parameter",
+        criticRunnerRequest?.effort === "high"
+          && criticSdkRequest?.model === "claude-opus-5-5"
+          && JSON.stringify(criticSdkRequest?.thinking) === JSON.stringify({ type: "adaptive" })
+          && outputConfig.effort === "high"
+          && (outputConfig.format as Record<string, unknown> | undefined)?.schema === FINAL_CRITIC_RESPONSE_FORMAT
+          && criticSdkRequest?.max_tokens === POLICY_MAX_TOKENS.critic
+          && POLICY_MAX_TOKENS.critic === 128_000
+          && criticSdkOptions?.maxRetries === 0
+          && criticSdkOptions?.streamDeadlineMs === POLICY_STREAM_DEADLINE_MS.critic
+          && !("fallbacks" in (criticSdkRequest ?? {})) && !("betas" in (criticSdkRequest ?? {})));
+
+      // The invariant is re-sited where the stage request is built, so a caller
+      // that bypasses the policy table still cannot send a knowable 400.
+      let openedForBadPairing = 0;
+      const refusesBeforeStream = async (opts: Parameters<typeof runStageAgentWithStreamOpener>[0]) => {
+        try {
+          await runStageAgentWithStreamOpener(opts, () => {
+            openedForBadPairing += 1;
+            return { finalMessage: async () => ({}) as never, abort: () => {} };
+          });
+          return false;
+        } catch (err) {
+          return err instanceof ModelPolicyError;
+        }
+      };
+      check("CI6. the stage request builder re-checks the same invariant: disabled thinking on "
+        + "claude-opus-5-5, or on claude-opus-5 above high, throws before any stream is opened",
+        await refusesBeforeStream({ systemPrompt: "s", prompt: "p", model: "claude-opus-5-5",
+          maxTokens: 1024, thinking: { type: "disabled" } })
+          && await refusesBeforeStream({ systemPrompt: "s", prompt: "p", model: "claude-opus-5",
+            maxTokens: 1024, thinking: { type: "disabled" }, effort: "max" })
+          && openedForBadPairing === 0);
+
+      let legacyWithEffort: Record<string, unknown> | undefined;
+      await runAgentWithMessageCreator(
+        { systemPrompt: "s", prompt: "p", effort: "high" } as unknown as AgentRunOptions,
+        async (request) => {
+          legacyWithEffort = request as unknown as Record<string, unknown>;
+          return { content: [{ type: "text", text: "ok" }], usage: {} } as never;
+        },
+      );
+      check("CI7. effort exists only on the stage path: the legacy builder ignores it entirely, "
+        + "so no legacy request can carry output_config.effort",
+        legacyWithEffort !== undefined && !("output_config" in legacyWithEffort)
+          && !("effort" in legacyWithEffort));
+      check("CI8. the critic's model is priced at its published rate, so its cost meter never "
+        + "reports undefined",
+        legacyModelPriceUsdPerMTok(critic.model)?.in === 4
+          && legacyModelPriceUsdPerMTok(critic.model)?.out === 20);
+    }
+
+    // --- CH. the stage path refuses a response that did not finish its turn --
+    //
+    // `collect()` reads only text blocks and is shared with the deployed legacy
+    // path, so the check lives in `runStageAgentWithStreamOpener` alone. Each
+    // case is driven through the injectable stream opener.
+    {
+      const stageOpts = {
+        systemPrompt: "s", prompt: "p", model: "claude-opus-5-5", maxTokens: 4096,
+        thinking: { type: "adaptive" } as const, effort: "high" as const,
+      };
+      const messageWith = (stopReason: unknown, stopDetails: unknown = null) => ({
+        id: "msg_offline", type: "message", role: "assistant", model: "claude-opus-5-5",
+        content: [{ type: "thinking", thinking: "", signature: "sig" }, { type: "text", text: "{\"partial\":" }],
+        stop_reason: stopReason, stop_details: stopDetails, stop_sequence: null,
+        usage: { input_tokens: 11, output_tokens: 4096 },
+      }) as never;
+      const outcome = async (message: unknown): Promise<{ error?: unknown; text?: string; opened: number }> => {
+        let opened = 0;
+        try {
+          const result = await runStageAgentWithStreamOpener(stageOpts, () => {
+            opened += 1;
+            return { finalMessage: async () => message as never, abort: () => {} };
+          });
+          return { text: result.text, opened };
+        } catch (error) {
+          return { error, opened };
+        }
+      };
+
+      const truncated = await outcome(messageWith("max_tokens"));
+      const truncatedError = truncated.error as StageOutputTruncatedError | undefined;
+      check("CH1. stop_reason \"max_tokens\" raises StageOutputTruncatedError naming the model, the "
+        + "max_tokens budget and the usage, and keeps the complete response for the caller to save",
+        truncatedError instanceof StageOutputTruncatedError && truncated.opened === 1
+          && truncatedError.model === "claude-opus-5-5" && truncatedError.maxTokens === 4096
+          && truncatedError.usage?.output_tokens === 4096
+          && (truncatedError.response as unknown as { stop_reason: string }).stop_reason === "max_tokens");
+
+      const refused = await outcome(messageWith("refusal", {
+        type: "refusal", category: "reasoning_extraction", explanation: "offline fixture",
+      }));
+      const refusedError = refused.error as StageRefusalError | undefined;
+      check("CH2. stop_reason \"refusal\" raises StageRefusalError carrying stop_details.category "
+        + "and explanation",
+        refusedError instanceof StageRefusalError && refusedError.category === "reasoning_extraction"
+          && refusedError.explanation === "offline fixture"
+          && /reasoning_extraction/.test(refusedError.message));
+      const refusedNoDetails = await outcome(messageWith("refusal", null));
+      const noDetailsError = refusedNoDetails.error as StageRefusalError | undefined;
+      check("CH3. a refusal whose stop_details is null is still a named refusal — the details are "
+        + "guarded, never dereferenced",
+        noDetailsError instanceof StageRefusalError && noDetailsError.category === null
+          && noDetailsError.explanation === null && /not reported/.test(noDetailsError.message));
+
+      const others = ["stop_sequence", "tool_use", "pause_turn", null, "a_future_stop_reason"];
+      const otherOutcomes = await Promise.all(others.map((reason) => outcome(messageWith(reason))));
+      check("CH4. every other stop_reason — stop_sequence, tool_use, pause_turn, null, or one this "
+        + "SDK does not know — raises StageUnexpectedStopError naming it",
+        otherOutcomes.every((o, i) => o.error instanceof StageUnexpectedStopError
+          && (o.error as StageUnexpectedStopError).stopReason === others[i]));
+
+      const completed = await outcome({
+        ...(messageWith("end_turn") as object),
+        content: [{ type: "thinking", thinking: "", signature: "sig" }, { type: "text", text: "{\"ok\":true}" }],
+      });
+      check("CH5. stop_reason \"end_turn\" returns the text blocks only, as before — thinking "
+        + "blocks are never read as output",
+        completed.error === undefined && completed.text === "{\"ok\":true}" && completed.opened === 1);
+
+      // Through the stage boundary, the named error fails the stage closed with
+      // its message preserved, after exactly one request.
+      let boundaryRequests = 0;
+      const refusingRunner = createAnthropicStageRunner((opts) =>
+        runStageAgentWithStreamOpener(opts, () => {
+          boundaryRequests += 1;
+          return {
+            finalMessage: async () => messageWith("refusal", { type: "refusal", category: "bio", explanation: null }),
+            abort: () => {},
+          };
+        }));
+      let boundaryError: unknown;
+      try {
+        await invokeStage({
+          stage: "final-critic", registry: new AgentRegistry(),
+          dataBlocks: [{ label: "PROBE", body: "offline" }], runner: refusingRunner,
+        });
+      } catch (err) {
+        boundaryError = err;
+      }
+      check("CH6. through the stage boundary a refusal fails the stage closed as a "
+        + "StageExecutionError naming the refusal, after exactly one request and no fallback",
+        boundaryError instanceof StageExecutionError && boundaryRequests === 1
+          && /refused/.test((boundaryError as Error).message) && /"bio"/.test((boundaryError as Error).message));
+
+      const sdkSource = await readFile(resolve(REPO_ROOT, "src/harness/sdk.ts"), "utf8");
+      const sdkCode = sdkSource.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
+      check("CH7. no fallback exists anywhere in the SDK boundary: no fallbacks parameter, no "
+        + "server-side-fallback beta, no refusal-fallback middleware",
+        !/fallbacks\s*:/.test(sdkCode) && !/server-side-fallback/.test(sdkCode)
+          && !/RefusalFallback/i.test(sdkCode));
+
+      // The legacy path is untouched: collect() still returns whatever text a
+      // response carries, whatever its stop reason, and the request is the
+      // exact object it always was.
+      const legacyRequests: Array<Record<string, unknown>> = [];
+      const legacyTexts: string[] = [];
+      for (const reason of ["max_tokens", "refusal", "end_turn"]) {
+        const result = await runAgentWithMessageCreator(
+          { systemPrompt: "s", prompt: "p" },
+          async (request) => {
+            legacyRequests.push(request as unknown as Record<string, unknown>);
+            return { content: [{ type: "text", text: `legacy ${reason}` }], stop_reason: reason,
+              stop_details: null, usage: { input_tokens: 1, output_tokens: 1 } } as never;
+          },
+        );
+        legacyTexts.push(result.text);
+      }
+      const collectBody = /function collect\(res: Anthropic\.Message, model: string\): AgentRunResult \{([\s\S]*?)\n\}/
+        .exec(sdkSource)?.[1] ?? "";
+      check("CH8. the legacy request and collect() are unchanged: a legacy response is collected "
+        + "whatever its stop_reason, and the default legacy request is byte-identical to before",
+        legacyTexts.join("|") === "legacy max_tokens|legacy refusal|legacy end_turn"
+          && legacyRequests.every((r) => JSON.stringify(r) === JSON.stringify({
+               model: "claude-sonnet-4-6", max_tokens: 3000, system: "s",
+               messages: [{ role: "user", content: "p" }],
+             }))
+          && collectBody.length > 0 && !/stop_reason/.test(collectBody)
+          && /if \(block\.type === "text"\) text \+= block\.text;/.test(collectBody));
     }
 
     // --- CC-F. the narrowing that is a narrowing, recorded as one ----------
@@ -7767,8 +8122,9 @@ async function run(): Promise<void> {
       {
         stage: "packaging-adaptation",
         file: "agents/packaging-adaptation.md",
+        // `packages[].localKeywords` is per platform, like the caption, so it is
+        // paired against each platform name below (CD7a) rather than here.
         paired: [
-          ["packages[].localKeywords", PACKAGING_LIMITS.maxLocalKeywords, "entries"],
           ["packages[].localKeywords[]", PACKAGING_LIMITS.localKeywordChars, "characters"],
           ["packages[].openQuestions", PACKAGING_LIMITS.maxOpenQuestions, "entries"],
           ["packages[].openQuestions[]", PACKAGING_LIMITS.openQuestionChars, "characters"],
@@ -7780,6 +8136,7 @@ async function run(): Promise<void> {
           // Instagram's is a stated range and Google Business Profile's is
           // zero ("no hashtags at all"); only Facebook's reads as "at most N".
           [effectiveHashtagMax("facebook"), "hashtags"],
+          ...PACKAGING_PLATFORMS.map((p) => [effectiveLocalKeywordMax(p), "entries"] as const),
         ],
       },
       {
@@ -7829,12 +8186,18 @@ async function run(): Promise<void> {
           ?.paired.find(([f]) => f === key.slice(dot + 1));
         return pair?.[1];
       };
+      // A reviewer-only product-bearing field carries a narrower margin than
+      // plumbing, sized on measured variance; it still must clear its own
+      // declared minimum.
       const tooTight = declared.filter(([key, stated]) => {
         const enforced = enforcedFor(key);
-        return enforced === undefined || enforced < stated * CEILING_SLACK_MULTIPLIER;
+        const minimum = REVIEWER_ONLY_MARGIN_FIELDS.has(key)
+          ? REVIEWER_ONLY_SLACK_MULTIPLIER : CEILING_SLACK_MULTIPLIER;
+        return enforced === undefined || enforced < stated * minimum;
       });
       check("CD0c. every field with a declared stated figure is enforced at no less than "
-        + `${CEILING_SLACK_MULTIPLIER}x that figure, so variance around the stated number `
+        + `${CEILING_SLACK_MULTIPLIER}x that figure (${REVIEWER_ONLY_SLACK_MULTIPLIER}x for a `
+        + "reviewer-only product field), so variance around the stated number "
         + "cannot reach the boundary"
         + (tooTight.length ? ` — too tight: ${tooTight.map(([k]) => k).join(", ")}` : ""),
         declared.length > 0 && tooTight.length === 0);
@@ -7854,6 +8217,9 @@ async function run(): Promise<void> {
       const PER_PLATFORM_FIELDS: ReadonlyArray<readonly [string, number, LimitUnit]> = [
         ["packaging-adaptation.packages[].caption", PACKAGING_LIMITS.pipelineCaptionChars, "characters"],
         ["packaging-adaptation.packages[].hashtags", PACKAGING_LIMITS.maxHashtags, "entries"],
+        // Classified at the pipeline ceiling; each platform's effective cap is
+        // at or below it (BQ36b), and GBP's is narrower.
+        ["packaging-adaptation.packages[].localKeywords", PACKAGING_LIMITS.maxLocalKeywords, "entries"],
       ];
       const expectedBounds = [
         ...promptLimits.flatMap((spec) => spec.paired.map(
@@ -7877,14 +8243,30 @@ async function run(): Promise<void> {
         .filter(([key, b]) => b.class === "internal-plumbing" && b.unit === "characters"
           && !declaredKeys.has(key))
         .map(([key]) => key);
+      // The one amendment to "a product-bearing field states exactly what it
+      // enforces": a field whose sole reader is the internal reviewer, with no
+      // platform or provider consumer, may carry a margin. The allow-list is
+      // pinned here, by value, so widening it is a reviewed edit to this check.
       const splitProduct = [...declaredKeys]
+        .filter((key) => !REVIEWER_ONLY_MARGIN_FIELDS.has(key))
         .filter((key) => OUTPUT_FIELD_BOUNDS[key]?.class !== "internal-plumbing"
           || OUTPUT_FIELD_BOUNDS[key]?.unit !== "characters");
       check("CD0f. every internal-plumbing character field states a lower figure than it "
-        + "enforces, and no product-bearing field is given a margin"
+        + "enforces, and no product-bearing field is given a margin except the reviewer-only "
+        + "allow-list"
         + (unsplitPlumbing.length ? ` — plumbing without a margin: ${unsplitPlumbing.join(", ")}` : "")
         + (splitProduct.length ? ` — margin on a product-bearing field: ${splitProduct.join(", ")}` : ""),
         unsplitPlumbing.length === 0 && splitProduct.length === 0 && declaredKeys.size > 0);
+      const allowList = [...REVIEWER_ONLY_MARGIN_FIELDS];
+      check("CD0f2. the reviewer-only margin allow-list is exactly {\"final-critic.findings[].issue\"}: "
+        + "product-bearing, a character field, rendered only for the reviewer, with no platform "
+        + "or provider consumer — text sent to a platform never gets a margin",
+        allowList.length === 1 && allowList[0] === "final-critic.findings[].issue"
+          && allowList.every((key) => OUTPUT_FIELD_BOUNDS[key]?.class === "product-bearing"
+            && OUTPUT_FIELD_BOUNDS[key]?.unit === "characters"
+            && declaredKeys.has(key)
+            && key.startsWith("final-critic.")
+            && !/platform:/.test(OUTPUT_FIELD_BOUNDS[key]!.basis)));
 
       // The review surface is `markdownSummary` in the local CLI — the only
       // place this pipeline renders stage output for a person. A plumbing
@@ -7969,6 +8351,14 @@ async function run(): Promise<void> {
       check(`CD6 (${platform}). the enforced caption ceiling is stated for this platform`,
         captions.length === 1 && captions[0] === groupDigits(effectiveCaptionMax(platform)));
     }
+    // Local keyword entries are per platform too: Google Business Profile's
+    // cap is the skill's "1–2", narrower than the pipeline ceiling.
+    for (const platform of PACKAGING_PLATFORMS) {
+      const stated = statedFor(packagingPrompt.filter((l) => l.includes("`localKeywords`")),
+        platform, "entries");
+      check(`CD7a (${platform}). the enforced local keyword ceiling is stated for this platform`,
+        stated.length === 1 && stated[0] === groupDigits(effectiveLocalKeywordMax(platform)));
+    }
     check("CD7. the enforced hashtag range is stated for every platform",
       packagingPrompt.some((l) => l.includes("`instagram`")
         && l.includes(`**${INSTAGRAM_HASHTAG_MIN}–${effectiveHashtagMax("instagram")} hashtags**`))
@@ -8010,11 +8400,24 @@ async function run(): Promise<void> {
     check("CE1. a live run refuses an incomplete evidence pack instead of warning past it",
       refusal > 0 && at('if (args.runner === "live") {\n      throw new Error(') > 0);
 
-    const preflight = at("evidence pack cannot satisfy every stage");
-    const costGate = at("Estimated ceiling cost per stage");
+    // The full run and the critic-only replay share their evidence builder,
+    // cost ceiling and live guard, so ordering is asserted on the call sites
+    // inside each entry point rather than on where the shared text is written.
+    const bodyOf = (startMarker: string, endMarker: string): string => {
+      const start = cli.indexOf(startMarker);
+      const end = cli.indexOf(endMarker, start + 1);
+      return start >= 0 && end > start ? cli.slice(start, end) : "";
+    };
+    const mainBody = bodyOf("async function main() {", "\nasync function readSavedStage(");
+    const inMain = (needle: string): number => mainBody.indexOf(needle);
+    const preflight = inMain("evidence pack cannot satisfy every stage");
+    const costGate = inMain("printCostCeiling(rt, ALL_STAGE_POLICIES");
+    const liveGuard = inMain("await requireLiveConsent(args);");
+    const packBuild = inMain("await buildRunEvidence(rt, {");
     check("CE2. every stage's required evidence classes are checked before any spend "
       + "is authorized, not per stage as each one runs",
-      preflight > 0 && costGate > 0 && preflight < costGate
+      preflight > 0 && costGate > 0 && preflight < costGate && costGate < liveGuard
+        && at("Estimated ceiling cost per stage") > 0
         && at("TARGET_STAGE_IDS") > 0 && at("requiredEvidenceKinds") > 0);
 
     check("CE3. the preflight is driven by the registry's own stage list, so a new "
@@ -8024,9 +8427,13 @@ async function run(): Promise<void> {
     // `indexOf` returns -1 for a marker that is gone, and -1 sorts before
     // every real index — so presence has to be asserted alongside order, or
     // deleting a check would read as "it comes first".
+    // The incomplete-pack refusal lives in the shared evidence builder; the
+    // full run calls that builder before the cost gate.
+    const builderBody = bodyOf("async function buildRunEvidence(", "\nfunction createRunRecorder(");
     check("CE4. both free checks are present and run before the cost gate authorizes spend",
-      refusal > 0 && preflight > 0 && costGate > 0
-        && refusal < costGate && preflight < costGate);
+      refusal > 0 && preflight > 0 && costGate > 0 && packBuild > 0
+        && builderBody.includes("Refusing to start a LIVE run against an incomplete evidence pack")
+        && packBuild < costGate && preflight < costGate);
 
     check("CE5. a response the run already paid for is written out, never discarded",
       at("rejected-responses.json") > 0
@@ -8046,6 +8453,209 @@ async function run(): Promise<void> {
         && /const measured = writeMeasurements\(\);/.test(cli)
         && /failureContext\.writeMeasurements\(\)/.test(cli)
         && at("failureContext.writeMeasurements()") < at("rejected-responses.json\");"));
+
+    // --- CG. the critic-only replay is fail-closed and never touches its source
+    //
+    // Drives the real CLI as a child process with the fake runner. The child's
+    // environment carries no API key and points the SDK at an unreachable
+    // local port, so even a regression that reached a live path could not
+    // contact a provider. The automotive facts file is a clearly synthetic
+    // fixture written to a temporary directory; nothing is committed.
+    {
+      const replayBody = bodyOf("async function replayCritic(", "\nmain().catch(");
+      const inReplay = (needle: string): number => replayBody.indexOf(needle);
+      const replayCost = inReplay('printCostCeiling(rt, [["final-critic", "critic"]]');
+      const replayGuard = inReplay("await requireLiveConsent(args);");
+      const replayMkdir = inReplay("await mkdir(replayDir");
+      check("CE7. the replay runs every free check — approved-facts identity, automotive identity, "
+        + "pack fingerprint, revalidation of every saved output — before the cost ceiling, the "
+        + "live guard, and the output directory",
+        [
+          "has changed since the source run",
+          "cannot be proven",
+          "the rebuilt evidence pack does not match the source run",
+          "revalidateAutomotiveTruthOutput(",
+          "revalidateHookStoryScriptOutput(",
+          "revalidateProductionDirectionOutput(",
+          "revalidatePackagingAdaptationOutput(",
+          "validateStrategyConceptOutput(",
+        ].every((marker) => inReplay(marker) > 0 && inReplay(marker) < replayCost)
+          && replayCost > 0 && replayCost < replayGuard && replayGuard < replayMkdir
+          && /requireLiveConsent[\s\S]{0,400}typed !== "LIVE"/.test(cli));
+
+      const work = mkdtempSync(join(tmpdir(), "gcd-critic-replay-"));
+      try {
+        const factsPath = join(work, "synthetic-automotive-facts.json");
+        const synthetic = (claimSuffix: string) => JSON.stringify({
+          facts: [0, 1, 2].map((i) => ({
+            id: `synthetic-test-fact-${i}`,
+            claim: `SYNTHETIC OFFLINE TEST FIXTURE ${i}${claimSuffix} - not a real automotive fact.`,
+            subject: "synthetic-test-subject",
+            attribute: `synthetic-attr-${i}`,
+            tags: ["synthetic-test"],
+            sourceType: "repository_config",
+            sourceRef: "synthetic://offline-test-fixture",
+            provenance: "synthetic offline test fixture; not a real source",
+            reviewedAt: "2026-09-01T00:00:00.000Z",
+          })),
+        }, null, 2);
+        writeFileSync(factsPath, synthetic(""), "utf8");
+        const cliPath = resolve(REPO_ROOT, "scripts/local/content-run.mjs");
+        const childEnv: NodeJS.ProcessEnv = { ...process.env, ANTHROPIC_BASE_URL: "http://127.0.0.1:9" };
+        delete childEnv.ANTHROPIC_API_KEY;
+        delete childEnv.ANTHROPIC_AUTH_TOKEN;
+        const runCli = (cliArgs: string[], input = "") => spawnSync(process.execPath, [cliPath, ...cliArgs], {
+          cwd: REPO_ROOT, env: childEnv, input, encoding: "utf8", timeout: 120_000,
+        });
+        const dirsIn = (parent: string): string[] => (existsSync(parent) ? readdirSync(parent) : []).sort();
+        const treeDigest = (dir: string): string => {
+          const hash = createHash("sha256");
+          for (const name of readdirSync(dir).sort()) {
+            hash.update(name).update(readFileSync(join(dir, name)));
+          }
+          return hash.digest("hex");
+        };
+
+        const runsDir = join(work, "runs");
+        const full = runCli(["Synthetic offline replay goal", "--automotive-facts", factsPath, "--out-dir", runsDir]);
+        const [sourceName] = dirsIn(runsDir);
+        const sourceDir = join(runsDir, sourceName ?? "missing");
+        const meta = existsSync(join(sourceDir, "run-meta.json"))
+          ? JSON.parse(readFileSync(join(sourceDir, "run-meta.json"), "utf8")) : undefined;
+        const sha = (path: string) => createHash("sha256").update(readFileSync(path)).digest("hex");
+        check("CG1. a full fake run records run-meta.json: the approved-facts sha256, a fingerprint "
+          + "of the automotive facts file, and the evidence-pack projection fingerprint",
+          full.status === 0 && meta !== undefined
+            && meta.approvedFacts?.sha256 === sha(resolve(REPO_ROOT, "config/approved-facts.json"))
+            && meta.automotiveFacts?.sha256 === sha(factsPath)
+            && /^[0-9a-f]{64}$/.test(String(meta.evidencePackSha256))
+            && typeof meta.now === "number" && meta.goal === "Synthetic offline replay goal");
+
+        const sourceBefore = treeDigest(sourceDir);
+        const replay = runCli(["--replay-critic", sourceDir, "--automotive-facts", factsPath]);
+        const siblings = dirsIn(runsDir).filter((n) => n !== sourceName);
+        const replayDir = join(runsDir, siblings[0] ?? "missing");
+        const replayMeta = existsSync(join(replayDir, "replay-meta.json"))
+          ? JSON.parse(readFileSync(join(replayDir, "replay-meta.json"), "utf8")) : undefined;
+        const replayed = existsSync(join(replayDir, "06-final-critic.json"))
+          ? JSON.parse(readFileSync(join(replayDir, "06-final-critic.json"), "utf8")) : undefined;
+        check("CG2. a fake critic-only replay writes 06-final-critic.json into a new sibling "
+          + "directory and leaves every byte of the source run unchanged",
+          replay.status === 0 && siblings.length === 1
+            && siblings[0]!.startsWith(`${sourceName}-critic-replay-`)
+            && replayed?.metadata?.stage === "final-critic"
+            && replayMeta?.evidencePackFingerprintChecked === true
+            && replayMeta?.automotiveFacts?.identity === "matched"
+            && treeDigest(sourceDir) === sourceBefore);
+
+        // Each refusal runs against a tampered COPY, so the source stays pristine.
+        const copyOf = (label: string, edit: (dir: string) => void): string => {
+          const parent = join(work, label);
+          const dir = join(parent, sourceName ?? "missing");
+          cpSync(sourceDir, dir, { recursive: true });
+          edit(dir);
+          return dir;
+        };
+        const editJson = (path: string, edit: (value: any) => void) => {
+          const value = JSON.parse(readFileSync(path, "utf8"));
+          edit(value);
+          writeFileSync(path, JSON.stringify(value, null, 2), "utf8");
+        };
+        const refusedWithoutOutput = (dir: string, result: ReturnType<typeof runCli>, message: RegExp) =>
+          result.status !== 0 && message.test(`${result.stderr}${result.stdout}`)
+            && dirsIn(dirname(dir)).length === 1;
+
+        // Every recorded digest is rewritten, so the copy reads exactly as a run
+        // made against a different approved-facts.json would.
+        const approvedTampered = copyOf("approved", (dir) => {
+          editJson(join(dir, "run-meta.json"), (m) => { m.approvedFacts.sha256 = "0".repeat(64); });
+          for (const name of readdirSync(dir).filter((n) => /^0[1-5]-.*\.json$/.test(n))) {
+            editJson(join(dir, name), (stage) => {
+              for (const asset of stage.metadata?.assets ?? []) {
+                if (asset.path === "config/approved-facts.json") asset.sha256 = "0".repeat(64);
+              }
+            });
+          }
+        });
+        check("CG3. a changed approved-facts.json is refused before any model call and before any "
+          + "output directory exists",
+          refusedWithoutOutput(approvedTampered,
+            runCli(["--replay-critic", approvedTampered, "--automotive-facts", factsPath]),
+            /config\/approved-facts\.json has changed since the source run/));
+        const conflicting = copyOf("conflicting", (dir) =>
+          editJson(join(dir, "run-meta.json"), (m) => { m.approvedFacts.sha256 = "0".repeat(64); }));
+        check("CG3a. a run whose recorded approved-facts digests disagree with each other is refused",
+          refusedWithoutOutput(conflicting,
+            runCli(["--replay-critic", conflicting, "--automotive-facts", factsPath]),
+            /conflicting approved-facts digests/));
+
+        const otherFacts = join(work, "other-synthetic-facts.json");
+        writeFileSync(otherFacts, synthetic(" (edited)"), "utf8");
+        const automotiveSource = copyOf("automotive", () => {});
+        check("CG4. an automotive facts file that differs from the run's recorded fingerprint is "
+          + "refused",
+          refusedWithoutOutput(automotiveSource,
+            runCli(["--replay-critic", automotiveSource, "--automotive-facts", otherFacts]),
+            /does not match the source run/));
+
+        const packTampered = copyOf("pack", (dir) =>
+          editJson(join(dir, "run-meta.json"), (m) => { m.evidencePackSha256 = "f".repeat(64); }));
+        check("CG5. a rebuilt evidence pack whose projection differs from the recorded fingerprint "
+          + "is refused",
+          refusedWithoutOutput(packTampered,
+            runCli(["--replay-critic", packTampered, "--automotive-facts", factsPath]),
+            /the rebuilt evidence pack does not match the source run/));
+
+        const outputTampered = copyOf("output", (dir) =>
+          editJson(join(dir, "05-packaging-adaptation.json"), (stage) => {
+            stage.output.claimUse.used[0].factId = "fabricated-fact-id";
+          }));
+        check("CG6. a saved prior output that fails its owning stage's validator is refused before "
+          + "any model call",
+          refusedWithoutOutput(outputTampered,
+            runCli(["--replay-critic", outputTampered, "--automotive-facts", factsPath]),
+            /StageExecutionError|stage packaging-adaptation/));
+
+        // A run that predates run-meta.json: the approved-facts digest comes from
+        // the stage metadata, the instant from the directory name, the goal from
+        // summary.md — and the automotive file's identity cannot be proven.
+        const legacyRun = copyOf("legacy", (dir) => rmSync(join(dir, "run-meta.json")));
+        const unconfirmed = runCli(["--replay-critic", legacyRun, "--automotive-facts", factsPath]);
+        check("CG7. a run without an automotive-facts fingerprint prints that its identity cannot "
+          + "be proven, and refuses without typed confirmation",
+          refusedWithoutOutput(legacyRun, unconfirmed, /cannot be proven/)
+            && /identity cannot be proven/.test(unconfirmed.stderr));
+        const confirmed = runCli(["--replay-critic", legacyRun, "--automotive-facts", factsPath], "UNPROVEN\n");
+        const legacySiblings = dirsIn(dirname(legacyRun)).filter((n) => n !== sourceName);
+        const legacyMeta = legacySiblings[0]
+          ? JSON.parse(readFileSync(join(dirname(legacyRun), legacySiblings[0], "replay-meta.json"), "utf8"))
+          : undefined;
+        check("CG8. with typed confirmation the same older run replays, using the approved-facts "
+          + "digest from its stage metadata and recording the automotive identity as unproven",
+          confirmed.status === 0 && legacySiblings.length === 1
+            && legacyMeta?.automotiveFacts?.identity === "unproven-confirmed"
+            && legacyMeta?.evidencePackFingerprintChecked === false
+            && legacyMeta?.approvedFactsSha256 === meta?.approvedFacts?.sha256);
+
+        const liveSource = copyOf("live", () => {});
+        check("CG9. a live replay without the cost flag is refused before any output directory, "
+          + "and with the flag it still requires the exact word LIVE",
+          refusedWithoutOutput(liveSource,
+            runCli(["--replay-critic", liveSource, "--automotive-facts", factsPath, "--runner", "live"]),
+            /requires --i-understand-this-costs-money/)
+            && refusedWithoutOutput(liveSource,
+              runCli(["--replay-critic", liveSource, "--automotive-facts", factsPath, "--runner", "live",
+                "--i-understand-this-costs-money"], "live\n"),
+              /live run cancelled: expected the exact word LIVE/));
+        const liveRuns = join(work, "live-full");
+        const liveFull = runCli(["Synthetic offline replay goal", "--automotive-facts", factsPath,
+          "--out-dir", liveRuns, "--runner", "live", "--i-understand-this-costs-money"], "");
+        check("CG10. the full run uses the same live guard: the cost flag alone is not enough",
+          liveFull.status !== 0 && /live run cancelled/.test(liveFull.stderr) && dirsIn(liveRuns).length === 0);
+      } finally {
+        rmSync(work, { recursive: true, force: true });
+      }
+    }
 
     // --- CF. the provider is constrained to the shape, not merely asked ------
     //
@@ -8188,6 +8798,7 @@ async function run(): Promise<void> {
           return {
             finalMessage: async () => ({
               content: [{ type: "text", text: "{}" }],
+              stop_reason: "end_turn",
               usage: { input_tokens: 1, output_tokens: 1 },
             }) as never,
             abort: () => {},
