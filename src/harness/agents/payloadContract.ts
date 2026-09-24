@@ -1436,19 +1436,29 @@ export const SCRIPT_COPY_BLOCK_CHARS = serializedCeiling(
 
 /**
  * The evidence-fidelity lens's `OVERLAY_TEXT`: stage 4's on-screen wording, each
- * entry with the shot it sits on and that shot's subject — overlay wording
+ * entry with the shot it sits on, that shot's subject, and the ids of the
+ * records stage 4's `claimVisuals` bound to that shot — overlay wording
  * attributes a claim to whatever is on screen, so the lens needs to know what
- * that is. Nothing else of stage 4 is shown.
+ * that is and which record it carries. Nothing else of stage 4 is shown; the
+ * binding's `directionSummary` prose is not.
+ *
+ * Worst case for the ids: every overlay sits on the same shot and every binding
+ * names that shot, so each of `maxOverlayText` entries repeats all
+ * `maxClaimVisuals` ids.
  */
 export const OVERLAY_TEXT_BLOCK_CHARS = serializedCeiling(
   times(DIRECTION_FIELD_LIMITS.maxOverlayText, () => ({
     shotIndex: DIRECTION_FIELD_LIMITS.maxShots - 1,
     role: "clarification",
     shotSubject: "",
+    shotFactIds: times(DIRECTION_FIELD_LIMITS.maxClaimVisuals, () => ""),
     text: "",
   })),
-  DIRECTION_FIELD_LIMITS.maxOverlayText
-    * (DIRECTION_FIELD_LIMITS.subjectChars + DIRECTION_FIELD_LIMITS.overlayTextChars),
+  DIRECTION_FIELD_LIMITS.maxOverlayText * (
+    DIRECTION_FIELD_LIMITS.subjectChars
+    + DIRECTION_FIELD_LIMITS.maxClaimVisuals * EVIDENCE_LIMITS.idChars
+    + DIRECTION_FIELD_LIMITS.overlayTextChars
+  ),
 );
 
 /**

@@ -653,6 +653,15 @@ deadline is passed as an argument there because a 45-second wait cannot be part
 of a test suite; both production call sites pass the fixed constants from
 `deadlines.mjs`, and the offline suite asserts that from source.
 
+Its timing check requires the stop to land above the 1,200 ms test deadline minus
+2 ms, and below the 5,000 ms `lock_timeout`. Elapsed time is measured on the
+monotonic clock (`performance.now()`), not `Date.now()`. The 2 ms is the
+timer's own error, not slack. libuv keeps its loop clock in whole milliseconds,
+and may read it from the kernel's coarse monotonic clock, so `setTimeout` can
+fire up to just under 2 ms early. Teardown after it fires takes about 1 ms. The
+earlier strict `>= 1,200` check, measured with `Date.now()`, failed once on
+PR #89's CI and passed on an identical re-run. The upper bound is unchanged.
+
 ---
 
 ## Why the self-extracting candidate was superseded

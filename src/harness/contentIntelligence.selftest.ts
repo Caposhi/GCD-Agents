@@ -63,6 +63,7 @@ import {
   CONTACT_LINE_SEPARATOR_CHARS,
   CONTACT_CTA_URL_CHARS,
   SCRIPT_CLAIMS_BLOCK_CHARS,
+  OVERLAY_TEXT_BLOCK_CHARS,
   REQUESTED_PLATFORMS_BLOCK_CHARS,
   assembledCeiling,
   PLATFORM_CLAIMS_BLOCK_CHARS,
@@ -4585,12 +4586,15 @@ async function run(): Promise<void> {
         })
           && !untrustedBlock(ev.prompt, "SCRIPT_COPY").includes("claimUse")
           && !untrustedBlock(ev.prompt, "SCRIPT_COPY").includes("openQuestions"));
-      check("BU3. evidence-fidelity: OVERLAY_TEXT is stage 4's on-screen wording with its shot and that "
-        + "shot's subject, and nothing else of stage 4",
+      check("BU3. evidence-fidelity: OVERLAY_TEXT is stage 4's on-screen wording with its shot, that "
+        + "shot's subject and the ids stage 4 bound to that shot, and nothing else of stage 4",
         JSON.stringify(JSON.parse(untrustedBlock(ev.prompt, "OVERLAY_TEXT")))
           === JSON.stringify(directionForPackaging.provisional.overlayText.map((o) => ({
             shotIndex: o.shotIndex, role: o.role,
-            shotSubject: directionForPackaging.provisional.shots[o.shotIndex]!.subject, text: o.text,
+            shotSubject: directionForPackaging.provisional.shots[o.shotIndex]!.subject,
+            shotFactIds: directionForPackaging.claimVisuals.used
+              .filter((b) => b.shotIndex === o.shotIndex).map((b) => b.factId),
+            text: o.text,
           })))
           && !ev.prompt.includes(directionForPackaging.provisional.visualApproach));
       check("BU4. evidence-fidelity: PACKAGING_COPY is each package's caption, hashtags, local keywords "
@@ -4710,6 +4714,93 @@ async function run(): Promise<void> {
             && JSON.stringify(call.thinking) === JSON.stringify(policy.thinking)
             && call.effort === policy.effort;
         }));
+
+      // --- the evidence lens sees which records each overlay's shot carries ---
+      const overlayBlock = JSON.parse(untrustedBlock(ev.prompt, "OVERLAY_TEXT")) as Array<{
+        shotIndex: number; shotFactIds: string[];
+      }>;
+      check("BU22. evidence-fidelity: each OVERLAY_TEXT entry carries the ids stage 4's claimVisuals bound to "
+        + "its shot, and every such id resolves to a record in the same lens's SCRIPT_CLAIMS",
+        directionForPackaging.claimVisuals.used.length === 1
+          && overlayBlock.length === 1 && overlayBlock[0]!.shotIndex === 1
+          && JSON.stringify(overlayBlock[0]!.shotFactIds) === JSON.stringify(["auto-1"])
+          && overlayBlock.every((o) => o.shotFactIds.every((id) =>
+            scriptClaimsBlock.some((c: { id: string; claim: string }) => c.id === id && c.claim.length > 0))));
+      {
+        // Three shots, overlays on each, bindings on shots 1 and 2 only — two on
+        // shot 1, in a deliberate order. Built by hand: the renderer reads the
+        // typed binding and nothing else.
+        const d = directionForPackaging;
+        const shots = [d.provisional.shots[0]!, d.provisional.shots[1]!, { ...d.provisional.shots[1]!, subject: "Hands closing the hood." }];
+        const binding = (factId: string, shotIndex: number) => ({
+          ...d.claimVisuals.used[0]!, factId, shotIndex, provisionalDirectionSummary: `Summary for ${factId}.`,
+        });
+        const multi: ProductionDirectionOutput = {
+          provisional: {
+            ...d.provisional,
+            shots,
+            overlayText: [0, 1, 2, 1].map((shotIndex, i) => ({ ...d.provisional.overlayText[0]!, shotIndex, text: `Overlay ${i}` })),
+          },
+          claimVisuals: { ...d.claimVisuals, used: [binding("z-2", 1), binding("a-3", 2), binding("m-1", 1)] },
+        };
+        const rendered = JSON.parse(renderOverlayText(multi)) as Array<{ shotIndex: number; shotFactIds: string[] }>;
+        check("BU23. an overlay's ids are only those bound to its own shot, in stage 4's binding order; a shot "
+          + "stage 4 bound nothing to carries none",
+          JSON.stringify(rendered.map((o) => o.shotFactIds))
+            === JSON.stringify([[], ["z-2", "m-1"], ["a-3"], ["z-2", "m-1"]]));
+        check("BU24. the evidence lens receives nothing else from stage 4: no direction summary, no other shot "
+          + "field, no requirement, no open question, no visual approach, and no binding structure",
+          !renderOverlayText(multi).includes("Summary for")
+            && ["directionSummary", "provisionalDirectionSummary", "claimVisuals", "factKind", "directionVerified",
+              "wordingVerified", "productionRequirements", "openQuestions", "purpose", "framing", "movement",
+              "action", "composition", "continuityNote"].every((key) => !ev.prompt.includes(`"${key}"`))
+            && Object.keys(rendered[0]!).join() === "shotIndex,role,shotSubject,shotFactIds,text"
+            && [d.claimVisuals.used[0]!.provisionalDirectionSummary, d.provisional.visualApproach,
+              ...d.provisional.shots.flatMap((s) => [s.action, s.composition, s.continuityNote]),
+              ...d.provisional.productionRequirements.map((r) => r.requirement), ...d.provisional.openQuestions]
+              .every((text) => !ev.prompt.includes(text))
+            && CRITIC_LENSES.filter((lens) => lens !== "evidence-fidelity" && lens !== "production-coherence")
+              .every((lens) => !criticCallFor(lens).prompt.includes("shotFactIds")));
+        // The derived ceiling covers the worst case: every overlay on one shot,
+        // every binding on that shot, every string at its bound and escaping to
+        // the maximum.
+        const worst = (chars: number) => '"'.repeat(chars);
+        const maximal: ProductionDirectionOutput = {
+          provisional: {
+            ...d.provisional,
+            shots: Array.from({ length: DIRECTION_LIMITS.maxShots }, () => ({
+              ...d.provisional.shots[0]!, subject: worst(DIRECTION_LIMITS.subjectChars),
+            })),
+            overlayText: Array.from({ length: DIRECTION_LIMITS.maxOverlayText }, () => ({
+              ...d.provisional.overlayText[0]!, role: "clarification" as const,
+              shotIndex: DIRECTION_LIMITS.maxShots - 1, text: worst(DIRECTION_LIMITS.overlayTextChars),
+            })),
+          },
+          claimVisuals: {
+            ...d.claimVisuals,
+            used: Array.from({ length: DIRECTION_LIMITS.maxClaimVisuals }, () =>
+              binding(worst(EVIDENCE_LIMITS.idChars), DIRECTION_LIMITS.maxShots - 1)),
+          },
+        };
+        check("BU25. the OVERLAY_TEXT ceiling covers the worst case — every overlay on one shot carrying every "
+          + "binding, every string at its bound and fully escaped",
+          renderOverlayText(maximal).length <= OVERLAY_TEXT_BLOCK_CHARS
+            && CRITIC_LENS_BLOCKS["evidence-fidelity"].find((b) => b.label === "OVERLAY_TEXT")!.bodyChars
+              === OVERLAY_TEXT_BLOCK_CHARS);
+      }
+      {
+        // Prompt text is executable input: the lens must be told what the new
+        // field is and to use it.
+        const evidencePromptBU = await readFile(resolve(REPO_ROOT, CRITIC_LENS_ASSETS["evidence-fidelity"].prompt), "utf8");
+        check("BU26. the evidence lens prompt names shotFactIds as the records bound to each overlay's shot, and "
+          + "tells the lens to compare overlay wording with those records, looked up in SCRIPT_CLAIMS",
+          /\*\*`shotFactIds`\*\*: the ids of the records stage 4 bound to that shot/.test(evidencePromptBU)
+            && /Look each id up in `SCRIPT_CLAIMS`/.test(evidencePromptBU)
+            && /Compare each overlay's wording with the record or records its `shotFactIds` name/.test(evidencePromptBU)
+            && /say which bound record the wording departs from/.test(evidencePromptBU)
+            && CRITIC_LENSES.filter((lens) => lens !== "evidence-fidelity").every((lens) =>
+              !criticCallFor(lens).systemPrompt.includes("shotFactIds")));
+      }
     }
 
     // --- BV. assets: one tool-free prompt per lens, fact-free skills, legacy rejected -
@@ -5329,10 +5420,13 @@ async function run(): Promise<void> {
           verdict: "needs_human_review",
           findings: [{ ...validCriticOutput.findings[0]!, owner: "human_review" }],
         });
+        // The panel verdict is owner-aware: a blocking finding owned only by
+        // human_review is one no revision resolves, so the panel asks for a
+        // person rather than a revision.
         check("BY16. a lens verdict \"needs_human_review\" validates when backed by a blocking human-owned "
-          + "finding — and the panel, seeing a blocking finding, computes \"needs_revision\"",
+          + "finding — and the panel, seeing only a human-owned blocking finding, computes \"needs_human_review\"",
           humanOwned.output.provisional.lenses[0]!.verdict === "needs_human_review"
-            && humanOwned.output.provisional.verdict === "needs_revision");
+            && humanOwned.output.provisional.verdict === "needs_human_review");
       }
       check("BY17. a genuinely clean, no-concerns result is a legitimate, honest answer",
         (await badCritic({
@@ -5530,12 +5624,53 @@ async function run(): Promise<void> {
       check("CL8. panel verdict: an advisory human_decision finding, no blocking finding -> needs_human_review",
         aggregateCriticVerdict(withLens("production-coherence",
           out("production-coherence", [findingIn("human_decision", { owner: "human_review" })]))) === "needs_human_review");
-      check("CL9. panel verdict: any blocking finding -> needs_revision, whichever lens and owner raised it",
-        aggregateCriticVerdict(withLens("platform-and-local", out("platform-and-local",
-          [findingIn("timing", { severity: "blocking" })], "needs_revision"))) === "needs_revision"
+      // Owner-aware: `needs_revision` is reserved for a blocking finding an
+      // upstream stage can fix. CL9 covers every revisable owner in turn; the
+      // human-owned cases are CL27 and CL28.
+      check("CL9. panel verdict: a blocking finding owned by a revisable stage -> needs_revision, whichever "
+        + "lens and revisable owner raised it",
+        (["hook-story-script", "production-direction", "packaging-adaptation"] as const).every((owner) =>
+          aggregateCriticVerdict(withLens("platform-and-local", out("platform-and-local",
+            [findingIn("timing", { severity: "blocking", owner })], "needs_revision"))) === "needs_revision")
           && aggregateCriticVerdict(withLens("evidence-fidelity", out("evidence-fidelity",
-            [findingIn("human_decision", { severity: "blocking", owner: "human_review" })], "needs_human_review")))
+            [findingIn("claim_fidelity", { severity: "blocking", owner: "hook-story-script" })], "needs_revision")))
             === "needs_revision");
+      {
+        const humanBlocking = findingIn("human_decision", { severity: "blocking", owner: "human_review" });
+        const humanBlockingOther = findingIn("claim_fidelity", { severity: "blocking", owner: "human_review" });
+        check("CL27. panel verdict: blocking findings owned only by human_review -> needs_human_review, not "
+          + "needs_revision — revision cannot resolve them",
+          aggregateCriticVerdict(withLens("evidence-fidelity", out("evidence-fidelity",
+            [humanBlocking], "needs_human_review"))) === "needs_human_review"
+            // Not only through the human_decision category: a human-owned
+            // blocking finding in a lens's own category counts on its owner.
+            && aggregateCriticVerdict(withLens("evidence-fidelity", out("evidence-fidelity",
+              [humanBlockingOther], "needs_human_review"))) === "needs_human_review");
+        // Built by hand so neither the human_decision category nor a lens
+        // verdict can carry it: only the finding's owner can.
+        const ownerOnly = { ...calm[1]!, provisional: { ...calm[1]!.provisional, findings: [{
+          lens: "platform-and-local" as const, severity: "blocking" as const,
+          category: "timing" as const, platform: "cross_platform" as const, owner: "human_review" as const,
+          issue: "A timing matter only a person can settle.", suggestedAction: "Ask the owner.", authoritative: false as const,
+        }] } };
+        check("CL27b. panel verdict: a human-owned blocking finding alone decides it, with no human_decision "
+          + "category and every lens verdict provisional_pass -> needs_human_review",
+          ownerOnly.provisional.verdict === "provisional_pass"
+            && aggregateCriticVerdict(withLens("platform-and-local", ownerOnly)) === "needs_human_review");
+        check("CL28. panel verdict: a revisable blocking finding and a human-owned blocking finding together -> "
+          + "needs_revision, across lenses and within one lens",
+          aggregateCriticVerdict(calm.map((o) => {
+            if (o.lens === "evidence-fidelity") return out(o.lens, [humanBlocking], "needs_human_review");
+            if (o.lens === "production-coherence") {
+              return out(o.lens, [findingIn("production_coherence", { severity: "blocking", owner: "production-direction" })],
+                "needs_revision");
+            }
+            return o;
+          })) === "needs_revision"
+            && aggregateCriticVerdict(withLens("evidence-fidelity", out("evidence-fidelity", [
+              humanBlockingOther, findingIn("claim_fidelity", { severity: "blocking", owner: "packaging-adaptation" }),
+            ], "needs_revision"))) === "needs_revision");
+      }
       {
         // The lens-verdict arm of the rule, exercised directly: a lens output
         // whose verdict says needs_human_review with no finding behind it. The

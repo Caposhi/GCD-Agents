@@ -47,9 +47,10 @@
  *
  *  - `findings` is the union of every lens's findings, in lens order, each
  *    carrying its `lens`; nothing is deduplicated;
- *  - `verdict`: any blocking finding → `needs_revision`; else any
- *    `human_decision` finding, or any lens verdict `needs_human_review` →
- *    `needs_human_review`; else `provisional_pass`;
+ *  - `verdict` is owner-aware (`aggregateCriticVerdict`): any blocking finding
+ *    owned by a revisable stage → `needs_revision`; else any blocking finding
+ *    owned by `human_review`, any `human_decision` finding, or any lens verdict
+ *    `needs_human_review` → `needs_human_review`; else `provisional_pass`;
  *  - the top-level `summary` is deterministic: finding counts per lens and
  *    severity;
  *  - each lens's own model-written summary is kept, attributed to its lens, in
@@ -133,7 +134,8 @@
  *
  *  - **evidence-fidelity** — `SCRIPT_COPY` (stage 3's hook, beats and script),
  *    `OVERLAY_TEXT` (stage 4's on-screen wording, with the shot and shot
- *    subject each sits on), `PACKAGING_COPY` (each package's caption,
+ *    subject each sits on and the ids stage 4's `claimVisuals` bound to that
+ *    shot), `PACKAGING_COPY` (each package's caption,
  *    hashtags, local keywords and contact line), `SCRIPT_CLAIMS`,
  *    `PLATFORM_CLAIMS`, and — reviewer-only — stage 2's `REQUIRED_CAVEATS` and
  *    `FORBIDDEN_CLAIMS`. Stage 2's caveats and forbidden claims are withheld
@@ -819,14 +821,26 @@ export function renderScriptCopy(scriptOutput: HookStoryScriptOutput): string {
 
 /**
  * The evidence-fidelity lens's `OVERLAY_TEXT`: stage 4's on-screen wording, each
- * entry with its shot and that shot's subject, and nothing else of stage 4.
+ * entry with its shot, that shot's subject, and the ids of the records stage 4
+ * bound to that shot — and nothing else of stage 4.
+ *
+ * `shotFactIds` is read from stage 4's typed `claimVisuals` binding, never from
+ * prose: every binding whose `shotIndex` is this overlay's shot, in stage 4's
+ * own binding order. A shot stage 4 bound nothing to reports an empty array.
+ * The binding's `directionSummary` is model prose and is not shown. Ids only:
+ * every id stage 4 may bind is, by its revalidation, a record stage 3 used, and
+ * `SCRIPT_CLAIMS` already carries each of those records' wording exactly once —
+ * so the lens can compare an overlay's wording with the record behind its shot
+ * without a second copy of any claim.
  */
 export function renderOverlayText(directionOutput: ProductionDirectionOutput): string {
   const p = directionOutput.provisional;
+  const bindings = directionOutput.claimVisuals.used;
   return JSON.stringify(p.overlayText.map((o) => ({
     shotIndex: o.shotIndex,
     role: o.role,
     shotSubject: p.shots[o.shotIndex]?.subject ?? "",
+    shotFactIds: bindings.filter((b) => b.shotIndex === o.shotIndex).map((b) => b.factId),
     text: o.text,
   })), null, 2);
 }
@@ -1074,21 +1088,32 @@ export function validateCriticLensOutput(
 }
 
 /**
- * The panel's verdict, computed — never taken from a model.
+ * The panel's verdict, computed — never taken from a model. Owner-aware:
  *
- * Any blocking finding → `needs_revision`. Else any `human_decision` finding, or
- * any lens verdict `needs_human_review` → `needs_human_review`. Else
- * `provisional_pass`. A lens's own `needs_human_review` requires a blocking
- * finding, so under the first rule it already yields `needs_revision`; the
- * second rule's lens-verdict arm is kept so the rule stands as written even if a
- * lens contract ever relaxes that. A blocking finding owned by `human_review`
- * still names its owner on the finding itself: the panel verdict is a triage
- * signal, the owner is the routing.
+ *  1. any blocking finding owned by a revisable stage (`REVISABLE_OWNERS`:
+ *     hook-story-script, production-direction, packaging-adaptation) →
+ *     `needs_revision`;
+ *  2. else any blocking finding owned by `human_review`, or any
+ *     `human_decision` finding, or any lens verdict `needs_human_review` →
+ *     `needs_human_review`;
+ *  3. else `provisional_pass`.
+ *
+ * `needs_revision` says an upstream stage can fix something, so it is reserved
+ * for work a stage owns. A blocking finding owned by `human_review` is one no
+ * revision resolves, so on its own it asks for a person, not a revision. When a
+ * revisable blocking finding is also present, revision comes first; the
+ * human-owned finding still names its owner on the finding itself. A lens's own
+ * `needs_human_review` already requires a blocking finding owned by
+ * `human_review`, so the lens-verdict arm of rule 2 is normally reached through
+ * that finding; it is kept so the rule stands as written even if a lens contract
+ * ever relaxes that.
  */
 export function aggregateCriticVerdict(lensOutputs: readonly CriticLensOutput[]): CriticVerdict {
   const findings = lensOutputs.flatMap((o) => o.provisional.findings);
-  if (findings.some((f) => f.severity === "blocking")) return "needs_revision";
-  if (findings.some((f) => f.category === "human_decision")
+  const blocking = findings.filter((f) => f.severity === "blocking");
+  if (blocking.some((f) => REVISABLE_OWNERS.has(f.owner))) return "needs_revision";
+  if (blocking.some((f) => f.owner === "human_review")
+    || findings.some((f) => f.category === "human_decision")
     || lensOutputs.some((o) => o.provisional.verdict === "needs_human_review")) {
     return "needs_human_review";
   }

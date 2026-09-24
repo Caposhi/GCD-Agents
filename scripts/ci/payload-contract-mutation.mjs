@@ -131,12 +131,25 @@
  * prompts are read at runtime and need no rebuild. Since the narrow critic
  * panel, the critic-side prompt rule lives in the evidence-fidelity lens prompt.
  *
- * The final group covers the narrow critic panel: the lens category
+ * The next group covers the narrow critic panel: the lens category
  * restriction, the aggregation verdict rule, the no-merge deterministic summary
  * and the no-dedup union, the reviewer-only caveat exposure, fail-closed on one
  * lens failing, the lens-scoped instruction channel, the lens label never
  * reaching the provider, the per-lens token budget, and the contact line's shop
- * name read from its approved-facts record. It adds no captured path.
+ * name read from its approved-facts record. It adds no captured path. Its three
+ * verdict mutations were repointed at the owner-aware rule's lines when that
+ * rule replaced "any blocking finding -> needs_revision"; their ids and expected
+ * checks are unchanged.
+ *
+ * The final group follows up the panel's acceptance run. It covers each arm of
+ * the owner-aware verdict — the revision arm reverting to any blocking finding,
+ * the human-owned blocking arm dropped, the two arms decided in the wrong order,
+ * and the last arm no longer yielding provisional_pass — and the evidence lens's
+ * per-shot `shotFactIds` on `OVERLAY_TEXT`: dropped, not filtered to the
+ * overlay's own shot, carrying stage 4's direction-summary prose, the lens shown
+ * stage 4's whole output, the block ceiling no longer counting the ids, and each
+ * of the two prompt sentences that tell the lens what the ids are and to use
+ * them. It adds no captured path.
  *
  * It is offline and deterministic: no network, no database, no provider, no
  * credential. The authoritative checkout is read-only after a disposable copy
@@ -3297,17 +3310,17 @@ const CRITIC_PANEL_MUTATIONS = [
     expect: ["CL2.", "CL5."],
   },
   {
-    name: "the panel verdict ignores blocking findings",
+    name: "the panel verdict ignores blocking findings owned by a revisable stage",
     file: FINAL_CRITIC,
-    from: '  if (findings.some((f) => f.severity === "blocking")) return "needs_revision";\n',
+    from: '  if (blocking.some((f) => REVISABLE_OWNERS.has(f.owner))) return "needs_revision";\n',
     to: "",
     expect: ["CL9.", "BT1."],
   },
   {
     name: "the panel verdict ignores human_decision findings",
     file: FINAL_CRITIC,
-    from: '  if (findings.some((f) => f.category === "human_decision")\n    || lensOutputs.some(',
-    to: "  if (lensOutputs.some(",
+    from: '\n    || findings.some((f) => f.category === "human_decision")',
+    to: "",
     expect: ["CL8."],
   },
   {
@@ -3405,9 +3418,100 @@ const CRITIC_PANEL_MUTATIONS = [
   },
 ];
 
+/**
+ * The owner-aware panel verdict and the evidence lens's per-shot bindings on
+ * `OVERLAY_TEXT`. Appended after every earlier group so no existing id moves.
+ */
+const CRITIC_PANEL_FOLLOW_UP_MUTATIONS = [
+  {
+    name: "the panel verdict reverts to any blocking finding -> needs_revision, whatever its owner",
+    file: FINAL_CRITIC,
+    from: '  if (blocking.some((f) => REVISABLE_OWNERS.has(f.owner))) return "needs_revision";',
+    to: '  if (blocking.length > 0) return "needs_revision";',
+    expect: ["CL27.", "CL27b.", "BY16."],
+  },
+  {
+    name: "the panel verdict ignores a blocking finding owned by human_review",
+    file: FINAL_CRITIC,
+    from: '  if (blocking.some((f) => f.owner === "human_review")\n    || findings',
+    to: "  if (findings",
+    expect: ["CL27b."],
+  },
+  {
+    name: "the human-review arm is decided before the revision arm",
+    file: FINAL_CRITIC,
+    from: '  if (blocking.some((f) => REVISABLE_OWNERS.has(f.owner))) return "needs_revision";\n'
+      + '  if (blocking.some((f) => f.owner === "human_review")\n',
+    to: '  if (blocking.some((f) => f.owner === "human_review")) return "needs_human_review";\n'
+      + '  if (blocking.some((f) => REVISABLE_OWNERS.has(f.owner))) return "needs_revision";\n'
+      + "  if (false\n",
+    expect: ["CL28."],
+  },
+  {
+    name: "the panel verdict's last arm no longer yields provisional_pass",
+    file: FINAL_CRITIC,
+    from: '    return "needs_human_review";\n  }\n  return "provisional_pass";\n}',
+    to: '    return "needs_human_review";\n  }\n  return "needs_human_review";\n}',
+    expect: ["CL6.", "CL7."],
+  },
+  {
+    name: "OVERLAY_TEXT drops the ids stage 4 bound to each overlay's shot",
+    file: FINAL_CRITIC,
+    from: "    shotFactIds: bindings.filter((b) => b.shotIndex === o.shotIndex).map((b) => b.factId),\n",
+    to: "",
+    expect: ["BU3.", "BU22.", "BU23."],
+  },
+  {
+    name: "an overlay carries every stage 4 binding, not only its own shot's",
+    file: FINAL_CRITIC,
+    from: "bindings.filter((b) => b.shotIndex === o.shotIndex)",
+    to: "bindings.filter(() => true)",
+    expect: ["BU23."],
+  },
+  {
+    name: "OVERLAY_TEXT carries stage 4's model-written direction summary beside each id",
+    file: FINAL_CRITIC,
+    from: ".map((b) => b.factId),\n",
+    to: ".map((b) => `${b.factId}: ${b.provisionalDirectionSummary}`),\n",
+    expect: ["BU3.", "BU22.", "BU24."],
+  },
+  {
+    name: "the evidence lens is shown stage 4's complete output as well as its overlay projection",
+    file: PAYLOAD,
+    from: '    { label: "OVERLAY_TEXT", bodyChars: OVERLAY_TEXT_BLOCK_CHARS },\n',
+    to: '    { label: "OVERLAY_TEXT", bodyChars: OVERLAY_TEXT_BLOCK_CHARS },\n'
+      + '    { label: "PRODUCTION_OUTPUT", bodyChars: DIRECTION_OUTPUT.transportChars },\n',
+    // BU1 cannot see it — it compares the prompt with this same contract — so
+    // BU24, which checks what of stage 4 actually reached the lens, owns it.
+    expect: ["BU24."],
+  },
+  {
+    name: "the OVERLAY_TEXT ceiling stops counting the per-shot ids",
+    file: PAYLOAD,
+    from: "    + DIRECTION_FIELD_LIMITS.maxClaimVisuals * EVIDENCE_LIMITS.idChars\n",
+    to: "",
+    expect: ["BU25."],
+  },
+  {
+    name: "the evidence lens prompt no longer tells the lens to compare overlay wording with the bound records",
+    file: EVIDENCE_LENS_PROMPT,
+    from: "Compare each overlay's wording with the record or records its `shotFactIds` name — the claim behind "
+      + "that shot. ",
+    to: "",
+    expect: ["BU26."],
+  },
+  {
+    name: "the evidence lens prompt no longer says what shotFactIds is",
+    file: EVIDENCE_LENS_PROMPT,
+    from: ", and **`shotFactIds`**: the ids of the records stage 4 bound to that shot, in stage 4's order.",
+    to: ".",
+    expect: ["BU26."],
+  },
+];
+
 const MUTATIONS = [
   ...LEGACY_MUTATIONS, ...RAW_IDENTITY_MUTATIONS, ...FIELD_MARGIN_MUTATIONS, ...CRITIC_POLICY_MUTATIONS,
-  ...CONTACT_LINE_MUTATIONS, ...CRITIC_PANEL_MUTATIONS,
+  ...CONTACT_LINE_MUTATIONS, ...CRITIC_PANEL_MUTATIONS, ...CRITIC_PANEL_FOLLOW_UP_MUTATIONS,
 ];
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
