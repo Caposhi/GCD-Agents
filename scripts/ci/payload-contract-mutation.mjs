@@ -4,7 +4,7 @@
  *
  * A regression that cannot fail is decoration. This script proves each
  * load-bearing derivation in `src/harness/agents/payloadContract.ts` and the
- * related repository-authority controls is actually load-bearing across twenty-two
+ * related repository-authority controls is actually load-bearing across twenty-three
  * captured paths: it applies one focused mutation in a disposable no-Git copy,
  * rebuilds there, runs the Content Intelligence offline suite, and
  * requires the NAMED check that owns that derivation to fail. Then it restores
@@ -158,10 +158,12 @@
  * the stage 3, 4 and 5 prompts no longer binding the lists (or calling them
  * advisory again), the stage 4 ceiling no longer counting the blocks, the
  * attribution rule weakened three ways, and the skill naming a make or a
- * number. It adds six captured paths: the registry, stage 4's module, stage
- * 2's module (where the shared renderers now live — the earlier mutation of
- * the evidence lens's caveat block was repointed there, its id and expected
- * checks unchanged), the stage 3 and stage 4 prompts, and the skill.
+ * number, and the evidence-lens and stage 2 prompts reverting to wording that
+ * called the lists writer-free or advisory. It adds seven captured paths: the
+ * registry, stage 4's module, stage 2's module (where the shared renderers now
+ * live — the earlier mutation of the evidence lens's caveat block was
+ * repointed there, its id and expected checks unchanged), the stage 2, stage 3
+ * and stage 4 prompts, and the skill.
  *
  * It is offline and deterministic: no network, no database, no provider, no
  * credential. The authoritative checkout is read-only after a disposable copy
@@ -223,6 +225,7 @@ const PRODUCTION_DIRECTION = "src/harness/agents/productionDirection.ts";
 const SCRIPT_PROMPT = "agents/hook-story-script.md";
 const DIRECTION_PROMPT = "agents/production-direction.md";
 const CLAIM_BOUNDARIES_SKILL = "skills/claim-boundaries/SKILL.md";
+const TRUTH_PROMPT = "agents/automotive-truth.md";
 
 /**
  * Each mutation names the derivation it breaks, the single edit that breaks it,
@@ -3672,6 +3675,22 @@ const WRITER_RESTRICTION_MUTATIONS = [
     from: "names three conditions and another names two",
     to: "names 3 conditions and another names 2",
     expect: ["CM9."],
+  },
+  {
+    name: "the evidence-lens prompt says again that no writing stage after stage 3 sees the lists",
+    file: EVIDENCE_LENS_PROMPT,
+    from: "The writing stages (3, 4 and 5) receive these same lists as binding restrictions, so copy that "
+      + "ignores them has broken a rule it was given.",
+    to: "`REQUIRED_CAVEATS` and `FORBIDDEN_CLAIMS` are shown to you and to no writing stage after stage 3.",
+    expect: ["CM11."],
+  },
+  {
+    name: "stage 2's prompt calls forbiddenClaims advisory again",
+    file: TRUTH_PROMPT,
+    from: "`requiredCaveats` and `forbiddenClaims` are passed to stages 3–5 as binding restrictions and to the "
+      + "critic as its yardstick, so write each one precisely and only where the evidence warrants it.",
+    to: "`forbiddenClaims` is advisory: it tells later stages and human reviewers what you rejected and why.",
+    expect: ["CM11."],
   },
 ];
 

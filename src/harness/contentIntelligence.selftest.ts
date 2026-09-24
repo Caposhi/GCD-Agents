@@ -6608,6 +6608,26 @@ async function run(): Promise<void> {
           && assembledCM(cmDir.prompt) <= STAGE_ASSEMBLED_CEILINGS["production-direction"]!
           && assembledCM(cmPack.prompt) <= STAGE_ASSEMBLED_CEILINGS["packaging-adaptation"]!
           && Object.values(STAGE_ASSEMBLED_CEILINGS).every((c) => c <= MAX_PAYLOAD_CHARS));
+
+      // The two prompts that described the lists before they bound the writers:
+      // the evidence lens said no writer after stage 3 saw them, and stage 2's
+      // own prompt called forbiddenClaims advisory. Both now say what is true.
+      const evidencePromptCM = await cmPromptText("agents/final-critic-evidence.md");
+      const truthPromptCM = await cmPromptText("agents/automotive-truth.md");
+      check("CM11. neither the evidence-lens prompt nor stage 2's prompt carries the old wording: the lens is "
+        + "told the writers receive the same lists as binding restrictions, and stage 2 is told its lists bind "
+        + "stages 3–5 and are the critic's yardstick, with its no-filter and nothing-permitted sentences kept",
+        !evidencePromptCM.includes("to no writing stage after stage 3")
+          && evidencePromptCM.includes("The writing stages (3, 4 and 5) receive these same lists as binding "
+            + "restrictions, so copy that ignores them has broken a rule it was given.")
+          && evidencePromptCM.includes("use them only to check the copy.")
+          && !/`forbiddenClaims` is advisory/.test(truthPromptCM)
+          && !/tells later stages and human reviewers what you rejected and why/.test(truthPromptCM)
+          && truthPromptCM.includes("`requiredCaveats` and `forbiddenClaims` are passed to stages 3–5 as binding "
+            + "restrictions and to the critic as its yardstick, so write each one precisely and only where the "
+            + "evidence warrants it.")
+          && truthPromptCM.includes("It is not a filter anything runs, so a claim you leave out of it is not "
+            + "thereby permitted. Nothing is permitted except what you bound to a fact id."));
     }
   }
 
