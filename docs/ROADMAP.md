@@ -33,7 +33,7 @@ These are not interchangeable and must not be collapsed into "done". `MERGED` in
 - **The owner's second live `--replay-critic`** (2026-09-24T14:59:31Z) is recorded in PR #90's record as *Second owner-run replay*, and PR #89's record points to it wherever it said item 7 was caught only at advisory severity. The original wording is kept as history.
 - The same state change in [Status](STATUS.md), [README](../README.md), [AI handoff](AI_HANDOFF.md), [Testing](TESTING.md), [Architecture](ARCHITECTURE.md) and [Security and continuity](SECURITY_AND_CONTINUITY.md), wherever they called PR #90's change implemented or not merged.
 
-**PR / merge:** opened as a pull request from `claude/relaxed-euler-v6y22e` into `main`. **Its PR number and merge SHA are not knowable before merging.** They are a **blocking follow-up** under the mutable-identifier exception in [`AGENTS.md`](../AGENTS.md), to be reconciled in the first change after merge.
+**PR / merge:** [PR #91](https://github.com/Caposhi/GCD-Agents/pull/91), from `claude/relaxed-euler-v6y22e` into `main`. **Its merge SHA is not knowable before merging.** It is a **blocking follow-up** under the mutable-identifier exception in [`AGENTS.md`](../AGENTS.md), to be reconciled in the first change after merge.
 
 **Migrations / schema impact:** none.
 
@@ -47,7 +47,7 @@ These are not interchangeable and must not be collapsed into "done". `MERGED` in
 
 **Unresolved follow-ups.**
 
-- **Blocking:** this PR's number and merge SHA (mutable-identifier exception).
+- **Blocking:** this PR's (PR #91) merge SHA (mutable-identifier exception).
 - Carried, out of scope here: moving completed history out of this file into `docs/COMPLETED_ROADMAP_PHASES.md` (a separate change), and the tuning follow-ups in PR #90's record.
 
 **Documents updated:** this file, [Status](STATUS.md), [README](../README.md), [AI handoff](AI_HANDOFF.md), [Testing](TESTING.md), [Architecture](ARCHITECTURE.md), [Security and continuity](SECURITY_AND_CONTINUITY.md). Each modified section was reread as a whole.
