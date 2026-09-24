@@ -355,7 +355,7 @@ const STAGE_DEFINITIONS: AgentStageDefinition[] = [
   {
     id: "final-critic",
     order: 6,
-    purpose: "Adversarially review the finished, per-platform-adapted package against what hook-story-script actually used and packaging-adaptation actually bound, and return a non-authoritative verdict, summary, and findings — never an approval, and never a replacement for the existing brand-compliance-critic publishing gate.",
+    purpose: "Adversarially review the finished, per-platform-adapted package through four narrow lenses — evidence fidelity, platform and local, voice and craft, production coherence — against what hook-story-script actually used and packaging-adaptation actually bound, and aggregate their findings deterministically into a non-authoritative verdict, summary, and findings — never an approval, and never a replacement for the existing brand-compliance-critic publishing gate.",
     modelPolicy: "critic",
     // Phase 0B.6: a dedicated tool-free prompt, and a craft-only skill.
     //
@@ -392,8 +392,33 @@ const STAGE_DEFINITIONS: AgentStageDefinition[] = [
     // `skills/critique-discipline/SKILL.md` replaces the checklist with the
     // craft-only subset that belongs here, written to state no fact and name
     // no legacy subagent.
-    promptPaths: ["agents/final-critic.md"],
-    skillPaths: ["skills/critique-discipline/SKILL.md"],
+    //
+    // The narrow critic panel: this stage reviews through four lenses, each a
+    // separate model request with its own prompt and its own skills. Every
+    // lens prompt and every skill a lens uses is declared here, so each is
+    // loaded through the same allowlisted door and recorded in the stage's
+    // asset metadata; each lens request names exactly its own
+    // (`CRITIC_LENS_ASSETS` in `finalCritic.ts`), and a request naming
+    // anything undeclared is refused. Every skill is fact-free:
+    // `critique-discipline` for every lens; `claim-boundaries` for
+    // evidence-fidelity; the new `platform-local-review` for platform-and-local
+    // — not `platform-specs` or `local-seo`, which carry concrete facts;
+    // `script-craft` and `adaptation-craft` for voice-and-craft; and
+    // `production-craft` for production-coherence.
+    promptPaths: [
+      "agents/final-critic-evidence.md",
+      "agents/final-critic-platform.md",
+      "agents/final-critic-voice.md",
+      "agents/final-critic-production.md",
+    ],
+    skillPaths: [
+      "skills/critique-discipline/SKILL.md",
+      "skills/claim-boundaries/SKILL.md",
+      "skills/platform-local-review/SKILL.md",
+      "skills/script-craft/SKILL.md",
+      "skills/adaptation-craft/SKILL.md",
+      "skills/production-craft/SKILL.md",
+    ],
     // No factual reference asset, for the same reason stage 4 and stage 5
     // declare none: this stage's factual surface is hook-story-script's used
     // claims, narrowed per platform by packaging-adaptation's own bindings. A

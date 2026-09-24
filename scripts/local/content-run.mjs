@@ -12,11 +12,15 @@
  * `src/harness/contentIntelligence.selftest.ts` proves works:
  *   strategy-concept -> automotive-truth -> hook-story-script ->
  *   production-direction -> packaging-adaptation -> final-critic
- * with each stage's validated output passed into the next.
+ * with each stage's validated output passed into the next. `final-critic` is a
+ * panel of four lenses — evidence-fidelity, platform-and-local, voice-and-craft,
+ * production-coherence — each one model request, run concurrently, aggregated
+ * deterministically by the executor. Full runs and `--replay-critic` both run
+ * the whole panel.
  *
  * After stage 5 validates, a deterministic step attaches each package's fixed
  * contact line — copied byte for byte from the evidence pack's approved-facts
- * phone and booking-link records, never written by a model — and the critic
+ * shop-name, phone and booking-link records, never written by a model — and the critic
  * receives the contacted packages, in a full run and in `--replay-critic` alike.
  * Every record a contact line needs is checked before the cost gate, so a
  * missing phone record costs nothing. See `src/harness/agents/contactLine.ts`.
@@ -43,7 +47,8 @@
  *                              the word LIVE typed at the prompt.
  *   --i-understand-this-costs-money
  *                              Required to use --runner live.
- *   --replay-critic <run-dir>  Run ONLY final-critic against an existing run
+ *   --replay-critic <run-dir>  Run ONLY final-critic — all four lens requests —
+ *                              against an existing run
  *                              directory's saved stage 1-5 outputs. Writes to a
  *                              new sibling directory and never touches the
  *                              source run. Refuses unless the rebuilt evidence
@@ -320,30 +325,55 @@ function buildFakeStageResponses(goal, pack) {
         : [];
       return { packages, claimUse };
     },
-    finalCritic(packagingOutput, platforms) {
-      const findings = [
-        {
-          severity: "advisory", category: "claim_fidelity", platform: "cross_platform", owner: "packaging-adaptation",
-          issue: "The caption is identical across platforms; Instagram and Facebook audiences may read it as copy-pasted.",
-          suggestedAction: "Vary phrasing per platform while keeping the same permitted fact and the same claim boundary.",
-        },
-        {
-          severity: "blocking", category: "human_decision", platform: "cross_platform", owner: "human_review",
-          issue: "This is a canned, fake-runner demonstration output, not a reviewed piece of content.",
-          suggestedAction: "A human must review the real evidence, the real script, and the real package before anything here is used.",
-        },
-      ];
-      const claimFindingUse = platforms.flatMap((platform) => {
-        const bound = packagingOutput.claimUse.used.find((u) => u.platform === platform);
-        if (!bound) return [];
-        return [{ findingIndex: 0, platform, factId: bound.factId, summary: "The same fact this platform's caption already cites." }];
+    /**
+     * One canned answer per critic lens. The executor sends four requests,
+     * each labelled with its lens; each answer uses only that lens's categories.
+     */
+    finalCritic(packagingOutput, platforms, lens) {
+      const bound = platforms.flatMap((platform) => {
+        const use = packagingOutput.claimUse.used.find((u) => u.platform === platform);
+        return use ? [{ platform, factId: use.factId }] : [];
       });
-      return {
-        verdict: "needs_human_review",
-        summary: "Wiring exercised end-to-end with a fake runner. Every claim traces to supplied evidence, but nothing here has been reviewed by a person and nothing here is publishable.",
-        findings,
-        claimFindingUse,
-      };
+      switch (lens) {
+        case "evidence-fidelity":
+          return {
+            verdict: "provisional_pass",
+            summary: "Fake-runner evidence lens: every caption relies on the same bound fact. Nothing here was reviewed by a person.",
+            findings: [{
+              severity: "advisory", category: "claim_fidelity", platform: "cross_platform", owner: "packaging-adaptation",
+              issue: "The caption is identical across platforms; check each still says only what its own platform's bound claim supports.",
+              suggestedAction: "Vary phrasing per platform while keeping the same permitted fact and the same claim boundary.",
+            }],
+            claimFindingUse: bound.map(({ platform, factId }) => ({
+              findingIndex: 0, platform, factId, summary: "The same fact this platform's caption already cites.",
+            })),
+          };
+        case "platform-and-local":
+          return {
+            verdict: "provisional_pass",
+            summary: "Fake-runner platform lens: no platform-fit concern raised by canned output.",
+            findings: [],
+            claimFindingUse: [],
+          };
+        case "voice-and-craft":
+          return {
+            verdict: "provisional_pass",
+            summary: "Fake-runner voice lens: no voice concern raised by canned output.",
+            findings: [],
+          };
+        case "production-coherence":
+          return {
+            verdict: "provisional_pass",
+            summary: "Fake-runner production lens: canned output, not a reviewed piece of content.",
+            findings: [{
+              severity: "advisory", category: "human_decision", platform: "cross_platform", owner: "human_review",
+              issue: "This is a canned, fake-runner demonstration output, not a reviewed piece of content.",
+              suggestedAction: "A human must review the real evidence, the real script, and the real package before anything here is used.",
+            }],
+          };
+        default:
+          throw new Error(`fake runner: no canned answer for critic lens ${JSON.stringify(lens)}`);
+      }
     },
   };
 }
@@ -442,7 +472,12 @@ const PRICE = {
   "claude-sonnet-4-6": { in: 3, out: 15 },
 };
 
-/** Print the rough ceiling for the given stages; returns the total. */
+/**
+ * Print the rough ceiling for the given model requests; returns the total. Each
+ * entry is one request: a full run is five stage requests plus the critic
+ * panel's four lens requests, and a critic-only replay is the four lens
+ * requests.
+ */
 function printCostCeiling(rt, stagePolicies, label) {
   const { resolveModelPolicy, modelBearingPolicies, POLICY_MAX_TOKENS } = rt.modelPolicy;
   const { MAX_PAYLOAD_CHARS } = rt.payloadContract;
@@ -452,25 +487,33 @@ function printCostCeiling(rt, stagePolicies, label) {
   // the thinking tokens, because they are billed as output and count against
   // the same `max_tokens`.
   let total = 0;
-  console.log("Estimated ceiling cost per stage (rough, not billing-accurate):");
+  console.log("Estimated ceiling cost per model request (rough, not billing-accurate):");
   for (const [stage, policy] of stagePolicies) {
     const resolved = resolveModelPolicy(policy);
     const price = PRICE[resolved.model];
     const inputTokensEstimate = Math.ceil(MAX_PAYLOAD_CHARS / 4);
     const cost = price ? (inputTokensEstimate * price.in + resolved.maxTokens * price.out) / 1e6 : undefined;
     total += cost ?? 0;
-    console.log(`  ${stage.padEnd(22)} ${resolved.model.padEnd(20)} out<=${resolved.maxTokens} tokens  ~$${cost?.toFixed(2) ?? "?"}`);
+    console.log(`  ${stage.padEnd(35)} ${resolved.model.padEnd(20)} out<=${resolved.maxTokens} tokens  ~$${cost?.toFixed(2) ?? "?"}`);
   }
-  console.log(`Estimated ceiling for ${label}: ~$${total.toFixed(2)}`);
+  console.log(`Estimated ceiling for ${label} (${stagePolicies.length} model requests): ~$${total.toFixed(2)}`);
   console.log(`(policies checked: ${modelBearingPolicies().join(", ")}; POLICY_MAX_TOKENS=${JSON.stringify(POLICY_MAX_TOKENS)})`);
   return total;
 }
 
-const ALL_STAGE_POLICIES = [
-  ["strategy-concept", "reasoning-heavy"], ["automotive-truth", "reasoning-heavy"],
-  ["hook-story-script", "reasoning-standard"], ["production-direction", "reasoning-standard"],
-  ["packaging-adaptation", "reasoning-standard"], ["final-critic", "critic"],
-];
+/** The critic panel: one `critic` request per lens, in lens order. */
+export function criticLensPolicies(rt) {
+  return rt.payloadContract.CRITIC_LENSES.map((lens) => [`final-critic:${lens}`, "critic"]);
+}
+
+/** Every model request one full run makes: five stages, then the four critic lenses. */
+export function allStagePolicies(rt) {
+  return [
+    ["strategy-concept", "reasoning-heavy"], ["automotive-truth", "reasoning-heavy"],
+    ["hook-story-script", "reasoning-standard"], ["production-direction", "reasoning-standard"],
+    ["packaging-adaptation", "reasoning-standard"], ...criticLensPolicies(rt),
+  ];
+}
 
 /**
  * Build and validate the evidence pack exactly as a full run does, and return
@@ -574,6 +617,9 @@ function createRunRecorder(rt, runDir) {
  */
 function recordingRunner(transcript, stage, inner) {
   return async (...callArgs) => {
+    // The critic panel labels each request with its lens; every saved response
+    // and every measurement row carries it, so four lens responses stay apart.
+    const lens = typeof callArgs[0]?.lens === "string" ? callArgs[0].lens : undefined;
     let response;
     try {
       response = await inner(...callArgs);
@@ -585,6 +631,7 @@ function recordingRunner(transcript, stage, inner) {
           : null;
         transcript.push({
           stage,
+          ...(lens ? { lens } : {}),
           receivedAt: new Date().toISOString(),
           failure: error?.name ?? "Error",
           stopReason: message.stop_reason ?? null,
@@ -599,6 +646,7 @@ function recordingRunner(transcript, stage, inner) {
     }
     transcript.push({
       stage,
+      ...(lens ? { lens } : {}),
       receivedAt: new Date().toISOString(),
       chars: typeof response?.text === "string" ? response.text.length : null,
       usage: response?.usage ?? null,
@@ -615,7 +663,8 @@ function recordingRunner(transcript, stage, inner) {
  *
  * Measured from the raw provider text, not the validated output, so a response
  * that failed a ceiling is measured too: that is the one that matters. Keys are
- * `OUTPUT_FIELD_BOUNDS`' own `<stage>.<field token>`, so each row carries the
+ * `OUTPUT_FIELD_BOUNDS`' own `<stage>.<field token>` — `final-critic:<lens>.<field
+ * token>` for a critic lens response — so each row carries the
  * enforced limit, the figure the prompt states, and the field's class. The
  * binding size is UTF-8 bytes — every bound caps code units and bytes with one
  * number, and bytes are never fewer. Stage 5's caption and hashtag count are
@@ -631,7 +680,9 @@ function measureFields(transcript, { bounds, statedCeiling, platformCaps, provid
     stage, field, observed, enforced, stated, class: fieldClass,
     pctOfStated: stated > 0 ? Math.round((observed / stated) * 100) : null, over: observed > enforced,
   });
-  for (const { stage, text } of transcript) {
+  for (const { stage: stageId, lens, text } of transcript) {
+    // A critic lens response is measured against its own lens's contract.
+    const stage = lens ? `${stageId}:${lens}` : stageId;
     let raw;
     try { raw = JSON.parse(text); } catch { rows.push({ stage, field: "(response)", observed: "not JSON" }); continue; }
     const seen = new Map();
@@ -652,7 +703,7 @@ function measureFields(transcript, { bounds, statedCeiling, platformCaps, provid
         || key === "packaging-adaptation.packages[].localKeywords") continue;
       row(stage, path, observed, bound.enforced, statedCeiling(key, bound.enforced), bound.class);
     }
-    for (const pkg of (stage === "packaging-adaptation" && Array.isArray(raw?.packages) ? raw.packages : [])) {
+    for (const pkg of (stageId === "packaging-adaptation" && Array.isArray(raw?.packages) ? raw.packages : [])) {
       if (typeof pkg?.caption !== "string") continue;
       const caps = platformCaps(pkg.platform);
       const tags = Array.isArray(pkg.hashtags) ? pkg.hashtags.filter((t) => typeof t === "string") : [];
@@ -695,7 +746,9 @@ export function summaryFooter(runner) {
  * The human review surface. `packaging` is stage 5's output with the
  * deterministic contact line attached to every package; each platform's contact
  * line and Google Business Profile's call to action are rendered beside its
- * caption, labelled as code-attached rather than model-written.
+ * caption, labelled as code-attached rather than model-written. The critic
+ * panel is rendered as the panel's computed verdict and counts, then one
+ * section per lens: that lens's verdict, its own summary, and its findings.
  */
 export function markdownSummary({ goal, runner, timestamp, script, direction, packaging, critic }) {
   const lines = [];
@@ -722,12 +775,19 @@ export function markdownSummary({ goal, runner, timestamp, script, direction, pa
         + `${contact.gbpCta.actionType} → ${contact.gbpCta.url}`, "");
     }
   });
-  lines.push("## Critic verdict", "");
+  lines.push("## Critic panel", "");
   lines.push(`**${critic.provisional.verdict}** — ${critic.provisional.summary}`, "");
-  critic.provisional.findings.forEach((f) => {
-    lines.push(`- [${f.severity}/${f.owner}] ${f.issue} — ${f.suggestedAction}`);
-  });
-  lines.push("", "---", summaryFooter(runner));
+  lines.push("_Verdict and counts are computed by code from the four lens answers; no model merged them._", "");
+  for (const lens of critic.provisional.lenses) {
+    lines.push(`### ${lens.lens} — ${lens.verdict}`, "", lens.summary, "");
+    const own = critic.provisional.findings.filter((f) => f.lens === lens.lens);
+    if (!own.length) lines.push("No findings from this lens.", "");
+    own.forEach((f) => {
+      lines.push(`- [${f.severity}/${f.category}/${f.platform}/${f.owner}] ${f.issue} — ${f.suggestedAction}`);
+    });
+    if (own.length) lines.push("");
+  }
+  lines.push("---", summaryFooter(runner));
   return lines.join("\n");
 }
 
@@ -781,13 +841,13 @@ async function main() {
     );
   }
 
-  // The deterministic contact line needs the approved-facts phone and booking
-  // records; without them the critic would refuse after five paid stages. Both
-  // are in the pack already built, so check now, for free.
+  // The deterministic contact line needs the approved-facts shop-name, phone
+  // and booking records; without them the critic would refuse after five paid
+  // stages. All three are in the pack already built, so check now, for free.
   rt.contact.assertContactFactsAvailable(pack, platforms);
 
   if (args.runner === "live") {
-    printCostCeiling(rt, ALL_STAGE_POLICIES, "one full six-stage run");
+    printCostCeiling(rt, allStagePolicies(rt), "one full six-stage run");
     await requireLiveConsent(args);
   }
 
@@ -820,7 +880,9 @@ async function main() {
   const fake = buildFakeStageResponses(args.goal, pack);
   const runnerFor = (stage, buildResponse) => recordingRunner(transcript, stage, args.runner === "live"
     ? runner
-    : async () => ({ text: JSON.stringify(buildResponse()), totalCostUsd: 0, usage: { input_tokens: 0, output_tokens: 0 } }));
+    : async (request) => ({
+      text: JSON.stringify(buildResponse(request)), totalCostUsd: 0, usage: { input_tokens: 0, output_tokens: 0 },
+    }));
 
   console.log("Running stage 1/6: strategy-concept");
   const strategy = await rt.strategy.executeStrategyConcept({
@@ -864,11 +926,11 @@ async function main() {
   const contacted = rt.contact.attachContactLines(packaging.output, pack);
   await writeContactLines(runDir, contacted);
 
-  console.log("Running stage 6/6: final-critic");
+  console.log(`Running stage 6/6: final-critic — ${rt.payloadContract.CRITIC_LENSES.length} lens requests, concurrently`);
   const critic = await rt.critic.executeFinalCritic({
     scriptOutput: script.output, directionOutput: direction.output, packagingOutput: contacted,
     truthOutput: truth.output, evidencePack: pack, requestedPlatforms: platforms, registry,
-    runner: runnerFor("final-critic", () => fake.finalCritic(contacted, platforms)),
+    runner: runnerFor("final-critic", (request) => fake.finalCritic(contacted, platforms, request?.lens)),
   });
   await writeStage("06-final-critic", critic);
 
@@ -1062,14 +1124,14 @@ async function replayCritic(rt, args) {
   // package shape either way. Free, and before the spend guard.
   rt.contact.assertContactFactsAvailable(pack, platforms);
   const contacted = rt.contact.attachContactLines(packagingOutput, pack);
-  console.log("Contact lines attached from the approved-facts phone and booking records.");
+  console.log("Contact lines attached from the approved-facts shop-name, phone and booking records.");
 
   const registry = new AgentRegistry();
   await registry.verifyAllAssets();
 
   // --- 6. the spend guard --------------------------------------------------
   if (args.runner === "live") {
-    printCostCeiling(rt, [["final-critic", "critic"]], "one critic-only replay");
+    printCostCeiling(rt, criticLensPolicies(rt), "one critic-only replay");
     await requireLiveConsent(args);
   }
 
@@ -1100,12 +1162,13 @@ async function replayCritic(rt, args) {
   const fake = buildFakeStageResponses(goal, pack);
   const runner = recordingRunner(transcript, "final-critic", args.runner === "live"
     ? createAnthropicStageRunner()
-    : async () => ({
-      text: JSON.stringify(fake.finalCritic(contacted, platforms)),
+    : async (request) => ({
+      text: JSON.stringify(fake.finalCritic(contacted, platforms, request?.lens)),
       totalCostUsd: 0, usage: { input_tokens: 0, output_tokens: 0 },
     }));
 
-  console.log("Running final-critic only, against the saved stage 2-5 outputs and fresh contact lines");
+  console.log(`Running final-critic only — ${rt.payloadContract.CRITIC_LENSES.length} lens requests, concurrently — `
+    + "against the saved stage 2-5 outputs and fresh contact lines");
   const critic = await rt.critic.executeFinalCritic({
     scriptOutput, directionOutput, packagingOutput: contacted, truthOutput, evidencePack: pack,
     requestedPlatforms: platforms, registry, runner,
@@ -1147,7 +1210,7 @@ function reportFailure(err) {
   } else if (err?.name === "EvidenceValidationError") {
     console.error(`${err.name}: ${err.message}`);
     if (Array.isArray(err.issues)) for (const i of err.issues) console.error(`  - ${i}`);
-  } else if (err?.name === "StageExecutionError") {
+  } else if (err?.name === "StageExecutionError" || err?.name === "CriticPanelError") {
     console.error(`${err.name}: ${err.message}`);
   } else if (["StageOutputTruncatedError", "StageRefusalError", "StageUnexpectedStopError", "ContactLineError"]
     .includes(err?.name)) {

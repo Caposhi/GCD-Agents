@@ -1,5 +1,5 @@
 /**
- * Phase 0B.6 — the `final-critic` stage executor.
+ * Phase 0B.6 — the `final-critic` stage executor, as a narrow critic panel.
  *
  * Stage 6 is the last of the six target Content Intelligence reasoning stages.
  * It reviews the finished, already-adapted package and returns an adversarial
@@ -10,6 +10,50 @@
  * `/console/content-intelligence/preview` route calls it. Executing it
  * requires a caller to construct an invocation deliberately and supply a
  * runner.
+ *
+ * ## One stage, four lenses, deterministic aggregation
+ *
+ * `final-critic` is still one registered stage (order 6). Its executor reviews
+ * the package through four narrow **lenses**, in this order:
+ *
+ *  1. **evidence-fidelity** — `claim_fidelity`, `uncited_implication`;
+ *  2. **platform-and-local** — `platform_semantics`,
+ *     `hashtag_keyword_relevance`, `timing`;
+ *  3. **voice-and-craft** — `voice_clarity`;
+ *  4. **production-coherence** — `production_coherence`.
+ *
+ * Any lens may also raise `human_decision`. The validator refuses any other
+ * category from a lens.
+ *
+ * Each lens is **exactly one model request** through the shared stage request
+ * boundary (`invokeStage`): the `critic` policy, no retries, stop-reason checks,
+ * the stream deadline. The four requests run concurrently. That is the one
+ * amendment to "exactly one model request per stage" in this pipeline, and it
+ * is narrow: **for final-critic only, exactly one request per lens, four lenses,
+ * no retries.** Every other stage still makes exactly one request.
+ *
+ * Each lens has its own prompt (`agents/final-critic-<lens>.md`), its own
+ * fact-free skills, its own input projection, its own categories and its own
+ * output contract (`CRITIC_LENS_FIELD_LIMITS`, `CRITIC_LENS_OUTPUTS` in
+ * `payloadContract.ts`). **If any lens fails — a request error, a refused or
+ * truncated response, non-strict JSON, or a validation failure — the stage fails
+ * closed** with a `CriticPanelError` naming every failed lens; no partial
+ * critique is returned. The executor waits for every lens to settle before it
+ * throws, so a caller recording raw responses (the local CLI does) keeps every
+ * response that did return.
+ *
+ * **No model writes or merges the combined output.** TypeScript aggregates the
+ * four validated lens outputs (`aggregateCriticPanel`):
+ *
+ *  - `findings` is the union of every lens's findings, in lens order, each
+ *    carrying its `lens`; nothing is deduplicated;
+ *  - `verdict`: any blocking finding → `needs_revision`; else any
+ *    `human_decision` finding, or any lens verdict `needs_human_review` →
+ *    `needs_human_review`; else `provisional_pass`;
+ *  - the top-level `summary` is deterministic: finding counts per lens and
+ *    severity;
+ *  - each lens's own model-written summary is kept, attributed to its lens, in
+ *    `lenses` — never merged into another.
  *
  * ## This is a second, different critic from the one already running
  *
@@ -55,9 +99,15 @@
  * entry only; the orchestrator's existing call site is untouched, and no
  * other registered stage references either file.
  *
- * This stage instead gets `agents/final-critic.md` (tool-free, no pinned
- * model) and `skills/critique-discipline/SKILL.md` — both written to state no
- * fact, name no legacy subagent, and describe no provider payload.
+ * This stage instead gets one tool-free prompt per lens, pinning no model, and
+ * fact-free skills: `skills/critique-discipline/SKILL.md` for every lens,
+ * `skills/claim-boundaries/SKILL.md` for evidence-fidelity,
+ * `skills/platform-local-review/SKILL.md` for platform-and-local (not
+ * `skills/platform-specs` or `skills/local-seo`, which carry concrete facts),
+ * `skills/script-craft/SKILL.md` and `skills/adaptation-craft/SKILL.md` for
+ * voice-and-craft, and `skills/production-craft/SKILL.md` for
+ * production-coherence. None states a fact, names a legacy subagent, or
+ * describes a provider payload.
  *
  * ## The authority boundary this stage exists to hold
  *
@@ -68,7 +118,7 @@
  *    knowledge, and not the rejected compliance-checklist rubric or
  *    approved-facts reference.
  *  - **Not stage 4's direction and not stage 5's captions either**, in the
- *    sense that neither becomes a new source of fact. Both reach the model as
+ *    sense that neither becomes a new source of fact. Both reach the lenses as
  *    context to critique — that is this stage's entire job — but what a
  *    caption or a shot is *permitted* to have asserted is still measured
  *    against stage 3's used-claim set, exactly as it was when stage 5
@@ -78,44 +128,65 @@
  *    the exact records stage 5 actually cited for each requested platform,
  *    never derived from a caption, a summary, or any other prose.
  *
- * The model receives exactly six bounded, labelled untrusted blocks:
- * `SCRIPT_OUTPUT`, `PRODUCTION_OUTPUT`, `PACKAGING_OUTPUT`,
- * `REQUESTED_PLATFORMS`, `SCRIPT_CLAIMS`, and `PLATFORM_CLAIMS`.
+ * Each lens receives only the bounded, labelled untrusted blocks its job needs
+ * (`CRITIC_LENS_BLOCKS` in `payloadContract.ts` fixes the labels and order):
+ *
+ *  - **evidence-fidelity** — `SCRIPT_COPY` (stage 3's hook, beats and script),
+ *    `OVERLAY_TEXT` (stage 4's on-screen wording, with the shot and shot
+ *    subject each sits on), `PACKAGING_COPY` (each package's caption,
+ *    hashtags, local keywords and contact line), `SCRIPT_CLAIMS`,
+ *    `PLATFORM_CLAIMS`, and — reviewer-only — stage 2's `REQUIRED_CAVEATS` and
+ *    `FORBIDDEN_CLAIMS`. Stage 2's caveats and forbidden claims are withheld
+ *    from every writing stage after stage 3, so a writer cannot reach for a
+ *    claim stage 3 did not use. **A reviewer writes no copy**: showing it the
+ *    caveats lets it check the copy kept them, and gives it nothing it could
+ *    put into a caption. Stage 2's assessment and restatements stay withheld.
+ *  - **platform-and-local** — `PACKAGING_OUTPUT` (stage 5's output with its
+ *    contact lines), `REQUESTED_PLATFORMS`, `PLATFORM_CLAIMS`.
+ *  - **voice-and-craft** — `COPY`: the hook, the script and each caption.
+ *  - **production-coherence** — `SCRIPT_OUTPUT`, `PRODUCTION_OUTPUT`,
+ *    `PACKAGING_OUTPUT`.
+ *
  * `PACKAGING_OUTPUT` is stage 5's output with the deterministic contact line
  * `contactLine.ts` attaches to every package — copied from the approved-facts
- * phone and booking-link records, never written by a model. The critic rebuilds
- * each line from the pack and refuses a package whose line is missing or
- * differs, so it always sees the same package shape. The complete
- * pack, stage 2's provisional prose, stage 2's wider whitelist, raw
- * references, `config/approved-facts.json`, active environment
+ * shop-name, phone and booking-link records, never written by a model. The
+ * critic rebuilds each line from the pack and refuses a package whose line is
+ * missing or differs, so every lens always sees the same package shape. The
+ * complete pack, stage 2's assessment and restatements, stage 2's wider
+ * whitelist, raw references, `config/approved-facts.json`, active environment
  * configuration, provider/account/location configuration, image or media
- * content, and any approval or publication state are never rendered.
+ * content, and any approval or publication state are never rendered to any
+ * lens.
  *
  * ## What this stage guarantees, exactly
  *
  * **Guaranteed:**
- *  - Every entry in the typed claim-finding channel names a finding the model
- *    actually returned, a platform that was actually requested, and a fact id
- *    stage 5 actually bound **for that platform**. Fabricated ids,
+ *  - Every lens's findings use only that lens's categories plus
+ *    `human_decision`.
+ *  - Every entry in a lens's typed claim-finding channel names a finding that
+ *    lens actually returned, a platform that was actually requested, and a
+ *    fact id stage 5 actually bound **for that platform**. Fabricated ids,
  *    wrong-platform ids, out-of-range finding indices, and exact-triple
  *    duplicates (the same finding citing the same platform and fact twice)
  *    all fail. A platform-specific finding's bindings must all name that
  *    finding's own platform; a `cross_platform` finding's bindings may name
  *    any requested platform, each still bound by stage 5 for that platform.
+ *    Only the two lenses shown `PLATFORM_CLAIMS` have that channel at all.
  *  - The evidence class attached to a claim-finding entry always comes from
  *    the record stage 5 bound, never from the model's declaration.
- *  - `verdict` is checked for **structural** self-consistency against each
- *    finding's `severity` and `owner`: `provisional_pass` cannot coexist with
- *    a blocking finding; `needs_revision` requires at least one blocking
- *    finding owned by a revisable Stage 3/4/5 owner; `needs_human_review`
- *    requires at least one blocking finding owned by human review — a
- *    human-review verdict backed only by advisory findings fails.
+ *  - Each lens's `verdict` is checked for **structural** self-consistency
+ *    against its own findings' `severity` and `owner`: `provisional_pass`
+ *    cannot coexist with a blocking finding; `needs_revision` requires at least
+ *    one blocking finding owned by a revisable Stage 3/4/5 owner;
+ *    `needs_human_review` requires at least one blocking finding owned by human
+ *    review — a human-review verdict backed only by advisory findings fails.
+ *    The panel's own verdict is then computed, never taken from a model.
  *  - All four prior-stage values (stage 2, 3, 4, 5) are revalidated against
  *    the same evidence pack, using the owning stages' own exported
  *    revalidators, before any model call, and the requested-platform sequence
  *    is checked to match stage 5's own package sequence exactly.
- *  - Every prose field this stage returns — the summary, each finding's issue
- *    and suggested action, and each claim-finding summary — is rejected if it
+ *  - Every prose field a lens returns — its summary, each finding's issue and
+ *    suggested action, and each claim-finding summary — is rejected if it
  *    contains recognizable URL syntax, using the same guard stage 5 uses.
  *  - Nothing here may ever read as an approval. See the guarantee below,
  *    stated as its own section because it is the point of this stage.
@@ -141,15 +212,16 @@
  * real provider payload.** Nothing in this module's output may be read as
  * clearance: `authoritative`, `approvalGranted`, `publishable`, `executable`,
  * and `productionValidated` are always `false`, structurally, on every
- * assessment this stage returns — including one where the model itself
- * expresses total confidence, invents an all-clear, or otherwise argues for
- * its own authority. Those fields are asserted by the validator, not copied
- * from the model, so a wrongly optimistic model output cannot escape them —
- * the output contract has no field through which a model could set any of
- * them, so an attempt to smuggle one in as an extra field is refused outright,
- * not silently dropped. Verdict consistency above is a check that the
- * model's own findings and their declared owners do not contradict its own
- * verdict; it is not a check that either is true.
+ * assessment this stage returns — the panel's and every lens's — including one
+ * where a model itself expresses total confidence, invents an all-clear, or
+ * otherwise argues for its own authority. Those fields are asserted by the
+ * validator and the aggregator, not copied from a model, so a wrongly
+ * optimistic model output cannot escape them — no lens contract has a field
+ * through which a model could set any of them, so an attempt to smuggle one in
+ * as an extra field is refused outright, not silently dropped. Verdict
+ * consistency above is a check that a lens's own findings and their declared
+ * owners do not contradict its own verdict; it is not a check that either is
+ * true.
  *
  * ## What this stage is not allowed to do
  *
@@ -175,9 +247,7 @@ import { revalidateProductionDirectionOutput } from "./productionDirection.js";
 import type { PackagingAdaptationOutput, PackagingPlatform } from "./packagingAdaptation.js";
 import {
   URL_SHAPED_TEXT_PATTERN,
-  PACKAGING_LIMITS,
   PACKAGING_PLATFORMS,
-  PLATFORM_PACKAGING_POLICY,
   packagingClaimRecords,
   scriptUsedClaimRecordsForPackaging,
   renderPackagingScriptClaims,
@@ -186,17 +256,26 @@ import {
 import {
   StageExecutionError,
   StageExecutionMetadata,
+  StageAssetUse,
   StageRunner,
   assertRequiredEvidenceKinds,
   invokeStage,
   parseStrictJsonObject,
 } from "./stageExecution.js";
 import {
-  CRITIC_FIELD_LIMITS, EVIDENCE_LIMITS, HANDOFF_GUARDS, CONTACTED_PACKAGING_OUTPUT, isBoundedSerializableText,
-  statedCeiling,
+  CRITIC_FIELD_LIMITS, CRITIC_LENSES, CRITIC_LENS_BINDS_CLAIMS, CRITIC_LENS_BLOCKS,
+  CRITIC_LENS_FIELD_LIMITS, EVIDENCE_LIMITS, HANDOFF_GUARDS, CONTACTED_PACKAGING_OUTPUT,
+  criticLensSpecId, isBoundedSerializableText, statedCeiling,
 } from "./payloadContract.js";
+import type { CriticLens } from "./payloadContract.js";
 import type { ContactedPackagingOutput } from "./contactLine.js";
 import { revalidateContactedPackagingOutput } from "./contactLine.js";
+import {
+  schemaArray, schemaEnum, schemaInteger, schemaObject, schemaString,
+} from "./responseFormatKit.js";
+
+export { CRITIC_LENSES } from "./payloadContract.js";
+export type { CriticLens } from "./payloadContract.js";
 
 export const FINAL_CRITIC_STAGE = "final-critic" as const;
 
@@ -208,7 +287,7 @@ export const FINAL_CRITIC_STAGE = "final-critic" as const;
  * to every package (`contactLine.ts`), so the ceiling is
  * `CONTACTED_PACKAGING_OUTPUT` — stage 5's own `PACKAGING_OUTPUT` plus the
  * contact fields. The contact line is not model output, so stage 5's token
- * budget does not move; only this guard and this stage's assembled payload do.
+ * budget does not move; only this guard and this stage's assembled payloads do.
  *
  * This stage used to derive its own, with its own escape multiplier and its own
  * hand-chosen skeleton and short-field allowances. That derivation was correct
@@ -221,8 +300,11 @@ export const FINAL_CRITIC_STAGE = "final-critic" as const;
 export const PACKAGING_OUTPUT_SERIALIZED_CEILING = CONTACTED_PACKAGING_OUTPUT.transportChars;
 
 /**
- * Bounds on the model's output and on the prior-stage values it is shown.
+ * Bounds on each lens's output and on the prior-stage values the panel is
+ * shown.
  *
+ * The output-field figures are the per-lens figures every lens instantiates
+ * (`CRITIC_LENS_FIELD_LIMITS` in `payloadContract.ts`), identical across lenses.
  * Every one of the three prior-stage bounds is **exactly** the producing
  * stage's own derived ceiling, re-exported from `payloadContract.ts`:
  * `scriptOutputChars` is `SCRIPT_OUTPUT.transportChars`,
@@ -237,15 +319,16 @@ export const PACKAGING_OUTPUT_SERIALIZED_CEILING = CONTACTED_PACKAGING_OUTPUT.tr
  * it accepts.
  *
  * **The available packaging payload is still a dynamic difference**, never a
- * fixed envelope constant: it is `MAX_PAYLOAD_CHARS` minus the serialized
- * sizes of the other five framed blocks this stage assembles, and those sizes
- * move with the evidence. What the payload-contract reconciliation changed is
- * that the difference is now provably positive at the worst case — evidence
- * text is bounded in both TypeScript and PostgreSQL, the pack projection is
- * bounded in cardinality, and `MAX_PAYLOAD_CHARS` is itself derived from the
- * largest assembled stage ceiling — so no structurally valid pipeline can
- * reach the shared boundary. A regression asserts that, block by block,
- * against a real assembled prompt rather than a second copy of the arithmetic.
+ * fixed envelope constant: for each lens that is shown the packaging output, it
+ * is `MAX_PAYLOAD_CHARS` minus the serialized sizes of the other framed blocks
+ * in that lens's request, and those sizes move with the evidence. What the
+ * payload-contract reconciliation changed is that the difference is now provably
+ * positive at the worst case — evidence text is bounded in both TypeScript and
+ * PostgreSQL, the pack projection is bounded in cardinality, and
+ * `MAX_PAYLOAD_CHARS` is itself derived from the largest assembled request any
+ * stage or lens can build — so no structurally valid pipeline can reach the
+ * shared boundary. A regression asserts that, block by block, against a real
+ * assembled prompt rather than a second copy of the arithmetic.
  *
  * **Still dormant.** Every stage reports `executionEnabled: false`, nothing
  * reaches an executor, and oversized input fails closed before any model call.
@@ -259,10 +342,6 @@ export const FINAL_CRITIC_LIMITS = {
 } as const;
 
 /** Closed set. What kind of concern a finding raises. */
-import {
-  schemaArray, schemaEnum, schemaInteger, schemaObject, schemaString,
-} from "./responseFormatKit.js";
-
 export const CRITIC_FINDING_CATEGORIES = [
   "claim_fidelity",
   "uncited_implication",
@@ -274,6 +353,44 @@ export const CRITIC_FINDING_CATEGORIES = [
   "human_decision",
 ] as const;
 export type CriticFindingCategory = (typeof CRITIC_FINDING_CATEGORIES)[number];
+
+/**
+ * Each lens's categories. Every lens may also raise `human_decision`; the
+ * validator refuses any category outside a lens's own list, and the lens's
+ * response schema enumerates only these.
+ */
+export const CRITIC_LENS_CATEGORIES: Readonly<Record<CriticLens, readonly CriticFindingCategory[]>> = {
+  "evidence-fidelity": ["claim_fidelity", "uncited_implication", "human_decision"],
+  "platform-and-local": ["platform_semantics", "hashtag_keyword_relevance", "timing", "human_decision"],
+  "voice-and-craft": ["voice_clarity", "human_decision"],
+  "production-coherence": ["production_coherence", "human_decision"],
+};
+
+/**
+ * Each lens's instruction assets: one prompt and the fact-free skills it uses.
+ * Every path is declared on the `final-critic` registry entry, and a request is
+ * refused if it names one that is not.
+ */
+export const CRITIC_LENS_ASSETS: Readonly<Record<CriticLens, { prompt: string; skills: readonly string[] }>> = {
+  "evidence-fidelity": {
+    prompt: "agents/final-critic-evidence.md",
+    skills: ["skills/critique-discipline/SKILL.md", "skills/claim-boundaries/SKILL.md"],
+  },
+  "platform-and-local": {
+    prompt: "agents/final-critic-platform.md",
+    skills: ["skills/critique-discipline/SKILL.md", "skills/platform-local-review/SKILL.md"],
+  },
+  "voice-and-craft": {
+    prompt: "agents/final-critic-voice.md",
+    skills: [
+      "skills/critique-discipline/SKILL.md", "skills/script-craft/SKILL.md", "skills/adaptation-craft/SKILL.md",
+    ],
+  },
+  "production-coherence": {
+    prompt: "agents/final-critic-production.md",
+    skills: ["skills/critique-discipline/SKILL.md", "skills/production-craft/SKILL.md"],
+  },
+};
 
 /** Closed set. Whether a finding blocks, or is advisory only. */
 export const CRITIC_FINDING_SEVERITIES = ["blocking", "advisory"] as const;
@@ -294,7 +411,7 @@ export type CriticFindingPlatform = (typeof CRITIC_FINDING_PLATFORMS)[number];
  * A revisable owner names the upstream stage whose output would need to
  * change; `human_review` names a matter this pipeline cannot resolve by
  * revision at all — a judgement call for a person. Every finding must name
- * one, which is also the anchor for `verdict` consistency below.
+ * one, which is also the anchor for a lens's `verdict` consistency below.
  */
 export const CRITIC_FINDING_OWNERS = [
   "hook-story-script",
@@ -310,8 +427,8 @@ const REVISABLE_OWNERS: ReadonlySet<CriticFindingOwner> = new Set([
 ]);
 
 /**
- * Closed set. The critic's opinion. Never an approval — see this module's
- * header for the honest guarantee this type does not weaken.
+ * Closed set. A lens's opinion, and the panel's. Never an approval — see this
+ * module's header for the honest guarantee this type does not weaken.
  */
 export const CRITIC_VERDICTS = [
   "provisional_pass",
@@ -320,8 +437,18 @@ export const CRITIC_VERDICTS = [
 ] as const;
 export type CriticVerdict = (typeof CRITIC_VERDICTS)[number];
 
-/** Exactly the fields the contract allows. Anything else is an extra field. */
-export const ALLOWED_OUTPUT_FIELDS = ["verdict", "summary", "findings", "claimFindingUse"] as const;
+/**
+ * Exactly the fields each lens's contract allows. Anything else is an extra
+ * field. Only a lens shown `PLATFORM_CLAIMS` has `claimFindingUse`.
+ */
+export const CRITIC_LENS_OUTPUT_FIELDS: Readonly<Record<CriticLens, readonly string[]>> = Object.fromEntries(
+  CRITIC_LENSES.map((lens): [CriticLens, readonly string[]] => [
+    lens,
+    CRITIC_LENS_BINDS_CLAIMS[lens]
+      ? ["verdict", "summary", "findings", "claimFindingUse"]
+      : ["verdict", "summary", "findings"],
+  ]),
+) as unknown as Record<CriticLens, readonly string[]>;
 export const ALLOWED_FINDING_FIELDS = [
   "severity", "category", "platform", "owner", "issue", "suggestedAction",
 ] as const;
@@ -330,45 +457,61 @@ const ALLOWED_CLAIM_FINDING_FIELDS = [
 ] as const;
 
 /**
- * The JSON Schema sent as `output_config.format` for this stage. Shape only.
+ * The JSON Schema sent as `output_config.format` for one lens. Shape only.
  *
- * Internal-plumbing fields, and the reviewer-only `issue` field, state
- * `statedCeiling`, not the enforced limit: a `description` is a model-facing
- * channel, so it states what the prompt states. See `STATED_FIELD_CEILINGS` and
- * `REVIEWER_ONLY_MARGIN_FIELDS` in `payloadContract.ts`.
+ * Built from the same `CRITIC_LENS_OUTPUT_FIELDS` and `CRITIC_LENS_CATEGORIES`
+ * the validator reads. Internal-plumbing fields, and the reviewer-only `issue`
+ * field, state `statedCeiling`, not the enforced limit: a `description` is a
+ * model-facing channel, so it states what the prompt states. See
+ * `STATED_FIELD_CEILINGS` and `REVIEWER_ONLY_MARGIN_FIELDS` in
+ * `payloadContract.ts`.
  */
-export const FINAL_CRITIC_RESPONSE_FORMAT = schemaObject({
-  verdict: schemaEnum(CRITIC_VERDICTS, "The provisional, non-approving verdict"),
-  summary: schemaString("No recognizable URL syntax", FINAL_CRITIC_LIMITS.summaryChars),
-  findings: schemaArray(
-    schemaObject({
-      severity: schemaEnum(CRITIC_FINDING_SEVERITIES, "Blocking or advisory"),
-      category: schemaEnum(CRITIC_FINDING_CATEGORIES, "What kind of finding"),
-      platform: schemaEnum(CRITIC_FINDING_PLATFORMS, "Which platform, or cross_platform"),
-      owner: schemaEnum(CRITIC_FINDING_OWNERS, "Which stage or human must act"),
-      issue: schemaString(
-        "No recognizable URL syntax",
-        statedCeiling("final-critic.findings[].issue", FINAL_CRITIC_LIMITS.issueChars),
-      ),
-      suggestedAction: schemaString("No recognizable URL syntax", FINAL_CRITIC_LIMITS.suggestedActionChars),
-    }),
-    "An empty findings array and a calm summary are a complete, correct answer",
-    FINAL_CRITIC_LIMITS.maxFindings,
-  ),
-  claimFindingUse: schemaArray(
-    schemaObject({
-      findingIndex: schemaInteger("0-based index of a finding you returned"),
-      platform: schemaEnum(PACKAGING_PLATFORMS, 'The bound platform; never "cross_platform"'),
-      factId: schemaString("An id stage 5 bound on that exact platform"),
-      summary: schemaString(
-        "No recognizable URL syntax",
-        statedCeiling("final-critic.claimFindingUse[].summary", FINAL_CRITIC_LIMITS.claimFindingSummaryChars),
-      ),
-    }),
-    "Which stage-5-bound claim a finding discusses, if any",
-    FINAL_CRITIC_LIMITS.maxClaimFindingUses,
-  ),
-});
+function criticLensResponseFormat(lens: CriticLens): Record<string, unknown> {
+  const limits = CRITIC_LENS_FIELD_LIMITS[lens];
+  const spec = criticLensSpecId(lens);
+  const properties: Record<string, Record<string, unknown>> = {
+    verdict: schemaEnum(CRITIC_VERDICTS, "This lens's provisional, non-approving verdict"),
+    summary: schemaString("No recognizable URL syntax", limits.summaryChars),
+    findings: schemaArray(
+      schemaObject({
+        severity: schemaEnum(CRITIC_FINDING_SEVERITIES, "Blocking or advisory"),
+        category: schemaEnum(CRITIC_LENS_CATEGORIES[lens], "This lens's categories, or human_decision"),
+        platform: schemaEnum(CRITIC_FINDING_PLATFORMS, "Which platform, or cross_platform"),
+        owner: schemaEnum(CRITIC_FINDING_OWNERS, "Which stage or human must act"),
+        issue: schemaString(
+          "No recognizable URL syntax", statedCeiling(`${spec}.findings[].issue`, limits.issueChars),
+        ),
+        suggestedAction: schemaString("No recognizable URL syntax", limits.suggestedActionChars),
+      }),
+      "An empty findings array and a calm summary are a complete, correct answer",
+      limits.maxFindings,
+    ),
+  };
+  if (limits.claimFindingUse) {
+    properties.claimFindingUse = schemaArray(
+      schemaObject({
+        findingIndex: schemaInteger("0-based index of a finding you returned"),
+        platform: schemaEnum(PACKAGING_PLATFORMS, 'The bound platform; never "cross_platform"'),
+        factId: schemaString("An id stage 5 bound on that exact platform"),
+        summary: schemaString(
+          "No recognizable URL syntax",
+          statedCeiling(`${spec}.claimFindingUse[].summary`, limits.claimFindingUse.summaryChars),
+        ),
+      }),
+      "Which stage-5-bound claim a finding discusses, if any",
+      limits.claimFindingUse.maxEntries,
+    );
+  }
+  // Same order as `CRITIC_LENS_OUTPUT_FIELDS`.
+  return schemaObject(Object.fromEntries(
+    CRITIC_LENS_OUTPUT_FIELDS[lens].map((field) => [field, properties[field]!]),
+  ));
+}
+
+/** Each lens's `output_config.format` schema. */
+export const CRITIC_LENS_RESPONSE_FORMATS: Readonly<Record<CriticLens, Record<string, unknown>>> = Object.fromEntries(
+  CRITIC_LENSES.map((lens) => [lens, criticLensResponseFormat(lens)]),
+) as Record<CriticLens, Record<string, unknown>>;
 
 /**
  * One adversarial finding.
@@ -378,6 +521,8 @@ export const FINAL_CRITIC_RESPONSE_FORMAT = schemaObject({
  * membership, and the absence of recognizable URL syntax.
  */
 export interface CriticFinding {
+  /** The lens that raised it. Set by the validator, never by the model. */
+  lens: CriticLens;
   severity: CriticFindingSeverity;
   category: CriticFindingCategory;
   /** One requested platform, or `"cross_platform"` for a cross-platform concern. */
@@ -399,7 +544,12 @@ export interface CriticFinding {
  */
 export interface CriticClaimFindingBinding {
   readonly kind: "evidence_bound_critic_claim_use";
-  /** Index into `findings`. Validated against the findings actually returned. */
+  /** The lens whose finding this binding supports. */
+  lens: CriticLens;
+  /**
+   * Index into `findings`. In a lens output, into that lens's findings; in the
+   * panel's aggregated output, into the aggregated findings.
+   */
   findingIndex: number;
   /** A platform that was actually requested. */
   platform: PackagingPlatform;
@@ -423,17 +573,61 @@ export interface CriticClaimFindingUse {
 }
 
 /**
- * Model-authored critique from this stage.
+ * One lens's model-authored critique, validated. Branded with the same five
+ * literal-`false` fields as the panel's assessment.
+ */
+export interface CriticLensAssessment {
+  readonly kind: "provisional_critic_lens_assessment";
+  lens: CriticLens;
+  readonly authoritative: false;
+  readonly approvalGranted: false;
+  readonly publishable: false;
+  readonly executable: false;
+  readonly productionValidated: false;
+  verdict: CriticVerdict;
+  summary: string;
+  /** Order is preserved exactly as returned. */
+  findings: CriticFinding[];
+}
+
+/** One lens's validated output. */
+export interface CriticLensOutput {
+  lens: CriticLens;
+  provisional: CriticLensAssessment;
+  /** Empty for a lens whose contract has no `claimFindingUse`. */
+  claimFindingUse: CriticClaimFindingUse;
+}
+
+/**
+ * One lens's own verdict and model-written summary, attributed to it in the
+ * panel's output. Never merged with another lens's.
+ */
+export interface CriticLensSummary {
+  readonly kind: "provisional_critic_lens_summary";
+  lens: CriticLens;
+  verdict: CriticVerdict;
+  /** The lens's own model-written summary, verbatim. */
+  summary: string;
+  findingCount: number;
+  /** Always false. A lens's summary is an opinion. */
+  readonly authoritative: false;
+}
+
+/**
+ * The panel's critique. Built by code from the four validated lens outputs —
+ * no model writes or merges it.
  *
  * Branded and flagged with five literal-`false` fields, deliberately more
  * than any prior stage: this is the stage most likely to be misread as a
  * clearance, so the type refuses every reading of "this passed" it can name.
  * Nothing here may be published, executed, treated as an approval, or treated
- * as proof of production readiness — including when the model itself argues
+ * as proof of production readiness — including when a model itself argues
  * that it should be.
  */
 export interface ProvisionalCriticAssessment {
   readonly kind: "provisional_critic_assessment";
+  /** How this assessment was produced: deterministic aggregation, not a model. */
+  readonly aggregation: "deterministic_critic_panel";
   /** Always false. An opinion is not a grant of authority. */
   readonly authoritative: false;
   /** Always false. Nothing here approves anything. */
@@ -444,22 +638,29 @@ export interface ProvisionalCriticAssessment {
   readonly executable: false;
   /** Always false. This stage does not validate production readiness. */
   readonly productionValidated: false;
+  /** Computed by `aggregateCriticVerdict`. */
   verdict: CriticVerdict;
+  /** Deterministic: finding counts per lens and severity. Not model prose. */
   summary: string;
-  /** Order is preserved exactly as returned; it is part of the contract. */
+  /** Each lens's own verdict and summary, in lens order. */
+  lenses: CriticLensSummary[];
+  /** Every lens's findings, in lens order, each carrying its lens. Not deduplicated. */
   findings: CriticFinding[];
 }
 
 export interface FinalCriticOutput {
-  /** Untrusted, non-authoritative model critique. Never an approval. */
+  /** Untrusted, non-authoritative panel critique. Never an approval. */
   provisional: ProvisionalCriticAssessment;
-  /** Typed, stage-5-bound record of which claim each finding discusses. */
+  /** Typed, stage-5-bound record of which claim each aggregated finding discusses. */
   claimFindingUse: CriticClaimFindingUse;
 }
 
 export interface FinalCriticResult {
   output: FinalCriticOutput;
+  /** The stage's metadata: four model requests, usage summed across lenses. */
   metadata: StageExecutionMetadata;
+  /** Each lens request's own metadata, in lens order. */
+  lenses: Array<{ lens: CriticLens; metadata: StageExecutionMetadata }>;
 }
 
 export interface FinalCriticInvocation {
@@ -477,9 +678,9 @@ export interface FinalCriticInvocation {
   /**
    * The complete typed output from stage 2.
    *
-   * Used only to revalidate the chain. It is never shown to the model: its
-   * whitelist is wider than what stage 3 used, and its prose would be a
-   * second, unused set of claims to reach for.
+   * Used to revalidate the chain. Its caveats and forbidden claims are shown to
+   * the evidence-fidelity lens alone, as reviewer-only input; its assessment,
+   * its restatements and its wider whitelist are never shown to any lens.
    */
   truthOutput: AutomotiveTruthOutput;
   /** The same pack that bound the whole chain. Revalidated against it. */
@@ -491,14 +692,41 @@ export interface FinalCriticInvocation {
    */
   requestedPlatforms: PackagingPlatform[];
   registry?: AgentRegistry;
+  /**
+   * Called once per lens. Each call's request carries its `lens` as a label;
+   * the production runner ignores it.
+   */
   runner: StageRunner;
+}
+
+/**
+ * The panel failed closed: at least one lens did not return a valid critique.
+ * Names every failed lens and why. No partial critique exists.
+ */
+export class CriticPanelError extends StageExecutionError {
+  readonly lensFailures: ReadonlyArray<{ lens: CriticLens; message: string }>;
+  readonly succeededLenses: readonly CriticLens[];
+  constructor(
+    lensFailures: ReadonlyArray<{ lens: CriticLens; message: string }>,
+    succeededLenses: readonly CriticLens[],
+  ) {
+    super(
+      FINAL_CRITIC_STAGE,
+      `critic panel failed closed — ${lensFailures.length} of ${CRITIC_LENSES.length} lens(es) failed: `
+      + lensFailures.map((f) => `[${f.lens}] ${f.message}`).join("; ")
+      + ". No partial critique is returned.",
+    );
+    this.name = "CriticPanelError";
+    this.lensFailures = lensFailures;
+    this.succeededLenses = succeededLenses;
+  }
 }
 
 const fail = (message: string): never => {
   throw new StageExecutionError(FINAL_CRITIC_STAGE, message);
 };
 
-function requireBoundedString(value: unknown, field: string, max: number): string {
+function requireBoundedString(fail: (m: string) => never, value: unknown, field: string, max: number): string {
   if (typeof value !== "string") fail(`"${field}" must be a string`);
   const text = (value as string).trim();
   if (!text) fail(`"${field}" must not be empty`);
@@ -513,7 +741,9 @@ function requireBoundedString(value: unknown, field: string, max: number): strin
   return text;
 }
 
-function requireExactKeys(obj: Record<string, unknown>, keys: string[], label: string): void {
+function requireExactKeys(
+  fail: (m: string) => never, obj: Record<string, unknown>, keys: readonly string[], label: string,
+): void {
   const extras = Object.keys(obj).filter((k) => !keys.includes(k));
   if (extras.length) fail(`${label} has unknown field(s): ${extras.join(", ")}`);
   for (const key of keys) {
@@ -521,28 +751,23 @@ function requireExactKeys(obj: Record<string, unknown>, keys: string[], label: s
   }
 }
 
-function requireObject(value: unknown, label: string): Record<string, unknown> {
+function requireObject(fail: (m: string) => never, value: unknown, label: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     fail(`"${label}" must be an object`);
   }
   return value as Record<string, unknown>;
 }
 
-function requireEnum<T extends string>(value: unknown, allowed: readonly T[], field: string): T {
+function requireEnum<T extends string>(
+  fail: (m: string) => never, value: unknown, allowed: readonly T[], field: string,
+): T {
   if (typeof value !== "string" || !(allowed as readonly string[]).includes(value)) {
     fail(`"${field}" must be one of: ${allowed.join(", ")}`);
   }
   return value as T;
 }
 
-function requirePlatform(value: unknown, field: string): PackagingPlatform {
-  if (typeof value !== "string" || !(PACKAGING_PLATFORMS as readonly string[]).includes(value)) {
-    fail(`"${field}" must be one of: ${PACKAGING_PLATFORMS.join(", ")}`);
-  }
-  return value as PackagingPlatform;
-}
-
-function requireUrlFreeText(value: string, field: string): string {
+function requireUrlFreeText(fail: (m: string) => never, value: string, field: string): string {
   if (URL_SHAPED_TEXT_PATTERN.test(value)) {
     fail(`"${field}" must not contain a recognizable URL`);
   }
@@ -550,7 +775,7 @@ function requireUrlFreeText(value: string, field: string): string {
 }
 
 /**
- * The bounded per-platform projection this stage's model is shown.
+ * The bounded per-platform projection the two claim-binding lenses are shown.
  *
  * Deliberately narrower than `SCRIPT_CLAIMS`: it is stage 5's own typed claim
  * bindings, drawn **only** via `packagingClaimRecords` — a caption, a
@@ -582,56 +807,127 @@ export function renderPlatformClaims(
   );
 }
 
+/** The evidence-fidelity lens's `SCRIPT_COPY`: stage 3's hook, beats and script. */
+export function renderScriptCopy(scriptOutput: HookStoryScriptOutput): string {
+  const p = scriptOutput.provisional;
+  return JSON.stringify({
+    hook: p.hook,
+    storyBeats: p.storyBeats.map((b) => ({ beat: b.beat, role: b.role })),
+    script: p.script,
+  }, null, 2);
+}
+
 /**
- * Validate the model's object against the contract and bind every
+ * The evidence-fidelity lens's `OVERLAY_TEXT`: stage 4's on-screen wording, each
+ * entry with its shot and that shot's subject, and nothing else of stage 4.
+ */
+export function renderOverlayText(directionOutput: ProductionDirectionOutput): string {
+  const p = directionOutput.provisional;
+  return JSON.stringify(p.overlayText.map((o) => ({
+    shotIndex: o.shotIndex,
+    role: o.role,
+    shotSubject: p.shots[o.shotIndex]?.subject ?? "",
+    text: o.text,
+  })), null, 2);
+}
+
+/**
+ * The evidence-fidelity lens's `PACKAGING_COPY`: each package's caption,
+ * hashtags, local keywords and deterministic contact line.
+ */
+export function renderPackagingCopy(packagingOutput: ContactedPackagingOutput): string {
+  return JSON.stringify(packagingOutput.provisional.packages.map((pkg) => ({
+    platform: pkg.platform,
+    caption: pkg.caption,
+    hashtags: pkg.hashtags,
+    localKeywords: pkg.localKeywords,
+    contact: pkg.contact,
+  })), null, 2);
+}
+
+/** The evidence-fidelity lens's `REQUIRED_CAVEATS`. Reviewer-only. */
+export function renderRequiredCaveats(truthOutput: AutomotiveTruthOutput): string {
+  return JSON.stringify(truthOutput.provisional.requiredCaveats, null, 2);
+}
+
+/** The evidence-fidelity lens's `FORBIDDEN_CLAIMS`. Reviewer-only. */
+export function renderForbiddenClaims(truthOutput: AutomotiveTruthOutput): string {
+  return JSON.stringify(
+    truthOutput.provisional.forbiddenClaims.map((f) => ({ claim: f.claim, reason: f.reason })), null, 2,
+  );
+}
+
+/** The voice-and-craft lens's `COPY`: the hook, the script and each caption. */
+export function renderVoiceCopy(
+  scriptOutput: HookStoryScriptOutput, packagingOutput: ContactedPackagingOutput,
+): string {
+  return JSON.stringify({
+    hook: scriptOutput.provisional.hook,
+    script: scriptOutput.provisional.script,
+    captions: packagingOutput.provisional.packages.map((pkg) => ({ platform: pkg.platform, caption: pkg.caption })),
+  }, null, 2);
+}
+
+/**
+ * Validate one lens's object against that lens's contract and bind every
  * claim-finding entry to stage 5's actual per-platform claim bindings.
  *
  * **Scope of this function, stated precisely.** It validates *shape*,
- * *bounds*, *enums*, *finding-index and platform membership*, *membership in
- * stage 5's per-platform bound-claim set*, *recognizable URL syntax in every
- * model prose field*, *platform coherence between a finding and its own
- * claim-finding bindings*, and *structural consistency between `verdict` and
- * each finding's `severity`/`owner`*. It does not evaluate whether a finding
- * is correct, whether the package actually has the problem described,
- * whether a suggested action would fix it, or whether the verdict is the
- * right call. **No language model in this pipeline proves any of that true,
+ * *bounds*, *enums* — including that every category is one of **this lens's**
+ * categories or `human_decision` — *finding-index and platform membership*,
+ * *membership in stage 5's per-platform bound-claim set*, *recognizable URL
+ * syntax in every model prose field*, *platform coherence between a finding and
+ * its own claim-finding bindings*, and *structural consistency between the
+ * lens's `verdict` and each finding's `severity`/`owner`*. It does not evaluate
+ * whether a finding is correct, whether the package actually has the problem
+ * described, whether a suggested action would fix it, or whether the verdict is
+ * the right call. **No language model in this pipeline proves any of that true,
  * and nothing here treats one as though it did.**
  */
-export function validateFinalCriticOutput(
+export function validateCriticLensOutput(
+  lens: CriticLens,
   raw: Record<string, unknown>,
   requestedPlatforms: PackagingPlatform[],
   packagingOutput: PackagingAdaptationOutput,
   scriptOutput: HookStoryScriptOutput,
   truthOutput: AutomotiveTruthOutput,
   pack: EvidencePack,
-): FinalCriticOutput {
-  requireExactKeys(raw, [...ALLOWED_OUTPUT_FIELDS], "output");
+): CriticLensOutput {
+  const lensFail = (message: string): never => fail(`lens ${lens}: ${message}`);
+  const limits = CRITIC_LENS_FIELD_LIMITS[lens];
+  requireExactKeys(lensFail, raw, CRITIC_LENS_OUTPUT_FIELDS[lens], "output");
 
-  const verdict = requireEnum(raw.verdict, CRITIC_VERDICTS, "verdict");
+  const verdict = requireEnum(lensFail, raw.verdict, CRITIC_VERDICTS, "verdict");
   const summary = requireUrlFreeText(
-    requireBoundedString(raw.summary, "summary", FINAL_CRITIC_LIMITS.summaryChars), "summary",
+    lensFail, requireBoundedString(lensFail, raw.summary, "summary", limits.summaryChars), "summary",
   );
 
-  if (!Array.isArray(raw.findings)) fail('"findings" must be an array');
+  if (!Array.isArray(raw.findings)) lensFail('"findings" must be an array');
   const rawFindings = raw.findings as unknown[];
-  if (rawFindings.length > FINAL_CRITIC_LIMITS.maxFindings) {
-    fail(`"findings" exceeds ${FINAL_CRITIC_LIMITS.maxFindings} entries`);
+  if (rawFindings.length > limits.maxFindings) {
+    lensFail(`"findings" exceeds ${limits.maxFindings} entries`);
   }
+  const categories = CRITIC_LENS_CATEGORIES[lens];
   const findings: CriticFinding[] = rawFindings.map((entry, index) => {
-    const obj = requireObject(entry, `findings[${index}]`);
-    requireExactKeys(obj, [...ALLOWED_FINDING_FIELDS], "findings entry");
+    const obj = requireObject(lensFail, entry, `findings[${index}]`);
+    requireExactKeys(lensFail, obj, ALLOWED_FINDING_FIELDS, "findings entry");
     return {
-      severity: requireEnum(obj.severity, CRITIC_FINDING_SEVERITIES, `findings[${index}].severity`),
-      category: requireEnum(obj.category, CRITIC_FINDING_CATEGORIES, `findings[${index}].category`),
-      platform: requireEnum(obj.platform, CRITIC_FINDING_PLATFORMS, `findings[${index}].platform`),
-      owner: requireEnum(obj.owner, CRITIC_FINDING_OWNERS, `findings[${index}].owner`),
+      lens,
+      severity: requireEnum(lensFail, obj.severity, CRITIC_FINDING_SEVERITIES, `findings[${index}].severity`),
+      // Restricted to this lens's categories plus human_decision: a lens that
+      // strays into another lens's job is refused, not silently re-filed.
+      category: requireEnum(lensFail, obj.category, categories, `findings[${index}].category`),
+      platform: requireEnum(lensFail, obj.platform, CRITIC_FINDING_PLATFORMS, `findings[${index}].platform`),
+      owner: requireEnum(lensFail, obj.owner, CRITIC_FINDING_OWNERS, `findings[${index}].owner`),
       issue: requireUrlFreeText(
-        requireBoundedString(obj.issue, `findings[${index}].issue`, FINAL_CRITIC_LIMITS.issueChars),
+        lensFail,
+        requireBoundedString(lensFail, obj.issue, `findings[${index}].issue`, limits.issueChars),
         `findings[${index}].issue`,
       ),
       suggestedAction: requireUrlFreeText(
+        lensFail,
         requireBoundedString(
-          obj.suggestedAction, `findings[${index}].suggestedAction`, FINAL_CRITIC_LIMITS.suggestedActionChars,
+          lensFail, obj.suggestedAction, `findings[${index}].suggestedAction`, limits.suggestedActionChars,
         ),
         `findings[${index}].suggestedAction`,
       ),
@@ -649,112 +945,121 @@ export function validateFinalCriticOutput(
   const hasHumanBlocking = blockingFindings.some((f) => f.owner === "human_review");
 
   if (verdict === "provisional_pass" && blockingFindings.length > 0) {
-    fail('"verdict" is "provisional_pass", but a finding is marked severity "blocking"');
+    lensFail('"verdict" is "provisional_pass", but a finding is marked severity "blocking"');
   }
   if (verdict === "needs_revision" && !hasRevisableBlocking) {
-    fail(
+    lensFail(
       '"verdict" is "needs_revision", but no finding is both severity "blocking" and owned by a '
       + "revisable stage (hook-story-script, production-direction, or packaging-adaptation)",
     );
   }
   if (verdict === "needs_human_review" && !hasHumanBlocking) {
-    fail(
+    lensFail(
       '"verdict" is "needs_human_review", but no finding is both severity "blocking" and owned by '
       + '"human_review" — a human-review verdict backed only by advisory findings is refused',
     );
   }
 
-  // --- binding: stage 5's per-platform bound claims are the boundary --------
-  const requestedSet = new Set<string>(requestedPlatforms);
-  const boundByPlatform = new Map<PackagingPlatform, Map<string, EvidenceRecord>>();
-  for (const platform of requestedPlatforms) {
-    boundByPlatform.set(
-      platform,
-      new Map(
-        packagingClaimRecords(packagingOutput, platform, scriptOutput, truthOutput, pack)
-          .map((record) => [record.id, record]),
-      ),
-    );
+  const used: CriticClaimFindingBinding[] = [];
+  if (limits.claimFindingUse) {
+    // --- binding: stage 5's per-platform bound claims are the boundary ------
+    const requestedSet = new Set<string>(requestedPlatforms);
+    const boundByPlatform = new Map<PackagingPlatform, Map<string, EvidenceRecord>>();
+    for (const platform of requestedPlatforms) {
+      boundByPlatform.set(
+        platform,
+        new Map(
+          packagingClaimRecords(packagingOutput, platform, scriptOutput, truthOutput, pack)
+            .map((record) => [record.id, record]),
+        ),
+      );
+    }
+
+    if (!Array.isArray(raw.claimFindingUse)) lensFail('"claimFindingUse" must be an array');
+    const rawClaimFindingUse = raw.claimFindingUse as unknown[];
+    if (rawClaimFindingUse.length > limits.claimFindingUse.maxEntries) {
+      lensFail(`"claimFindingUse" exceeds ${limits.claimFindingUse.maxEntries} entries`);
+    }
+    // Keyed by the exact (findingIndex, platform, factId) triple. A duplicate
+    // triple is a repeated entry; the SAME (platform, factId) pair cited by two
+    // genuinely different findings is not — each finding's use of a claim is
+    // its own, independent citation.
+    const seenTriples = new Set<string>();
+    rawClaimFindingUse.forEach((entry, index) => {
+      const obj = requireObject(lensFail, entry, `claimFindingUse[${index}]`);
+      requireExactKeys(lensFail, obj, ALLOWED_CLAIM_FINDING_FIELDS, "claimFindingUse entry");
+
+      if (typeof obj.findingIndex !== "number" || !Number.isInteger(obj.findingIndex)) {
+        lensFail(`"claimFindingUse[${index}].findingIndex" must be an integer`);
+      }
+      const findingIndex = obj.findingIndex as number;
+      if (findingIndex < 0 || findingIndex >= findings.length) {
+        lensFail(
+          `claimFindingUse[${index}] names finding ${findingIndex}, but only ${findings.length} `
+          + "finding(s) were returned",
+        );
+      }
+      const finding = findings[findingIndex]!;
+
+      const platform = requireEnum(lensFail, obj.platform, PACKAGING_PLATFORMS, `claimFindingUse[${index}].platform`);
+      if (!requestedSet.has(platform)) {
+        lensFail(`claimFindingUse[${index}] names "${platform}", which was not requested`);
+      }
+      // Platform-specific findings may only bind claims on their own platform.
+      // A cross_platform finding may bind any requested platform.
+      if (finding.platform !== "cross_platform" && finding.platform !== platform) {
+        lensFail(
+          `claimFindingUse[${index}] names platform "${platform}", but finding ${findingIndex} is `
+          + `scoped to "${finding.platform}" — a platform-specific finding's bindings must name its own platform`,
+        );
+      }
+
+      const factId = requireBoundedString(
+        lensFail, obj.factId, `claimFindingUse[${index}].factId`, EVIDENCE_LIMITS.idChars,
+      );
+      const record = boundByPlatform.get(platform)?.get(factId);
+      if (!record) {
+        lensFail(
+          `claimFindingUse[${index}] cites "${factId}" for "${platform}", which packaging-adaptation `
+          + "did not bind for that platform (a fabricated id, a script-only id, or a claim bound on a "
+          + "different platform)",
+        );
+      }
+      const triple = `${findingIndex} ${platform} ${factId}`;
+      if (seenTriples.has(triple)) {
+        lensFail(
+          `claimFindingUse repeats the exact (finding, platform, fact) triple: finding ${findingIndex}, `
+          + `"${platform}", "${factId}"`,
+        );
+      }
+      seenTriples.add(triple);
+
+      const bindingSummary = requireUrlFreeText(
+        lensFail,
+        requireBoundedString(
+          lensFail, obj.summary, `claimFindingUse[${index}].summary`, limits.claimFindingUse!.summaryChars,
+        ),
+        `claimFindingUse[${index}].summary`,
+      );
+
+      used.push({
+        kind: "evidence_bound_critic_claim_use",
+        lens,
+        findingIndex,
+        platform,
+        factId,
+        factKind: record!.kind as CriticClaimFindingBinding["factKind"],
+        provisionalSummary: bindingSummary,
+        authoritative: false,
+      });
+    });
   }
-
-  if (!Array.isArray(raw.claimFindingUse)) fail('"claimFindingUse" must be an array');
-  const rawClaimFindingUse = raw.claimFindingUse as unknown[];
-  if (rawClaimFindingUse.length > FINAL_CRITIC_LIMITS.maxClaimFindingUses) {
-    fail(`"claimFindingUse" exceeds ${FINAL_CRITIC_LIMITS.maxClaimFindingUses} entries`);
-  }
-  // Keyed by the exact (findingIndex, platform, factId) triple. A duplicate
-  // triple is a repeated entry; the SAME (platform, factId) pair cited by two
-  // genuinely different findings is not — each finding's use of a claim is
-  // its own, independent citation.
-  const seenTriples = new Set<string>();
-  const used: CriticClaimFindingBinding[] = rawClaimFindingUse.map((entry, index) => {
-    const obj = requireObject(entry, `claimFindingUse[${index}]`);
-    requireExactKeys(obj, [...ALLOWED_CLAIM_FINDING_FIELDS], "claimFindingUse entry");
-
-    if (typeof obj.findingIndex !== "number" || !Number.isInteger(obj.findingIndex)) {
-      fail(`"claimFindingUse[${index}].findingIndex" must be an integer`);
-    }
-    const findingIndex = obj.findingIndex as number;
-    if (findingIndex < 0 || findingIndex >= findings.length) {
-      fail(
-        `claimFindingUse[${index}] names finding ${findingIndex}, but only ${findings.length} `
-        + "finding(s) were returned",
-      );
-    }
-    const finding = findings[findingIndex]!;
-
-    const platform = requirePlatform(obj.platform, `claimFindingUse[${index}].platform`);
-    if (!requestedSet.has(platform)) {
-      fail(`claimFindingUse[${index}] names "${platform}", which was not requested`);
-    }
-    // Platform-specific findings may only bind claims on their own platform.
-    // A cross_platform finding may bind any requested platform.
-    if (finding.platform !== "cross_platform" && finding.platform !== platform) {
-      fail(
-        `claimFindingUse[${index}] names platform "${platform}", but finding ${findingIndex} is `
-        + `scoped to "${finding.platform}" — a platform-specific finding's bindings must name its own platform`,
-      );
-    }
-
-    const factId = requireBoundedString(obj.factId, `claimFindingUse[${index}].factId`, EVIDENCE_LIMITS.idChars);
-    const record = boundByPlatform.get(platform)?.get(factId);
-    if (!record) {
-      fail(
-        `claimFindingUse[${index}] cites "${factId}" for "${platform}", which packaging-adaptation `
-        + "did not bind for that platform (a fabricated id, a script-only id, or a claim bound on a "
-        + "different platform)",
-      );
-    }
-    const triple = `${findingIndex} ${platform} ${factId}`;
-    if (seenTriples.has(triple)) {
-      fail(
-        `claimFindingUse repeats the exact (finding, platform, fact) triple: finding ${findingIndex}, `
-        + `"${platform}", "${factId}"`,
-      );
-    }
-    seenTriples.add(triple);
-
-    const summary = requireUrlFreeText(
-      requireBoundedString(
-        obj.summary, `claimFindingUse[${index}].summary`, FINAL_CRITIC_LIMITS.claimFindingSummaryChars,
-      ),
-      `claimFindingUse[${index}].summary`,
-    );
-
-    return {
-      kind: "evidence_bound_critic_claim_use",
-      findingIndex,
-      platform,
-      factId,
-      factKind: record!.kind as CriticClaimFindingBinding["factKind"],
-      provisionalSummary: summary,
-      authoritative: false,
-    };
-  });
 
   return {
+    lens,
     provisional: {
-      kind: "provisional_critic_assessment",
+      kind: "provisional_critic_lens_assessment",
+      lens,
       authoritative: false,
       approvalGranted: false,
       publishable: false,
@@ -764,10 +1069,94 @@ export function validateFinalCriticOutput(
       summary,
       findings,
     },
-    claimFindingUse: {
-      kind: "typed_critic_claim_use",
-      used,
+    claimFindingUse: { kind: "typed_critic_claim_use", used },
+  };
+}
+
+/**
+ * The panel's verdict, computed — never taken from a model.
+ *
+ * Any blocking finding → `needs_revision`. Else any `human_decision` finding, or
+ * any lens verdict `needs_human_review` → `needs_human_review`. Else
+ * `provisional_pass`. A lens's own `needs_human_review` requires a blocking
+ * finding, so under the first rule it already yields `needs_revision`; the
+ * second rule's lens-verdict arm is kept so the rule stands as written even if a
+ * lens contract ever relaxes that. A blocking finding owned by `human_review`
+ * still names its owner on the finding itself: the panel verdict is a triage
+ * signal, the owner is the routing.
+ */
+export function aggregateCriticVerdict(lensOutputs: readonly CriticLensOutput[]): CriticVerdict {
+  const findings = lensOutputs.flatMap((o) => o.provisional.findings);
+  if (findings.some((f) => f.severity === "blocking")) return "needs_revision";
+  if (findings.some((f) => f.category === "human_decision")
+    || lensOutputs.some((o) => o.provisional.verdict === "needs_human_review")) {
+    return "needs_human_review";
+  }
+  return "provisional_pass";
+}
+
+/**
+ * The panel's top-level summary, deterministic: how many findings each lens
+ * raised, and of what severity. It contains no model prose — each lens's own
+ * summary is in `lenses`, attributed to it.
+ */
+export function criticPanelSummary(lensOutputs: readonly CriticLensOutput[], verdict: CriticVerdict): string {
+  const count = (findings: readonly CriticFinding[], severity: CriticFindingSeverity) =>
+    findings.filter((f) => f.severity === severity).length;
+  const all = lensOutputs.flatMap((o) => o.provisional.findings);
+  const perLens = lensOutputs.map((o) => {
+    const f = o.provisional.findings;
+    return `${o.lens}: ${f.length} (${count(f, "blocking")} blocking, ${count(f, "advisory")} advisory)`;
+  });
+  return `Critic panel, ${lensOutputs.length} lenses, deterministic aggregation — verdict ${verdict}. `
+    + `${all.length} finding(s): ${count(all, "blocking")} blocking, ${count(all, "advisory")} advisory. `
+    + `${perLens.join("; ")}.`;
+}
+
+/**
+ * Aggregate the four validated lens outputs into the panel's output. Pure,
+ * deterministic TypeScript: no model writes or merges any part of it.
+ *
+ * Findings are the union of every lens's findings, in lens order, each carrying
+ * its lens, with no deduplication — two lenses flagging the same line is two
+ * findings. Claim-finding bindings keep their lens and have their finding index
+ * shifted to the aggregated findings array.
+ */
+export function aggregateCriticPanel(lensOutputs: readonly CriticLensOutput[]): FinalCriticOutput {
+  const order = lensOutputs.map((o) => o.lens).join();
+  if (order !== CRITIC_LENSES.join()) {
+    fail(`the critic panel aggregates exactly the lenses ${CRITIC_LENSES.join(", ")}, in order; got ${order}`);
+  }
+  const findings: CriticFinding[] = [];
+  const used: CriticClaimFindingBinding[] = [];
+  for (const output of lensOutputs) {
+    const offset = findings.length;
+    findings.push(...output.provisional.findings);
+    used.push(...output.claimFindingUse.used.map((b) => ({ ...b, findingIndex: offset + b.findingIndex })));
+  }
+  const verdict = aggregateCriticVerdict(lensOutputs);
+  return {
+    provisional: {
+      kind: "provisional_critic_assessment",
+      aggregation: "deterministic_critic_panel",
+      authoritative: false,
+      approvalGranted: false,
+      publishable: false,
+      executable: false,
+      productionValidated: false,
+      verdict,
+      summary: criticPanelSummary(lensOutputs, verdict),
+      lenses: lensOutputs.map((o) => ({
+        kind: "provisional_critic_lens_summary",
+        lens: o.lens,
+        verdict: o.provisional.verdict,
+        summary: o.provisional.summary,
+        findingCount: o.provisional.findings.length,
+        authoritative: false,
+      })),
+      findings,
     },
+    claimFindingUse: { kind: "typed_critic_claim_use", used },
   };
 }
 
@@ -829,18 +1218,37 @@ export function assertRequiredFinalCriticEvidence(pack: EvidencePack, registry: 
   assertRequiredEvidenceKinds(FINAL_CRITIC_STAGE, registry, pack);
 }
 
+/** Sum each numeric usage key across lens requests; undefined when no lens reported usage. */
+function sumUsage(metadata: readonly StageExecutionMetadata[]): Record<string, number> | undefined {
+  const reported = metadata.map((m) => m.usage).filter((u): u is Record<string, number> => u !== undefined);
+  if (!reported.length) return undefined;
+  const total: Record<string, number> = {};
+  for (const usage of reported) {
+    for (const [key, value] of Object.entries(usage)) {
+      if (typeof value === "number") total[key] = (total[key] ?? 0) + value;
+    }
+  }
+  return total;
+}
+
 /**
- * Execute the final-critic stage exactly once.
+ * Execute the final-critic stage: exactly one request per lens, four lenses,
+ * concurrently, no retries.
  *
  * Fails closed on: a malformed, incompletely branded, evidence-inconsistent,
  * or oversized prior-stage value at any of the four preceding stages; a
  * requested-platform sequence that does not exactly match stage 5's own
- * package sequence; an empty stage 3 used-claim set; a missing asset; a
- * runner error or timeout; non-strict JSON; any structural or policy
- * violation; and any claim-finding use that is fabricated, wrong-platform,
- * out-of-range, an exact-triple duplicate, incoherent with its own finding's
- * platform, or structurally inconsistent with its own verdict. Performs no
- * retry and no second model call.
+ * package sequence; an empty stage 3 used-claim set; a lens block larger than
+ * its derived ceiling; a missing asset. Every one of those is raised before any
+ * model request exists. Then, per lens: a runner error or timeout, a refused,
+ * truncated or unfinished response, non-strict JSON, any structural or policy
+ * violation, a category outside the lens's own, and any claim-finding use that
+ * is fabricated, wrong-platform, out-of-range, an exact-triple duplicate,
+ * incoherent with its own finding's platform, or structurally inconsistent with
+ * the lens's own verdict. **If any lens fails, the stage fails** with a
+ * `CriticPanelError` naming every failed lens — after every lens has settled,
+ * so no returned response is abandoned mid-flight. No lens is retried and no
+ * second call is made for any lens.
  *
  * **The zero-used-claims decision, made explicitly.** Stage 5 already refuses
  * when stage 3 bound nothing, and stage 4 refuses before it. This stage does
@@ -882,7 +1290,7 @@ export async function executeFinalCritic(
   // (`revalidatePackagingAdaptationOutput`, called inside
   // `revalidateContactedPackagingOutput`), and every contact line
   // is rebuilt from the approved-facts records in this pack and must match the
-  // one supplied: the critic always sees the same package shape, and never a
+  // one supplied: every lens always sees the same package shape, and never a
   // contact line a model — or anyone — edited.
   const packagingOutput = revalidateContactedPackagingOutput(
     invocation.packagingOutput, scriptOutput, truthOutput, pack,
@@ -923,33 +1331,94 @@ export async function executeFinalCritic(
     fail("hook-story-script bound no claims: refusing to critique a package with no factual authority");
   }
 
-  const { rawText, metadata } = await invokeStage({
-    stage: FINAL_CRITIC_STAGE,
-    responseFormatSchema: FINAL_CRITIC_RESPONSE_FORMAT,
-    registry,
-    runner: invocation.runner,
-    // This stage declares no reference asset. Explicit anyway, so adding one
-    // later is a deliberate reviewed act rather than a silent channel change.
-    referenceChannel: "omit",
-    dataBlocks: [
-      { label: "SCRIPT_OUTPUT", body: renderedScriptOutput },
-      { label: "PRODUCTION_OUTPUT", body: renderedDirectionOutput },
-      { label: "PACKAGING_OUTPUT", body: renderedPackagingOutput },
-      { label: "REQUESTED_PLATFORMS", body: JSON.stringify(requestedPlatforms, null, 2) },
-      {
-        label: "SCRIPT_CLAIMS",
-        body: renderPackagingScriptClaims(scriptOutput, truthOutput, pack),
-      },
-      {
-        label: "PLATFORM_CLAIMS",
-        body: renderPlatformClaims(packagingOutput, requestedPlatforms, scriptOutput, truthOutput, pack),
-      },
-    ],
-  });
+  // Every block any lens is shown, by label. Each lens is sent exactly the
+  // labels `CRITIC_LENS_BLOCKS` lists for it, in that order — the payload
+  // contract, not this function, decides what a lens sees.
+  const bodies: Record<string, string> = {
+    SCRIPT_OUTPUT: renderedScriptOutput,
+    PRODUCTION_OUTPUT: renderedDirectionOutput,
+    PACKAGING_OUTPUT: renderedPackagingOutput,
+    REQUESTED_PLATFORMS: JSON.stringify(requestedPlatforms, null, 2),
+    SCRIPT_CLAIMS: renderPackagingScriptClaims(scriptOutput, truthOutput, pack),
+    PLATFORM_CLAIMS: renderPlatformClaims(packagingOutput, requestedPlatforms, scriptOutput, truthOutput, pack),
+    SCRIPT_COPY: renderScriptCopy(scriptOutput),
+    OVERLAY_TEXT: renderOverlayText(directionOutput),
+    PACKAGING_COPY: renderPackagingCopy(packagingOutput),
+    REQUIRED_CAVEATS: renderRequiredCaveats(truthOutput),
+    FORBIDDEN_CLAIMS: renderForbiddenClaims(truthOutput),
+    COPY: renderVoiceCopy(scriptOutput, packagingOutput),
+  };
+  const lensBlocks = Object.fromEntries(CRITIC_LENSES.map((lens) => [
+    lens,
+    CRITIC_LENS_BLOCKS[lens].map(({ label, bodyChars }) => {
+      const body = bodies[label];
+      if (body === undefined) fail(`lens ${lens}: no renderer for block ${label}`);
+      if (body!.length > bodyChars) {
+        fail(`lens ${lens}: block ${label} exceeds its derived ceiling of ${bodyChars} characters`);
+      }
+      return { label, body: body! };
+    }),
+  ])) as Record<CriticLens, Array<{ label: string; body: string }>>;
 
-  const parsed = parseStrictJsonObject(FINAL_CRITIC_STAGE, rawText);
-  const output = validateFinalCriticOutput(
-    parsed, requestedPlatforms, packagingOutput, scriptOutput, truthOutput, pack,
-  );
-  return { output, metadata };
+  // One request per lens, concurrently. Every lens settles before anything is
+  // decided, so a response that did return is never abandoned mid-flight — a
+  // caller recording responses keeps it — and a failure in one lens does not
+  // cancel a paid request in another.
+  const settled = await Promise.allSettled(CRITIC_LENSES.map(async (lens) => {
+    const assets = CRITIC_LENS_ASSETS[lens];
+    const { rawText, metadata } = await invokeStage({
+      stage: FINAL_CRITIC_STAGE,
+      responseFormatSchema: CRITIC_LENS_RESPONSE_FORMATS[lens],
+      registry,
+      runner: invocation.runner,
+      // This stage declares no reference asset. Explicit anyway, so adding one
+      // later is a deliberate reviewed act rather than a silent channel change.
+      referenceChannel: "omit",
+      instructionAssets: [assets.prompt, ...assets.skills],
+      lens,
+      dataBlocks: lensBlocks[lens],
+    });
+    const parsed = parseStrictJsonObject(FINAL_CRITIC_STAGE, rawText);
+    const output = validateCriticLensOutput(
+      lens, parsed, requestedPlatforms, packagingOutput, scriptOutput, truthOutput, pack,
+    );
+    return { output, metadata };
+  }));
+
+  const lensFailures: Array<{ lens: CriticLens; message: string }> = [];
+  const succeeded: Array<{ output: CriticLensOutput; metadata: StageExecutionMetadata }> = [];
+  settled.forEach((result, index) => {
+    const lens = CRITIC_LENSES[index]!;
+    if (result.status === "fulfilled") succeeded.push(result.value);
+    else lensFailures.push({ lens, message: (result.reason as Error)?.message ?? String(result.reason) });
+  });
+  if (lensFailures.length) {
+    throw new CriticPanelError(lensFailures, succeeded.map((s) => s.output.lens));
+  }
+
+  const output = aggregateCriticPanel(succeeded.map((s) => s.output));
+  const lensMetadata = succeeded.map((s) => s.metadata);
+  const first = lensMetadata[0]!;
+  // Every declared asset, with the channel it reached in at least one lens.
+  const assets: StageAssetUse[] = first.assets.map((asset) => ({
+    ...asset,
+    channel: lensMetadata.some((m) => m.assets.some((a) => a.path === asset.path && a.channel === "instruction"))
+      ? "instruction" : asset.channel,
+  }));
+  const costs = lensMetadata.map((m) => m.totalCostUsd);
+  const metadata: StageExecutionMetadata = {
+    stage: FINAL_CRITIC_STAGE,
+    model: first.model,
+    modelPolicy: first.modelPolicy,
+    assets,
+    modelRequests: lensMetadata.reduce((total, m) => total + m.modelRequests, 0),
+    usage: sumUsage(lensMetadata),
+    totalCostUsd: costs.every((c): c is number => typeof c === "number")
+      ? costs.reduce((total, c) => total + c, 0) : undefined,
+  };
+  return {
+    output,
+    metadata,
+    lenses: succeeded.map((s) => ({ lens: s.output.lens, metadata: s.metadata })),
+  };
 }

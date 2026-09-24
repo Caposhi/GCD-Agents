@@ -128,7 +128,15 @@
  * check, the critic's packaging ceiling, the local CLI's footer, contact
  * handoff and free preflight, and the two prompt rules. Those targets add the
  * contact module, the CLI and two prompts to the captured paths; the CLI and
- * prompts are read at runtime and need no rebuild.
+ * prompts are read at runtime and need no rebuild. Since the narrow critic
+ * panel, the critic-side prompt rule lives in the evidence-fidelity lens prompt.
+ *
+ * The final group covers the narrow critic panel: the lens category
+ * restriction, the aggregation verdict rule, the no-merge deterministic summary
+ * and the no-dedup union, the reviewer-only caveat exposure, fail-closed on one
+ * lens failing, the lens-scoped instruction channel, the lens label never
+ * reaching the provider, the per-lens token budget, and the contact line's shop
+ * name read from its approved-facts record. It adds no captured path.
  *
  * It is offline and deterministic: no network, no database, no provider, no
  * credential. The authoritative checkout is read-only after a disposable copy
@@ -178,7 +186,9 @@ const SQL_AUTHORITY_SOURCE = "src/harness/sqlAuthority.ts";
 const CONTACT_LINE = "src/harness/agents/contactLine.ts";
 const CONTENT_RUN_CLI = "scripts/local/content-run.mjs";
 const PACKAGING_PROMPT = "agents/packaging-adaptation.md";
-const CRITIC_PROMPT = "agents/final-critic.md";
+// The critic panel's evidence-fidelity lens prompt: the prompt that carries the
+// contact-line rule since the single critic prompt was split into four lenses.
+const EVIDENCE_LENS_PROMPT = "agents/final-critic-evidence.md";
 
 /**
  * Each mutation names the derivation it breaks, the single edit that breaks it,
@@ -3057,8 +3067,10 @@ const FIELD_MARGIN_MUTATIONS = [
   {
     name: "a product-bearing field is given a hidden margin",
     file: PAYLOAD,
-    from: '  "final-critic.claimFindingUse[].summary": 400,',
-    to: '  "final-critic.claimFindingUse[].summary": 400,\n  "final-critic.summary": 750,',
+    // The critic's fields are keyed per lens since the narrow critic panel; a
+    // lens summary is product-bearing and must not be given a stated figure.
+    from: '  "packaging-adaptation.claimUse[].summary": 400,',
+    to: '  "packaging-adaptation.claimUse[].summary": 400,\n  "final-critic:evidence-fidelity.summary": 750,',
     expect: ["CD0f."],
   },
   {
@@ -3126,8 +3138,11 @@ const CRITIC_POLICY_MUTATIONS = [
   {
     name: "the reviewer-only margin allow-list is widened to a second product-bearing field",
     file: PAYLOAD,
-    from: '  "final-critic.findings[].issue",\n]);',
-    to: '  "final-critic.findings[].issue",\n  "final-critic.summary",\n]);',
+    // Per lens since the narrow critic panel: the allow-list is each lens's
+    // findings[].issue, and widening it to a lens summary must fail.
+    from: "  CRITIC_LENSES.map((lens) => `${criticLensSpecId(lens)}.findings[].issue`),\n);",
+    to: "  [...CRITIC_LENSES.map((lens) => `${criticLensSpecId(lens)}.findings[].issue`), "
+      + '"final-critic:evidence-fidelity.summary"],\n);',
     expect: ["CD0f2."],
   },
   {
@@ -3168,8 +3183,9 @@ const CONTACT_LINE_MUTATIONS = [
   {
     name: "the critic's packaging ceiling stops counting the call-to-action link",
     file: PAYLOAD,
-    from: "    + CONTACT_CTA_URL_CHARS\n",
-    to: "",
+    from: "    + CONTACT_TEXT_MAX_CHARS // contact text, at the widest reserve less its separator\n"
+      + "    + CONTACT_CTA_URL_CHARS\n",
+    to: "    + CONTACT_TEXT_MAX_CHARS // contact text, at the widest reserve less its separator\n",
     expect: ["CK13b."],
   },
   {
@@ -3196,7 +3212,7 @@ const CONTACT_LINE_MUTATIONS = [
   {
     name: "the Instagram template drifts from the owner-reviewed wording",
     file: CONTACT_LINE,
-    from: "text: `Call German Car Depot: ${values.phone}`, sourceFactIds };",
+    from: "text: `Call ${values.shop}: ${values.phone}`, sourceFactIds };",
     to: "text: `Call us: ${values.phone}`, sourceFactIds };",
     expect: ["CK1.", "CG11."],
   },
@@ -3210,8 +3226,8 @@ const CONTACT_LINE_MUTATIONS = [
   {
     name: "the summary footer is hardcoded to the fake runner again",
     file: CONTENT_RUN_CLI,
-    from: '  lines.push("", "---", summaryFooter(runner));',
-    to: '  lines.push("", "---", "_Fake-runner output. Not reviewed. Not publishable. Authorizes nothing._");',
+    from: '  lines.push("---", summaryFooter(runner));',
+    to: '  lines.push("---", "_Fake-runner output. Not reviewed. Not publishable. Authorizes nothing._");',
     expect: ["CE8."],
   },
   {
@@ -3224,7 +3240,7 @@ const CONTACT_LINE_MUTATIONS = [
   {
     name: "the full run no longer checks the contact records before any spend",
     file: CONTENT_RUN_CLI,
-    from: "  // are in the pack already built, so check now, for free.\n"
+    from: "  // stages. All three are in the pack already built, so check now, for free.\n"
       + "  rt.contact.assertContactFactsAvailable(pack, platforms);\n",
     to: "",
     expect: ["CE9."],
@@ -3239,9 +3255,9 @@ const CONTACT_LINE_MUTATIONS = [
   },
   {
     name: "the critic's prompt no longer says a contact line is never an uncited implication",
-    file: CRITIC_PROMPT,
+    file: EVIDENCE_LENS_PROMPT,
     from: "Do not flag a contact line, or the link inside it, as an `uncited_implication` or a "
-      + "`claim_fidelity` problem, and do not suggest a stage rewrite it — no stage wrote it. ",
+      + "`claim_fidelity` problem — no stage wrote it. ",
     to: "",
     expect: ["CK16."],
   },
@@ -3254,9 +3270,144 @@ const CONTACT_LINE_MUTATIONS = [
   },
 ];
 
+/**
+ * The narrow critic panel: final-critic reviews through four lenses — one
+ * request per lens, concurrently, no retries — and code aggregates the four
+ * validated answers. Each mutation breaks one of the panel's load-bearing
+ * rules: the lens category restriction, the aggregation verdict rule, the
+ * no-merge deterministic summary and the no-dedup union, the reviewer-only
+ * caveat exposure, fail-closed on one lens failing, the lens-scoped
+ * instruction channel, the lens label never reaching the provider, the
+ * per-lens budget, and the shop name read from its approved-facts record.
+ * Appended after every earlier group, so no existing id moves.
+ */
+const CRITIC_PANEL_MUTATIONS = [
+  {
+    name: "a lens accepts every category, not only its own and human_decision",
+    file: FINAL_CRITIC,
+    from: "      category: requireEnum(lensFail, obj.category, categories, `findings[${index}].category`),",
+    to: "      category: requireEnum(lensFail, obj.category, CRITIC_FINDING_CATEGORIES, `findings[${index}].category`),",
+    expect: ["CL1.", "CL5."],
+  },
+  {
+    name: "the voice lens is widened into the evidence lens's category",
+    file: FINAL_CRITIC,
+    from: '  "voice-and-craft": ["voice_clarity", "human_decision"],',
+    to: '  "voice-and-craft": ["voice_clarity", "claim_fidelity", "human_decision"],',
+    expect: ["CL2.", "CL5."],
+  },
+  {
+    name: "the panel verdict ignores blocking findings",
+    file: FINAL_CRITIC,
+    from: '  if (findings.some((f) => f.severity === "blocking")) return "needs_revision";\n',
+    to: "",
+    expect: ["CL9.", "BT1."],
+  },
+  {
+    name: "the panel verdict ignores human_decision findings",
+    file: FINAL_CRITIC,
+    from: '  if (findings.some((f) => f.category === "human_decision")\n    || lensOutputs.some(',
+    to: "  if (lensOutputs.some(",
+    expect: ["CL8."],
+  },
+  {
+    name: "the panel verdict ignores a lens's own needs_human_review verdict",
+    file: FINAL_CRITIC,
+    from: '\n    || lensOutputs.some((o) => o.provisional.verdict === "needs_human_review")) {',
+    to: ") {",
+    expect: ["CL10."],
+  },
+  {
+    name: "the panel summary merges the lenses' model-written summaries",
+    file: FINAL_CRITIC,
+    from: "      summary: criticPanelSummary(lensOutputs, verdict),",
+    to: '      summary: lensOutputs.map((o) => o.provisional.summary).join(" "),',
+    expect: ["CL14.", "CL15.", "BT10."],
+  },
+  {
+    name: "each lens's summary is replaced by a merge of every lens's summary",
+    file: FINAL_CRITIC,
+    from: "        summary: o.provisional.summary,",
+    to: '        summary: lensOutputs.map((x) => x.provisional.summary).join(" "),',
+    expect: ["CL15.", "BT10."],
+  },
+  {
+    name: "the aggregator deduplicates identical findings across lenses",
+    file: FINAL_CRITIC,
+    from: "    findings.push(...output.provisional.findings);",
+    to: "    findings.push(...output.provisional.findings.filter((f) => !findings.some((g) => g.issue === f.issue)));",
+    expect: ["CL12."],
+  },
+  {
+    name: "stage 2's caveats reach the voice lens too",
+    file: PAYLOAD,
+    from: '    { label: "COPY", bodyChars: VOICE_COPY_BLOCK_CHARS },\n',
+    to: '    { label: "COPY", bodyChars: VOICE_COPY_BLOCK_CHARS },\n'
+      + '    { label: "REQUIRED_CAVEATS", bodyChars: REQUIRED_CAVEATS_BLOCK_CHARS },\n',
+    expect: ["BU11."],
+  },
+  {
+    name: "the evidence lens's caveat block carries stage 2's withheld assessment",
+    file: FINAL_CRITIC,
+    from: "  return JSON.stringify(truthOutput.provisional.requiredCaveats, null, 2);",
+    to: "  return JSON.stringify([...truthOutput.provisional.requiredCaveats, truthOutput.provisional.assessment], null, 2);",
+    expect: ["BU5.", "BU6."],
+  },
+  {
+    name: "a failed lens no longer fails the panel with a named CriticPanelError",
+    file: FINAL_CRITIC,
+    from: "  if (lensFailures.length) {\n    throw new CriticPanelError(",
+    to: "  if (lensFailures.length > 1) {\n    throw new CriticPanelError(",
+    expect: ["CL18.", "CL19."],
+  },
+  {
+    name: "a lens request's instruction channel carries every lens's prompt and skills",
+    file: STAGE_EXECUTION,
+    from: '    if (selected && asset.role !== "reference" && !selected.has(asset.path)) {',
+    to: "    if (false) {",
+    expect: ["BV1.", "BV11.", "BV12."],
+  },
+  {
+    name: "a multi-prompt stage may run without naming its instruction assets",
+    file: STAGE_EXECUTION,
+    from: '  } else if (assets.filter((a) => a.role === "prompt").length > 1) {',
+    to: "  } else if (false) {",
+    expect: ["CL22."],
+  },
+  {
+    name: "the production runner forwards the lens label to the provider request",
+    file: STAGE_EXECUTION,
+    from: "    ...(request.responseFormatSchema ? { responseFormatSchema: request.responseFormatSchema } : {}),",
+    to: "    ...(request.responseFormatSchema ? { responseFormatSchema: request.responseFormatSchema } : {}),\n"
+      + "    ...(request.lens !== undefined ? { lens: request.lens } : {}),",
+    expect: ["CL26."],
+  },
+  {
+    name: "a lens contract grows past the thinking reserve under the critic's max_tokens",
+    file: PAYLOAD,
+    from: "    maxFindings: CRITIC_FIELD_LIMITS.maxFindings,",
+    to: "    maxFindings: CRITIC_FIELD_LIMITS.maxFindings * 2,",
+    expect: ["CC19c."],
+  },
+  {
+    name: "the contact line's shop name is typed into the module again instead of read from its record",
+    file: CONTACT_LINE,
+    from: "text: `Call ${values.shop}: ${values.phone}`, sourceFactIds };",
+    to: "text: `Call German Car Depot: ${values.phone}`, sourceFactIds };",
+    expect: ["CK4c."],
+  },
+  {
+    name: "Instagram's contact line stops reading the shop record",
+    file: CONTACT_LINE,
+    from: '  instagram: ["shop", "phone"],',
+    to: '  instagram: ["phone"],',
+    expect: ["CK2.", "CK4d."],
+  },
+];
+
 const MUTATIONS = [
   ...LEGACY_MUTATIONS, ...RAW_IDENTITY_MUTATIONS, ...FIELD_MARGIN_MUTATIONS, ...CRITIC_POLICY_MUTATIONS,
-  ...CONTACT_LINE_MUTATIONS,
+  ...CONTACT_LINE_MUTATIONS, ...CRITIC_PANEL_MUTATIONS,
 ];
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");

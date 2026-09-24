@@ -23,9 +23,134 @@ These are not interchangeable and must not be collapsed into "done". `MERGED` in
 
 ## Implemented repository change awaiting merge
 
-### Deterministic contact line for stage 5 packages, plus follow-ups from the first complete six-stage run — `IMPLEMENTED`
+### Narrow critic panel — `final-critic` becomes four focused lenses with deterministic aggregation — `IMPLEMENTED`
 
-**State:** `IMPLEMENTED` on branch `claude/kind-curie-5i5r6i`, based on `main` at `72535d5cc7f184efe8d9763030e70a75e727595b` (the PR #86 merge). **Not `MERGED`, not `DEPLOYED`, not `ENABLED`, not `PRODUCTION-VALIDATED`.** All six stages remain `executionEnabled: false` and no production path reaches any of them; the change is dormant stage code, three stage prompts, and the operator-local CLI. It authorizes no release; the partial-release interval in [Status](STATUS.md) (current bound `2026-10-22T18:52Z`) still prohibits any release of any service. No deployed legacy path changed: `src/harness/packageMap.ts`, `orchestrator.ts`, `runAgent`, `runVision`, `agents/brand-compliance-critic.md` and the worker, API and scheduler are untouched.
+**State:** `IMPLEMENTED` on branch `claude/kind-curie-5i5r6i`, based on `main` at `fb51527ce8077cf45e4adc576c0cbc72b9f52aff` (the PR #88 merge). **Not `MERGED`, not `DEPLOYED`, not `ENABLED`, not `PRODUCTION-VALIDATED`.** All six stages remain `executionEnabled: false` and no production path reaches any of them; the change is dormant stage code, stage prompts, one new fact-free skill, and the operator-local CLI. It authorizes no release; the partial-release interval in [Status](STATUS.md) (current bound `2026-10-22T18:52Z`) still prohibits any release of any service. No deployed legacy path changed: `src/harness/packageMap.ts`, `orchestrator.ts`, the legacy functions in `sdk.ts` (`runAgent`, `runVision`, `collect()`), `agents/brand-compliance-critic.md`, `src/api` and `src/scheduler` are untouched, and so is the tracked `.DS_Store`. This record moves the *Narrow critic panel* item out of `PLANNED`; the planning entry's evidence is carried below, not deleted.
+
+**PR / merge:** opened as a pull request from `claude/kind-curie-5i5r6i` into `main`. **The PR number and merge SHA are not knowable before merging** — recorded here as a **blocking follow-up** under the mutable-identifier exception in [`AGENTS.md`](../AGENTS.md), to be reconciled in the first change after merge.
+
+**Why.** The owner decided on 2026-09-23 to build the panel next, after the deterministic contact line (PR #88). One critic reviewing everything at once is one long prompt, one budget and one opinion; four narrow reviewers each look at one kind of problem, with only the inputs that problem needs, and their findings are combined by code rather than by a model.
+
+**Delivered.**
+
+- **One stage, four lenses.** `final-critic` stays one registered stage (order 6; the six-stage registry is unchanged). Its executor makes **exactly one model request per lens, four lenses, concurrently, no retries**. Each request goes through the existing stage request boundary on the `critic` policy — Claude Opus 5.5, adaptive thinking, effort `high`, `max_tokens` 128,000 — with every existing guard: `maxRetries: 0`, the stop-reason checks, and the stream deadline. The guarantee "exactly one model request per stage" is amended **for `final-critic` only** to "exactly one request per lens, four lenses, no retries"; every other stage still makes exactly one request, and a regression requires every other stage to declare exactly one prompt (`CL25`).
+- **The lenses.**
+
+  | Lens | Categories (plus `human_decision`) | Shown | Skills |
+  |---|---|---|---|
+  | **evidence-fidelity** | `claim_fidelity`, `uncited_implication` | `SCRIPT_COPY` (stage 3's hook, beats, script), `OVERLAY_TEXT` (stage 4's overlay wording, each with its shot index and shot subject), `PACKAGING_COPY` (each package's caption, hashtags, local keywords, contact line), `SCRIPT_CLAIMS`, `PLATFORM_CLAIMS`, and — reviewer-only — `REQUIRED_CAVEATS` and `FORBIDDEN_CLAIMS` from stage 2 | `critique-discipline`, `claim-boundaries` |
+  | **platform-and-local** | `platform_semantics`, `hashtag_keyword_relevance`, `timing` | `PACKAGING_OUTPUT` (stage 5 with its contact lines), `REQUESTED_PLATFORMS`, `PLATFORM_CLAIMS` | `critique-discipline`, the new `platform-local-review` |
+  | **voice-and-craft** | `voice_clarity` | `COPY`: the hook, the script, each caption | `critique-discipline`, `script-craft`, `adaptation-craft` |
+  | **production-coherence** | `production_coherence` | `SCRIPT_OUTPUT`, `PRODUCTION_OUTPUT`, `PACKAGING_OUTPUT` | `critique-discipline`, `production-craft` |
+
+  Any lens may raise `human_decision`; the validator refuses any other category from a lens, and each lens's response schema enumerates only its own. Only the two lenses shown `PLATFORM_CLAIMS` have a `claimFindingUse` channel; the voice and production lenses' contracts have no such field.
+- **Prompts and assets.** `agents/final-critic.md` is replaced by four self-contained, tool-free lens prompts that pin no model: `agents/final-critic-evidence.md`, `agents/final-critic-platform.md`, `agents/final-critic-voice.md`, `agents/final-critic-production.md`. Each states its lens's inputs, categories and size ceilings, that it never approves, that its answer is combined by code, and — where the lens sees packages — that the `contact` object is deterministic. All four prompts and every skill a lens uses are declared on the `final-critic` registry entry; `CRITIC_LENS_ASSETS` in `finalCritic.ts` maps each lens to its own. `invokeStage` gained `instructionAssets`: a lens request puts only its own prompt and skills into the instruction channel and records the rest as `omitted`; a request naming an undeclared asset, or selecting no prompt, is refused; a stage declaring more than one prompt must name its assets, so four prompts can never be concatenated into one request. `StageRunnerRequest.lens` carries the lens as a label for the caller's own records; `createAnthropicStageRunner` does not forward it to the provider.
+- **A fact-free platform rubric.** `skills/platform-local-review/SKILL.md`, in the style of `skills/script-craft`, covers platform fit, hashtag and local-keyword relevance (a keyword that names no place is not local; a keyword naming a make, service or kind of business needs a bound claim behind it), and the review-only timing note. It states no fact and no number; `skills/platform-specs` and `skills/local-seo`, which carry concrete facts, are not injected. `BW8`–`BW15` prove it states no approved-fact value, make, service, place, destination, provider id, media profile or digit, and that no lens prompt names a make, place, approved-fact value or destination.
+- **Why a reviewer may see caveats a writer may not.** Stage 2's `requiredCaveats` and `forbiddenClaims` are withheld from every writing stage after stage 3, so a writer cannot reach for a claim stage 3 did not use. **A reviewer writes no copy**: showing the evidence-fidelity lens the caveats lets it check that the copy kept them, and gives it nothing it could put into a caption. Stage 2's assessment and restatements stay withheld from every lens, and no other lens receives either block (`BU5`, `BU6`, `BU11`).
+- **Fail closed.** If any lens fails — a request error, a refused, truncated or unfinished response, non-strict JSON, a category outside its own, or any other validation failure — the stage fails closed with a named `CriticPanelError` (a `StageExecutionError`) listing every failed lens and why. The executor waits for every lens to settle before throwing, so no returned response is abandoned mid-flight, and the local CLI, which records every response as it arrives, saves the raw response of every lens that did return to `rejected-responses.json`.
+- **Deterministic aggregation — no model writes or merges the combined output.** `aggregateCriticPanel` in TypeScript: `findings` is the union of every lens's findings in lens order, each carrying its `lens`, **with no deduplication**; each claim-finding binding keeps its `lens` and is re-indexed into the aggregated findings. `verdict`: **any blocking finding → `needs_revision`; else any `human_decision` finding or any lens verdict `needs_human_review` → `needs_human_review`; else `provisional_pass`.** The top-level `summary` is deterministic — finding counts per lens and severity. Each lens's own model-written summary is kept, verbatim and attributed, in `lenses`, never merged. Every non-authoritative marker is kept: the panel's assessment and every lens's carry `authoritative`, `approvalGranted`, `publishable`, `executable` and `productionValidated` as literal `false`, with `aggregation: "deterministic_critic_panel"`.
+- **Contracts and budgets per lens.** `CRITIC_LENSES`, `CRITIC_LENS_FIELD_LIMITS`, `CRITIC_LENS_OUTPUTS`, `CRITIC_LENS_OUTPUT_TOKEN_FLOORS`, `CRITIC_LENS_BLOCKS` and `CRITIC_LENS_ASSEMBLED_CEILINGS` in `payloadContract.ts`. Every lens instantiates the single critic's per-field figures — no product decision moved — and each lens's fields are classified under `final-critic:<lens>.<field>` in `OUTPUT_FIELD_BOUNDS` and `STATED_FIELD_CEILINGS`. `REVIEWER_ONLY_MARGIN_FIELDS` is now each lens's `findings[].issue` — the one field the single critic had, split four ways — and `CD0f2` pins exactly that set. The executor refuses a lens block larger than its derived ceiling, so the payload contract, not the executor, decides what each lens sees.
+- **The local CLI.** Full runs and `--replay-critic` both run the whole panel. The fake runner answers each lens separately. `summary.md` renders the panel's computed verdict and counts, then one section per lens — its verdict, its own summary and only its own findings. Every saved response and every `field-measurements` row carries its lens (`final-critic:<lens>.<field>`), measured against that lens's own limits. The cost ceiling counts one request per lens.
+- **Contact line — shop name from its record (PR #88 review follow-up).** `contactLine.ts` reads the shop name from the approved-facts `shop` record (`approved-facts:shop`, claim `shop: German Car Depot`) instead of typing "German Car Depot" into the module — byte for byte, failing closed exactly like the phone number and booking link (absent, not a usable verified business fact, wrong attribute, or not one clean line → `ContactLineError` before any paid call). Instagram's line now cites `approved-facts:shop` and `approved-facts:phone`; Facebook's cites all three records; Google Business Profile's call to action carries no name and cites the booking link only. **Rendered text is unchanged for the current facts** (`CK1` pins `Call German Car Depot: {phone}` and the Facebook line literally); `CK4c` proves a different shop record renders its own name, `CK4d` and `CK4e` the fail-closed cases. `CONTACT_LINE_MAX_SOURCE_FACTS` moves 2 → 3.
+
+**Before → after — every figure.**
+
+| Value | Before (single critic, `main` at `fb51527`) | After (panel) |
+|---|---:|---:|
+| Critic model requests per stage execution | 1 | **4** (one per lens) |
+| Output contract transport / contract chars | `CRITIC_OUTPUT` 109,006 / 60,706 | evidence-fidelity 110,727 / 62,427; platform-and-local 110,773 / 62,473; voice-and-craft 45,519 / 26,019; production-coherence 45,629 / 26,129 |
+| Output-token floor | 110,000 (`critic`) | evidence-fidelity 111,000; platform-and-local 111,000; voice-and-craft 46,000; production-coherence 46,000; `POLICY_OUTPUT_TOKEN_FLOORS.critic` = largest = **111,000** |
+| `critic` `max_tokens` / stream deadline | 128,000 / 108 min | 128,000 / 108 min — unchanged, per lens request |
+| Headroom under 128,000 at the floor (reserve required: `THINKING_RESERVE_TOKENS` 16,000) | 18,000 | evidence-fidelity 17,000; platform-and-local 17,000; voice-and-craft 82,000; production-coherence 82,000 — every lens ≥ 16,000 (`CC19c`) |
+| `CONTACT_LINE_MAX_SOURCE_FACTS` | 2 | 3 |
+| `CONTACTED_PACKAGING_OUTPUT` transport / contract (= `FINAL_CRITIC_LIMITS.packagingOutputChars`) | 103,604 / 56,474 | **104,852 / 57,122** |
+| Lens blocks (new) | — | `SCRIPT_COPY` 32,294; `OVERLAY_TEXT` 10,962; `PACKAGING_COPY` 38,333; `REQUIRED_CAVEATS` 10,838; `FORBIDDEN_CLAIMS` 10,382; `COPY` 26,086 |
+| Assembled ceiling per request | final-critic 327,021 | evidence-fidelity 166,054; platform-and-local 134,966; voice-and-craft 26,153; production-coherence 265,277 |
+| `STAGE_ASSEMBLED_CEILINGS["final-critic"]` (largest request) | 327,021 | **265,277** |
+| Other five assembled ceilings | 341,520 / 403,564 / 173,030 / 105,675 / 193,489 | unchanged |
+| `MAX_PAYLOAD_CHARS` | 410,000 | 410,000 — unchanged (still set by `automotive-truth`) |
+| `reasoning-heavy` / `reasoning-standard` floor, `max_tokens`, deadline | 74,000 / 99,000; 63 / 84 min | unchanged |
+| `OUTPUT_FIELD_BOUNDS` entries | 55 | 69 (the six critic rows became twenty: six per claim-binding lens, four per other lens) |
+| `STATED_FIELD_CEILINGS` entries | 14 | 18 |
+| CLI ceiling, one critic-only replay | ~$2.97 (1 request) | **~$11.88** (4 requests × ~$2.97) |
+| CLI ceiling, one full run | ~$11.28 (6 requests) | **~$20.19** (9 requests) |
+
+The floors move because each lens's validated output carries its `lens` attribution on every finding and binding and the witness now counts a two-digit finding index; the raw model response carries neither, so the bound is conservative. The CLI ceiling is the same rough worst case it has always printed — each request priced at `MAX_PAYLOAD_CHARS / 4` input tokens and its whole `max_tokens` of output — and it is a ceiling, not a spend.
+
+**Realistic cost — an estimate, to be replaced by the owner's measured replay.** The single Opus 5.5 critic on run `2026-09-23T17-07-15-470Z` cost **$0.209** (23,526 input and 5,746 output tokens). Estimated for the panel on that run: instructions grow from about 19.5 KB (the single prompt plus `critique-discipline`) to about 87 KB across four lenses (four ~20–25 KB instruction sets), and the data blocks from about 18.5k to roughly 30–35k tokens because the packaging output and forms of the script reach more than one lens — about 52–57k input tokens, **~$0.21–0.23**; if each lens thinks and answers in 4–6k output tokens, 16–23k output tokens, **~$0.32–0.46**. **Estimated total ~$0.53–0.69 per critic-only replay, roughly 2.5–3.3× the single critic**; a full run adds the same over a single-critic run. The repository records no measured cost for stages 1–5, so no full-run total is claimed. This is arithmetic on stated assumptions, not a measurement.
+
+**Acceptance fixture — recorded now; the owner verifies after merge.** The owner runs a live `--replay-critic` against `local-output/content-intelligence/2026-09-23T17-07-15-470Z`. Those outputs exist only on the owner's machine and were not reached from this change. **The panel passes if it flags at least all seven below, each on the right platform or surface:**
+
+1. **Script** — "You also don't have to bring the car to us, or to a dealer, to stay covered": warranty overreach; no BMW record supports it.
+2. **Google Business Profile caption** — makes BMW claims, but no BMW record is bound on GBP.
+3. **Instagram and Facebook captions, and the script** — say BMW and Mercedes both describe intervals as calculated or written for normal driving; only the Mercedes record says that.
+4. **Facebook** — "BMW agrees" drops BMW's hedge ("may") and its scope (maintenance generally, not oil and filter).
+5. **Script** — closes with "Book online or give us a call": contact channels named in model copy — uncited, and now against stage 3's rule.
+6. **Local keywords** — "BMW oil change service", "Mercedes-Benz oil change service", "German car maintenance shop": make, service and shop type are not established by bound claims, and none is local.
+7. **Shot-2 overlay** — "Short trips. Stop-and-go. Idling." sits over the Mercedes page; "stop-and-go" is BMW's wording.
+
+**Comparison baseline:** the single Opus 5.5 critic caught all seven on that run, at **$0.209**. The panel is accepted only if it catches at least those seven; the replay also yields the panel's measured cost and each lens's `usage.output_tokens`, which replace the estimate above and inform tuning `POLICY_EFFORT.critic` and `THINKING_RESERVE_TOKENS` per lens. Because the approved-facts file changed after that run (PR #86), the replay must use the pre-change file from `git show e812ba4:config/approved-facts.json` — the replay checks the file hash — as recorded in the PR #86 record above; the shop, phone and booking records it needs are present in that file.
+
+**Background carried from the `PLANNED` entry (relocated, not deleted).** *Owner decision, 2026-09-23: build it next*, after the contact-line change. The planned shape — four narrow reviewers, evidence-fidelity receiving stage 2's `requiredCaveats` and `forbiddenClaims` as reviewer-only input, platform & local, voice & craft, production coherence, aggregated deterministically with no model-written merged summary — is what this record delivers. *The single Opus 5.5 critic's result on run `2026-09-23T17-07-15-470Z`* — the second complete six-stage run, and the first with the critic on `claude-opus-5-5` (cost $0.209; 23,526 input and 5,746 output tokens) — caught **4 of 4** against the pre-registered list (the "to stay covered" warranty line, blocking; the make/service keywords; the uncited "Book online or give us a call"; "both say … normal driving") and **3 more** (Google Business Profile making BMW claims with no BMW record bound on GBP, blocking; Facebook's "BMW agrees" dropping BMW's hedge and scope; the shot-2 overlay using BMW's "stop-and-go" over the Mercedes page). For comparison, the Sonnet 5 critic on the earlier run caught 1 of 3. *Acceptance test as first written, superseded by the fixture above and preserved as history:* a replay of the 2026-09-23 run must flag the "both manufacturers say … not a direct read of your oil" misattribution, the uncited estimate-approval claim, and the make/service GBP keywords. *Acceptance-fixture finding, 2026-09-23:* the first `--replay-critic` attempt against `local-output/content-intelligence/2026-09-23T12-22-23-782Z` refused before any model call with `packages[2].localKeywords exceeds 2 entries` — its saved stage 5 output carries three Google Business Profile keywords, legal when produced and invalid under PR #87's cap of two; refusal is correct fail-closed behavior. Superseded 2026-09-23 by run `2026-09-23T17-07-15-470Z`, produced under the current contract. Its stage 5 caption+hashtag sizes fit the contact-line budgets (see the contact-line record's replay-compatibility note).
+
+**What the reference says — quoted from the `claude-api` skill, invoked for this change before any model request code was written.** From `shared/model-migration.md` → "Migrating to Claude Opus 5.5":
+
+- Thinking: "On Claude Opus 5.5 thinking is **always on**: `{"type": "disabled"}` and `{"type": "enabled", "budget_tokens": N}` both return a 400 `invalid_request_error` at every effort level".
+- Effort: "**The API default is `medium`** (Claude Opus 5 and earlier Opus models default to `high`), so a request that omits `effort` now runs one level lower than it did. **Set `effort` explicitly** and re-run the sweep rather than carrying the Claude Opus 5 setting over."
+- `max_tokens`: "**Size `max_tokens` for the thinking as well as the reply.** Thinking counts toward `max_tokens` even though its text isn't returned under the default `display`, so a limit sized for a no-thinking route cuts replies off."
+
+And from the skill's own guidance: "Fable 5, Claude Fable 5.1, Opus 5, Claude Opus 5.5, … support up to 128K `max_tokens`, but the SDKs require streaming for values that large to avoid HTTP timeouts", and "`max_retries`/`maxRetries` default 2 (retries 408/409/429/5xx + connection errors)". Each lens request therefore keeps the `critic` policy exactly as PR #87 set it — adaptive thinking, effort `high` set explicitly, `max_tokens` at the 128,000 cap covering thinking and reply, streamed, `maxRetries: 0`. The same section's advice to ship a refusal fallback remains **deliberately not followed**, for the reason the PR #87 record gives.
+
+**Migrations / schema impact:** none. No SQL, no durable state.
+
+**Material design decisions.**
+
+- **Keep it inside the existing stage.** `final-critic` stays order 6 with one registry entry and one executor; the panel is how that stage does its work. Every caller, the CLI, the preview's six-stage plan and the dormancy assertions are unchanged in shape.
+- **Code aggregates; no model merges.** The verdict, the counts, the union and the attribution are computed, so nothing a lens writes can overrule another lens or the rule.
+- **The union is not deduplicated.** Two lenses flagging the same line is two findings, each attributed; a reviewer sees that two independent lenses agreed.
+- **The payload contract decides what each lens sees.** `CRITIC_LENS_BLOCKS` fixes labels and order, the executor renders exactly those, and a block over its derived ceiling is refused.
+- **Per-lens contracts, identical figures.** Each lens is bounded and budgeted on its own, but no field's product figure moved when the critic was split.
+- **Overlay text travels with its shot subject.** On-screen words attribute a claim to whatever is on screen, so the evidence lens needs the shot subject beside each overlay — acceptance item 7 turns on it — and nothing else of stage 4.
+- **The panel verdict is a triage signal; the owner stays on the finding.** Under the rule, a blocking finding owned by `human_review` yields `needs_revision` at the panel level; the finding still names `human_review`. A lens's own `needs_human_review` already requires a blocking finding, so the rule's lens-verdict arm is kept for completeness and exercised directly (`CL10`).
+
+**Material rejected alternatives.**
+
+- **A model-written merged summary.** Rejected: a fifth model call that reads four critiques and writes one could drop, soften or re-weight a lens's finding, and would be one more paid request and one more failure point — the merge is exactly the step that must not be an opinion.
+- **Four separately registered stages.** Rejected: it would change the six-stage registry, the preview plan, the dormancy assertions and every caller, and turn one reviewing stage into four pipeline stages with four prerequisites, for no gain over one stage that makes four requests.
+- **Deduplicating findings.** Rejected: deciding that two findings are "the same" is a semantic judgement no deterministic check makes reliably; merging them would hide which lenses agreed, and a wrong merge would silently drop a real finding.
+- **Injecting `skills/platform-specs` or `skills/local-seo` into the platform lens.** Rejected: both carry concrete facts (media profiles, provider payloads, an address, city lists, makes), which would give a reviewer a second, unclassified source of "fact".
+- **Letting a lens raise any category.** Rejected: a lens straying into another's job is refused, so each lens's scope is enforced rather than hoped for.
+
+**Automated validation (on the head that was pushed).** Build and typecheck clean. `npm run test:offline` **ALL PASS** on all nine suites — **1,704 checks** (1,629 before): posting 52, image 18, orchestrator 119, gate 56, API 51, render-identity one invariant pass, ownership/recovery 112, content-intelligence **1,201** (was 1,126), interval monitor 94. New checks: `BT10`, `BU16`–`BU21`, `BV14`, `BW8`–`BW15`, `BY34`, `CL1`–`CL26`, `CK4c`–`CK4e`, `CC19c`, `CE10`, `CG14`–`CG16`; the critic groups `BT`, `BU`, `BV`, `BX`, `BY`, `CB`, `CK`, `CC`, `CD`, `CE`, `CF` and `CI` were rewritten for four lens requests and the per-lens contracts, not loosened. `npm run test:payload-mutation` **ALL PASS — 386 mutations** (369 before; 384 prohibited, 2 coordinated-authority updates); seventeen new mutations, `M370`–`M386`, are appended after every earlier group so no existing id moves, and seven earlier mutations (`M344`, `M353`, `M358`, `M362`, `M364`, `M366`, `M368`) had their `from` sites repointed at the per-lens keys, the shop-name template, the CLI's new summary line and the evidence lens prompt, each still expecting the same check. Also clean: simulated dry run; deployment-controller fixtures; `npm audit --omit=dev` (0 vulnerabilities); Markdown links (65 files); environment coverage (35 variables); the sensitive-content scan (184 files — manual triage: the diff adds no phone number, URL, token or e-mail address to code; the only URLs added to documents are this repository's own pull-request links); AgentShield 1.4.0 at **B/87** with zero critical or high findings (see the limitation below); and `git diff --check`. **One defect was found by the mutation harness and fixed before push:** the first full run failed only `M357` (Facebook's contact reserve narrowed in the contract), because the new `CK4c` built a contact line for a longer substitute shop name outside any guard, so under a narrowed reserve its `ContactLineError` aborted the suite instead of failing a named check. `CK4c` now evaluates inside a guard, and `M357` again fails `CD6 (facebook)` and `CD3 (packaging-adaptation)` by name. The CLI was driven in fake mode against synthetic automotive facts, a full run and a critic-only replay, both running the four lenses. **No live model call was made.**
+
+**Production evidence:** none, and none is possible — no stage is enabled or reachable. The acceptance fixture above is the owner's post-merge verification.
+
+**Rollback / recovery:** revert the commit. No migration, no durable state; files written under `local-output/` are local run records never read back.
+
+**Security and privacy implications.** The panel adds no provider, publishing, scheduling or approval surface, no tool, and no credential. Stage 2's caveats and forbidden claims now reach one model — the evidence-fidelity reviewer — that writes no copy; they were already in the pipeline and carry no customer data. Four requests replace one, so a critic run costs more and makes four refusals possible; every one is a visible, named failure, and no fallback answers with a different model. The shop name is now read from the approved-facts record rather than typed into code, which removes a hardcoded business fact from source; it is the same public name already in `config/approved-facts.json`. The Phase-A approval gate and the live `brand-compliance-critic` are untouched.
+
+**Accepted limitations.**
+
+- **The panel is not measured.** Whether four narrow lenses catch more than, the same as, or less than the single Opus 5.5 critic is exactly what the acceptance replay decides; the single critic caught all seven, so the panel can at best match it on this fixture.
+- **Cost rises.** Four requests with overlapping inputs cost more than one; the estimate above is arithmetic, not a measurement.
+- **A lens can still stray in prose.** Category restriction is enforced; a lens writing about another lens's concern under its own category is not detected.
+- **Effort and the thinking reserve are shared, not tuned per lens.** Every lens runs effort `high` under one `THINKING_RESERVE_TOKENS`; per-lens tuning waits on the measured replay.
+- **The panel's four prompts are longer in total than the one they replace, and AgentShield counts each.** Its grade moves from A/92 to **B/87**: the one `agents/final-critic.md` medium oversized-agent finding and one low unspecified-model finding become four of each (9 medium and 9 low in total, from 6 and 6), with zero critical or high findings. The prompts pin no model by design — the stage policy chooses it — and CI does not gate on the grade.
+
+**Unresolved follow-ups.**
+
+- **Blocking:** the PR number and merge SHA above (mutable-identifier exception).
+- The acceptance replay against `2026-09-23T17-07-15-470Z`, by the owner, after merge — with its measured cost recorded here.
+- Tune `POLICY_EFFORT.critic` and `THINKING_RESERVE_TOKENS` per lens from measured `usage.output_tokens`, carried forward from the PR #87 record.
+- The evidence pack's 64-record cap — see the open item below.
+
+**Documents updated with implementation:** [README](../README.md), [Status](STATUS.md) (PR #88 recorded as merged, and a phase row for this change), [Architecture](ARCHITECTURE.md), [Testing](TESTING.md), [AI handoff](AI_HANDOFF.md), [Security and continuity](SECURITY_AND_CONTINUITY.md) (including a stale clause that still called the PR #87 critic policy `IMPLEMENTED`, now `MERGED`), [Environment](ENVIRONMENT.md), [Production-wiring design](PRODUCTION_WIRING_DESIGN.md) (the one-request guarantee, amended for `final-critic`), this file (including PR #88's record, moved to *Merged repository change awaiting rollout*, and the `PLANNED` entry, relocated into this record), the four lens prompts, `skills/platform-local-review/SKILL.md`, and the mutation harness's header. `agents/final-critic.md` was removed. Each was reread in full.
+
+## Merged repository change awaiting rollout
+
+### Deterministic contact line for stage 5 packages, plus follow-ups from the first complete six-stage run — `MERGED`
+
+**State:** `MERGED` through [PR #88](https://github.com/Caposhi/GCD-Agents/pull/88) at `fb51527ce8077cf45e4adc576c0cbc72b9f52aff` (recorded 2026-09-23). **Not `DEPLOYED`, and not `PRODUCTION-VALIDATED`**: the live worker does not carry it, all six stages remain `executionEnabled: false`, and no production path reaches any of them. Implemented on branch `claude/kind-curie-5i5r6i`, based on `main` at `72535d5cc7f184efe8d9763030e70a75e727595b` (the PR #86 merge). The rest of this record is preserved as written at implementation; where it says the change is unmerged or that its PR number and merge SHA are a blocking follow-up, this line supersedes it. The narrow critic panel it points to below is now the implemented record at the top of this file.
 
 **PR / merge:** opened as a pull request from `claude/kind-curie-5i5r6i` into `main`. **The PR number and merge SHA are not knowable before merging** — recorded here as a **blocking follow-up** under the mutable-identifier exception in [`AGENTS.md`](../AGENTS.md), to be reconciled in the first change after merge.
 
@@ -110,8 +235,6 @@ No token budget moves because the contact line is not model output: stage 5's re
 **Automated validation (on the head that was pushed).** Build and typecheck clean. `npm run test:offline` **ALL PASS** on all nine suites — **1,629 checks** (1,597 before): posting 52, image 18, orchestrator 119, gate 56, API 51, render-identity one invariant pass, ownership/recovery 112, content-intelligence **1,126** (was 1,094), interval monitor 94. The 32 new checks are `AF5c`, `CK1`–`CK17` (with `CK4a`, `CK4b`, `CK5a`, `CK8a`, `CK9a`, `CK9b`, `CK9c`, `CK13a`, `CK13b`), `CE8`, `CE9` and `CG11`–`CG13`; `BX18`–`BX23`, `BU4`, `BO3`, `BQ33e`/`BQ33f`, `CC11`/`CC13`, `CD6` and `CE7` were updated to the contacted shape and the lowered budgets, not loosened. `npm run test:payload-mutation` **ALL PASS — 369 mutations** (355 before; 367 prohibited, 2 coordinated-authority updates): the fourteen new ones, `M356`–`M369`, are appended after every earlier group so no existing id moves, and the harness now captures sixteen paths. Also clean: simulated dry run; deployment-controller fixtures; `npm audit --omit=dev` (0 vulnerabilities); Markdown links (61 files); environment coverage (35 variables); the sensitive-content scan (180 files — manual triage: the only phone number in the diff is GCD's public business number, already committed in `config/approved-facts.json`, and two `(000) 000-0000` values are synthetic test fixtures; the booking link is not written into any document); AgentShield 1.4.0 at grade A/92 with zero critical or high findings — its six medium oversized-agent and six low unspecified-model findings are the same classes and counts as before this change, though three of the oversized prompts grew by the rules added here; and `git diff --check`. **Two defects were found in review and fixed before push.** First, found by the new mutations: the contact text's UTF-8 byte bound was folded into the character check, so a Facebook line one byte over its reserve ("·" is two bytes) was refused with a message reporting only a character count that fit — an unexplained refusal; the reserve now bounds characters and bytes as two explicit checks, each with its own message (`CK8a`). Second, found in self-review: a saved caption within the new budget in characters but over it in UTF-8 bytes was refused on replay without naming the reserve; the byte-bound message now names it too (`CK9c`, `M369`). The CLI was also driven by hand in fake mode against a synthetic automotive-facts file: `summary.md` showed all three contact renderings and the fake-runner footer, and `05b-contact-lines.json` matched. **No live model call was made.**
 
 **Documents updated with implementation:** [README](../README.md), [Status](STATUS.md) (PR #86 recorded as merged, and a phase row for this change), [Architecture](ARCHITECTURE.md), [Testing](TESTING.md), [AI handoff](AI_HANDOFF.md) (including a pre-existing stale clause that still called the critic-policy change unmerged, now recorded as `MERGED` through PR #87), [Security and continuity](SECURITY_AND_CONTINUITY.md), this file, `agents/hook-story-script.md`, `agents/packaging-adaptation.md`, and `agents/final-critic.md`. Each was reread in full.
-
-## Merged repository change awaiting rollout
 
 ### CTO-attested approved-facts expansion
 
@@ -1579,7 +1702,7 @@ produced three findings this change acts on:
    67% of their ceilings and are not changed.
 2. **The critic's model.** The Sonnet 5 critic, thinking disabled, missed the most serious defect
    in the package — the stage-3 misattribution recorded under the *Narrow critic panel* entry
-   below. The owner chose Claude Opus 5.5 for the critic.
+   (now the implemented record at the top of this file). The owner chose Claude Opus 5.5 for the critic.
 3. **Google Business Profile local keywords.** `skills/local-seo/SKILL.md` says "work 1–2 local
    keyword phrases in"; stage 5 accepted six on every platform and returned three for GBP — finding
    3 of the output-field classification record below, now decided.
@@ -1774,60 +1897,6 @@ policy sentence inside the PR #54 record, and the dated three-budget clause besi
 [AI handoff](AI_HANDOFF.md) (including a pre-existing stale "zero commits after `A`" clause, re-tensed
 as the dated snapshot it is), [Security and continuity](SECURITY_AND_CONTINUITY.md),
 `agents/packaging-adaptation.md`, and this file.
-
-## Planned — narrow critic panel — `PLANNED`
-
-**State:** `PLANNED`. Not begun. **Owner decision, 2026-09-23: build it next**, after the
-deterministic contact-line change recorded at the top of this file. That decision orders the work;
-the implementation still needs its own authorized change.
-
-Replace the single critic with four narrow reviewers, each with its own contract:
-
-- **evidence-fidelity** — receives stage 2's `requiredCaveats` and `forbiddenClaims` as
-  reviewer-only input;
-- **platform & local**;
-- **voice & craft**;
-- **production coherence**.
-
-Their findings are aggregated **deterministically**, with no model-written merged summary.
-
-**The single Opus 5.5 critic's result on run `2026-09-23T17-07-15-470Z`** — the second complete
-six-stage run, and the first with the critic on `claude-opus-5-5` (cost $0.209; 23,526 input and
-5,746 output tokens). Against the pre-registered list it caught **4 of 4**:
-
-1. the "to stay covered" warranty line (blocking);
-2. the make/service keywords;
-3. the uncited "Book online or give us a call";
-4. "both say … normal driving".
-
-It also caught **3 more**:
-
-5. Google Business Profile makes BMW claims with no BMW record bound on GBP (blocking);
-6. Facebook's "BMW agrees" drops BMW's hedge and scope;
-7. the shot-2 overlay uses BMW's "stop-and-go" over the Mercedes page.
-
-For comparison, the Sonnet 5 critic on the earlier run caught 1 of 3.
-
-**Acceptance test — current.** That run carries `run-meta.json`, so it is replayable with
-`--replay-critic`, and it is the panel's acceptance fixture: **the panel must catch at least those
-seven.** The fixture's own outputs live only in the operator's `local-output/` folder; they are not
-in this repository, and the test cannot run from a fresh checkout. Its stage 5 caption+hashtag
-sizes fit the contact-line budgets (see the contact-line record's replay-compatibility note).
-
-**Acceptance test — as first written, superseded by the fixture above and preserved as history:** a
-replay of the 2026-09-23 run (`--replay-critic`) must flag all three of: the
-"both manufacturers say … not a direct read of your oil" misattribution; the uncited
-estimate-approval claim; and the make/service GBP keywords.
-
-**Acceptance-fixture finding, 2026-09-23:** the first `--replay-critic` attempt against
-`local-output/content-intelligence/2026-09-23T12-22-23-782Z` refused before any model call with
-`packages[2].localKeywords exceeds 2 entries`. The saved stage-5 output carries three Google
-Business Profile keywords, which were legal when produced and are invalid under PR #87's cap of
-two; refusal is correct fail-closed behavior. This 2026-09-23 fixture therefore no longer
-revalidates under the current contract. The acceptance test needs either a fixture produced under
-the current contract or a replay that revalidates against the contract of the commit that produced
-the run. That choice remains open and is not made here. **Superseded 2026-09-23:** run
-`2026-09-23T17-07-15-470Z`, produced under the current contract, is the fixture now.
 
 ## Decided — stage 1 `maxIds` stays 12 — `DECIDED`
 
@@ -3548,8 +3617,11 @@ failing (*Output-field classification*, above) — `run-meta.json` fingerprints,
 confirmation and the critic-only `--replay-critic` mode (*Critic on Claude Opus 5.5*, above), and
 the deterministic contact line — its free preflight, `05b-contact-lines.json`, the contacted
 packages the critic receives, the contact lines in `summary.md` — and the runner-named summary
-footer (*Deterministic contact line*, at the top of this file). Since that change the CLI runs
-`main()` only when executed as a script, so importing it runs nothing.
+footer (*Deterministic contact line*, under *Merged repository change awaiting rollout*). Since
+that change the CLI runs `main()` only when executed as a script, so importing it runs nothing. The
+critic panel then made full runs and `--replay-critic` run four lens requests, grouped `summary.md`
+by lens, tagged every saved response and `field-measurements` row with its lens, and counted four
+critic requests in the printed cost ceiling (*Narrow critic panel*, at the top of this file).
 
 **Documents updated with this entry:** `docs/ROADMAP.md` (this section) and `.gitignore` (excludes
 the operator-supplied automotive facts file and the tool's local output directory). `README.md` was
