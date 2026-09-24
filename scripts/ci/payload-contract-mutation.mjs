@@ -4,7 +4,7 @@
  *
  * A regression that cannot fail is decoration. This script proves each
  * load-bearing derivation in `src/harness/agents/payloadContract.ts` and the
- * related repository-authority controls is actually load-bearing across sixteen
+ * related repository-authority controls is actually load-bearing across twenty-two
  * captured paths: it applies one focused mutation in a disposable no-Git copy,
  * rebuilds there, runs the Content Intelligence offline suite, and
  * requires the NAMED check that owns that derivation to fail. Then it restores
@@ -141,7 +141,7 @@
  * rule replaced "any blocking finding -> needs_revision"; their ids and expected
  * checks are unchanged.
  *
- * The final group follows up the panel's acceptance run. It covers each arm of
+ * The next group follows up the panel's acceptance run. It covers each arm of
  * the owner-aware verdict — the revision arm reverting to any blocking finding,
  * the human-owned blocking arm dropped, the two arms decided in the wrong order,
  * and the last arm no longer yielding provisional_pass — and the evidence lens's
@@ -150,6 +150,18 @@
  * stage 4's whole output, the block ceiling no longer counting the ids, and each
  * of the two prompt sentences that tell the lens what the ids are and to use
  * them. It adds no captured path.
+ *
+ * The final group makes stage 2's restrictions binding on the writing stages
+ * and gives every writer the claim-boundaries skill: a writer dropping the
+ * skill, stage 4 or 5 no longer receiving the two restriction blocks, those
+ * blocks carrying stage 2's assessment, stage 5 shown stage 2's whole output,
+ * the stage 3, 4 and 5 prompts no longer binding the lists (or calling them
+ * advisory again), the stage 4 ceiling no longer counting the blocks, the
+ * attribution rule weakened three ways, and the skill naming a make or a
+ * number. It adds six captured paths: the registry, stage 4's module, stage
+ * 2's module (where the shared renderers now live — the earlier mutation of
+ * the evidence lens's caveat block was repointed there, its id and expected
+ * checks unchanged), the stage 3 and stage 4 prompts, and the skill.
  *
  * It is offline and deterministic: no network, no database, no provider, no
  * credential. The authoritative checkout is read-only after a disposable copy
@@ -202,6 +214,15 @@ const PACKAGING_PROMPT = "agents/packaging-adaptation.md";
 // The critic panel's evidence-fidelity lens prompt: the prompt that carries the
 // contact-line rule since the single critic prompt was split into four lenses.
 const EVIDENCE_LENS_PROMPT = "agents/final-critic-evidence.md";
+// Stage 2's restrictions bind the writing stages, and every writer loads the
+// claim-boundaries skill. The prompts and the skill are read at runtime, so
+// mutating them needs no rebuild.
+const REGISTRY = "src/harness/agents/registry.ts";
+const AUTOMOTIVE_TRUTH = "src/harness/agents/automotiveTruth.ts";
+const PRODUCTION_DIRECTION = "src/harness/agents/productionDirection.ts";
+const SCRIPT_PROMPT = "agents/hook-story-script.md";
+const DIRECTION_PROMPT = "agents/production-direction.md";
+const CLAIM_BOUNDARIES_SKILL = "skills/claim-boundaries/SKILL.md";
 
 /**
  * Each mutation names the derivation it breaks, the single edit that breaks it,
@@ -3361,7 +3382,8 @@ const CRITIC_PANEL_MUTATIONS = [
   },
   {
     name: "the evidence lens's caveat block carries stage 2's withheld assessment",
-    file: FINAL_CRITIC,
+    // The renderer moved to stage 2's module, shared with stages 4 and 5.
+    file: AUTOMOTIVE_TRUTH,
     from: "  return JSON.stringify(truthOutput.provisional.requiredCaveats, null, 2);",
     to: "  return JSON.stringify([...truthOutput.provisional.requiredCaveats, truthOutput.provisional.assessment], null, 2);",
     expect: ["BU5.", "BU6."],
@@ -3509,9 +3531,154 @@ const CRITIC_PANEL_FOLLOW_UP_MUTATIONS = [
   },
 ];
 
+/**
+ * Stage 2's restrictions bind the writing stages, and every writer is given the
+ * claim-boundaries skill. Each mutation breaks one of: a writer loading the
+ * skill, stage 4 or 5 receiving the two restriction blocks, those blocks
+ * carrying nothing of stage 2 but the two lists, stages 4 and 5 never seeing
+ * stage 2's assessment, the stage prompts binding the lists (and no longer
+ * calling them advisory), the stage 4 ceiling counting the blocks, the
+ * attribution rule, and the skill staying fact-free. Appended after every
+ * earlier group so no existing id moves.
+ */
+const WRITER_RESTRICTION_MUTATIONS = [
+  {
+    name: "hook-story-script stops loading claim-boundaries",
+    file: REGISTRY,
+    from: '    skillPaths: ["skills/script-craft/SKILL.md", "skills/claim-boundaries/SKILL.md"],',
+    to: '    skillPaths: ["skills/script-craft/SKILL.md"],',
+    expect: ["CM1.", "AZ19.", "AT8."],
+  },
+  {
+    name: "production-direction stops loading claim-boundaries",
+    file: REGISTRY,
+    from: '    skillPaths: ["skills/production-craft/SKILL.md", "skills/claim-boundaries/SKILL.md"],',
+    to: '    skillPaths: ["skills/production-craft/SKILL.md"],',
+    expect: ["CM1.", "BI20.", "BC11."],
+  },
+  {
+    name: "packaging-adaptation stops loading claim-boundaries",
+    file: REGISTRY,
+    from: '    skillPaths: ["skills/adaptation-craft/SKILL.md", "skills/claim-boundaries/SKILL.md"],',
+    to: '    skillPaths: ["skills/adaptation-craft/SKILL.md"],',
+    expect: ["CM1.", "BS21.", "BL13."],
+  },
+  {
+    name: "stage 4 stops sending stage 2's restriction blocks",
+    file: PRODUCTION_DIRECTION,
+    from: "      { label: \"SCRIPT_CLAIMS\", body: renderScriptClaims(scriptOutput, truthOutput, pack) },\n"
+      + "      ...restrictionBlocks,\n",
+    to: "      { label: \"SCRIPT_CLAIMS\", body: renderScriptClaims(scriptOutput, truthOutput, pack) },\n",
+    expect: ["CM2."],
+  },
+  {
+    name: "stage 5 stops sending stage 2's restriction blocks",
+    file: PACKAGING,
+    from: "        body: renderPackagingScriptClaims(scriptOutput, truthOutput, pack),\n      },\n"
+      + "      ...restrictionBlocks,\n",
+    to: "        body: renderPackagingScriptClaims(scriptOutput, truthOutput, pack),\n      },\n",
+    expect: ["CM3."],
+  },
+  {
+    name: "the writers' caveat block renders stage 2's whole provisional channel, assessment included",
+    file: PRODUCTION_DIRECTION,
+    from: "    REQUIRED_CAVEATS: renderRequiredCaveats(truthOutput),",
+    to: "    REQUIRED_CAVEATS: JSON.stringify(truthOutput.provisional, null, 2),",
+    expect: ["CM2.", "CM3.", "CM5.", "BB10.", "BK9."],
+  },
+  {
+    name: "stage 5 is shown stage 2's complete output beside its restriction blocks",
+    file: PACKAGING,
+    from: "      ...restrictionBlocks,\n    ],\n  });",
+    to: "      ...restrictionBlocks,\n      { label: \"TRUTH_OUTPUT\", body: JSON.stringify(truthOutput, null, 2) },\n"
+      + "    ],\n  });",
+    expect: ["CM3.", "CM5.", "BK9."],
+  },
+  {
+    name: "stage 3's prompt calls stage 2's forbidden claims advisory again",
+    file: SCRIPT_PROMPT,
+    from: "Its `requiredCaveats` and `forbiddenClaims` are **binding restrictions** on what this script may say",
+    to: "`forbiddenClaims` is advisory: it tells you what stage 2 rejected and why. Its `requiredCaveats` are "
+      + "context on what this script may say",
+    expect: ["CM6."],
+  },
+  {
+    name: "stage 3's prompt stops saying the restrictions only narrow and never permit",
+    file: SCRIPT_PROMPT,
+    from: "These lists can only **narrow** what you may say. They never permit anything: ",
+    to: "",
+    expect: ["CM6."],
+  },
+  {
+    name: "stage 3's prompt stops sending an unmet caveat to an open question",
+    file: SCRIPT_PROMPT,
+    from: "leave that content out of the script and record what a human would need to verify in `openQuestions`",
+    to: "state what the caveat needs",
+    expect: ["CM6."],
+  },
+  {
+    name: "stage 4's prompt drops the binding-restriction section",
+    file: DIRECTION_PROMPT,
+    from: "## Stage 2's restrictions bind you",
+    to: "## Stage 2's lists, for context",
+    expect: ["CM7."],
+  },
+  {
+    name: "stage 5's prompt stops naming FORBIDDEN_CLAIMS as an input",
+    file: PACKAGING_PROMPT,
+    from: "- **`FORBIDDEN_CLAIMS`** — the claims stage 2 said may not be made.\n",
+    to: "",
+    expect: ["CM7."],
+  },
+  {
+    name: "stage 4's assembled ceiling stops counting the restriction blocks",
+    file: PAYLOAD,
+    from: "      { label: \"SCRIPT_CLAIMS\", bodyChars: SCRIPT_CLAIMS_BLOCK_CHARS },\n"
+      + "      ...WRITER_RESTRICTION_BLOCKS,\n    ]),\n    \"packaging-adaptation\"",
+    to: "      { label: \"SCRIPT_CLAIMS\", bodyChars: SCRIPT_CLAIMS_BLOCK_CHARS },\n    ]),\n    \"packaging-adaptation\"",
+    expect: ["CM10."],
+  },
+  {
+    name: "the attribution rule stops forbidding merged lists",
+    file: CLAIM_BOUNDARIES_SKILL,
+    from: "- **Never merge two sources' lists into one attributed list.**",
+    to: "- **Prefer to keep two sources' lists apart.**",
+    expect: ["CM8."],
+  },
+  {
+    name: "the attribution rule stops forbidding \"both\" without each record",
+    file: CLAIM_BOUNDARIES_SKILL,
+    from: "  unless each named source's own record says that thing.",
+    to: "  when the sources broadly agree.",
+    expect: ["CM8."],
+  },
+  {
+    name: "the attribution rule drops the one-source's-wording-over-another's rule",
+    file: CLAIM_BOUNDARIES_SKILL,
+    from: "- **Never place one source's wording over another source's material.**",
+    to: "- **Prefer each source's wording over its own material.**",
+    expect: ["CM8."],
+  },
+  {
+    name: "claim-boundaries names a vehicle make",
+    file: CLAIM_BOUNDARIES_SKILL,
+    from: "When a claim names or implies a source — a manufacturer, a manual, an",
+    to: "When a claim names or implies a source — a manufacturer such as BMW, a manual, an",
+    expect: ["CM9.", "AL6."],
+  },
+  {
+    name: "claim-boundaries states a number",
+    file: CLAIM_BOUNDARIES_SKILL,
+    from: "names three conditions and another names two",
+    to: "names 3 conditions and another names 2",
+    expect: ["CM9."],
+  },
+];
+
 const MUTATIONS = [
   ...LEGACY_MUTATIONS, ...RAW_IDENTITY_MUTATIONS, ...FIELD_MARGIN_MUTATIONS, ...CRITIC_POLICY_MUTATIONS,
   ...CONTACT_LINE_MUTATIONS, ...CRITIC_PANEL_MUTATIONS, ...CRITIC_PANEL_FOLLOW_UP_MUTATIONS,
+  ...WRITER_RESTRICTION_MUTATIONS,
 ];
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");

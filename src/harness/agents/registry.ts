@@ -228,8 +228,13 @@ const STAGE_DEFINITIONS: AgentStageDefinition[] = [
     //
     // `skills/script-craft/SKILL.md` replaces it with the craft-only subset that
     // belongs here, written to contain no facts of its own.
+    //
+    // `skills/claim-boundaries/SKILL.md` is loaded too: the claim-level rules,
+    // attribution among them, that the critic's evidence-fidelity lens checks
+    // the finished copy against. A writer that is never told a rule the critic
+    // enforces fails it. The skill states no fact, so it widens nothing.
     promptPaths: ["agents/hook-story-script.md"],
-    skillPaths: ["skills/script-craft/SKILL.md"],
+    skillPaths: ["skills/script-craft/SKILL.md", "skills/claim-boundaries/SKILL.md"],
     referencePaths: [],
     allowedCapabilities: ["read_evidence_pack"],
     // Inherited sanity check only. This stage's real authority gate is the
@@ -277,8 +282,12 @@ const STAGE_DEFINITIONS: AgentStageDefinition[] = [
     //
     // `skills/production-craft/SKILL.md` replaces it with the craft-only subset
     // that belongs here, written to contain no facts of its own.
+    //
+    // `skills/claim-boundaries/SKILL.md` is loaded too, for the same reason as
+    // on hook-story-script: overlay wording is a claim, and attribution rules
+    // the critic enforces must reach the stage that writes it. Fact-free.
     promptPaths: ["agents/production-direction.md"],
-    skillPaths: ["skills/production-craft/SKILL.md"],
+    skillPaths: ["skills/production-craft/SKILL.md", "skills/claim-boundaries/SKILL.md"],
     // No factual reference asset. This stage's factual surface is the set of
     // claims hook-story-script actually used; a reference here would be a second,
     // wider source competing with it.
@@ -333,8 +342,13 @@ const STAGE_DEFINITIONS: AgentStageDefinition[] = [
     //
     // All four are preserved byte-for-byte for the orchestrator flow and the
     // subagents that still load them by name.
+    //
+    // `skills/claim-boundaries/SKILL.md` is loaded beside the craft skill, for
+    // the same reason as on hook-story-script and production-direction: every
+    // caption, hashtag and keyword is a claim, and the attribution rules the
+    // critic enforces must reach the stage that writes them. Fact-free.
     promptPaths: ["agents/packaging-adaptation.md"],
-    skillPaths: ["skills/adaptation-craft/SKILL.md"],
+    skillPaths: ["skills/adaptation-craft/SKILL.md", "skills/claim-boundaries/SKILL.md"],
     // No factual reference asset. This stage's factual surface is the set of
     // claims hook-story-script actually used; a reference here would be a second,
     // wider source competing with it.

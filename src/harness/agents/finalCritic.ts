@@ -137,12 +137,12 @@
  *    subject each sits on and the ids stage 4's `claimVisuals` bound to that
  *    shot), `PACKAGING_COPY` (each package's caption,
  *    hashtags, local keywords and contact line), `SCRIPT_CLAIMS`,
- *    `PLATFORM_CLAIMS`, and — reviewer-only — stage 2's `REQUIRED_CAVEATS` and
- *    `FORBIDDEN_CLAIMS`. Stage 2's caveats and forbidden claims are withheld
- *    from every writing stage after stage 3, so a writer cannot reach for a
- *    claim stage 3 did not use. **A reviewer writes no copy**: showing it the
- *    caveats lets it check the copy kept them, and gives it nothing it could
- *    put into a caption. Stage 2's assessment and restatements stay withheld.
+ *    `PLATFORM_CLAIMS`, and stage 2's `REQUIRED_CAVEATS` and
+ *    `FORBIDDEN_CLAIMS` — the same blocks, from the same renderers, that
+ *    stages 4 and 5 receive as binding restrictions (stage 3 sees them inside
+ *    `TRUTH_OUTPUT`). Here they are the yardstick: the lens checks the copy
+ *    kept every caveat and made no forbidden claim. It is the only lens shown
+ *    them. Stage 2's assessment and restatements stay withheld.
  *  - **platform-and-local** — `PACKAGING_OUTPUT` (stage 5's output with its
  *    contact lines), `REQUESTED_PLATFORMS`, `PLATFORM_CLAIMS`.
  *  - **voice-and-craft** — `COPY`: the hook, the script and each caption.
@@ -241,7 +241,9 @@ import { EvidenceRecord } from "../evidence/contract.js";
 import { EvidencePack } from "../evidence/pack.js";
 import { AgentRegistry } from "./registry.js";
 import type { AutomotiveTruthOutput } from "./automotiveTruth.js";
-import { revalidateAutomotiveTruthOutput } from "./automotiveTruth.js";
+import {
+  renderForbiddenClaims, renderRequiredCaveats, revalidateAutomotiveTruthOutput,
+} from "./automotiveTruth.js";
 import type { HookStoryScriptOutput } from "./hookStoryScript.js";
 import { revalidateHookStoryScriptOutput } from "./hookStoryScript.js";
 import type { ProductionDirectionOutput } from "./productionDirection.js";
@@ -681,8 +683,9 @@ export interface FinalCriticInvocation {
    * The complete typed output from stage 2.
    *
    * Used to revalidate the chain. Its caveats and forbidden claims are shown to
-   * the evidence-fidelity lens alone, as reviewer-only input; its assessment,
-   * its restatements and its wider whitelist are never shown to any lens.
+   * the evidence-fidelity lens alone among the lenses, to check the copy against
+   * — the same blocks stages 4 and 5 were bound by; its assessment, its
+   * restatements and its wider whitelist are never shown to any lens.
    */
   truthOutput: AutomotiveTruthOutput;
   /** The same pack that bound the whole chain. Revalidated against it. */
@@ -859,17 +862,13 @@ export function renderPackagingCopy(packagingOutput: ContactedPackagingOutput): 
   })), null, 2);
 }
 
-/** The evidence-fidelity lens's `REQUIRED_CAVEATS`. Reviewer-only. */
-export function renderRequiredCaveats(truthOutput: AutomotiveTruthOutput): string {
-  return JSON.stringify(truthOutput.provisional.requiredCaveats, null, 2);
-}
-
-/** The evidence-fidelity lens's `FORBIDDEN_CLAIMS`. Reviewer-only. */
-export function renderForbiddenClaims(truthOutput: AutomotiveTruthOutput): string {
-  return JSON.stringify(
-    truthOutput.provisional.forbiddenClaims.map((f) => ({ claim: f.claim, reason: f.reason })), null, 2,
-  );
-}
+/**
+ * The evidence-fidelity lens's `REQUIRED_CAVEATS` and `FORBIDDEN_CLAIMS`. The
+ * renderers live with stage 2's type in `automotiveTruth.ts`, so stages 4 and 5
+ * receive exactly the blocks this lens receives; re-exported here for callers
+ * that already import them from this module.
+ */
+export { renderForbiddenClaims, renderRequiredCaveats };
 
 /** The voice-and-craft lens's `COPY`: the hook, the script and each caption. */
 export function renderVoiceCopy(
