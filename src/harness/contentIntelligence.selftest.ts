@@ -6616,7 +6616,7 @@ async function run(): Promise<void> {
       const truthPromptCM = await cmPromptText("agents/automotive-truth.md");
       check("CM11. neither the evidence-lens prompt nor stage 2's prompt carries the old wording: the lens is "
         + "told the writers receive the same lists as binding restrictions, and stage 2 is told its lists bind "
-        + "stages 3–5 and are the critic's yardstick, with its no-filter and nothing-permitted sentences kept",
+        + "stages 3–5 and are the critic's yardstick, neither list is a filter, and its nothing-permitted sentence is kept",
         !evidencePromptCM.includes("to no writing stage after stage 3")
           && evidencePromptCM.includes("The writing stages (3, 4 and 5) receive these same lists as binding "
             + "restrictions, so copy that ignores them has broken a rule it was given.")
@@ -6626,8 +6626,9 @@ async function run(): Promise<void> {
           && truthPromptCM.includes("`requiredCaveats` and `forbiddenClaims` are passed to stages 3–5 as binding "
             + "restrictions and to the critic as its yardstick, so write each one precisely and only where the "
             + "evidence warrants it.")
-          && truthPromptCM.includes("It is not a filter anything runs, so a claim you leave out of it is not "
-            + "thereby permitted. Nothing is permitted except what you bound to a fact id."));
+          && truthPromptCM.includes("Neither list is a filter anything runs, so a claim you leave out of "
+            + "`forbiddenClaims` is not thereby permitted. Nothing is permitted except what you bound to a fact id.")
+          && !truthPromptCM.includes("It is not a filter anything runs"));
     }
   }
 
