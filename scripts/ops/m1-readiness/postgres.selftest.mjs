@@ -435,7 +435,10 @@ try {
     let error = null;
     let elapsed = 0;
     try {
-      const started = Date.now();
+      // Monotonic and sub-millisecond, like the clock libuv derives timers from.
+      // `Date.now()` is wall-clock time, truncated to whole milliseconds and
+      // subject to NTP slew, so it adds its own error to the measurement.
+      const started = performance.now();
       try {
         await withReadOnlySession(
           { connectionString: url, runtime, label: "lock-wait deadline probe", totalMs: PHASE_MS },
@@ -450,7 +453,7 @@ try {
       } catch (e) {
         error = e;
       }
-      elapsed = Date.now() - started;
+      elapsed = performance.now() - started;
     } finally {
       await blocker.query("ROLLBACK");
       await blocker.end();
@@ -473,9 +476,20 @@ try {
       "lock-wait deadline: the stop is attributed to the deadline, not an operator",
       error?.stoppedBy === "deadline",
     );
+    // The lower bound allows two milliseconds, and the cause is the timer, not
+    // the database. libuv keeps its loop clock in WHOLE milliseconds, so arming
+    // `setTimeout(PHASE_MS)` at X.9 ms records a start of X and the timer is due
+    // at X + PHASE_MS — up to 1 ms of monotonic time early. Where the kernel's
+    // coarse monotonic clock ticks at 1 ms or finer, libuv reads its loop time
+    // from that clock (`CLOCK_MONOTONIC_COARSE`), which lags the precise clock by
+    // up to one more tick: 1 ms at most. The timer therefore fires strictly less
+    // than 2 ms early, never more. Teardown after it fires takes about 1 ms here,
+    // so the old strict `>= PHASE_MS`, measured with `Date.now()`, failed
+    // intermittently. In isolation, `setTimeout(50)` was measured firing after
+    // 49.095 ms of monotonic time. The upper bound is unchanged.
     check(
       `lock-wait deadline: it stopped near the ${PHASE_MS}ms deadline, well inside lock_timeout`,
-      elapsed >= PHASE_MS && elapsed < DEADLINES_MS.database_lock,
+      elapsed > PHASE_MS - 2 && elapsed < DEADLINES_MS.database_lock,
     );
     check("lock-wait deadline: the blocked statement never returned rows", laterPhaseStarted === false);
     check("lock-wait deadline: no runner session survives the timeout", await assertNoRunnerSession(url));

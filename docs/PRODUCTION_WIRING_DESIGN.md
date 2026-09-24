@@ -303,7 +303,7 @@ produces a second, different set of model outputs for the same brief.
 
 **PROPOSED** — no retry is added anywhere. "Exactly one provider request per stage invocation" is a
 merged guarantee (**VERIFIED**: `maxRetries: 0`) and the wiring must not weaken it by retrying higher up.
-The narrow critic panel (`IMPLEMENTED`, not merged — see [Roadmap](ROADMAP.md)) amends it for
+The narrow critic panel (`MERGED` through PR #89, not deployed — see [Roadmap](ROADMAP.md)) amends it for
 `final-critic` only: one request per lens, four lenses, no retries; any lens failing fails the stage.
 The wiring must count four provider requests for stage 6 and must not retry a lens either.
 
