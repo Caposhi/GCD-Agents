@@ -52,10 +52,13 @@
  *    id-bound permissions whose restatements are individually branded
  *    `restatementVerified: false`.
  *
- * `forbiddenClaims` is advisory prose, in the provisional channel on purpose:
- * it records what the model rejected and why, for later stages and human
- * reviewers. Nothing enforces it, and a claim absent from it is not thereby
- * permitted — only a binding permits.
+ * `forbiddenClaims` is prose, in the provisional channel on purpose: it records
+ * what the model rejected and why, for later stages and human reviewers. The
+ * writing stages (3, 4 and 5) are instructed to honour it and `requiredCaveats`
+ * as **binding restrictions** — each can only narrow what a writer may say,
+ * never permit anything. No code checks copy against either list, and a claim
+ * absent from `forbiddenClaims` is not thereby permitted — only a binding
+ * permits.
  */
 
 import { EvidenceKind, EvidenceRecord } from "../evidence/contract.js";
@@ -227,7 +230,10 @@ export interface ProvisionalTruthAssessment {
   /** Always false. No prose from this stage has been checked for truth. */
   readonly verified: false;
   assessment: string;
-  /** Advisory only. Nothing enforces this list. */
+  /**
+   * A restriction the writing stages are told to honour; never a permission.
+   * No code checks copy against it.
+   */
   forbiddenClaims: ForbiddenClaim[];
   requiredCaveats: string[];
   openQuestions: string[];
@@ -622,6 +628,33 @@ export function allowedClaimTexts(
   pack: EvidencePack,
 ): string[] {
   return allowedClaimRecords(output, pack).map((record) => record.claim);
+}
+
+/**
+ * Stage 2's `requiredCaveats`, as the `REQUIRED_CAVEATS` data block.
+ *
+ * One renderer for every consumer: stages 4 and 5 (writers, as a binding
+ * restriction) and the critic's evidence-fidelity lens (a reviewer, to check the
+ * copy kept them) receive byte-identical blocks. It reads the caveat list and
+ * nothing else — never `assessment`, a restatement, or an open question.
+ *
+ * A caveat is model prose, not a permission. It can only narrow what a writer
+ * may say; the writer's claim block stays the only source of assertable fact.
+ */
+export function renderRequiredCaveats(truthOutput: AutomotiveTruthOutput): string {
+  return JSON.stringify(truthOutput.provisional.requiredCaveats, null, 2);
+}
+
+/**
+ * Stage 2's `forbiddenClaims`, as the `FORBIDDEN_CLAIMS` data block: each
+ * entry's claim and reason, and nothing else of stage 2. Shared exactly as
+ * `renderRequiredCaveats` is. A forbidden claim only ever removes something
+ * from what may be said; a claim absent from it is not thereby permitted.
+ */
+export function renderForbiddenClaims(truthOutput: AutomotiveTruthOutput): string {
+  return JSON.stringify(
+    truthOutput.provisional.forbiddenClaims.map((f) => ({ claim: f.claim, reason: f.reason })), null, 2,
+  );
 }
 
 /**

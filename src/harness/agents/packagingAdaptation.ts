@@ -34,10 +34,15 @@
  *    set stays the stage 3 used-claim set even where stage 4 chose to depict only
  *    part of it.
  *
- * The model receives exactly four bounded, labelled untrusted blocks:
- * `SCRIPT_OUTPUT`, `PRODUCTION_OUTPUT`, `REQUESTED_PLATFORMS`, and
- * `SCRIPT_CLAIMS`. The complete pack, stage 2's provisional prose, stage 2's
- * wider whitelist, raw references, active environment configuration, and
+ * The model receives exactly six bounded, labelled untrusted blocks:
+ * `SCRIPT_OUTPUT`, `PRODUCTION_OUTPUT`, `REQUESTED_PLATFORMS`, `SCRIPT_CLAIMS`,
+ * and stage 2's `REQUIRED_CAVEATS` and `FORBIDDEN_CLAIMS` — the last two
+ * rendered exactly as stage 4 and the critic's evidence-fidelity lens receive
+ * them (`renderWriterRestrictionBlocks`). They are **binding restrictions**
+ * that only ever narrow what a caption, hashtag or keyword may say; they permit
+ * nothing, and `SCRIPT_CLAIMS` stays the only source of assertable fact. The
+ * complete pack, stage 2's assessment and restatements, stage 2's wider
+ * whitelist, raw references, active environment configuration, and
  * provider/account/location configuration are never rendered.
  *
  * ## Deterministic platform policy
@@ -106,7 +111,7 @@ import { revalidateAutomotiveTruthOutput } from "./automotiveTruth.js";
 import type { HookStoryScriptOutput } from "./hookStoryScript.js";
 import { revalidateHookStoryScriptOutput, scriptClaimRecords } from "./hookStoryScript.js";
 import type { ProductionDirectionOutput } from "./productionDirection.js";
-import { revalidateProductionDirectionOutput } from "./productionDirection.js";
+import { renderWriterRestrictionBlocks, revalidateProductionDirectionOutput } from "./productionDirection.js";
 import {
   StageExecutionError,
   StageExecutionMetadata,
@@ -1030,6 +1035,8 @@ export async function executePackagingAdaptation(
     fail("hook-story-script bound no claims: refusing to adapt copy with no factual authority");
   }
 
+  const restrictionBlocks = renderWriterRestrictionBlocks(truthOutput, fail);
+
   const { rawText, metadata } = await invokeStage({
     stage: PACKAGING_ADAPTATION_STAGE,
     responseFormatSchema: PACKAGING_ADAPTATION_RESPONSE_FORMAT,
@@ -1038,8 +1045,8 @@ export async function executePackagingAdaptation(
     // This stage declares no reference asset. Explicit anyway, so adding one
     // later is a deliberate reviewed act rather than a silent channel change.
     referenceChannel: "omit",
-    // Stage 2's output was needed to revalidate the chain; it is an input to the
-    // validator, not to the model, and its wider whitelist and prose are not sent.
+    // Stage 2's restrictions are sent as binding restrictions; its assessment,
+    // restatements and wider whitelist are not.
     dataBlocks: [
       { label: "SCRIPT_OUTPUT", body: renderedScriptOutput },
       { label: "PRODUCTION_OUTPUT", body: renderedDirectionOutput },
@@ -1048,6 +1055,7 @@ export async function executePackagingAdaptation(
         label: "SCRIPT_CLAIMS",
         body: renderPackagingScriptClaims(scriptOutput, truthOutput, pack),
       },
+      ...restrictionBlocks,
     ],
   });
 

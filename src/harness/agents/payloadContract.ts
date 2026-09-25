@@ -666,8 +666,8 @@ export const OUTPUT_FIELD_BOUNDS: Readonly<Record<string, OutputFieldBound>> = {
   "automotive-truth.allowedClaims[].restatement": plumbing(S2.restatementChars, "characters", "binding gloss; claim text is read back from the record"),
   "automotive-truth.forbiddenClaims": product(S2.maxForbiddenClaims, "entries", "human reader: \"tells later stages and human reviewers\""),
   "automotive-truth.forbiddenClaims[].claim": product(S2.forbiddenClaimChars, "characters", "human reader: \"tells later stages and human reviewers\""),
-  "automotive-truth.requiredCaveats": plumbing(S2.maxCaveats, "entries", "handoff to stage 3 and to the critic's evidence-fidelity lens (reviewer-only input); no human reader named"),
-  "automotive-truth.requiredCaveats[]": plumbing(S2.caveatChars, "characters", "handoff to stage 3 and to the critic's evidence-fidelity lens (reviewer-only input); no human reader named"),
+  "automotive-truth.requiredCaveats": plumbing(S2.maxCaveats, "entries", "handoff to stages 3–5 (a binding restriction on the writers) and to the critic's evidence-fidelity lens; no human reader named"),
+  "automotive-truth.requiredCaveats[]": plumbing(S2.caveatChars, "characters", "handoff to stages 3–5 (a binding restriction on the writers) and to the critic's evidence-fidelity lens; no human reader named"),
   "automotive-truth.openQuestions": product(S2.maxOpenQuestions, "entries", "human reader: \"what a human would have to verify\""),
   "automotive-truth.openQuestions[]": product(S2.openQuestionChars, "characters", "human reader: \"what a human would have to verify\""),
 
@@ -1490,20 +1490,25 @@ export const PACKAGING_COPY_BLOCK_CHARS = serializedCeiling(
 );
 
 /**
- * The evidence-fidelity lens's `REQUIRED_CAVEATS`: stage 2's caveat list.
+ * `REQUIRED_CAVEATS`: stage 2's caveat list, rendered by `renderRequiredCaveats`.
  *
- * **Reviewer-only.** Stage 2's caveats are withheld from every writing stage —
- * stages 4 and 5 never see stage 2's prose, so they cannot reach for a claim
- * stage 3 did not use. A reviewer writes no copy: showing it the caveats lets it
- * check that the copy kept them, and gives it nothing it could put into a
- * caption. Stage 2's assessment and restatements stay withheld here too.
+ * Sent to stages 4 and 5 as a **binding restriction** and to the critic's
+ * evidence-fidelity lens as the yardstick for the copy (stage 3 already sees
+ * the list inside `TRUTH_OUTPUT`). A caveat can only narrow what a writer may
+ * say: each writer's claim block stays its only source of assertable fact, and
+ * a caveat that seems to need an unbound fact is omitted and raised as an open
+ * question. Stage 2's assessment and restatements stay withheld from all three.
  */
 export const REQUIRED_CAVEATS_BLOCK_CHARS = serializedCeiling(
   times(TRUTH_FIELD_LIMITS.maxCaveats, () => ""),
   TRUTH_FIELD_LIMITS.maxCaveats * TRUTH_FIELD_LIMITS.caveatChars,
 );
 
-/** The evidence-fidelity lens's `FORBIDDEN_CLAIMS`: stage 2's forbidden-claim list. Reviewer-only, as above. */
+/**
+ * `FORBIDDEN_CLAIMS`: stage 2's forbidden-claim list (claim and reason only),
+ * rendered by `renderForbiddenClaims`, sent to the same three consumers on the
+ * same terms as `REQUIRED_CAVEATS` above.
+ */
 export const FORBIDDEN_CLAIMS_BLOCK_CHARS = serializedCeiling(
   times(TRUTH_FIELD_LIMITS.maxForbiddenClaims, () => ({ claim: "", reason: "outside_evidence_scope" })),
   TRUTH_FIELD_LIMITS.maxForbiddenClaims * TRUTH_FIELD_LIMITS.forbiddenClaimChars,
@@ -1553,6 +1558,17 @@ export const HANDOFF_GUARDS = {
 // ---------------------------------------------------------------------------
 // The shared assembled-payload boundary
 // ---------------------------------------------------------------------------
+
+/**
+ * Stage 2's restrictions as stages 4 and 5 receive them: the same two blocks,
+ * at the same ceilings and in the same order, as the critic's evidence-fidelity
+ * lens. Each writer appends them after its own blocks and refuses a rendered
+ * body larger than its ceiling here.
+ */
+export const WRITER_RESTRICTION_BLOCKS: ReadonlyArray<{ label: string; bodyChars: number }> = [
+  { label: "REQUIRED_CAVEATS", bodyChars: REQUIRED_CAVEATS_BLOCK_CHARS },
+  { label: "FORBIDDEN_CLAIMS", bodyChars: FORBIDDEN_CLAIMS_BLOCK_CHARS },
+];
 
 /**
  * The blocks each critic lens is sent, in order, at their maximum body sizes.
@@ -1611,12 +1627,14 @@ export const STAGE_ASSEMBLED_CEILINGS: Record<string, number> = {
     "production-direction": assembledCeiling([
       { label: "SCRIPT_OUTPUT", bodyChars: SCRIPT_OUTPUT.transportChars },
       { label: "SCRIPT_CLAIMS", bodyChars: SCRIPT_CLAIMS_BLOCK_CHARS },
+      ...WRITER_RESTRICTION_BLOCKS,
     ]),
     "packaging-adaptation": assembledCeiling([
       { label: "SCRIPT_OUTPUT", bodyChars: SCRIPT_OUTPUT.transportChars },
       { label: "PRODUCTION_OUTPUT", bodyChars: DIRECTION_OUTPUT.transportChars },
       { label: "REQUESTED_PLATFORMS", bodyChars: REQUESTED_PLATFORMS_BLOCK_CHARS },
       { label: "SCRIPT_CLAIMS", bodyChars: SCRIPT_CLAIMS_BLOCK_CHARS },
+      ...WRITER_RESTRICTION_BLOCKS,
     ]),
     "final-critic": Math.max(...CRITIC_LENSES.map((lens) => CRITIC_LENS_ASSEMBLED_CEILINGS[lens])),
 };

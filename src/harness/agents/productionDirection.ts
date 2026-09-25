@@ -20,14 +20,20 @@
  *    and citing it fails validation. A fact merely sitting in
  *    `pack.allowedFacts` is absent for the same reason, one step further out.
  *  - **The complete pack is never rendered to this model**, and neither is
- *    stage 2's provisional prose. Stage 2's output is required here only so
- *    stage 3's bindings can be structurally revalidated; it is an input to the
- *    *validator*, not to the *model*. Sending its assessment, restatements,
- *    caveats and forbidden-claim prose along would hand the model a wider,
- *    unused set of claims to reach for.
- *  - The model receives exactly two blocks: the complete stage 3 result as
- *    bounded untrusted data, and `SCRIPT_CLAIMS` — the exact evidence records
- *    bound by stage 3's claim-use ids.
+ *    stage 2's assessment, its restatements or its wider whitelist. Sending
+ *    those along would hand the model a wider, unused set of claims to reach
+ *    for.
+ *  - **Stage 2's restrictions are sent, and bind.** `REQUIRED_CAVEATS` and
+ *    `FORBIDDEN_CLAIMS` — rendered by the same functions, at the same ceilings,
+ *    as the critic's evidence-fidelity lens receives them — only ever narrow
+ *    what the direction may show or say. They permit nothing: `SCRIPT_CLAIMS`
+ *    stays the only source of assertable fact, and a caveat that seems to need
+ *    an unbound fact is omitted and raised as an open question. A writer that
+ *    is never told the caveats the critic checks for cannot keep them.
+ *  - The model receives exactly four blocks: the complete stage 3 result as
+ *    bounded untrusted data, `SCRIPT_CLAIMS` — the exact evidence records
+ *    bound by stage 3's claim-use ids — then `REQUIRED_CAVEATS` and
+ *    `FORBIDDEN_CLAIMS`.
  *
  * ## What this stage guarantees, exactly
  *
@@ -88,7 +94,9 @@ import { EvidenceRecord } from "../evidence/contract.js";
 import { EvidencePack } from "../evidence/pack.js";
 import { AgentRegistry, AgentStageId } from "./registry.js";
 import type { AutomotiveTruthOutput } from "./automotiveTruth.js";
-import { revalidateAutomotiveTruthOutput } from "./automotiveTruth.js";
+import {
+  renderForbiddenClaims, renderRequiredCaveats, revalidateAutomotiveTruthOutput,
+} from "./automotiveTruth.js";
 import type { HookStoryScriptOutput } from "./hookStoryScript.js";
 import { revalidateHookStoryScriptOutput, scriptClaimRecords } from "./hookStoryScript.js";
 import {
@@ -100,7 +108,8 @@ import {
   parseStrictJsonObject,
 } from "./stageExecution.js";
 import {
-  DIRECTION_FIELD_LIMITS, EVIDENCE_LIMITS, HANDOFF_GUARDS, isBoundedSerializableText, statedCeiling,
+  DIRECTION_FIELD_LIMITS, EVIDENCE_LIMITS, HANDOFF_GUARDS, WRITER_RESTRICTION_BLOCKS,
+  isBoundedSerializableText, statedCeiling,
 } from "./payloadContract.js";
 
 export const PRODUCTION_DIRECTION_STAGE = "production-direction" as const;
@@ -434,6 +443,29 @@ export function renderScriptClaims(
     null,
     2,
   );
+}
+
+/**
+ * Stage 2's restrictions as this stage's model receives them: `REQUIRED_CAVEATS`
+ * then `FORBIDDEN_CLAIMS`, in `WRITER_RESTRICTION_BLOCKS` order, each rendered by
+ * stage 2's own renderer — byte-identical to the critic's evidence-fidelity lens
+ * — and refused before any request if it exceeds its derived ceiling. Nothing
+ * else of stage 2 is read. Stage 5 applies the same function.
+ */
+export function renderWriterRestrictionBlocks(
+  truthOutput: AutomotiveTruthOutput,
+  failHere: (message: string) => never,
+): Array<{ label: string; body: string }> {
+  const bodies: Record<string, string> = {
+    REQUIRED_CAVEATS: renderRequiredCaveats(truthOutput),
+    FORBIDDEN_CLAIMS: renderForbiddenClaims(truthOutput),
+  };
+  return WRITER_RESTRICTION_BLOCKS.map(({ label, bodyChars }) => {
+    const body = bodies[label];
+    if (body === undefined) failHere(`no renderer for block ${label}`);
+    if (body!.length > bodyChars) failHere(`block ${label} exceeds its derived ceiling of ${bodyChars} characters`);
+    return { label, body: body! };
+  });
 }
 
 /**
@@ -801,6 +833,8 @@ export async function executeProductionDirection(
     fail("hook-story-script bound no claims: refusing to direct a piece with no factual authority");
   }
 
+  const restrictionBlocks = renderWriterRestrictionBlocks(truthOutput, fail);
+
   const { rawText, metadata } = await invokeStage({
     stage: PRODUCTION_DIRECTION_STAGE,
     responseFormatSchema: PRODUCTION_DIRECTION_RESPONSE_FORMAT,
@@ -810,12 +844,12 @@ export async function executeProductionDirection(
     // adding one later is a deliberate reviewed act rather than something that
     // silently starts entering a channel.
     referenceChannel: "omit",
-    // Deliberately two blocks. Stage 2's output was needed to revalidate stage
-    // 3's bindings; it is an input to the validator, not to the model, and its
-    // wider whitelist and prose are not sent.
+    // Deliberately four blocks. Stage 2's restrictions are sent as binding
+    // restrictions; its assessment, restatements and wider whitelist are not.
     dataBlocks: [
       { label: "SCRIPT_OUTPUT", body: renderedScriptOutput },
       { label: "SCRIPT_CLAIMS", body: renderScriptClaims(scriptOutput, truthOutput, pack) },
+      ...restrictionBlocks,
     ],
   });
 
