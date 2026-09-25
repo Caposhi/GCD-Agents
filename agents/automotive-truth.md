@@ -52,7 +52,7 @@ Return **exactly one JSON object** and nothing else. No prose before or after it
 {
   "assessment": string,             // what you concluded and why, in plain language;
                                     // at most 2,000 characters
-  "allowedClaims": [                // at most 12 entries
+  "allowedClaims": [                // at most 16 entries
     {
       "factId": string,             // an id from allowedFacts ONLY
       "claimClass": "automotive" | "business",
@@ -82,7 +82,7 @@ Rules the validator enforces, so satisfying them is not optional:
 - **`claimClass` must match the class the evidence system recorded for that id.** Declaring a business fact "automotive" fails. The recorded class wins; your declaration is checked against it, never the other way round.
 - **Size ceilings the validator enforces.** Every string is non-empty, and each bound below is checked *after* you answer. One entry or one character over and the whole response is discarded — there is no retry, no repair pass, and no partial credit.
   - `assessment` — at most 2,000 characters
-  - `allowedClaims` — at most 12 entries
+  - `allowedClaims` — at most 16 entries
   - `allowedClaims[].restatement` — at most 400 characters
   - `forbiddenClaims` — at most 12 entries
   - `forbiddenClaims[].claim` — at most 400 characters
@@ -90,6 +90,7 @@ Rules the validator enforces, so satisfying them is not optional:
   - `requiredCaveats[]` — at most 300 characters
   - `openQuestions` — at most 6 entries
   - `openQuestions[]` — at most 300 characters
+- **The shop's identity records are supplied to stage 5 by code.** `approved-facts:makes` and `approved-facts:servicearea` are given to the packaging stage on every platform whatever you permit, so you need not spend `allowedClaims` entries on them for the packaging stage alone. Permit either one only when the script itself needs it.
 - **A ceiling is not a quota.** `allowedFacts` will often hold more citable facts than `allowedClaims` may carry, and the list of things this piece may not say is effectively endless. Permit the claims the content genuinely needs, and never more than the ceiling; name the rejections that actually matter rather than filling `forbiddenClaims` to its limit. A caveat or an open question invented to occupy a slot is noise a human then has to read past.
 - `reason` must be one of the four listed values.
 - Arrays may be empty when you genuinely have nothing to put in them. **An empty `allowedClaims` is honest; an invented `factId` is not.**

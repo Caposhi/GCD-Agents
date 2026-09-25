@@ -63,6 +63,10 @@ import {
   CONTACT_LINE_SEPARATOR_CHARS,
   CONTACT_CTA_URL_CHARS,
   SCRIPT_CLAIMS_BLOCK_CHARS,
+  PACKAGING_SCRIPT_CLAIMS_BLOCK_CHARS,
+  PERMITTED_CLAIMS_BLOCK_CHARS,
+  IDENTITY_CLAIM_MAX_RECORDS,
+  serializedCeiling,
   OVERLAY_TEXT_BLOCK_CHARS,
   REQUESTED_PLATFORMS_BLOCK_CHARS,
   REQUIRED_CAVEATS_BLOCK_CHARS,
@@ -236,6 +240,7 @@ import {
   executePackagingAdaptation,
   packagingClaimRecords,
   packagingClaimTexts,
+  packagingClaimUniverse,
   renderPackagingScriptClaims,
   scriptUsedClaimRecordsForPackaging,
   validatePackagingAdaptationOutput,
@@ -297,6 +302,14 @@ import {
   revalidateContactedPackagingOutput,
 } from "./agents/contactLine.js";
 import type { ContactedPackagingOutput } from "./agents/contactLine.js";
+import {
+  IDENTITY_FACTS,
+  IDENTITY_FACT_IDS,
+  IdentityFactError,
+  assertIdentityFactsAvailable,
+  identityFactRecords,
+  readIdentityRecord,
+} from "./agents/identityFacts.js";
 
 let failures = 0;
 function check(name: string, cond: boolean): void {
@@ -521,6 +534,10 @@ async function run(): Promise<void> {
     .catch(() => readFile(resolve(REPO_ROOT, "config/approved-facts.json"), "utf8"));
   const first = adaptApprovedFactsFile(rawFacts, { reviewedAt: "2026-08-01T00:00:00Z", now: NOW });
   const second = adaptApprovedFactsFile(rawFacts, { reviewedAt: "2026-08-01T00:00:00Z", now: NOW });
+  // The shop's two identity records, exactly as the adapter projects them from
+  // the checked-in file. Stage 5 binds them on every platform and refuses a pack
+  // without them, so every stage 5 and critic fixture pack carries them.
+  const identityFixtureRecords = first.records.filter((r) => IDENTITY_FACT_IDS.includes(r.id));
   const ctoAttestedFields = [
     "oilChangeRecommendation",
     "nextOilChangeAppointment",
@@ -1158,7 +1175,7 @@ async function run(): Promise<void> {
       .filter((f) => f.endsWith(".ts")).sort();
     check("AF5. exactly six stage executors exist — strategy-concept, automotive-truth, hook-story-script, production-direction, packaging-adaptation, final-critic",
       agentModules.join()
-        === "automotiveTruth.ts,contactLine.ts,finalCritic.ts,hookStoryScript.ts,modelPolicy.ts,"
+        === "automotiveTruth.ts,contactLine.ts,finalCritic.ts,hookStoryScript.ts,identityFacts.ts,modelPolicy.ts,"
           + "packagingAdaptation.ts,payloadContract.ts,productionDirection.ts,registry.ts,"
           + "responseFormatKit.ts,stageExecution.ts,strategyConcept.ts");
     // `responseFormatKit.ts` is in that list and is deliberately NOT an
@@ -3452,7 +3469,8 @@ async function run(): Promise<void> {
     const contactFactRecords = first.records.filter((r) =>
       Object.values(CONTACT_FACTS).some((fact) => fact.id === r.id));
     const packPack = buildEvidencePack({
-      goal: "brake service content", records: [...mixed, packUnpermitted, ...contactFactRecords], now: NOW,
+      goal: "brake service content",
+      records: [...mixed, packUnpermitted, ...contactFactRecords, ...identityFixtureRecords], now: NOW,
     });
     const truthForPackaging: AutomotiveTruthOutput = validateAutomotiveTruthOutput({
       assessment: "Two facts are citable for this concept; the performance signal establishes nothing.",
@@ -3647,10 +3665,17 @@ async function run(): Promise<void> {
       check("BK5. prior-stage handoffs are bounded, not unbounded pass-through",
         untrustedBlock(sent.prompt, "SCRIPT_OUTPUT").length <= PACKAGING_LIMITS.scriptOutputChars
           && untrustedBlock(sent.prompt, "PRODUCTION_OUTPUT").length <= PACKAGING_LIMITS.directionOutputChars);
-      check("BK6. SCRIPT_CLAIMS holds only the records stage 3 actually used",
-        Array.isArray(claimsBlock) && claimsBlock.length === 1 && claimsBlock[0].id === "auto-1"
+      // Re-specified with the identity records: stage 3's used records first,
+      // then the two identity records code supplies, each in the pack's words.
+      check("BK6. SCRIPT_CLAIMS holds only the records stage 3 actually used, then the two identity records",
+        Array.isArray(claimsBlock) && claimsBlock.length === 1 + IDENTITY_FACT_IDS.length
+          && claimsBlock[0].id === "auto-1"
           && claimsBlock[0].claim === packPack.allowedFacts.find((r) => r.id === "auto-1")!.claim
-          && claimsBlock[0].kind === "verified_automotive_fact");
+          && claimsBlock[0].kind === "verified_automotive_fact"
+          && claimsBlock.slice(1).map((c: { id: string }) => c.id).join() === IDENTITY_FACT_IDS.join()
+          && claimsBlock.slice(1).every((c: { id: string; claim: string; kind: string }) =>
+               c.claim === packPack.allowedFacts.find((r) => r.id === c.id)!.claim
+               && c.kind === "verified_business_fact"));
       check("BK7. a stage 2-permitted but stage 3-unused fact never reaches the model",
         truthForPackaging.constraints.allowed.some((b) => b.factId === "biz-1")
           && scriptForPackaging.claimUse.used.every((b) => b.factId !== "biz-1")
@@ -3683,7 +3708,8 @@ async function run(): Promise<void> {
       check("BK13. the exported projection helpers agree with the rendered payload",
         scriptUsedClaimRecordsForPackaging(scriptForPackaging, truthForPackaging, packPack)
           .map((r) => r.id).join() === "auto-1"
-          && JSON.parse(renderPackagingScriptClaims(scriptForPackaging, truthForPackaging, packPack)).length === 1);
+          && JSON.parse(renderPackagingScriptClaims(scriptForPackaging, truthForPackaging, packPack))
+            .map((c: { id: string }) => c.id).join() === ["auto-1", ...IDENTITY_FACT_IDS].join());
 
       // Stage 4's own narrower visual selection must not shrink the caption
       // authority, and its prose must not widen it.
@@ -3693,7 +3719,7 @@ async function run(): Promise<void> {
                o.wordingVerified === false)
           && productionBlock.provisional.productionRequirements.every(
                (r: { availabilityVerified: boolean }) => r.availabilityVerified === false)
-          && claimsBlock.length === 1);
+          && claimsBlock.length === 1 + IDENTITY_FACT_IDS.length);
     }
 
     // --- BL. assets: one tool-free prompt, one craft-only skill -------------
@@ -4012,13 +4038,17 @@ async function run(): Promise<void> {
       check("BO2. the refusal happens before any model call", unusedCalls.length === 0);
       check("BO3. authority is never widened back to stage 2, the pack, or stage 4 prose",
         // Three tier facts plus the approved-facts shop-name, phone and booking
-        // records the deterministic contact line reads; none of the extra three
-        // is citable here.
-        packPack.allowedFacts.length === 3 + contactFactRecords.length
+        // records the deterministic contact line reads, and the two identity
+        // records; no contact record is citable here, and the identity records
+        // (re-specified) are all that remains when stage 3 used nothing — they
+        // never rescue the refusal above.
+        packPack.allowedFacts.length === 3 + contactFactRecords.length + identityFixtureRecords.length
           && contactFactRecords.length === 3
+          && identityFixtureRecords.length === IDENTITY_FACT_IDS.length
           && truthForPackaging.constraints.allowed.length === 2
           && scriptUsedClaimRecordsForPackaging(noUse, truthForPackaging, packPack).length === 0
-          && JSON.parse(renderPackagingScriptClaims(noUse, truthForPackaging, packPack)).length === 0);
+          && JSON.parse(renderPackagingScriptClaims(noUse, truthForPackaging, packPack))
+            .map((c: { id: string }) => c.id).join() === IDENTITY_FACT_IDS.join());
       const packSource = await readFile(resolve(REPO_ROOT, "src/harness/agents/packagingAdaptation.ts"), "utf8");
       check("BO4. the decision is documented in source, not merely implemented",
         /zero-used-claims decision/.test(packSource)
@@ -4328,27 +4358,34 @@ async function run(): Promise<void> {
       const records = packagingClaimRecords(
         drifted.output, "google_business_profile", scriptForPackaging, truthForPackaging, packPack,
       );
+      // Re-specified: the model's binding first, then the identity records code
+      // binds on every platform — every text read back from its record.
       check("BR14. what the cited claim says comes from the evidence record",
-        readBack.length === 1
-          && readBack[0] === packPack.allowedFacts.find((r) => r.id === "auto-1")!.claim);
+        readBack.length === 1 + IDENTITY_FACT_IDS.length
+          && readBack[0] === packPack.allowedFacts.find((r) => r.id === "auto-1")!.claim
+          && readBack.slice(1).join("\u0000") === IDENTITY_FACT_IDS
+            .map((id) => packPack.allowedFacts.find((r) => r.id === id)!.claim).join("\u0000"));
       check("BR15. no drifting caption, keyword, timing or summary wording appears in either accessor result",
         !readBack.join(" ").includes("30,000") && !readBack.join(" ").includes("only shop")
           && !JSON.stringify(records).includes("Atlantis")
           && !JSON.stringify(records).includes("03:00")
           && !JSON.stringify(records).includes("proves fluid fails"));
-      check("BR16. the accessors still return the exact record bound by the cited id",
-        records.length === 1 && records[0]!.id === "auto-1"
-          && records.every((r) => scriptForPackaging.claimUse.used.some((b) => b.factId === r.id)));
+      check("BR16. the accessors still return the exact record bound by the cited id, then the identity records",
+        records.length === 1 + IDENTITY_FACT_IDS.length && records[0]!.id === "auto-1"
+          && scriptForPackaging.claimUse.used.some((b) => b.factId === records[0]!.id)
+          && records.slice(1).map((r) => r.id).join() === IDENTITY_FACT_IDS.join()
+          && records.slice(1).every((r) => r === packPack.allowedFacts.find((f) => f.id === r.id)));
       check("BR17. the accessors read platform plus ids only, never copy",
         packagingClaimRecords(
           drifted.output, "instagram", scriptForPackaging, truthForPackaging, packPack,
-        ).length === 0);
+        ).map((r) => r.id).join() === IDENTITY_FACT_IDS.join());
       check("BR18. a fabricated id contributes nothing even if it reaches the accessor",
         packagingClaimTexts(
           { ...drifted.output, claimUse: { ...drifted.output.claimUse, used: [
             { ...drifted.output.claimUse.used[0]!, factId: "biz-1" }] } },
           "google_business_profile", scriptForPackaging, truthForPackaging, packPack,
-        ).length === 0);
+        ).join("\u0000") === IDENTITY_FACT_IDS
+          .map((id) => packPack.allowedFacts.find((r) => r.id === id)!.claim).join("\u0000"));
 
       const packSource = await readFile(resolve(REPO_ROOT, "src/harness/agents/packagingAdaptation.ts"), "utf8");
       const unwrapped = packSource.replace(/\n\s*\*\s?/g, " ").replace(/\s+/g, " ");
@@ -4655,9 +4692,10 @@ async function run(): Promise<void> {
           && truthForPackaging.constraints.allowed.every((a) => !c.prompt.includes(a.provisionalRestatement))));
       const scriptClaimsBlock = JSON.parse(untrustedBlock(ev.prompt, "SCRIPT_CLAIMS"));
       const platformClaimsBlock = JSON.parse(untrustedBlock(ev.prompt, "PLATFORM_CLAIMS"));
-      check("BU7. SCRIPT_CLAIMS holds only the records stage 3 actually used",
-        Array.isArray(scriptClaimsBlock) && scriptClaimsBlock.length === 1
-          && scriptClaimsBlock[0].id === "auto-1" && scriptClaimsBlock[0].kind === "verified_automotive_fact");
+      check("BU7. SCRIPT_CLAIMS holds only the records stage 3 actually used, then the two identity records",
+        Array.isArray(scriptClaimsBlock) && scriptClaimsBlock.length === 1 + IDENTITY_FACT_IDS.length
+          && scriptClaimsBlock[0].id === "auto-1" && scriptClaimsBlock[0].kind === "verified_automotive_fact"
+          && scriptClaimsBlock.slice(1).map((c: { id: string }) => c.id).join() === IDENTITY_FACT_IDS.join());
       // Narrowed: ids only. The authoritative records live in SCRIPT_CLAIMS,
       // exactly once each; this block says which of them stage 5 bound per
       // platform, in stage 5's order. Authority is unchanged — ids remain the
@@ -4667,14 +4705,14 @@ async function run(): Promise<void> {
           && platformClaimsBlock.every((p: { platform: string; factIds: string[] }) =>
                ALL_PLATFORMS.includes(p.platform as PackagingPlatform)
                && Object.keys(p).join() === "platform,factIds"
-               && p.factIds.length === 1 && p.factIds[0] === "auto-1"));
+               && p.factIds.join() === ["auto-1", ...IDENTITY_FACT_IDS].join()));
       check("BU8b. the narrowed block carries no evidence prose of its own — the "
         + "authoritative records are in SCRIPT_CLAIMS and are not repeated here",
         !JSON.stringify(platformClaimsBlock).includes(
           packPack.allowedFacts.find((r) => r.id === "auto-1")!.claim));
       check("BU9. PLATFORM_CLAIMS agrees exactly with the exported projection helper, for both lenses shown it",
         JSON.parse(renderPlatformClaims(packResult.output, ALL_PLATFORMS, scriptForPackaging, truthForPackaging, packPack))
-          .every((p: { factIds: string[] }) => p.factIds.length === 1)
+          .every((p: { factIds: string[] }) => p.factIds.length === 1 + IDENTITY_FACT_IDS.length)
           && untrustedBlock(ev.prompt, "PLATFORM_CLAIMS")
             === untrustedBlock(criticCallFor("platform-and-local").prompt, "PLATFORM_CLAIMS"));
       check("BU10. a stage 2-permitted but stage 3-unused fact reaches no lens",
@@ -5283,7 +5321,7 @@ async function run(): Promise<void> {
       const framingOverhead = framedPrompt.length - PRODUCTION_LENS_BLOCKS.reduce(
         (total, label) => total + framedBody(label).length, 0);
 
-      const maximalClaimRecords = [...mixed, packUnpermitted, ...contactFactRecords].map((record) =>
+      const maximalClaimRecords = [...mixed, packUnpermitted, ...contactFactRecords, ...identityFixtureRecords].map((record) =>
         (record.id === "auto-1"
           ? { ...record, claim: "e".repeat(EVIDENCE_LIMITS.claimChars) }
           : record));
@@ -6602,7 +6640,8 @@ async function run(): Promise<void> {
             { label: "SCRIPT_OUTPUT", bodyChars: SCRIPT_OUTPUT.transportChars },
             { label: "PRODUCTION_OUTPUT", bodyChars: DIRECTION_OUTPUT.transportChars },
             { label: "REQUESTED_PLATFORMS", bodyChars: REQUESTED_PLATFORMS_BLOCK_CHARS },
-            { label: "SCRIPT_CLAIMS", bodyChars: SCRIPT_CLAIMS_BLOCK_CHARS },
+            // Re-specified: stage 5's SCRIPT_CLAIMS carries the identity records too.
+            { label: "SCRIPT_CLAIMS", bodyChars: PACKAGING_SCRIPT_CLAIMS_BLOCK_CHARS },
             ...WRITER_RESTRICTION_BLOCKS,
           ])
           && assembledCM(cmDir.prompt) <= STAGE_ASSEMBLED_CEILINGS["production-direction"]!
@@ -6629,6 +6668,494 @@ async function run(): Promise<void> {
           && truthPromptCM.includes("Neither list is a filter anything runs, so a claim you leave out of "
             + "`forbiddenClaims` is not thereby permitted. Nothing is permitted except what you bound to a fact id.")
           && !truthPromptCM.includes("It is not a filter anything runs"));
+    }
+
+    // ========================================================================
+    // CN. Evidence-pack scoping in the local CLI, the shop's identity records
+    //     bound on every stage 5 platform by code, and stage 2's whitelist at
+    //     16 (the owner's decisions of 2026-09-25, after the run of that day).
+    //
+    // Scope off is today's pack exactly; the records every run needs survive
+    // any scope; a replay reuses the source run's scope; `--list-tags` builds
+    // no pack and shows no claim text; the identity records are supplied by
+    // code, in the evidence system's wording, and fail closed.
+    // ========================================================================
+    {
+      const cnText = async (file: string) => readFile(resolve(REPO_ROOT, file), "utf8");
+      const ALWAYS_IDS = [...Object.values(CONTACT_FACTS).map((f) => f.id), ...IDENTITY_FACT_IDS];
+      const cnSynthetic = (tags: (i: number) => string[], count = 3) => JSON.stringify({
+        facts: Array.from({ length: count }, (_, i) => ({
+          id: `synthetic-cn-fact-${i}`,
+          claim: `SYNTHETIC CN FIXTURE CLAIM ${i} - not a real automotive fact.`,
+          subject: "synthetic-cn-subject",
+          attribute: `synthetic-cn-attr-${i}`,
+          tags: tags(i),
+          sourceType: "repository_config",
+          sourceRef: "synthetic://offline-test-fixture",
+          provenance: "synthetic offline test fixture; not a real source",
+          reviewedAt: "2026-09-01T00:00:00.000Z",
+        })),
+      }, null, 2);
+
+      // --- the pack builder's always-included records ------------------------
+      const cnRecords = [...first.records, ...mixed];
+      const cnUnscoped = buildEvidencePack({ goal: "g", records: cnRecords, now: NOW });
+      const cnUnscopedWithIds = buildEvidencePack({
+        goal: "g", records: cnRecords, now: NOW, alwaysIncludeIds: ALWAYS_IDS,
+      });
+      check("CN1. with no scope the always-included option changes nothing: the pack, and the projection "
+        + "every stage is shown, are byte-identical to a pack built without it",
+        JSON.stringify(cnUnscoped) === JSON.stringify(cnUnscopedWithIds)
+          && renderEvidencePackForStage(cnUnscoped) === renderEvidencePackForStage(cnUnscopedWithIds));
+
+      const cnNoMatch = buildEvidencePack({
+        goal: "g", records: cnRecords, now: NOW, tags: ["no-record-carries-this-tag"], alwaysIncludeIds: ALWAYS_IDS,
+      });
+      const cnNoMatchBare = buildEvidencePack({
+        goal: "g", records: cnRecords, now: NOW, tags: ["no-record-carries-this-tag"],
+      });
+      const cnTagged = buildEvidencePack({
+        goal: "g", records: [...cnRecords, { ...verifiedAutomotive(), id: "auto-cn-tagged", attribute: "cn-tagged",
+          tags: ["cn-scope"] } as EvidenceRecord],
+        now: NOW, tags: ["cn-scope"], alwaysIncludeIds: ALWAYS_IDS,
+      });
+      check("CN2. the contact-line and identity records survive any scope: a tag no record carries still "
+        + "yields exactly those five, a real tag adds only its own records, and without the option they are dropped",
+        cnNoMatch.allowedFacts.map((r) => r.id).sort().join() === [...ALWAYS_IDS].sort().join()
+          && cnTagged.allowedFacts.map((r) => r.id).sort().join() === [...ALWAYS_IDS, "auto-cn-tagged"].sort().join()
+          && cnNoMatchBare.allowedFacts.length === 0
+          && ALWAYS_IDS.every((id) => cnRecords.some((r) => r.id === id)));
+
+      // --- the CLI, driven in-process ---------------------------------------
+      // The CLI's own `main`, fake runner only, with its console captured. Run
+      // in-process rather than as a child so these checks add almost nothing to
+      // the suite's time, which every mutation of the harness pays again.
+      const cnWork = mkdtempSync(join(tmpdir(), "gcd-cn-scope-"));
+      const cliPath = resolve(REPO_ROOT, "scripts/local/content-run.mjs");
+      const cliModule = await import(pathToFileURL(cliPath).href);
+      const cnQuiet = async (fn: () => Promise<unknown>): Promise<{ ok: boolean; out: string; error: string }> => {
+        const saved = { log: console.log, warn: console.warn, error: console.error };
+        const lines: string[] = [];
+        const sink = (...parts: unknown[]) => { lines.push(parts.map(String).join(" ")); };
+        console.log = sink; console.warn = sink; console.error = sink;
+        try {
+          await fn();
+          return { ok: true, out: lines.join("\n"), error: "" };
+        } catch (e) {
+          return { ok: false, out: lines.join("\n"), error: `${(e as Error)?.name ?? "Error"}: ${(e as Error)?.message ?? e}` };
+        } finally {
+          console.log = saved.log; console.warn = saved.warn; console.error = saved.error;
+        }
+      };
+      const runCn = (argv: string[]) => cnQuiet(() => cliModule.main(argv));
+      try {
+        const cnDirs = (parent: string): string[] => (existsSync(parent) ? readdirSync(parent) : []).sort();
+        const factsPath = join(cnWork, "synthetic-cn-facts.json");
+        writeFileSync(factsPath, cnSynthetic((i) => (i < 2 ? ["cn-scope", "synthetic-cn"] : ["synthetic-cn"])), "utf8");
+        const cnRt = await cliModule.loadRuntime();
+        const sha = (bytes: string | Buffer) => createHash("sha256").update(bytes).digest("hex");
+        const readMeta = (dir: string) => JSON.parse(readFileSync(join(dir, "run-meta.json"), "utf8"));
+        const rebuiltRecords = (meta: { reviewedAt: string; now: number }) => [
+          ...adaptApprovedFactsFile(rawFacts, { reviewedAt: meta.reviewedAt, now: meta.now }).records,
+          ...(JSON.parse(readFileSync(factsPath, "utf8")).facts as Array<Record<string, unknown>>).map((f) => ({
+            ...f, kind: "verified_automotive_fact", createdAt: new Date(meta.now).toISOString(), lifecycle: "active",
+          }) as unknown as EvidenceRecord),
+        ];
+
+        const plainDir = join(cnWork, "plain");
+        const plain = await runCn(["CN synthetic goal", "--automotive-facts", factsPath, "--out-dir", plainDir]);
+        const [plainName] = cnDirs(plainDir);
+        const plainRun = join(plainDir, plainName ?? "missing");
+        const plainMeta = plain.ok ? readMeta(plainRun) : {};
+        const plainPack = plain.ok ? buildEvidencePack({
+          goal: "CN synthetic goal", records: rebuiltRecords(plainMeta), now: plainMeta.now,
+        }) : undefined;
+        check("CN3. a run with no --scope-tags is today's run exactly: run-meta.json carries the same keys as "
+          + "before scoping existed and no evidenceScope, and its fingerprint is the unscoped projection's plain sha256",
+          plain.ok
+            && Object.keys(plainMeta).join() === "schema,goal,runner,platforms,now,nowIso,reviewedAt,"
+              + "approvedFacts,automotiveFacts,evidencePackSha256"
+            && plainPack !== undefined
+            && plainMeta.evidencePackSha256 === sha(renderEvidencePackForStage(plainPack))
+            && !/Evidence scope:/.test(plain.out)
+            && cliModule.effectiveEvidenceScope(cnRt, undefined) === null
+            && cliModule.evidencePackFingerprint("x", null) === sha("x"));
+
+        const scopedDir = join(cnWork, "scoped");
+        const scoped = await runCn(["CN synthetic goal", "--automotive-facts", factsPath, "--out-dir", scopedDir,
+          "--scope-tags", " cn-scope ,cn-scope"]);
+        const [scopedName] = cnDirs(scopedDir);
+        const scopedRun = join(scopedDir, scopedName ?? "missing");
+        const scopedMeta = scoped.ok ? readMeta(scopedRun) : {};
+        const scopedPack = scoped.ok ? buildEvidencePack({
+          goal: "CN synthetic goal", records: rebuiltRecords(scopedMeta), now: scopedMeta.now,
+          tags: ["cn-scope"], alwaysIncludeIds: ALWAYS_IDS,
+        }) : undefined;
+        const expectedScope = { schema: "gcd-evidence-scope/1", tags: ["cn-scope"], alwaysIncludedIds: ALWAYS_IDS };
+        check("CN4. a scoped run records its effective scope — the tags normalized, and the always-included "
+          + "records — and hashes that scope into the pack fingerprint",
+          scoped.ok
+            && JSON.stringify(scopedMeta.evidenceScope) === JSON.stringify(expectedScope)
+            && JSON.stringify(cliModule.alwaysIncludedIds(cnRt)) === JSON.stringify(ALWAYS_IDS)
+            && scopedPack !== undefined
+            && scopedPack.allowedFacts.map((r) => r.id).sort().join()
+              === [...ALWAYS_IDS, "synthetic-cn-fact-0", "synthetic-cn-fact-1"].sort().join()
+            && scopedMeta.evidencePackSha256
+              === cliModule.evidencePackFingerprint(renderEvidencePackForStage(scopedPack), expectedScope)
+            && scopedMeta.evidencePackSha256 !== sha(renderEvidencePackForStage(scopedPack))
+            && JSON.stringify(cliModule.normalizeScopeTags("b, a,,a")) === JSON.stringify(["a", "b"]));
+
+        const emptyScope = await runCn(["CN synthetic goal", "--automotive-facts", factsPath,
+          "--out-dir", join(cnWork, "empty"), "--scope-tags", " , "]);
+        check("CN5. an empty --scope-tags is refused rather than read as no scope",
+          !emptyScope.ok && /--scope-tags needs at least one tag/.test(emptyScope.error)
+            && cnDirs(join(cnWork, "empty")).length === 0);
+
+        // Replay: the recorded scope is reused, and a different one is refused.
+        const scopedReplay = await runCn(["--replay-critic", scopedRun, "--automotive-facts", factsPath]);
+        const scopedSiblings = cnDirs(scopedDir).filter((n) => n !== scopedName);
+        const scopedReplayMeta = scopedSiblings.length === 1
+          ? JSON.parse(readFileSync(join(scopedDir, scopedSiblings[0]!, "replay-meta.json"), "utf8")) : {};
+        const matchingFlag = await runCn(["--replay-critic", scopedRun, "--automotive-facts", factsPath,
+          "--scope-tags", "cn-scope"]);
+        const afterMatching = cnDirs(scopedDir).length;
+        check("CN6. a replay of a scoped run reuses its recorded scope, with or without the exact same "
+          + "--scope-tags, and records it",
+          scopedReplay.ok && matchingFlag.ok && afterMatching === 3
+            && JSON.stringify(scopedReplayMeta.evidenceScope) === JSON.stringify(expectedScope)
+            && scopedReplayMeta.evidencePackSha256 === scopedMeta.evidencePackSha256);
+        const mismatch = await runCn(["--replay-critic", scopedRun, "--automotive-facts", factsPath,
+          "--scope-tags", "synthetic-cn"]);
+        const unscopedWithFlag = await runCn(["--replay-critic", plainRun, "--automotive-facts", factsPath,
+          "--scope-tags", "cn-scope"]);
+        check("CN7. a replay refuses a --scope-tags that differs from the source run's recorded scope, and one "
+          + "given against an unscoped run, before any output directory exists",
+          !mismatch.ok
+            && /EvidenceScopeError: --scope-tags synthetic-cn differs from the source run's recorded scope \(cn-scope\)/
+              .test(mismatch.error)
+            && !unscopedWithFlag.ok && /none — the run was unscoped/.test(unscopedWithFlag.error)
+            && cnDirs(scopedDir).length === afterMatching && cnDirs(plainDir).length === 1);
+
+        const copyRun = (label: string, edit: (meta: any) => void): string => {
+          const dir = join(cnWork, label, scopedName ?? "missing");
+          cpSync(scopedRun, dir, { recursive: true });
+          const meta = readMeta(dir);
+          edit(meta);
+          writeFileSync(join(dir, "run-meta.json"), JSON.stringify(meta, null, 2), "utf8");
+          return dir;
+        };
+        const retagged = copyRun("retagged", (m) => { m.evidenceScope.tags = ["synthetic-cn"]; });
+        const retaggedReplay = await runCn(["--replay-critic", retagged, "--automotive-facts", factsPath]);
+        const reAlways = copyRun("realways", (m) => { m.evidenceScope.alwaysIncludedIds = ALWAYS_IDS.slice(0, 3); });
+        const reAlwaysReplay = await runCn(["--replay-critic", reAlways, "--automotive-facts", factsPath]);
+        const stripped = copyRun("stripped", (m) => { delete m.evidenceScope; });
+        const strippedReplay = await runCn(["--replay-critic", stripped, "--automotive-facts", factsPath]);
+        check("CN8. a recorded scope that was edited, an always-included set that differs from this CLI's, or a "
+          + "scope removed from run-meta.json are all refused: the scope is part of the fingerprint",
+          !retaggedReplay.ok && /the rebuilt evidence pack does not match the source run/.test(retaggedReplay.error)
+            && !reAlwaysReplay.ok && /always included/.test(reAlwaysReplay.error)
+            && !strippedReplay.ok && /the rebuilt evidence pack does not match the source run/.test(strippedReplay.error)
+            && ["retagged", "realways", "stripped"].every((l) => cnDirs(join(cnWork, l)).length === 1));
+
+        // --list-tags: counts only, no claim text, no pack, no model call. The
+        // runtime handed to it throws on any access to a pack builder, registry,
+        // stage or runner, so reaching one fails loudly.
+        const forbiddenRt = new Proxy(cnRt, {
+          get(target, key) {
+            if (["packModule", "registryModule", "stageExecution", "strategy", "truth", "script", "direction",
+              "packaging", "critic", "modelPolicy"].includes(String(key))) {
+              throw new Error(`--list-tags reached rt.${String(key)}`);
+            }
+            return (target as Record<string, unknown>)[key as string];
+          },
+        });
+        const listed = await cnQuiet(() => cliModule.listTags(forbiddenRt, cliModule.parseArgs([
+          "--list-tags", "--automotive-facts", factsPath, "--runner", "live"])));
+        const listedScoped = await cnQuiet(() => cliModule.listTags(forbiddenRt, cliModule.parseArgs([
+          "--list-tags", "--automotive-facts", factsPath, "--scope-tags", "cn-scope"])));
+        const listOut = join(cnWork, "list-out");
+        const listedMain = await runCn(["--list-tags", "--automotive-facts", factsPath, "--out-dir", listOut]);
+        const allLoaded = rebuiltRecords({ reviewedAt: "2026-09-01T00:00:00.000Z", now: NOW });
+        const tagCounts = new Map<string, number>();
+        for (const r of allLoaded) for (const t of new Set(r.tags)) tagCounts.set(t, (tagCounts.get(t) ?? 0) + 1);
+        check("CN9. --list-tags prints every tag with its record count from the loaded records, sorted, and "
+          + "with --scope-tags the size of that scope",
+          listed.ok && listedMain.ok && listedMain.out === listed.out
+            && [...tagCounts.keys()].sort().every((tag) =>
+                 new RegExp(`^${tag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s+${tagCounts.get(tag)}$`, "m").test(listed.out))
+            && listed.out.includes(`${allLoaded.length} loaded record(s); ${tagCounts.size} tag(s).`)
+            && listedScoped.ok
+            && listedScoped.out.includes("--scope-tags cn-scope would include 7 record(s), 5 of them always included"));
+        check("CN10. --list-tags prints no claim text and no record id, reaches no pack builder, registry, stage, "
+          + "runner or cost estimate — even with --runner live — and writes no output directory",
+          [listed.out, listedScoped.out, listedMain.out].every((out) =>
+            allLoaded.every((r) => !out.includes(r.claim) && !out.includes(r.id))
+              && !/Estimated ceiling|Type LIVE|Evidence pack built|Running stage/.test(out))
+            && !existsSync(listOut));
+        const cliSource = await cnText("scripts/local/content-run.mjs");
+        const mainBody = cliSource.slice(cliSource.indexOf("export async function main("));
+        const listAt = mainBody.indexOf("if (args.listTags) return listTags(rt, args);");
+        check("CN11. in source, --list-tags returns before the pack, the registry and any runner are built",
+          listAt > 0 && listAt < mainBody.indexOf("buildRunEvidence(")
+            && listAt < mainBody.indexOf("new AgentRegistry()")
+            && listAt < mainBody.indexOf("createAnthropicStageRunner")
+            && listAt < mainBody.indexOf("replayCritic(rt, args)"));
+        const listWithGoal = await runCn(["--list-tags", "a goal"]);
+        const listWithReplay = await runCn(["--list-tags", "--replay-critic", scopedRun]);
+        check("CN12. --list-tags refuses a goal or --replay-critic rather than silently running either",
+          !listWithGoal.ok && /--list-tags takes no goal/.test(listWithGoal.error)
+            && !listWithReplay.ok && /--list-tags takes no goal and no --replay-critic/.test(listWithReplay.error));
+
+        // The always-included records must be loaded before a scope may be
+        // applied. An approved-facts copy with one record removed stands in for
+        // an operator's edited file.
+        const editedFacts = (field: string) => {
+          const facts = JSON.parse(rawFacts) as Record<string, unknown>;
+          delete facts[field];
+          const path = join(cnWork, `approved-facts-without-${field}.json`);
+          writeFileSync(path, JSON.stringify(facts, null, 2), "utf8");
+          return path;
+        };
+        const evidenceWithout = (field: string, scopeTags?: string[]) => cnQuiet(() => cliModule.buildRunEvidence(cnRt, {
+          goal: "g", now: NOW, reviewedAt: "2026-09-01T00:00:00.000Z", automotiveFactsPath: factsPath,
+          runner: "fake", scopeTags, approvedFactsPath: editedFacts(field),
+        }));
+        const noMakesScoped = await evidenceWithout("makes", ["cn-scope"]);
+        const noPhoneScoped = await evidenceWithout("phone", ["cn-scope"]);
+        const noAreaScoped = await evidenceWithout("serviceArea", ["cn-scope"]);
+        check("CN13. a scoped run refuses, naming the record, when any always-included record is missing from "
+          + "the loaded facts — before any pack exists, so before the cost gate",
+          !noMakesScoped.ok && /EvidenceScopeError: .*approved-facts:makes/.test(noMakesScoped.error)
+            && !noPhoneScoped.ok && /EvidenceScopeError: .*approved-facts:phone/.test(noPhoneScoped.error)
+            && !noAreaScoped.ok && /EvidenceScopeError: .*approved-facts:servicearea/.test(noAreaScoped.error));
+        const preflight = cliSource.indexOf("rt.identity.assertIdentityFactsAvailable(pack);");
+        const replayPreflight = cliSource.lastIndexOf("rt.identity.assertIdentityFactsAvailable(pack);");
+        check("CN14. the identity preflight runs in a full run before the cost ceiling and the live prompt, and "
+          + "in a replay before its spend guard",
+          preflight > 0 && preflight < cliSource.indexOf("printCostCeiling(rt, allStagePolicies(rt)")
+            && replayPreflight > preflight
+            && replayPreflight < cliSource.indexOf("printCostCeiling(rt, criticLensPolicies(rt)")
+            && cliSource.indexOf("async function replayCritic(") < replayPreflight);
+      } finally {
+        rmSync(cnWork, { recursive: true, force: true });
+      }
+
+      // --- the identity records --------------------------------------------------
+      check("CN15. the identity records are the adapter's own makes and service-area ids, both present in the "
+        + "checked-in approved facts as verified business facts, and the contract counts exactly that many",
+        IDENTITY_FACTS.makes.id === approvedFactEvidenceId("makes")
+          && IDENTITY_FACTS.serviceArea.id === approvedFactEvidenceId("serviceArea")
+          && IDENTITY_FACT_IDS.join() === "approved-facts:makes,approved-facts:servicearea"
+          && IDENTITY_CLAIM_MAX_RECORDS === IDENTITY_FACT_IDS.length
+          && identityFixtureRecords.length === IDENTITY_FACT_IDS.length
+          && identityFixtureRecords.every((r) => r.kind === "verified_business_fact"));
+      check("CN16. the identity records are read from the pack unchanged — the evidence system's own records "
+        + "and wording, in fixed order",
+        identityFactRecords(packPack).every((r, i) =>
+          r === packPack.allowedFacts.find((f) => f.id === IDENTITY_FACT_IDS[i]))
+          && identityFactRecords(packPack).map((r) => r.claim).join("\u0000")
+            === IDENTITY_FACT_IDS.map((id) => first.records.find((r) => r.id === id)!.claim).join("\u0000"));
+
+      const noIdentity = (drop: string) => buildEvidencePack({
+        goal: "brake service content",
+        records: [...mixed, packUnpermitted, ...contactFactRecords, ...identityFixtureRecords.filter((r) => r.id !== drop)],
+        now: NOW,
+      });
+      const conflictedMakes = buildEvidencePack({
+        goal: "brake service content",
+        records: [...mixed, packUnpermitted, ...contactFactRecords, ...identityFixtureRecords,
+          { ...identityFixtureRecords[0]!, id: "approved-facts:makes-conflicting", claim: "makes: Nothing" }],
+        now: NOW,
+      });
+      const staleArea = buildEvidencePack({
+        goal: "brake service content",
+        records: [...mixed, packUnpermitted, ...contactFactRecords, identityFixtureRecords[0]!,
+          { ...identityFixtureRecords[1]!, reviewBy: "2026-01-01T00:00:00Z" } as EvidenceRecord],
+        now: NOW,
+      });
+      const identityError = (fn: () => unknown): string => {
+        try { fn(); return ""; } catch (e) { return e instanceof IdentityFactError ? e.message : ""; }
+      };
+      const withRecord = (patch: Partial<EvidenceRecord>) => buildEvidencePack({
+        goal: "g", records: [{ ...identityFixtureRecords[0]!, ...patch } as EvidenceRecord], now: NOW,
+      });
+      check("CN17. either identity record absent, conflicted or stale fails closed by name, and so does one "
+        + "with the wrong attribute or a claim not in the adapter's form",
+        identityError(() => assertIdentityFactsAvailable(noIdentity("approved-facts:makes"))).includes("approved-facts:makes")
+          && identityError(() => assertIdentityFactsAvailable(noIdentity("approved-facts:servicearea")))
+            .includes("approved-facts:servicearea")
+          && identityError(() => identityFactRecords(conflictedMakes)).includes("approved-facts:makes")
+          && staleArea.staleEvidence.some((r) => r.id === "approved-facts:servicearea")
+          && identityError(() => identityFactRecords(staleArea)).includes("approved-facts:servicearea")
+          && identityError(() => readIdentityRecord(withRecord({ attribute: "brands" }), "makes")).includes("attribute")
+          && identityError(() => readIdentityRecord(withRecord({ claim: "brands: BMW" }), "makes")).includes("claim")
+          && identityError(() => readIdentityRecord(withRecord({ claim: "makes: " }), "makes")).includes("claim"));
+
+      const { runner: cnPackRunner, calls: cnPackCalls } = recordingRunner(JSON.stringify(validPackagingOutput));
+      const cnPackRefused = await rejects(() => executePackagingAdaptation({
+        scriptOutput: scriptForPackaging, directionOutput: directionForPackaging, truthOutput: truthForPackaging,
+        evidencePack: noIdentity("approved-facts:makes"), requestedPlatforms: ALL_PLATFORMS, runner: cnPackRunner,
+      }).catch((e) => { throw e instanceof IdentityFactError ? e : new Error("wrong error"); }));
+      const { runner: cnCriticRunner, calls: cnCriticCalls } = panelRunner(JSON.stringify(validCriticOutput));
+      const cnCriticRefused = await rejectsWithStageError(() => executeFinalCritic({
+        scriptOutput: scriptForPackaging, directionOutput: directionForPackaging,
+        packagingOutput: attachContactLines(packResult.output, packPack),
+        truthOutput: truthForPackaging, evidencePack: noIdentity("approved-facts:servicearea"),
+        requestedPlatforms: ALL_PLATFORMS, runner: cnCriticRunner,
+      }));
+      check("CN18. stage 5 and the critic each refuse a pack without an identity record before any model call",
+        cnPackRefused && cnPackCalls.length === 0 && cnCriticRefused && cnCriticCalls.length === 0);
+
+      // Stage 5's request, and a stage 5 output binding nothing on two platforms.
+      const cnSent = packCalls[0]!;
+      const cnClaims = JSON.parse(untrustedBlock(cnSent.prompt, "SCRIPT_CLAIMS")) as Array<Record<string, string>>;
+      check("CN19. stage 5's SCRIPT_CLAIMS carries the identity records after stage 3's, in the evidence "
+        + "system's words and with the pack's kind and attribute, and the exported claim set agrees",
+        cnClaims.slice(-IDENTITY_FACT_IDS.length).every((c, i) => {
+          const record = packPack.allowedFacts.find((r) => r.id === IDENTITY_FACT_IDS[i])!;
+          return c.id === record.id && c.claim === record.claim && c.kind === record.kind
+            && c.attribute === record.attribute && Object.keys(c).join() === "id,kind,claim,attribute";
+        })
+          && packagingClaimUniverse(scriptForPackaging, truthForPackaging, packPack).map((r) => r.id).join()
+            === cnClaims.map((c) => c.id).join());
+      const cnSparse = validatePackagingAdaptationOutput({
+        ...validPackagingOutput,
+        claimUse: [
+          { platform: "instagram", factId: "auto-1", summary: "The caption uses the moisture fact." },
+          { platform: "instagram", factId: "approved-facts:makes", summary: "The hashtags name makes." },
+        ],
+      }, ALL_PLATFORMS, scriptForPackaging, truthForPackaging, packPack);
+      const cnPlatformClaims = JSON.parse(renderPlatformClaims(
+        cnSparse, ALL_PLATFORMS, scriptForPackaging, truthForPackaging, packPack)) as Array<{ platform: string; factIds: string[] }>;
+      check("CN20. code binds the identity records on every platform: after the platform's own bindings, with "
+        + "no duplicate when the model also cited one, and on platforms where the model bound nothing",
+        cnPlatformClaims.map((p) => p.factIds.join()).join("|") === [
+          ["auto-1", ...IDENTITY_FACT_IDS].join(),
+          IDENTITY_FACT_IDS.join(),
+          IDENTITY_FACT_IDS.join(),
+        ].join("|")
+          && ALL_PLATFORMS.every((platform) =>
+               packagingClaimRecords(cnSparse, platform, scriptForPackaging, truthForPackaging, packPack)
+                 .slice(-IDENTITY_FACT_IDS.length).map((r) => r.id).join() === IDENTITY_FACT_IDS.join()));
+      const cnLens = (lens: CriticLens, platform: PackagingPlatform, factId: string) => {
+        try {
+          validateCriticLensOutput(lens, {
+            verdict: "provisional_pass", summary: "Checks a make-naming hashtag.",
+            findings: [{
+              severity: "advisory", category: lens === "evidence-fidelity" ? "claim_fidelity" : "hashtag_keyword_relevance",
+              platform, owner: "packaging-adaptation", issue: "A tag names a make.", suggestedAction: "Keep it descriptive.",
+            }],
+            claimFindingUse: [{ findingIndex: 0, platform, factId, summary: "The makes record supports the tag." }],
+          }, ALL_PLATFORMS, cnSparse, scriptForPackaging, truthForPackaging, packPack);
+          return true;
+        } catch { return false; }
+      };
+      check("CN21. the critic accepts a finding bound to an identity record on every platform, for both lenses "
+        + "shown PLATFORM_CLAIMS, and still refuses a stage-3-unused id",
+        ALL_PLATFORMS.every((platform) => IDENTITY_FACT_IDS.every((id) =>
+          cnLens("evidence-fidelity", platform, id) && cnLens("platform-and-local", platform, id)))
+          && !cnLens("evidence-fidelity", "facebook", "biz-1")
+          && !cnLens("platform-and-local", "facebook", "auto-1"));
+      check("CN22. the identity records never rescue a script with no used claims, and stage 5 still refuses "
+        + "an id that is neither used by stage 3 nor an identity record",
+        await rejectsWithStageError(() => runPackaging(JSON.stringify({
+          ...validPackagingOutput,
+          claimUse: [{ platform: "instagram", factId: "biz-1", summary: "Permitted but unused." }],
+        })))
+          && packagingClaimUniverse(scriptForPackaging, truthForPackaging, packPack)
+            .every((r) => r.id === "auto-1" || IDENTITY_FACT_IDS.includes(r.id)));
+
+      const identitySource = await cnText("src/harness/agents/identityFacts.ts");
+      const identityCode = identitySource.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+      check("CN23. the identity step is deterministic code, not a seventh executor: no stage invocation, no "
+        + "runner, no model call, and no claim text typed into it",
+        !/invokeStage|executeStage|StageRunner|runAgent|messages\.(create|stream)|anthropic/i.test(identityCode)
+          && !(JSON.parse(rawFacts).makes as string[]).some((make) => identitySource.includes(make))
+          && !identitySource.includes(String(JSON.parse(rawFacts).serviceArea)));
+
+      // --- prompts ------------------------------------------------------------
+      const cnPackPrompt = await cnText("agents/packaging-adaptation.md");
+      const cnTruthPrompt = await cnText("agents/automotive-truth.md");
+      check("CN24. stage 5's prompt names both identity records in SCRIPT_CLAIMS, says code binds them on every "
+        + "platform, keeps a make to descriptive use with no affiliation, and a place to the service-area record",
+        cnPackPrompt.includes("followed by the shop's two **identity records** — `approved-facts:makes`")
+          && cnPackPrompt.includes("`approved-facts:servicearea`")
+          && cnPackPrompt.includes("## The identity records")
+          && cnPackPrompt.includes("**Code binds them on every platform.**")
+          && cnPackPrompt.includes("**A make is descriptive use only.**")
+          && /never state or imply that the shop is affiliated with, authorized by, certified by, or a dealer for that make/
+            .test(cnPackPrompt)
+          && cnPackPrompt.includes("**A place is only where the records say.**")
+          && cnPackPrompt.includes("**They permit nothing else.**")
+          && (JSON.parse(rawFacts).makes as string[]).every((make) => !cnPackPrompt.includes(make)));
+      check("CN25. stage 2's prompt states the widened whitelist twice and says the identity records reach "
+        + "stage 5 by code, without naming a value",
+        (cnTruthPrompt.match(/at most 16 entries/g) ?? []).length === 2
+          && !/allowedClaims[^\n]*at most 12 entries/.test(cnTruthPrompt)
+          && cnTruthPrompt.includes("**The shop's identity records are supplied to stage 5 by code.**")
+          && !(JSON.parse(rawFacts).makes as string[]).some((make) => cnTruthPrompt.includes(make)));
+
+      // --- stage 2's whitelist at 16 -------------------------------------------
+      const cnSixteenFacts = Array.from({ length: 17 }, (_, i) => verifiedAutomotive({
+        id: `auto-cap-${String(i).padStart(2, "0")}`, attribute: `cap-${i}`,
+      }));
+      const cnCapPack = buildEvidencePack({ goal: "g", records: cnSixteenFacts, now: NOW });
+      const cnTruthRaw = (n: number) => ({
+        assessment: "Cap check.",
+        allowedClaims: cnSixteenFacts.slice(0, n).map((r) => ({
+          factId: r.id, claimClass: "automotive", restatement: "Restated.",
+        })),
+        forbiddenClaims: [], requiredCaveats: [], openQuestions: [],
+      });
+      const cnAccepts = (n: number) => {
+        try { return validateAutomotiveTruthOutput(cnTruthRaw(n), cnCapPack).constraints.allowed.length === n; }
+        catch { return false; }
+      };
+      const truthFormatAllowed = ((AUTOMOTIVE_TRUTH_RESPONSE_FORMAT as Record<string, any>).properties.allowedClaims);
+      check("CN26. stage 2 accepts 16 allowed claims and refuses 17; its response schema and field bound say "
+        + "16; stage 1's supporting ids and stage 3's claim uses stay 12",
+        Number(TRUTH_LIMITS.maxAllowedClaims) === 16 && cnAccepts(16) && !cnAccepts(17)
+          && String(truthFormatAllowed.description).endsWith("at most 16 entries")
+          && OUTPUT_FIELD_BOUNDS["automotive-truth.allowedClaims"]!.enforced === 16
+          && Number(LIMITS.maxIds) === 12 && Number(SCRIPT_LIMITS.maxClaimUses) === 12
+          && OUTPUT_FIELD_BOUNDS["strategy-concept.supportingFactIds"]!.enforced === 12);
+
+      // --- budgets ----------------------------------------------------------------
+      check("CN27. the claim blocks are sized from the contract: stage 3's PERMITTED_CLAIMS at 16 records, "
+        + "stage 5's and the evidence lens's SCRIPT_CLAIMS at stage 3's 12 plus the identity records, stage 4's "
+        + "unchanged, and PLATFORM_CLAIMS counting the identity ids on every platform",
+        PERMITTED_CLAIMS_BLOCK_CHARS > PACKAGING_SCRIPT_CLAIMS_BLOCK_CHARS
+          && PACKAGING_SCRIPT_CLAIMS_BLOCK_CHARS > SCRIPT_CLAIMS_BLOCK_CHARS
+          && (PERMITTED_CLAIMS_BLOCK_CHARS - SCRIPT_CLAIMS_BLOCK_CHARS) * IDENTITY_CLAIM_MAX_RECORDS
+            === (PACKAGING_SCRIPT_CLAIMS_BLOCK_CHARS - SCRIPT_CLAIMS_BLOCK_CHARS)
+              * (TRUTH_LIMITS.maxAllowedClaims - SCRIPT_LIMITS.maxClaimUses)
+          && CRITIC_LENS_BLOCKS["evidence-fidelity"].find((b) => b.label === "SCRIPT_CLAIMS")!.bodyChars
+            === PACKAGING_SCRIPT_CLAIMS_BLOCK_CHARS
+          && STAGE_ASSEMBLED_CEILINGS["production-direction"] === assembledCeiling([
+            { label: "SCRIPT_OUTPUT", bodyChars: SCRIPT_OUTPUT.transportChars },
+            { label: "SCRIPT_CLAIMS", bodyChars: SCRIPT_CLAIMS_BLOCK_CHARS },
+            ...WRITER_RESTRICTION_BLOCKS,
+          ])
+          && PLATFORM_CLAIMS_BLOCK_CHARS === serializedCeiling(
+            Array.from({ length: PACKAGING_LIMITS.maxRequestedPlatforms }, () => ({
+              platform: "google_business_profile",
+              factIds: Array.from({ length: PACKAGING_LIMITS.maxClaimUses + IDENTITY_CLAIM_MAX_RECORDS }, () => ""),
+            })),
+            PACKAGING_LIMITS.maxRequestedPlatforms * (PACKAGING_LIMITS.maxClaimUses + IDENTITY_CLAIM_MAX_RECORDS)
+              * EVIDENCE_LIMITS.idChars,
+          )
+          && JSON.stringify(cnPlatformClaims).length <= PLATFORM_CLAIMS_BLOCK_CHARS
+          && untrustedBlock(cnSent.prompt, "SCRIPT_CLAIMS").length <= PACKAGING_SCRIPT_CLAIMS_BLOCK_CHARS
+          && Object.values(STAGE_ASSEMBLED_CEILINGS).every((c) => c <= MAX_PAYLOAD_CHARS)
+          && MAX_PAYLOAD_CHARS === 410_000);
+      check("CN28. the reasoning-heavy output-token floor is re-derived from stage 2's widened contract and still "
+        + "fits its model's output cap, and its budget is that floor",
+        POLICY_OUTPUT_TOKEN_FLOORS["reasoning-heavy"] === Math.ceil(Math.max(
+          minimumOutputTokens(STRATEGY_OUTPUT.transportChars), minimumOutputTokens(TRUTH_OUTPUT.transportChars),
+        ) / 1_000) * 1_000
+          && TRUTH_OUTPUT.transportChars > STRATEGY_OUTPUT.transportChars
+          && POLICY_MAX_TOKENS["reasoning-heavy"] === POLICY_OUTPUT_TOKEN_FLOORS["reasoning-heavy"]
+          && POLICY_MAX_TOKENS["reasoning-heavy"] < 128_000);
     }
   }
 
@@ -7539,8 +8066,18 @@ async function run(): Promise<void> {
         : {}),
     } as EvidenceRecord);
 
-    const ccFacts = Array.from({ length: LIMITS.maxIds },
+    // Enough maximal facts for the widest id channel: stage 2's whitelist (16)
+    // is now wider than stage 1's supporting ids (12).
+    const ccFacts = Array.from({ length: Math.max(LIMITS.maxIds, TRUTH_LIMITS.maxAllowedClaims) },
       (_, i) => maximalRecord(maxIdOf("fact", i), "verified_automotive_fact"));
+    // The two identity records stage 5 binds on every platform, each with a
+    // maximal claim in the adapter's "<field>: <value>" form, so stage 5's and
+    // the critic's claim blocks are measured with them at their largest.
+    const ccIdentity = Object.values(IDENTITY_FACTS).map(({ id, field }) => ({
+      ...maximalRecord(id, "verified_business_fact"),
+      attribute: field,
+      claim: `${field}: ${"i".repeat(EVIDENCE_LIMITS.claimChars - field.length - 2)}`,
+    } as EvidenceRecord));
     const ccObservations = Array.from({ length: LIMITS.maxIds },
       (_, i) => maximalRecord(maxIdOf("obs", i), "gcd_direct_observation"));
     const ccPerformance = Array.from({ length: LIMITS.maxIds },
@@ -7553,6 +8090,7 @@ async function run(): Promise<void> {
       records: [
         ...ccFacts, ...ccObservations, ...ccPerformance,
         maximalRecord(maxIdOf("biz", 0), "verified_business_fact"),
+        ...ccIdentity,
       ],
       now: NOW,
     });
@@ -7566,7 +8104,7 @@ async function run(): Promise<void> {
       })),
       assumptions: Array.from({ length: LIMITS.maxAssumptions },
         () => "S".repeat(LIMITS.assumptionChars)),
-      supportingFactIds: ccFacts.map((r) => r.id),
+      supportingFactIds: ccFacts.slice(0, LIMITS.maxIds).map((r) => r.id),
       observationIds: ccObservations.map((r) => r.id),
       performanceSignalIds: ccPerformance.map((r) => r.id),
     }, ccPack);
@@ -9694,7 +10232,7 @@ async function run(): Promise<void> {
       // what the summary would have to name to render one.
       const runCli = await readFile(resolve(REPO_ROOT, "scripts/local/content-run.mjs"), "utf8");
       const summaryStart = runCli.indexOf("function markdownSummary(");
-      const summaryEnd = runCli.indexOf("\nasync function main(", summaryStart);
+      const summaryEnd = runCli.indexOf("\nexport async function main(", summaryStart);
       const summarySource = summaryStart >= 0 && summaryEnd > summaryStart
         ? runCli.slice(summaryStart, summaryEnd) : "";
       const rendered = classified
@@ -9828,7 +10366,7 @@ async function run(): Promise<void> {
       const end = cli.indexOf(endMarker, start + 1);
       return start >= 0 && end > start ? cli.slice(start, end) : "";
     };
-    const mainBody = bodyOf("async function main() {", "\nasync function readSavedStage(");
+    const mainBody = bodyOf("export async function main(argv = process.argv.slice(2)) {", "\nasync function readSavedStage(");
     const inMain = (needle: string): number => mainBody.indexOf(needle);
     const preflight = inMain("evidence pack cannot satisfy every stage");
     const costGate = inMain("printCostCeiling(rt, allStagePolicies(rt)");
@@ -10186,7 +10724,7 @@ async function run(): Promise<void> {
           && !liveSummary.includes("Fake-runner")
           && fakeSummary.trimEnd().endsWith("_Fake-runner output. Not reviewed. Not publishable. Authorizes nothing._")
           && !fakeSummary.includes("Live-runner")
-          && !/_Fake-runner output\./.test(bodyOf("export function markdownSummary(", "\nasync function main(")));
+          && !/_Fake-runner output\./.test(bodyOf("export function markdownSummary(", "\nexport async function main(")));
 
       const contactPreflight = inMain("rt.contact.assertContactFactsAvailable(pack, platforms);");
       const replayBodyCE = bodyOf("async function replayCritic(", "\nfunction reportFailure(");

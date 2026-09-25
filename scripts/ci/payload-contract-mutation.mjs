@@ -4,7 +4,7 @@
  *
  * A regression that cannot fail is decoration. This script proves each
  * load-bearing derivation in `src/harness/agents/payloadContract.ts` and the
- * related repository-authority controls is actually load-bearing across twenty-three
+ * related repository-authority controls is actually load-bearing across twenty-four
  * captured paths: it applies one focused mutation in a disposable no-Git copy,
  * rebuilds there, runs the Content Intelligence offline suite, and
  * requires the NAMED check that owns that derivation to fail. Then it restores
@@ -151,7 +151,7 @@
  * of the two prompt sentences that tell the lens what the ids are and to use
  * them. It adds no captured path.
  *
- * The final group makes stage 2's restrictions binding on the writing stages
+ * The next group (M398-M417) makes stage 2's restrictions binding on the writing stages
  * and gives every writer the claim-boundaries skill: a writer dropping the
  * skill, stage 4 or 5 no longer receiving the two restriction blocks, those
  * blocks carrying stage 2's assessment, stage 5 shown stage 2's whole output,
@@ -164,6 +164,25 @@
  * live — the earlier mutation of the evidence lens's caveat block was
  * repointed there, its id and expected checks unchanged), the stage 2, stage 3
  * and stage 4 prompts, and the skill.
+ *
+ * The last group (M418-M445) covers evidence-pack scoping in the local CLI, the
+ * shop's identity records bound on every stage 5 platform by code, and stage
+ * 2's whitelist at 16: the pack builder or the CLI dropping the always-included
+ * records under a scope, an unscoped run's record or fingerprint changing, the
+ * scope leaving the fingerprint, the tags no longer normalized, an empty scope
+ * read as none, a missing always-included record no longer refused, a replay
+ * rebuilding with the command line's scope or accepting a different one or a
+ * different always-included set, `--list-tags` running on into a run, printing
+ * claim text or accepting a goal, the full run's identity preflight dropped, an
+ * identity record read from outside the usable facts or with any attribute, the
+ * identity module typing a make, stage 5's claim set or per-platform bindings
+ * losing the identity records or binding one twice, the identity records
+ * rescuing a script with no used claims, stage 5's and the critic's claim-block
+ * ceilings no longer counting them, the contract counting one, and stage 2's
+ * whitelist, or its prompt, going back to 12, and stage 5's prompt dropping the
+ * descriptive-use rule for makes. It adds one captured path, the identity
+ * module; the CLI, the pack builder, stage 5, the contract and both prompts
+ * were already captured.
  *
  * It is offline and deterministic: no network, no database, no provider, no
  * credential. The authoritative checkout is read-only after a disposable copy
@@ -226,6 +245,8 @@ const SCRIPT_PROMPT = "agents/hook-story-script.md";
 const DIRECTION_PROMPT = "agents/production-direction.md";
 const CLAIM_BOUNDARIES_SKILL = "skills/claim-boundaries/SKILL.md";
 const TRUTH_PROMPT = "agents/automotive-truth.md";
+// The shop's identity records, bound on every stage 5 platform by code.
+const IDENTITY_FACTS_MODULE = "src/harness/agents/identityFacts.ts";
 
 /**
  * Each mutation names the derivation it breaks, the single edit that breaks it,
@@ -3694,10 +3715,222 @@ const WRITER_RESTRICTION_MUTATIONS = [
   },
 ];
 
+/**
+ * Evidence-pack scoping in the local CLI, the shop's identity records bound on
+ * every stage 5 platform by code, and stage 2's whitelist at 16 (the owner's
+ * decisions of 2026-09-25). Appended after every earlier group.
+ */
+const IDENTITY_SCOPE_MUTATIONS = [
+  {
+    name: "the pack builder stops keeping the always-included records under a scope",
+    file: EVIDENCE_PACK,
+    from: "  if (alwaysIncludeIds && alwaysIncludeIds.includes(record.id)) return true;\n",
+    to: "",
+    expect: ["CN2."],
+  },
+  {
+    name: "a scoped run stops passing the always-included records to the pack builder",
+    file: CONTENT_RUN_CLI,
+    from: "    ...(scope ? { tags: scope.tags, alwaysIncludeIds: scope.alwaysIncludedIds } : {}),",
+    to: "    ...(scope ? { tags: scope.tags } : {}),",
+    expect: ["CN4."],
+  },
+  {
+    name: "an unscoped run's run-meta.json gains an evidenceScope key",
+    file: CONTENT_RUN_CLI,
+    from: "    ...(scope ? { evidenceScope: scope } : {}),\n    ...fingerprints,",
+    to: "    evidenceScope: scope,\n    ...fingerprints,",
+    expect: ["CN3."],
+  },
+  {
+    name: "the pack fingerprint stops including the scope",
+    file: CONTENT_RUN_CLI,
+    from: "  if (scope) hash.update(`${JSON.stringify(scope)}\\n`, \"utf8\");\n",
+    to: "",
+    // CN8's refusals still fire: a changed or removed scope changes the pack
+    // itself, so the projection alone no longer matches the recorded digest.
+    expect: ["CN4."],
+  },
+  {
+    name: "the pack fingerprint hashes a scope even when there is none",
+    file: CONTENT_RUN_CLI,
+    from: "  if (scope) hash.update(`${JSON.stringify(scope)}\\n`, \"utf8\");\n",
+    to: "  hash.update(`${JSON.stringify(scope)}\\n`, \"utf8\");\n",
+    expect: ["CN3."],
+  },
+  {
+    name: "the scope tags stop being sorted and deduplicated",
+    file: CONTENT_RUN_CLI,
+    from: ".map((t) => t.trim()).filter(Boolean))].sort();",
+    to: ".map((t) => t.trim()).filter(Boolean))];",
+    expect: ["CN4."],
+  },
+  {
+    name: "an empty --scope-tags is read as no scope",
+    file: CONTENT_RUN_CLI,
+    from: "  if (!tags.length) throw new Error(\"--scope-tags needs at least one tag (a,b,c); omit the flag for no scope\");",
+    to: "  if (!tags.length) return undefined;",
+    expect: ["CN5."],
+  },
+  {
+    name: "a scoped run stops refusing when an always-included record was not loaded",
+    file: CONTENT_RUN_CLI,
+    from: "    if (missing.length) {\n      throw new EvidenceScopeError(",
+    to: "    if (false && missing.length) {\n      throw new EvidenceScopeError(",
+    expect: ["CN13."],
+  },
+  {
+    name: "a replay rebuilds with the command line's scope instead of the source run's",
+    file: CONTENT_RUN_CLI,
+    from: "    scopeTags: recordedTags ?? undefined,",
+    to: "    scopeTags: args.scopeTags,",
+    expect: ["CN6."],
+  },
+  {
+    name: "a replay stops refusing a --scope-tags that differs from the recorded scope",
+    file: CONTENT_RUN_CLI,
+    from: "  if (args.scopeTags && JSON.stringify(args.scopeTags) !== JSON.stringify(recordedTags)) {",
+    to: "  if (false) {",
+    expect: ["CN7."],
+  },
+  {
+    name: "a replay stops comparing the recorded always-included records with this CLI's",
+    file: CONTENT_RUN_CLI,
+    from: "    if (JSON.stringify(recordedScope.alwaysIncludedIds) !== JSON.stringify(currentAlways)) {",
+    to: "    if (false) {",
+    expect: ["CN8."],
+  },
+  {
+    name: "--list-tags no longer returns before the run is built",
+    file: CONTENT_RUN_CLI,
+    from: "  if (args.listTags) return listTags(rt, args);\n",
+    to: "",
+    expect: ["CN9.", "CN11."],
+  },
+  {
+    name: "--list-tags prints claim text",
+    file: CONTENT_RUN_CLI,
+    from: "  for (const tag of tags) console.log(`${tag.padEnd(width)}  ${counts.get(tag)}`);",
+    to: "  for (const tag of tags) console.log(`${tag.padEnd(width)}  ${counts.get(tag)}`);\n"
+      + "  for (const record of records) console.log(record.claim);",
+    expect: ["CN10."],
+  },
+  {
+    name: "--list-tags accepts a goal",
+    file: CONTENT_RUN_CLI,
+    from: "  if (args.listTags && (args.replayCritic || args.goal !== undefined)) {",
+    to: "  if (false) {",
+    expect: ["CN12."],
+  },
+  {
+    name: "a full run drops the free identity preflight",
+    file: CONTENT_RUN_CLI,
+    from: "  // the critic would refuse after four paid stages. Check now, for free.\n"
+      + "  rt.identity.assertIdentityFactsAvailable(pack);\n",
+    to: "  // the critic would refuse after four paid stages. Check now, for free.\n",
+    expect: ["CN14."],
+  },
+  {
+    name: "an identity record is accepted from outside the usable facts",
+    file: IDENTITY_FACTS_MODULE,
+    from: "  const record = (pack?.allowedFacts ?? []).find((r) => r.id === id);",
+    to: "  const record = [...(pack?.allowedFacts ?? []), ...(pack?.staleEvidence ?? []), "
+      + "...(pack?.conflictedEvidence ?? [])].find((r) => r.id === id);",
+    expect: ["CN17."],
+  },
+  {
+    name: "an identity record's attribute stops being checked",
+    file: IDENTITY_FACTS_MODULE,
+    from: "  if (record.attribute !== field) {\n"
+      + "    fail(`\"${id}\" carries attribute ${JSON.stringify(record.attribute)}, not \"${field}\"`);\n  }\n",
+    to: "",
+    expect: ["CN17."],
+  },
+  {
+    name: "the identity module types a make",
+    file: IDENTITY_FACTS_MODULE,
+    from: "  makes: { id: \"approved-facts:makes\", field: \"makes\" },",
+    to: "  makes: { id: \"approved-facts:makes\", field: \"makes\", example: \"BMW\" },",
+    expect: ["CN23."],
+  },
+  {
+    name: "stage 5's claim set stops carrying the identity records",
+    file: PACKAGING,
+    from: "  return [...used, ...identityFactRecords(pack).filter((record) => !usedIds.has(record.id))];",
+    to: "  return used;",
+    expect: ["CN19.", "BK6."],
+  },
+  {
+    name: "code stops binding the identity records on every platform",
+    file: PACKAGING,
+    from: "  return [...modelBound, ...identityFactRecords(pack).filter((record) => !boundIds.has(record.id))];",
+    to: "  return modelBound;",
+    expect: ["CN20.", "CN21."],
+  },
+  {
+    name: "an identity record the model also cited is bound twice",
+    file: PACKAGING,
+    from: "  return [...modelBound, ...identityFactRecords(pack).filter((record) => !boundIds.has(record.id))];",
+    to: "  return [...modelBound, ...identityFactRecords(pack)];",
+    expect: ["CN20."],
+  },
+  {
+    name: "the identity records rescue a script with no used claims",
+    file: PACKAGING,
+    from: "  const usedClaims = scriptUsedClaimRecordsForPackaging(scriptOutput, truthOutput, pack);",
+    to: "  const usedClaims = packagingClaimUniverse(scriptOutput, truthOutput, pack);",
+    // The model call is then made (BO2); the canned answer still fails
+    // validation afterwards, so BO1's rejection alone does not speak.
+    expect: ["BO2."],
+  },
+  {
+    name: "stage 5's SCRIPT_CLAIMS ceiling stops counting the identity records",
+    file: PAYLOAD,
+    from: "  SCRIPT_FIELD_LIMITS.maxClaimUses + IDENTITY_CLAIM_MAX_RECORDS,\n);",
+    to: "  SCRIPT_FIELD_LIMITS.maxClaimUses,\n);",
+    expect: ["CN27."],
+  },
+  {
+    name: "PLATFORM_CLAIMS stops counting the identity ids",
+    file: PAYLOAD,
+    from: "    * (PACKAGING_FIELD_LIMITS.maxClaimUses + IDENTITY_CLAIM_MAX_RECORDS)\n",
+    to: "    * PACKAGING_FIELD_LIMITS.maxClaimUses\n",
+    expect: ["CN27."],
+  },
+  {
+    name: "the contract counts one identity record",
+    file: PAYLOAD,
+    from: "export const IDENTITY_CLAIM_MAX_RECORDS = 2;",
+    to: "export const IDENTITY_CLAIM_MAX_RECORDS = 1;",
+    expect: ["CN15."],
+  },
+  {
+    name: "stage 2's whitelist goes back to 12",
+    file: PAYLOAD,
+    from: "  maxAllowedClaims: 16,",
+    to: "  maxAllowedClaims: 12,",
+    expect: ["CN26."],
+  },
+  {
+    name: "stage 2's prompt states 12 allowed claims again",
+    file: TRUTH_PROMPT,
+    from: "  \"allowedClaims\": [                // at most 16 entries",
+    to: "  \"allowedClaims\": [                // at most 12 entries",
+    expect: ["CN25."],
+  },
+  {
+    name: "stage 5's prompt drops the descriptive-use rule for makes",
+    file: PACKAGING_PROMPT,
+    from: "- **A make is descriptive use only.** ",
+    to: "- A make may be named. ",
+    expect: ["CN24."],
+  },
+];
+
 const MUTATIONS = [
   ...LEGACY_MUTATIONS, ...RAW_IDENTITY_MUTATIONS, ...FIELD_MARGIN_MUTATIONS, ...CRITIC_POLICY_MUTATIONS,
   ...CONTACT_LINE_MUTATIONS, ...CRITIC_PANEL_MUTATIONS, ...CRITIC_PANEL_FOLLOW_UP_MUTATIONS,
-  ...WRITER_RESTRICTION_MUTATIONS,
+  ...WRITER_RESTRICTION_MUTATIONS, ...IDENTITY_SCOPE_MUTATIONS,
 ];
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");

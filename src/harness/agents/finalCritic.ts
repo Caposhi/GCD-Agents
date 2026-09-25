@@ -127,7 +127,12 @@
  *  - **`PLATFORM_CLAIMS` narrows further still.** It is not stage 3's whole
  *    used-claim set; it is stage 5's own typed, per-platform claim bindings —
  *    the exact records stage 5 actually cited for each requested platform,
- *    never derived from a caption, a summary, or any other prose.
+ *    never derived from a caption, a summary, or any other prose — followed on
+ *    every platform by the shop's two identity records (`approved-facts:makes`,
+ *    `approved-facts:servicearea`), which code binds on every platform
+ *    (`identityFacts.ts`). `SCRIPT_CLAIMS` is stage 5's claim set: stage 3's
+ *    used records, then those two identity records, in the evidence system's
+ *    own wording.
  *
  * Each lens receives only the bounded, labelled untrusted blocks its job needs
  * (`CRITIC_LENS_BLOCKS` in `payloadContract.ts` fixes the labels and order):
@@ -167,7 +172,8 @@
  *    `human_decision`.
  *  - Every entry in a lens's typed claim-finding channel names a finding that
  *    lens actually returned, a platform that was actually requested, and a
- *    fact id stage 5 actually bound **for that platform**. Fabricated ids,
+ *    fact id stage 5 actually bound **for that platform** — its own binding,
+ *    or one of the identity records code binds on every platform. Fabricated ids,
  *    wrong-platform ids, out-of-range finding indices, and exact-triple
  *    duplicates (the same finding citing the same platform and fact twice)
  *    all fail. A platform-specific finding's bindings must all name that
@@ -784,9 +790,10 @@ function requireUrlFreeText(fail: (m: string) => never, value: string, field: st
  *
  * Deliberately narrower than `SCRIPT_CLAIMS`: it is stage 5's own typed claim
  * bindings, drawn **only** via `packagingClaimRecords` — a caption, a
- * hashtag, a local keyword, or a claim-use summary is never the source. A
- * platform stage 5 did not actually cite anything for reports an empty
- * `claims` array rather than falling back to stage 3's wider used-claim set.
+ * hashtag, a local keyword, or a claim-use summary is never the source — plus
+ * the two identity records code binds on every platform. A platform stage 5
+ * did not actually cite anything for reports only the identity records rather
+ * than falling back to stage 3's wider used-claim set.
  */
 export function renderPlatformClaims(
   packagingOutput: PackagingAdaptationOutput,
@@ -800,10 +807,12 @@ export function renderPlatformClaims(
       platform,
       // Ids only. The authoritative records for these ids are already in
       // SCRIPT_CLAIMS, exactly once each, and every stage 5 binding is by
-      // construction a member of stage 3's used-claim set — so repeating the
-      // whole record per platform added size without adding authority. What
-      // this block carries is the part SCRIPT_CLAIMS cannot say: which of those
-      // records stage 5 bound, on which platform, in stage 5's own order.
+      // construction a member of stage 5's claim set — stage 3's used records
+      // plus the identity records — so repeating the whole record per platform
+      // added size without adding authority. What this block carries is the
+      // part SCRIPT_CLAIMS cannot say: which of those records stage 5 bound, on
+      // which platform, in stage 5's own order, then the identity records code
+      // binds on every platform.
       factIds: packagingClaimRecords(packagingOutput, platform, scriptOutput, truthOutput, pack)
         .map((record) => record.id),
     })),

@@ -25,11 +25,28 @@
  * Every record a contact line needs is checked before the cost gate, so a
  * missing phone record costs nothing. See `src/harness/agents/contactLine.ts`.
  *
+ * Stage 5 is also given the shop's two identity records — the approved-facts
+ * makes and service-area records — and code binds them on every platform, so a
+ * make- or place-naming hashtag or keyword is supported. Both are checked before
+ * the cost gate too. See `src/harness/agents/identityFacts.ts`.
+ *
+ * `--scope-tags` narrows the evidence pack to records carrying at least one of
+ * the named tags, through the pack builder's own tag scope. The records every
+ * run needs — the contact-line records and the identity records — are always
+ * included whatever the scope, and a scoped run refuses before the cost gate if
+ * any of them is missing from the loaded facts. With no flag the pack is exactly
+ * what it was before the flag existed: every loaded record, the same fingerprint,
+ * the same run-meta.json. `--list-tags` prints each tag and how many loaded
+ * records carry it, and nothing else — no claim text — then exits before a pack
+ * is built or any model is called.
+ *
  * Every run writes `run-meta.json` beside its stage files: the goal, the run's
  * instant, the attributed review time, and sha256 fingerprints of
  * config/approved-facts.json, of the automotive facts file, and of the evidence
  * pack projection — what a later `--replay-critic` needs to prove it rebuilt the
- * same evidence.
+ * same evidence. A scoped run also records its effective scope
+ * (`evidenceScope`), and that scope is part of the pack fingerprint; a replay
+ * rebuilds with the recorded scope and refuses a `--scope-tags` that differs.
  *
  * Requires `npm run build` first (this script imports the compiled `dist/`
  * output, the same way `npm run test:offline` and the other `scripts/*.mjs`
@@ -38,6 +55,7 @@
  * Usage:
  *   node scripts/local/content-run.mjs "<goal text>" [options]
  *   node scripts/local/content-run.mjs --replay-critic <run-dir> ["<goal text>"] [options]
+ *   node scripts/local/content-run.mjs --list-tags [--automotive-facts <path>] [--scope-tags a,b,c]
  *
  * Options:
  *   --runner fake|live         Default "fake": canned responses, no network,
@@ -57,6 +75,15 @@
  *                              call. The goal is read from the run's
  *                              run-meta.json when present, else from its
  *                              summary.md, else from the positional argument.
+ *   --scope-tags a,b,c         Narrow the evidence pack to records carrying any of
+ *                              these tags. The contact-line and identity records
+ *                              are always included. Default: no scope — every
+ *                              loaded record, exactly as before. A replay reuses
+ *                              the source run's recorded scope; if given there it
+ *                              must match it.
+ *   --list-tags                Print each tag and its record count from the loaded
+ *                              records (no claim text) and exit. Builds no pack and
+ *                              makes no model call.
  *   --automotive-facts <path> Default config/automotive-facts.local.json.
  *   --platforms a,b,c          Default instagram,facebook,google_business_profile.
  *   --out-dir <path>           Default local-output/content-intelligence.
@@ -87,12 +114,16 @@ function usage() {
   console.log(`Usage: node scripts/local/content-run.mjs "<goal text>" [options]
 
        node scripts/local/content-run.mjs --replay-critic <run-dir> ["<goal text>"] [options]
+       node scripts/local/content-run.mjs --list-tags [--automotive-facts <path>] [--scope-tags a,b,c]
 
 Options:
   --runner fake|live               Default "fake". "live" requires --i-understand-this-costs-money,
                                    then typing LIVE at the prompt.
   --i-understand-this-costs-money  Required to use --runner live.
   --replay-critic <run-dir>        Run only final-critic against a saved run; writes a new sibling directory.
+  --scope-tags a,b,c               Narrow the evidence pack to records with any of these tags. Contact-line and
+                                   identity records are always included. Default: no scope (every record).
+  --list-tags                      Print each tag and its record count (no claim text) and exit; no model call.
   --automotive-facts <path>        Default config/automotive-facts.local.json
   --platforms a,b,c                Default instagram,facebook,google_business_profile
   --out-dir <path>                 Default local-output/content-intelligence
@@ -101,7 +132,7 @@ Options:
 `);
 }
 
-function parseArgs(argv) {
+export function parseArgs(argv) {
   const args = {
     goal: undefined,
     runner: "fake",
@@ -112,6 +143,8 @@ function parseArgs(argv) {
     reviewedAt: new Date().toISOString(),
     reviewedAtExplicit: false,
     replayCritic: undefined,
+    scopeTags: undefined,
+    listTags: false,
     help: false,
   };
   const rest = [...argv];
@@ -125,11 +158,24 @@ function parseArgs(argv) {
     if (token === "--out-dir") { args.outDir = resolve(process.cwd(), rest.shift()); continue; }
     if (token === "--reviewed-at") { args.reviewedAt = rest.shift(); args.reviewedAtExplicit = true; continue; }
     if (token === "--replay-critic") { args.replayCritic = resolve(process.cwd(), rest.shift() ?? ""); continue; }
+    if (token === "--scope-tags") { args.scopeTags = normalizeScopeTags(rest.shift()); continue; }
+    if (token === "--list-tags") { args.listTags = true; continue; }
     if (token.startsWith("--")) { throw new Error(`unknown option: ${token}`); }
     if (args.goal === undefined) { args.goal = token; continue; }
     throw new Error(`unexpected extra argument: ${token}`);
   }
   return args;
+}
+
+/**
+ * `--scope-tags` as the effective tag list: trimmed, deduplicated and sorted, so
+ * the same scope always records and fingerprints identically however it was
+ * typed. An empty list is refused rather than read as "no scope".
+ */
+export function normalizeScopeTags(value) {
+  const tags = [...new Set(String(value ?? "").split(",").map((t) => t.trim()).filter(Boolean))].sort();
+  if (!tags.length) throw new Error("--scope-tags needs at least one tag (a,b,c); omit the flag for no scope");
+  return tags;
 }
 
 function requireDist() {
@@ -440,7 +486,7 @@ function nowFromRunDirName(name) {
 }
 
 /** The compiled modules this CLI drives. Imported once, after `requireDist`. */
-async function loadRuntime() {
+export async function loadRuntime() {
   const approved = await import(resolve(DIST_HARNESS, "evidence/approvedFacts.js"));
   const packModule = await import(resolve(DIST_HARNESS, "evidence/pack.js"));
   const registryModule = await import(resolve(DIST_HARNESS, "agents/registry.js"));
@@ -454,9 +500,10 @@ async function loadRuntime() {
   const modelPolicy = await import(resolve(DIST_HARNESS, "agents/modelPolicy.js"));
   const payloadContract = await import(resolve(DIST_HARNESS, "agents/payloadContract.js"));
   const contact = await import(resolve(DIST_HARNESS, "agents/contactLine.js"));
+  const identity = await import(resolve(DIST_HARNESS, "agents/identityFacts.js"));
   return {
     approved, packModule, registryModule, stageExecution, strategy, truth, script, direction,
-    packaging, critic, modelPolicy, payloadContract, contact,
+    packaging, critic, modelPolicy, payloadContract, contact, identity,
   };
 }
 
@@ -516,17 +563,61 @@ export function allStagePolicies(rt) {
 }
 
 /**
- * Build and validate the evidence pack exactly as a full run does, and return
- * the fingerprints a later replay needs to prove it rebuilt the same pack.
+ * The records every run needs, whatever the scope: the contact-line records
+ * (shop name, phone, booking link) and the identity records (makes, service
+ * area), in that order. Read from the modules that use them, never retyped here.
  */
-async function buildRunEvidence(rt, args) {
-  const { goal, now, reviewedAt, automotiveFactsPath } = args;
-  const approvedFactsPath = resolve(REPO_ROOT, "config/approved-facts.json");
+export function alwaysIncludedIds(rt) {
+  return [...Object.values(rt.contact.CONTACT_FACTS).map((fact) => fact.id), ...rt.identity.IDENTITY_FACT_IDS];
+}
+
+/**
+ * The effective scope a scoped run records and fingerprints, or null for no
+ * scope. Null is today's behaviour exactly: every loaded record.
+ */
+export function effectiveEvidenceScope(rt, scopeTags) {
+  if (!scopeTags) return null;
+  return { schema: "gcd-evidence-scope/1", tags: [...scopeTags], alwaysIncludedIds: alwaysIncludedIds(rt) };
+}
+
+/**
+ * The evidence-pack fingerprint: sha256 of the exact projection a stage model
+ * is shown. For a scoped run the effective scope is hashed in front of the
+ * projection, so two runs that differ only in scope never share a fingerprint
+ * and an older CLI that ignores the scope refuses to replay the run. With no
+ * scope it is exactly the digest it always was.
+ */
+export function evidencePackFingerprint(rendered, scope) {
+  const hash = createHash("sha256");
+  if (scope) hash.update(`${JSON.stringify(scope)}\n`, "utf8");
+  return hash.update(rendered, "utf8").digest("hex");
+}
+
+/**
+ * Load every business and automotive record the CLI would put in a pack.
+ *
+ * `args.approvedFactsPath` exists only so the offline suite can point this at
+ * an edited copy; no command-line option sets it, and every run reads
+ * `config/approved-facts.json`.
+ */
+async function loadRecords(rt, args) {
+  const { now, reviewedAt, automotiveFactsPath } = args;
+  const approvedFactsPath = args.approvedFactsPath ?? resolve(REPO_ROOT, "config/approved-facts.json");
   const approvedFactsBytes = await readFile(approvedFactsPath);
   const { records: businessRecords } = rt.approved.adaptApprovedFactsFile(approvedFactsBytes.toString("utf8"), {
     reviewedAt, now,
   });
   const { records: automotiveRecords, warning } = await loadAutomotiveFacts(automotiveFactsPath, now);
+  return { approvedFactsPath, approvedFactsBytes, records: [...businessRecords, ...automotiveRecords], warning };
+}
+
+/**
+ * Build and validate the evidence pack exactly as a full run does, and return
+ * the fingerprints a later replay needs to prove it rebuilt the same pack.
+ */
+export async function buildRunEvidence(rt, args) {
+  const { goal, now, automotiveFactsPath } = args;
+  const { approvedFactsPath, approvedFactsBytes, records, warning } = await loadRecords(rt, args);
   if (warning) {
     // A live run must never buy a stage against an evidence pack the operator
     // did not mean to send. On 2026-09-21 this was a warning: the run scrolled
@@ -544,13 +635,30 @@ async function buildRunEvidence(rt, args) {
     console.warn(`warning: ${warning}`);
   }
 
+  // A scope may only narrow what else the pack carries. The records every run
+  // needs are always included, so a scoped run refuses here — free, before the
+  // cost gate — if any of them was not even loaded.
+  const scope = effectiveEvidenceScope(rt, args.scopeTags);
+  if (scope) {
+    const loaded = new Set(records.map((r) => r.id));
+    const missing = scope.alwaysIncludedIds.filter((id) => !loaded.has(id));
+    if (missing.length) {
+      throw new EvidenceScopeError(
+        `the loaded facts have no ${missing.join(", ")} record(s), which every run needs whatever the scope; `
+        + "refusing before any paid call",
+      );
+    }
+  }
+
   const pack = rt.packModule.assertUsableEvidencePack(rt.packModule.buildEvidencePack({
     goal,
-    records: [...businessRecords, ...automotiveRecords],
+    records,
     now,
+    ...(scope ? { tags: scope.tags, alwaysIncludeIds: scope.alwaysIncludedIds } : {}),
   }));
   return {
     pack,
+    scope,
     fingerprints: {
       approvedFacts: { path: displayPath(approvedFactsPath), sha256: sha256OfBytes(approvedFactsBytes) },
       automotiveFacts: {
@@ -560,11 +668,46 @@ async function buildRunEvidence(rt, args) {
       },
       // The exact projection a stage model is shown. It excludes review and
       // creation timestamps, so it is stable for the same facts and the same
-      // freshness instant.
-      evidencePackSha256: createHash("sha256")
-        .update(rt.packModule.renderEvidencePackForStage(pack), "utf8").digest("hex"),
+      // freshness instant. A scoped run hashes its scope in front of it.
+      evidencePackSha256: evidencePackFingerprint(rt.packModule.renderEvidencePackForStage(pack), scope),
     },
   };
+}
+
+/** A scope refusal: always before any pack is used or any model is called. */
+class EvidenceScopeError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "EvidenceScopeError";
+  }
+}
+
+/**
+ * `--list-tags`: each tag and how many loaded records carry it, sorted by tag,
+ * and nothing else from any record — no id, no claim text. With `--scope-tags`
+ * it also prints how many records that scope would put in the pack, the always-
+ * included records counted. Builds no pack and makes no model call.
+ */
+export async function listTags(rt, args) {
+  const { records, warning } = await loadRecords(rt, { ...args, now: Date.now() });
+  if (warning) console.warn(`warning: ${warning}`);
+  const counts = new Map();
+  for (const record of records) {
+    for (const tag of new Set(record.tags)) counts.set(tag, (counts.get(tag) ?? 0) + 1);
+  }
+  const tags = [...counts.keys()].sort();
+  const width = Math.max(3, ...tags.map((t) => t.length));
+  console.log(`${records.length} loaded record(s); ${tags.length} tag(s). No claim text is shown.`);
+  console.log(`${"tag".padEnd(width)}  records`);
+  for (const tag of tags) console.log(`${tag.padEnd(width)}  ${counts.get(tag)}`);
+  if (args.scopeTags) {
+    const always = new Set(alwaysIncludedIds(rt));
+    const inScope = records.filter((r) => always.has(r.id) || r.tags.some((t) => args.scopeTags.includes(t)));
+    const cap = rt.payloadContract.EVIDENCE_LIMITS.maxProjectedRecords;
+    console.log(`--scope-tags ${args.scopeTags.join(",")} would include ${inScope.length} record(s), `
+      + `${[...always].filter((id) => records.some((r) => r.id === id)).length} of them always included `
+      + `(pack cap ${cap}).`);
+  }
 }
 
 /**
@@ -791,15 +934,24 @@ export function markdownSummary({ goal, runner, timestamp, script, direction, pa
   return lines.join("\n");
 }
 
-async function main() {
-  const args = parseArgs(process.argv.slice(2));
-  if (args.help || (!args.goal && !args.replayCritic)) { usage(); process.exit(args.help ? 0 : 1); }
+/**
+ * The CLI. `argv` defaults to the process's own arguments; the offline suite
+ * passes its own to drive fake runs in-process.
+ */
+export async function main(argv = process.argv.slice(2)) {
+  const args = parseArgs(argv);
+  if (args.help || (!args.goal && !args.replayCritic && !args.listTags)) { usage(); process.exit(args.help ? 0 : 1); }
   if (args.runner !== "fake" && args.runner !== "live") {
     throw new Error(`--runner must be "fake" or "live", got: ${args.runner}`);
+  }
+  if (args.listTags && (args.replayCritic || args.goal !== undefined)) {
+    throw new Error("--list-tags takes no goal and no --replay-critic: it only prints tag counts and exits");
   }
 
   requireDist();
   const rt = await loadRuntime();
+  // Before any pack is built, any registry is loaded, or any runner exists.
+  if (args.listTags) return listTags(rt, args);
   if (args.replayCritic) return replayCritic(rt, args);
 
   const { AgentRegistry, TARGET_STAGE_IDS } = rt.registryModule;
@@ -812,10 +964,13 @@ async function main() {
   }
 
   const now = Date.now();
-  const { pack, fingerprints } = await buildRunEvidence(rt, {
+  const { pack, scope, fingerprints } = await buildRunEvidence(rt, {
     goal: args.goal, now, reviewedAt: args.reviewedAt,
-    automotiveFactsPath: args.automotiveFactsPath, runner: args.runner,
+    automotiveFactsPath: args.automotiveFactsPath, runner: args.runner, scopeTags: args.scopeTags,
   });
+  if (scope) {
+    console.log(`Evidence scope: tags ${scope.tags.join(",")}; always included: ${scope.alwaysIncludedIds.join(", ")}`);
+  }
   console.log(`Evidence pack built: ${JSON.stringify(pack.counts)}`);
 
   const registry = new AgentRegistry();
@@ -845,6 +1000,9 @@ async function main() {
   // and booking records; without them the critic would refuse after five paid
   // stages. All three are in the pack already built, so check now, for free.
   rt.contact.assertContactFactsAvailable(pack, platforms);
+  // Stage 5 binds the identity records on every platform; without them it and
+  // the critic would refuse after four paid stages. Check now, for free.
+  rt.identity.assertIdentityFactsAvailable(pack);
 
   if (args.runner === "live") {
     printCostCeiling(rt, allStagePolicies(rt), "one full six-stage run");
@@ -871,6 +1029,9 @@ async function main() {
     now,
     nowIso: new Date(now).toISOString(),
     reviewedAt: args.reviewedAt,
+    // Written only for a scoped run, so an unscoped run's record is byte-for-byte
+    // what it was before scoping existed. Absent means no scope.
+    ...(scope ? { evidenceScope: scope } : {}),
     ...fingerprints,
   }, null, 2), "utf8");
 
@@ -978,7 +1139,9 @@ async function readSavedStage(runDir, name) {
  * before the spend guard and before any request exists.
  *
  *  1. The saved stage files load, and the source run is left untouched: output
- *     goes to a new sibling directory that must not already exist.
+ *     goes to a new sibling directory that must not already exist. The evidence
+ *     scope is the one the source run recorded — none, for a run that recorded
+ *     none — and a `--scope-tags` that differs from it is refused.
  *  2. `config/approved-facts.json` is byte-identical to the file the run used,
  *     by the sha256 the run recorded (run-meta.json, or — for runs that predate
  *     it — the per-asset sha256 every stage's metadata carries). Refused on any
@@ -1007,6 +1170,38 @@ async function replayCritic(rt, args) {
     direction: await readSavedStage(sourceDir, "04-production-direction"),
     packaging: await readSavedStage(sourceDir, "05-packaging-adaptation"),
   };
+
+  // --- 1a. the evidence scope: the source run's, and only the source run's --
+  // A run that recorded no scope was unscoped (every run before scoping
+  // existed was). The recorded scope is reused, never re-derived from the
+  // command line, and a --scope-tags that differs from it is refused.
+  const recordedScope = meta?.evidenceScope ?? null;
+  const currentAlways = alwaysIncludedIds(rt);
+  if (recordedScope !== null) {
+    const wellFormed = recordedScope && typeof recordedScope === "object"
+      && recordedScope.schema === "gcd-evidence-scope/1"
+      && Array.isArray(recordedScope.tags) && recordedScope.tags.length > 0
+      && recordedScope.tags.every((t) => typeof t === "string")
+      && JSON.stringify(normalizeScopeTags(recordedScope.tags.join(","))) === JSON.stringify(recordedScope.tags)
+      && Array.isArray(recordedScope.alwaysIncludedIds);
+    if (!wellFormed) {
+      throw new EvidenceScopeError("the source run's recorded evidenceScope is malformed; refusing to guess its scope");
+    }
+    if (JSON.stringify(recordedScope.alwaysIncludedIds) !== JSON.stringify(currentAlways)) {
+      throw new EvidenceScopeError(
+        `the source run always included ${recordedScope.alwaysIncludedIds.join(", ")}, but this CLI always `
+        + `includes ${currentAlways.join(", ")}; refusing: the rebuilt pack would not be the one the run used`,
+      );
+    }
+  }
+  const recordedTags = recordedScope ? recordedScope.tags : null;
+  if (args.scopeTags && JSON.stringify(args.scopeTags) !== JSON.stringify(recordedTags)) {
+    throw new EvidenceScopeError(
+      `--scope-tags ${args.scopeTags.join(",")} differs from the source run's recorded scope `
+      + `(${recordedTags ? recordedTags.join(",") : "none — the run was unscoped"}); a replay reuses the `
+      + "source run's scope, so omit --scope-tags or pass exactly the recorded tags",
+    );
+  }
 
   // --- the run's goal, instant and attributed review time -----------------
   let goal = meta?.goal;
@@ -1082,9 +1277,13 @@ async function replayCritic(rt, args) {
   }
 
   // --- 4. the rebuilt pack ------------------------------------------------
-  const { pack, fingerprints } = await buildRunEvidence(rt, {
+  const { pack, scope, fingerprints } = await buildRunEvidence(rt, {
     goal, now, reviewedAt, automotiveFactsPath: args.automotiveFactsPath, runner: args.runner,
+    scopeTags: recordedTags ?? undefined,
   });
+  if (JSON.stringify(scope) !== JSON.stringify(recordedScope)) {
+    throw new EvidenceScopeError("the rebuilt evidence scope does not match the source run's recorded scope. Refusing.");
+  }
   if (meta?.evidencePackSha256 && meta.evidencePackSha256 !== fingerprints.evidencePackSha256) {
     throw new Error(
       `the rebuilt evidence pack does not match the source run: recorded ${meta.evidencePackSha256}, `
@@ -1123,6 +1322,7 @@ async function replayCritic(rt, args) {
   // The same deterministic step a full run applies, so the critic sees the same
   // package shape either way. Free, and before the spend guard.
   rt.contact.assertContactFactsAvailable(pack, platforms);
+  rt.identity.assertIdentityFactsAvailable(pack);
   const contacted = rt.contact.attachContactLines(packagingOutput, pack);
   console.log("Contact lines attached from the approved-facts shop-name, phone and booking records.");
 
@@ -1151,6 +1351,7 @@ async function replayCritic(rt, args) {
     platforms,
     approvedFactsSha256: currentApproved,
     automotiveFacts: { ...fingerprints.automotiveFacts, identity: automotiveIdentity },
+    ...(scope ? { evidenceScope: scope } : {}),
     evidencePackSha256: fingerprints.evidencePackSha256,
     evidencePackFingerprintChecked: Boolean(meta?.evidencePackSha256),
   }, null, 2), "utf8");
@@ -1212,8 +1413,8 @@ function reportFailure(err) {
     if (Array.isArray(err.issues)) for (const i of err.issues) console.error(`  - ${i}`);
   } else if (err?.name === "StageExecutionError" || err?.name === "CriticPanelError") {
     console.error(`${err.name}: ${err.message}`);
-  } else if (["StageOutputTruncatedError", "StageRefusalError", "StageUnexpectedStopError", "ContactLineError"]
-    .includes(err?.name)) {
+  } else if (["StageOutputTruncatedError", "StageRefusalError", "StageUnexpectedStopError", "ContactLineError",
+    "IdentityFactError", "EvidenceScopeError"].includes(err?.name)) {
     console.error(`${err.name}: ${err.message}`);
   } else {
     console.error(err?.stack ?? String(err));

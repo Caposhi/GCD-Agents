@@ -98,6 +98,15 @@ export interface BuildEvidencePackInput {
   /** Optional subject/tag narrowing. Absent means "everything". */
   subjects?: string[];
   tags?: string[];
+  /**
+   * Record ids kept whatever the subject/tag narrowing says — the records every
+   * run needs, such as the ones the deterministic contact line and the identity
+   * bindings are built from. Only consulted when a narrowing is given; with no
+   * narrowing every record is already kept. It never adds a record the caller
+   * did not supply, and a kept record is validated, sorted, counted and
+   * classified exactly like any other.
+   */
+  alwaysIncludeIds?: string[];
 }
 
 export class EvidencePackBoundsError extends Error {
@@ -116,7 +125,10 @@ function compareRecords(a: EvidenceRecord, b: EvidenceRecord): number {
     || a.id.localeCompare(b.id);
 }
 
-function matchesScope(record: EvidenceRecord, subjects?: string[], tags?: string[]): boolean {
+function matchesScope(
+  record: EvidenceRecord, subjects?: string[], tags?: string[], alwaysIncludeIds?: string[],
+): boolean {
+  if (alwaysIncludeIds && alwaysIncludeIds.includes(record.id)) return true;
   if (subjects && subjects.length && !subjects.includes(record.subject)) return false;
   if (tags && tags.length && !record.tags.some((t) => tags.includes(t))) return false;
   return true;
@@ -203,7 +215,7 @@ export function buildEvidencePack(input: BuildEvidencePackInput): EvidencePack {
   const relations = input.relations ?? [];
   for (const relation of relations) assertValidEvidenceRelation(relation);
   const scoped = input.records
-    .filter((r) => matchesScope(r, input.subjects, input.tags))
+    .filter((r) => matchesScope(r, input.subjects, input.tags, input.alwaysIncludeIds))
     .slice()
     .sort(compareRecords);
   if (scoped.length > EVIDENCE_LIMITS.maxProjectedRecords) {
