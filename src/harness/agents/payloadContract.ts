@@ -318,6 +318,13 @@ export const DIRECTION_FIELD_LIMITS = {
 } as const;
 
 /**
+ * The most platforms one stage 5 request may name. `validateRequestedPlatforms`
+ * refuses more than this and refuses a repeat, so a response carries at most
+ * this many distinct platforms. Every per-platform derivation below counts it.
+ */
+const PACKAGING_MAX_REQUESTED_PLATFORMS = 3;
+
+/**
  * Stage 5 — packaging-adaptation, output fields only.
  *
  * `pipelineCaptionChars` is a **deliberate narrowing** of the product contract,
@@ -356,8 +363,24 @@ export const PACKAGING_FIELD_LIMITS = {
    */
   maxLocalKeywords: 6,
   maxOpenQuestions: 6,
-  maxClaimUses: 24,
-  maxRequestedPlatforms: 3,
+  /**
+   * `claimUse` entries: stage 3's claim-use cardinality on every requested
+   * platform — **derived, not chosen**.
+   *
+   * A caption may rely on every record stage 3 used (at most
+   * `SCRIPT_FIELD_LIMITS.maxClaimUses`), a record may be bound once per
+   * platform, and a response carries at most `maxRequestedPlatforms`
+   * platforms, so the contract's own legitimate maximum is their product. The
+   * identity records are not counted: code binds them on every platform
+   * (`packagingClaimRecords`), and the prompt tells the model not to list them.
+   *
+   * It was a fixed 24, below that maximum. On 2026-09-26 the owner's run
+   * `2026-09-26T14-28-27-677Z` returned 27 legitimate entries — instagram 10,
+   * facebook 10, google_business_profile 7, none an identity record, every one
+   * a record stage 3 used — and the validator discarded the paid response.
+   */
+  maxClaimUses: SCRIPT_FIELD_LIMITS.maxClaimUses * PACKAGING_MAX_REQUESTED_PLATFORMS,
+  maxRequestedPlatforms: PACKAGING_MAX_REQUESTED_PLATFORMS,
   /**
    * The most hashtag tokens any one package may carry.
    *
@@ -791,8 +814,12 @@ export const OUTPUT_FIELD_BOUNDS: Readonly<Record<string, OutputFieldBound>> = {
  *    and stages 3 and 4
  *    (72,621 and 87,531 transport characters), which sit below stage 5 and so do
  *    not move the `reasoning-standard` budget at all.
- *  - **2×** — stage 5, which *sets* the `reasoning-standard` budget (99,000); 2.5×
- *    would reach 107,684.
+ *  - **2×** — stage 5, which *sets* the `reasoning-standard` budget: 99,000
+ *    when this was sized (2.5× would have reached 107,684). Since stage 5's
+ *    `claimUse` cap became derived on 2026-09-26 (24 → 36) the budget is
+ *    126,000, **above this sizing rule** even at 2× and 2,000 under the model's
+ *    cap; the invariant the suite asserts is the cap (`CC19a`), not this rule.
+ *    2.5× would now reach 139,532, over the cap.
  *  - **2.5×** — stage 6 (`critic`); sized at PR #85, when the critic ran with
  *    thinking disabled and its floor was 102,000 (3× would have reached 110,606).
  *    The critic now runs with adaptive thinking and `max_tokens` at its model's
@@ -1833,7 +1860,7 @@ export const STAGE_REQUEST_SETUP_TIMEOUT_MS = 60_000;
  *
  * The 90-second non-streaming budget this replaces could not carry the output
  * contracts it was paired with: at the per-policy budgets — 87,000
- * tokens for `reasoning-heavy`, 99,000 for `reasoning-standard`, 128,000 for
+ * tokens for `reasoning-heavy`, 126,000 for `reasoning-standard`, 128,000 for
  * `critic` (its model's whole output cap, because the critic thinks and its
  * thinking shares `max_tokens`) — a contract-valid maximum response cannot be generated in 90
  * seconds by any model, so the timeout, not the contract, decided what the

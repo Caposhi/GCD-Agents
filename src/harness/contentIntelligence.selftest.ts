@@ -9446,6 +9446,91 @@ async function run(): Promise<void> {
         && buildEvidencePack({ goal: "maximum valid", records: conflictRecords, now: NOW })
              .conflicts.length === 2_016
         && invalidRecordRunnerCalls === 0);
+
+    // --- CP. stage 5's claimUse cap is the contract's own maximum ------------
+    // Appended after CO so existing check ids never move. It sits here because
+    // it reuses this section's maximal stage 3 chain (12 used claims) and pack.
+    //
+    // On 2026-09-26 the owner's run returned 27 legitimate entries (instagram
+    // 10, facebook 10, google_business_profile 7), every one a record stage 3
+    // used, none an identity record, and the fixed cap of 24 discarded it.
+    {
+      const cpPrompt = await readFile(resolve(REPO_ROOT, "agents/packaging-adaptation.md"), "utf8");
+      const cpCap = PACKAGING_LIMITS.maxClaimUses;
+      const cpUsed = ccScript.claimUse.used.map((binding) => binding.factId);
+      const cpRaw = (perPlatform: Record<PackagingPlatform, number>, identityOn: PackagingPlatform[] = []) => ({
+        packages: ALL_PLATFORMS.map((platform) => ({
+          platform,
+          caption: "A caption.",
+          hashtags: Array.from({ length: PLATFORM_PACKAGING_POLICY[platform].hashtagMin }, (_, i) => `#tag${i}`),
+          localKeywords: [],
+          recommendedTime: "09:00 ET",
+          openQuestions: [],
+        })),
+        claimUse: ALL_PLATFORMS.flatMap((platform) => [
+          ...cpUsed.slice(0, perPlatform[platform]).map((factId) => ({
+            platform, factId, summary: "The caption relies on this record.",
+          })),
+          ...(identityOn.includes(platform)
+            ? [{ platform, factId: IDENTITY_FACT_IDS[0]!, summary: "A hashtag names a make." }]
+            : []),
+        ]),
+      });
+      const cpValidate = (raw: Record<string, unknown>): { count: number; error: string } => {
+        try {
+          return {
+            count: validatePackagingAdaptationOutput(raw, ALL_PLATFORMS, ccScript, ccTruth, ccPack).claimUse.used.length,
+            error: "",
+          };
+        } catch (e) {
+          return { count: -1, error: e instanceof Error ? e.message : String(e) };
+        }
+      };
+      const cpFull = { instagram: cpUsed.length, facebook: cpUsed.length, google_business_profile: cpUsed.length };
+      const cpClaimUseFormat = (PACKAGING_ADAPTATION_RESPONSE_FORMAT as Record<string, any>).properties.claimUse;
+
+      check("CP1. stage 5's claimUse cap is derived — stage 3's claim-use cardinality times the contract's "
+        + "maximum requested-platform count — not a hand-kept number, and the schema and field bound carry it",
+        cpCap === SCRIPT_LIMITS.maxClaimUses * PACKAGING_LIMITS.maxRequestedPlatforms
+          && Number(cpCap) === 36
+          && PACKAGING_LIMITS.maxRequestedPlatforms === PACKAGING_PLATFORMS.length
+          && throws(() => validateRequestedPlatforms([...PACKAGING_PLATFORMS, PACKAGING_PLATFORMS[0]]))
+          && /maxClaimUses: SCRIPT_FIELD_LIMITS\.maxClaimUses \* PACKAGING_MAX_REQUESTED_PLATFORMS,/.test(payloadSource)
+          && /maxRequestedPlatforms: PACKAGING_MAX_REQUESTED_PLATFORMS,/.test(payloadSource)
+          && OUTPUT_FIELD_BOUNDS["packaging-adaptation.claimUse"]!.enforced === cpCap
+          && String(cpClaimUseFormat.description).endsWith(`at most ${cpCap} entries`));
+      check("CP2. a response binding all 12 of stage 3's used claims on every requested platform validates, "
+        + "and so does the owner's 2026-09-26 shape (10, 10, 7) the fixed cap of 24 refused",
+        cpUsed.length === SCRIPT_LIMITS.maxClaimUses
+          && cpValidate(cpRaw(cpFull)).count === cpCap
+          && cpValidate(cpRaw({ instagram: 10, facebook: 10, google_business_profile: 7 })).count === 27
+          && ccPackaging.claimUse.used.length === cpCap);
+      const cpOver = cpValidate(cpRaw(cpFull, ["instagram"]));
+      const cpIdentityWithin = cpValidate(cpRaw(
+        { instagram: cpUsed.length - 1, facebook: cpUsed.length, google_business_profile: cpUsed.length },
+        ["instagram"]));
+      check("CP3. one entry above the cap is refused by name; a model-listed identity entry is accepted "
+        + "harmlessly within the cap but counts toward it",
+        cpOver.count === -1 && cpOver.error.includes(`"claimUse" exceeds ${cpCap} entries`)
+          && cpIdentityWithin.count === cpCap);
+      check("CP4. the prompt states the derived cap for claimUse, twice, no stale figure, and tells the model "
+        + "not to list the identity records",
+        (cpPrompt.match(new RegExp(`at most ${cpCap} entries`, "g")) ?? []).length === 2
+          && /"claimUse": \[[^\n]*at most 36 entries/.test(cpPrompt)
+          && cpPrompt.includes("- `claimUse` — at most 36 entries")
+          && !cpPrompt.includes("at most 24 entries")
+          && cpPrompt.includes("Do not list them in `claimUse`; code binds them on every platform.")
+          && !cpPrompt.includes("need not list"));
+      check("CP5. the budgets the cap feeds are re-derived: stage 5 sets the reasoning-standard floor, its "
+        + "budget is that floor and stays under its model's cap, and every assembled payload fits",
+        POLICY_OUTPUT_TOKEN_FLOORS["reasoning-standard"]
+            === Math.ceil(minimumOutputTokens(PACKAGING_OUTPUT.transportChars) / 1_000) * 1_000
+          && PACKAGING_OUTPUT.transportChars > DIRECTION_OUTPUT.transportChars
+          && POLICY_MAX_TOKENS["reasoning-standard"] === POLICY_OUTPUT_TOKEN_FLOORS["reasoning-standard"]
+          && POLICY_MAX_TOKENS["reasoning-standard"] < POLICY_MODEL_OUTPUT_CAPS["reasoning-standard"]
+          && Object.values(STAGE_ASSEMBLED_CEILINGS).every((c) => c <= MAX_PAYLOAD_CHARS)
+          && MAX_PAYLOAD_CHARS === 410_000);
+    }
   }
 
     const evidencePackSource = await readFile(

@@ -165,7 +165,7 @@
  * repointed there, its id and expected checks unchanged), the stage 2, stage 3
  * and stage 4 prompts, and the skill.
  *
- * The last group (M418-M445) covers evidence-pack scoping in the local CLI, the
+ * The next group (M418-M445) covers evidence-pack scoping in the local CLI, the
  * shop's identity records bound on every stage 5 platform by code, and stage
  * 2's whitelist at 16: the pack builder or the CLI dropping the always-included
  * records under a scope, an unscoped run's record or fingerprint changing, the
@@ -184,10 +184,19 @@
  * module; the CLI, the pack builder, stage 5, the contract and both prompts
  * were already captured.
  *
- * The final appended mutation (M446) changes one of Lane S's owner-approved
+ * The next appended mutation (M446) changes one of Lane S's owner-approved
  * values in `config/approved-facts.json` and requires the exact-text regression
  * to name the drift. The configuration file is captured and restored like every
  * other target; no authoritative byte is ever mutated.
+ *
+ * The final appended group (M447-M453) covers stage 5's `claimUse` cap, derived
+ * as stage 3's claim-use cardinality times the contract's maximum
+ * requested-platform count: the cap going back to a fixed 24, being hand-kept
+ * at today's product, or multiplying a typed platform count; the validator
+ * no longer counting a model-listed identity entry toward the cap, or letting
+ * one entry past it; and the prompt stating the old cap or letting the model
+ * list the identity records again.
+ * It adds no captured path.
  *
  * It is offline and deterministic: no network, no database, no provider, no
  * credential. The authoritative checkout is read-only after a disposable copy
@@ -3943,10 +3952,66 @@ const LANE_S_APPROVED_FACTS_MUTATIONS = [
   },
 ];
 
+// Stage 5's claimUse cap, derived from the contract. Appended after every
+// earlier group so no existing mutation id moves.
+const PACKAGING_CLAIM_USE_CAP_MUTATIONS = [
+  {
+    name: "stage 5's claimUse cap goes back to a fixed 24",
+    file: PAYLOAD,
+    from: "  maxClaimUses: SCRIPT_FIELD_LIMITS.maxClaimUses * PACKAGING_MAX_REQUESTED_PLATFORMS,",
+    to: "  maxClaimUses: 24,",
+    expect: ["CP1.", "CP2."],
+  },
+  {
+    name: "stage 5's claimUse cap is hand-kept at today's product",
+    file: PAYLOAD,
+    from: "  maxClaimUses: SCRIPT_FIELD_LIMITS.maxClaimUses * PACKAGING_MAX_REQUESTED_PLATFORMS,",
+    to: "  maxClaimUses: 36,",
+    expect: ["CP1."],
+  },
+  {
+    name: "stage 5's claimUse cap multiplies a typed platform count",
+    file: PAYLOAD,
+    from: "  maxClaimUses: SCRIPT_FIELD_LIMITS.maxClaimUses * PACKAGING_MAX_REQUESTED_PLATFORMS,",
+    to: "  maxClaimUses: SCRIPT_FIELD_LIMITS.maxClaimUses * 3,",
+    expect: ["CP1."],
+  },
+  {
+    name: "stage 5's validator stops counting identity entries toward the cap",
+    file: PACKAGING,
+    from: "  if (rawClaimUse.length > PACKAGING_LIMITS.maxClaimUses) {",
+    to: "  if (rawClaimUse.filter((entry) => !String((entry as { factId?: unknown } | null)?.factId)"
+      + ".startsWith(\"approved-facts:\")).length > PACKAGING_LIMITS.maxClaimUses) {",
+    expect: ["CP3."],
+  },
+  {
+    name: "stage 5's validator lets one entry past the cap",
+    file: PACKAGING,
+    from: "  if (rawClaimUse.length > PACKAGING_LIMITS.maxClaimUses) {",
+    to: "  if (rawClaimUse.length > PACKAGING_LIMITS.maxClaimUses + 1) {",
+    expect: ["CP3."],
+  },
+  {
+    name: "stage 5's prompt states the old claimUse cap",
+    file: PACKAGING_PROMPT,
+    from: "  - `claimUse` — at most 36 entries",
+    to: "  - `claimUse` — at most 24 entries",
+    expect: ["CP4."],
+  },
+  {
+    name: "stage 5's prompt lets the model list the identity records again",
+    file: PACKAGING_PROMPT,
+    from: "Do not list them in `claimUse`; code binds them on every platform.",
+    to: "You need not list them in `claimUse`.",
+    expect: ["CP4."],
+  },
+];
+
 const MUTATIONS = [
   ...LEGACY_MUTATIONS, ...RAW_IDENTITY_MUTATIONS, ...FIELD_MARGIN_MUTATIONS, ...CRITIC_POLICY_MUTATIONS,
   ...CONTACT_LINE_MUTATIONS, ...CRITIC_PANEL_MUTATIONS, ...CRITIC_PANEL_FOLLOW_UP_MUTATIONS,
   ...WRITER_RESTRICTION_MUTATIONS, ...IDENTITY_SCOPE_MUTATIONS, ...LANE_S_APPROVED_FACTS_MUTATIONS,
+  ...PACKAGING_CLAIM_USE_CAP_MUTATIONS,
 ];
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");

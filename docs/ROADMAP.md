@@ -23,7 +23,90 @@ These are not interchangeable and must not be collapsed into "done". `MERGED` in
 
 ## Implemented repository change awaiting merge
 
-### Lane S — CTO-attested oil-interval rationale and driving-conditions facts — `IMPLEMENTED`
+### Stage 5's `claimUse` cap derived from the contract (24 → 36), and "Do not list" the identity records — `IMPLEMENTED`
+
+**State:** `IMPLEMENTED` on branch `claude/cool-shannon-3rf47s`, based directly on `origin/main` at `6f350792fdd8fd65d01c6fcb786b95dab0b819aa` (the merge of PR #94). **Not `MERGED`, not `DEPLOYED`, not `ENABLED`, not `PRODUCTION-VALIDATED`.** All six stages remain `executionEnabled: false`, no production path reaches any of them, and the partial-release interval (bound `2026-10-22T18:52Z`; see [Status](STATUS.md)) prohibits any release. No model was called.
+
+**PR / merge:** opened from `claude/cool-shannon-3rf47s` into `main`; its number and CI run are recorded in the PR itself. **This PR's merge SHA is the blocking follow-up** permitted by the mutable-identifier rule in [`AGENTS.md`](../AGENTS.md).
+
+**Why — the owner's run of 2026-09-26 (motivating evidence).** Run `2026-09-26T14-28-27-677Z`, a live run by the owner after PR #94 merged, spent **$0.530567** on stages 1–5, and stage 5's paid response was then **refused by its validator**: `"claimUse" exceeds 24 entries`. It carried **27** entries: instagram 10, facebook 10, google_business_profile 7. **Every one was a record stage 3 used** — stage 3 bound 11 — and **no identity record was listed**. Stage 6 never ran. This is **operator-local evidence, not production evidence**; the figures are as the owner reported them and were not re-examined from this repository.
+
+**Corrected diagnosis.** The refusal was **not** caused by identity records padding the list. It was a **fixed cap below the contract's own legitimate maximum**: `PACKAGING_FIELD_LIMITS.maxClaimUses` was a hand-kept 24, while a caption may rely on every record stage 3 used (at most `SCRIPT_FIELD_LIMITS.maxClaimUses`, 12), a record may be bound once on each platform, and a request names at most `maxRequestedPlatforms` distinct platforms (3; `validateRequestedPlatforms` refuses more, and refuses a repeat). The legitimate maximum is therefore 12 × 3 = 36, and any response whose bindings totalled more than 24 across its platforms — more than eight per platform on average — was refused, however faithful.
+
+**The owner's scoped dry pass.** Before that run, the owner's dry pass `2026-09-26T14-27-21-098Z` built a **44-record** evidence pack under the run's recorded `--scope-tags` (below the 64-record cap that an unscoped 67-record pack exceeds since Lane S). Operator-local; the tags themselves stay on the owner's machine.
+
+**Delivered.**
+
+1. **The cap is derived** (`payloadContract.ts`). `PACKAGING_FIELD_LIMITS.maxClaimUses` is now `SCRIPT_FIELD_LIMITS.maxClaimUses * PACKAGING_MAX_REQUESTED_PLATFORMS` — **36** today — and `maxRequestedPlatforms` reads the same new constant, `PACKAGING_MAX_REQUESTED_PLATFORMS` (3), so the platform count is written once. The identity records are **not** counted: code binds them on every platform (`packagingClaimRecords`), and the prompt now tells the model not to list them. The validator, the response schema's description (`at most 36 entries`), `OUTPUT_FIELD_BOUNDS`, and every derived ceiling below read the one value.
+2. **The prompt states the contract's figure** (`agents/packaging-adaptation.md`). Both `claimUse` ceilings — the output sketch and the size-ceiling list — say **at most 36 entries**. That figure was already contract-checked: `CD2`/`CD3` compare every stated ceiling with the validator's and fail on a stale number, and they did fail on "24" until the prompt was updated. *The identity records* now says: "**Do not list them in `claimUse`; code binds them on every platform.**" and that an entry for one only spends room the chosen claims may need.
+3. **Tests** `CP1`–`CP5` and **mutations** `M447`–`M453` (below).
+
+**Decision — a model-listed identity entry stays accepted, and counts toward the cap.** Checked in source: the validator accepts any id in `packagingClaimUniverse` (stage 3's used records plus the identity records), refuses a repeat per platform, and `packagingClaimRecords` never binds an identity record twice, so an identity entry is harmless to correctness. Today's behaviour is kept for two reasons. *Refusing* one would discard a paid response for citing a record it was shown — the alternative PR #93 rejected. *Not counting* one toward the cap would let a valid response carry 12 + 2 = 14 entries per platform, 42 in all, and the output contract would have to be sized for 42: stage 5's floor would reach about 139,000 tokens, over the 128,000 model cap. So the prompt says "Do not list", an identity entry is accepted if listed, and it counts; the only response this still refuses is one that binds all twelve used claims on every platform **and** lists an identity record as well (`CP3`).
+
+**Before → after — every figure the cap feeds** (built at `6f35079` and at this change; `payloadContract.ts`, `modelPolicy.ts`, and the CLI's own estimator).
+
+| Value | Before (`main` at `6f35079`) | After |
+|---|---:|---:|
+| `PACKAGING_FIELD_LIMITS.maxClaimUses` | 24 (typed) | **36** (derived: 12 × 3) |
+| `maxRequestedPlatforms` | 3 (typed) | 3 (from `PACKAGING_MAX_REQUESTED_PLATFORMS`) |
+| `PLATFORM_CLAIMS_BLOCK_CHARS` (evidence and platform lenses) | 32,204 | **46,964** |
+| `SCRIPT_CLAIMS` — stage 5 and the evidence lens (`PACKAGING_SCRIPT_CLAIMS_BLOCK_CHARS`) | 38,362 | 38,362 — unchanged (sized by stage 3's 12 + 2) |
+| Stage 5 output contract (`PACKAGING_OUTPUT` transport) | 98,084 | **125,132** |
+| Contacted stage 5 output the critic receives (`CONTACTED_PACKAGING_OUTPUT` transport) | 104,852 | **131,900** |
+| `packaging-adaptation` assembled ceiling | 220,375 | 220,375 — unchanged (its input blocks do not carry its own output) |
+| Critic lens ceilings: evidence / platform / voice / production | 223,464 / 137,426 / 26,153 / 265,277 | **238,224 / 179,234** / 26,153 / **292,325** |
+| `final-critic` assembled ceiling (largest lens) | 265,277 | **292,325** |
+| `MAX_PAYLOAD_CHARS` | 410,000 | 410,000 — unchanged (still set by `automotive-truth`, 403,564) |
+| Headroom under `MAX_PAYLOAD_CHARS`: `final-critic` | 144,723 | 117,675 |
+| `POLICY_OUTPUT_TOKEN_FLOORS`: `reasoning-heavy` / `reasoning-standard` / `critic` | 87,000 / 99,000 / 111,000 | 87,000 / **126,000** / 111,000 |
+| `POLICY_MAX_TOKENS["reasoning-standard"]` (derived from its floor) / model output cap | 99,000 / 128,000 | **126,000** / 128,000 |
+| `reasoning-standard` stream deadline (`POLICY_STREAM_DEADLINE_MS`) | 84 min | **106 min** |
+| Critic lens output-token floors | 111,000 / 111,000 / 46,000 / 46,000 | unchanged (lens contracts do not carry stage 5's cap) |
+| Handoff guards (stages 1–4, evidence pack) | 66,022 / 86,011 / 72,621 / 87,531 / 337,376 | unchanged |
+| Prompt characters, `agents/packaging-adaptation.md` | 15,067 | 15,185 (`MAX_INSTRUCTION_CHARS` 200,000 unchanged) |
+| CLI ceiling estimate: full run / critic-only replay | ~$20.84 / ~$11.88 | **~$21.65** / ~$11.88 |
+
+**Limit check — no enforced limit is exceeded and none was raised.** Every assembled ceiling fits `MAX_PAYLOAD_CHARS`; every floor is strictly below its model's 128,000 output cap (`CC19a`); the critic's lens floors still leave `THINKING_RESERVE_TOKENS` under its cap; the instruction ceiling is untouched. **One sizing rule is crossed, and is recorded rather than hidden:** `reasoning-standard` at 126,000 is above the one-fifth-unallocated rule (≤ 102,400) PR #85 used to size the plumbing margins, and leaves **2,000 tokens** under its model's cap. That rule is documented as a sizing rule, not an invariant, and asserting it was explicitly rejected (see *Output-field classification* below); the critic already exceeds it. The consequence is that stage 5's contract has almost no room left: any future growth of stage 5's output — another platform, a longer summary, a wider margin — will fail `CC19a` rather than fit, and 2.5× on `claimUse[].summary` would now reach 139,532. **The owner should accept this before merge.**
+
+**Migrations / schema impact:** none. No SQL, no durable state, no saved-file format change. Every stage 5 output that validated before this change still validates.
+
+**Material rejected alternatives.**
+
+- **Raising the cap to another hand-kept number** (for example 30 for the observed 27). Rejected: it would be wrong again at the next run whose captions rely on more of stage 3's claims, and nothing would tie it to the platform count or stage 3's cardinality.
+- **Excluding identity entries from the count.** Rejected: see *Decision* above — the output contract would need 42 entries and would overflow the model cap.
+- **Refusing a model-listed identity entry.** Rejected, as in PR #93: a paid response would die for citing a record it was shown.
+- **Narrowing `PLATFORM_CLAIMS` to stage 3's 12 + 2 per platform** (it counts the whole cap on every platform, which over-approximates). Not done: the owner asked for recomputation, not a derivation change; the over-approximation is safe and every ceiling still fits.
+- **Lowering `claimUse[].summary`'s margin to buy back budget.** Out of scope ("any other limit").
+
+**Automated validation.** Build and typecheck clean. `npm run test:offline` passes all nine suites; content-intelligence gains `CP1`–`CP5` (1,252 → 1,257). `CP1` requires the cap to equal stage 3's cardinality times the contract's platform count, the platform count to equal the closed enum's size with a repeated platform refused, the source to derive both rather than type a number, and the response schema and field bound to carry it. `CP2` validates a response binding all 12 of stage 3's used claims on each of the three platforms (36 entries), the owner's 10/10/7 shape, and the maximal fixture now binding 12 per platform. `CP3` refuses 37 entries by name and accepts 35 used plus one identity entry. `CP4` requires the prompt to state the derived figure twice, no stale 24, and "Do not list". `CP5` requires stage 5 to set the `reasoning-standard` floor, its budget to equal that floor under the model's cap, and every assembled payload to fit. `CD2`, `CD3` and `CC43a` were already contract-checked and needed only the prompt and comment updates. `npm run test:payload-mutation` derives **453 mutations** (451 prohibited, 2 coordinated); `M447`–`M453` are appended after `M446` and were each run and caught locally: the cap back to 24 (`CP1`, `CP2`), hand-kept at 36 (`CP1`), multiplying a typed 3 (`CP1`), the validator not counting identity entries (`CP3`) or letting one entry past the cap (`CP3`), and the prompt stating 24 (`CP4`) or dropping "Do not list" (`CP4`). A fake-runner full run with `--scope-tags approved-facts,claim-cap-auto` against a synthetic 84-record automotive file built a **34-record** pack and completed all six stages; the same file unscoped refused at 84 > 64 before any stage. The full list and results are in the PR.
+
+**Harness duration.** Recorded in the PR and in [Testing](TESTING.md) from the local run and the CI run on the final head. For reference: PR #94's run 219 took **21m06s** in its mutation step for 446 mutations (13:53:15–14:14:21Z), faster than PR #93's run 216 (33m50s for 445), so runner speed varies more than the per-mutation growth.
+
+**Production evidence:** none, and none is possible — no stage is enabled or reachable. The motivating run is operator-local evidence.
+
+**Rollback / recovery:** revert the commit. No migration and no durable state. A stage 5 output with more than 24 entries saved after this change would then be refused on replay, which fails closed.
+
+**Security and privacy implications:** none new. No credential, customer data, provider, publishing, scheduling, approval, model, effort, thinking or autonomy setting changed; the Phase-A approval gate and the live `brand-compliance-critic` are untouched. The stage 5 `max_tokens` rises to 126,000, which can raise the cost of a live stage 5 call only as far as the output actually produced.
+
+**Accepted limitations.**
+
+- **`reasoning-standard` is 2,000 tokens under its model's cap** (see *Limit check*).
+- **A response that binds every used claim on every platform and also lists an identity record is still refused.** The prompt now says not to list them.
+- **The critic lens prompts** still describe `SCRIPT_CLAIMS` as "every evidence record stage 3 bound" (carried from PR #93; out of scope here), and still state `claimFindingUse` at 24 — a separate limit this change does not touch.
+
+**Unresolved follow-ups.**
+
+- **This PR's merge SHA** (mutable-identifier exception) — blocking.
+- An owner-run live full run after merge, to confirm stage 5 now validates; not an acceptance gate for this change.
+- Carried: the critic-prompt change for the identity records and the unflagged BMW highway attribution; speeding up the mutation harness (now 453); `POLICY_EFFORT.critic` and `THINKING_RESERVE_TOKENS` per lens; moving completed history out of this file.
+
+**Documents updated:** this file (this record; Lane S and PR #93 moved to *Merged repository change awaiting rollout* with their merge and CI reconciled; a dated addition to the 64-record-cap item), [README](../README.md), [Status](STATUS.md), [Architecture](ARCHITECTURE.md), [Testing](TESTING.md), [AI handoff](AI_HANDOFF.md), [Security and continuity](SECURITY_AND_CONTINUITY.md), `agents/packaging-adaptation.md`, and the mutation harness's header. Stale "`IMPLEMENTED`, not merged" markers for PR #88, #89, #92 and #93 work in the README, Architecture, AI handoff and Security and continuity were reconciled to `MERGED` where this change touched those passages; the README's guard and assembled-ceiling figures, which predated PR #92 and PR #93, were refreshed. Each was reread in full.
+
+## Merged repository change awaiting rollout
+
+### Lane S — CTO-attested oil-interval rationale and driving-conditions facts — `MERGED`
+
+**Merge reconciliation (recorded 2026-09-26 by the stage 5 `claimUse` cap change above):** `MERGED` through [PR #94](https://github.com/Caposhi/GCD-Agents/pull/94) at `6f350792fdd8fd65d01c6fcb786b95dab0b819aa`, whose ordered parents are `fb88ec5974f1cb9f6f51e59d47c621015bba70ef` and then reviewed head `3294ae415b060c24d9bf58bef6f03551d0ab3a5c`. PR CI [run 219](https://github.com/Caposhi/GCD-Agents/actions/runs/36246631793) on head `3294ae4` passed all five jobs on attempt 1 (446 mutations; mutation step 21m06s). The `main` push [run 220](https://github.com/Caposhi/GCD-Agents/actions/runs/36248088902) on `6f35079` also passed on attempt 1, and the `deploy-production` workflow ([run 59](https://github.com/Caposhi/GCD-Agents/actions/runs/36249726084)) refused at its "Refuse while production automation is disabled" step, as it has on every `main` merge during the interval — no release. **Not `DEPLOYED`, not `ENABLED`, not `PRODUCTION-VALIDATED`.** The blocking merge-SHA follow-up below is discharged by this paragraph; where the record says unmerged, this paragraph supersedes it.
 
 **State:** `IMPLEMENTED` on branch `codex/lane-s-approved-facts`, based directly on `origin/main` at `fb88ec5974f1cb9f6f51e59d47c621015bba70ef`. **Not `MERGED`, not `DEPLOYED`, not `ENABLED`, and not `PRODUCTION-VALIDATED`.** This change is limited to three owner-attested strings in `config/approved-facts.json`, adapter and mutation regressions, and documentation. It changes no schema, application code, prompt, approval gate, workflow, provider authority, or deployed service. The current partial-release interval (bound `2026-10-22T18:52Z`; see [Status](STATUS.md)) prohibits any release, so even after merge this remains `MERGED`-only until a separately authorized release. The live worker at `44d7336…` does not carry it. No model was called.
 
@@ -56,13 +139,13 @@ These are not interchangeable and must not be collapsed into "done". `MERGED` in
 
 **Validation.** Build and typecheck passed. All nine offline suites passed, 1,755 checks total: posting 52, image 18, orchestrator 119, gate 56, API 51, render identity one invariant-suite pass, ownership/recovery 112, content intelligence 1,252, and interval monitor 94. The payload-mutation harness passed all 446 mutations (444 prohibited and 2 coordinated updates), including appended `M446` changing a Lane S value and being caught by appended `CO2`; the Lane S self-tests are `CO1`–`CO4`. Simulated dry run, deployment-controller fixtures, the 461-check M1 readiness offline suite, production dependency audit (zero vulnerabilities), AgentShield 1.4.0 (exit zero, B/87, no critical/high; nine pre-existing oversized-agent medium and nine pre-existing unspecified-model low findings), Markdown links (65 files), environment coverage (35 variables), sensitive scan (185 tracked text files, manually triaged clean), whitespace review, and both fake-runner pack-size cases passed. The unscoped run refused 67 records before a stage call; `--scope-tags approved-facts,lane-s-auto` built 31 and completed all six fake stages. Complete final diff review is required again after the PR number is recorded. No live model call was made. Full detail is in [Testing](TESTING.md).
 
-**Unresolved follow-up:** this PR's merge SHA. No release is authorized; the interval's release prohibition must be resolved and a release separately authorized before production can carry these facts.
+**Unresolved follow-up:** ~~this PR's merge SHA~~ — discharged above (`6f35079`). No release is authorized; the interval's release prohibition must be resolved and a release separately authorized before production can carry these facts.
 
 **Documents updated:** [README](../README.md), this file, [Status](STATUS.md), and [Testing](TESTING.md). Each modified document is reread as a whole before push.
 
 ### Evidence-pack scoping in the local CLI, the shop's identity records bound on every stage 5 platform, and stage 2's whitelist at 16 — `MERGED`
 
-**State:** `MERGED` through [PR #93](https://github.com/Caposhi/GCD-Agents/pull/93) at `fb88ec5974f1cb9f6f51e59d47c621015bba70ef`. Its ordered parents are `f2a58785c8a9aa2605dda3c7f7daf34ffdf16007` and then reviewed head `00c9cde019a349000e0b9e767823c409c8d98000`. **Not `DEPLOYED`, not `ENABLED`, not `PRODUCTION-VALIDATED`.** All six stages remain `executionEnabled: false` and no production path reaches any of them. CI [run 216](https://github.com/Caposhi/GCD-Agents/actions/runs/36178128557) on head `00c9cde` passed all five jobs on attempt 1: 445 mutations, mutation step 33m50s, quality job 35m10s. The `main` push [run 217](https://github.com/Caposhi/GCD-Agents/actions/runs/36244544876), head `fb88ec5`, attempt 1, was still pending in its payload-mutation step when this documentation was written; its completed jobs were green. Final conclusion remains a follow-up if it is not complete before this PR is opened. The rest of this record preserves the implementation detail; where it says unmerged or that the merge SHA is unknown, this paragraph supersedes it.
+**State:** `MERGED` through [PR #93](https://github.com/Caposhi/GCD-Agents/pull/93) at `fb88ec5974f1cb9f6f51e59d47c621015bba70ef`. Its ordered parents are `f2a58785c8a9aa2605dda3c7f7daf34ffdf16007` and then reviewed head `00c9cde019a349000e0b9e767823c409c8d98000`. **Not `DEPLOYED`, not `ENABLED`, not `PRODUCTION-VALIDATED`.** All six stages remain `executionEnabled: false` and no production path reaches any of them. CI [run 216](https://github.com/Caposhi/GCD-Agents/actions/runs/36178128557) on head `00c9cde` passed all five jobs on attempt 1: 445 mutations, mutation step 33m50s, quality job 35m10s. The `main` push [run 217](https://github.com/Caposhi/GCD-Agents/actions/runs/36244544876), head `fb88ec5`, **passed on attempt 1** (completed 2026-09-26T13:45:30Z; still pending when Lane S's documentation was written, reconciled by the stage 5 `claimUse` cap change). The rest of this record preserves the implementation detail; where it says unmerged or that the merge SHA is unknown, this paragraph supersedes it.
 
 **PR / merge:** [PR #93](https://github.com/Caposhi/GCD-Agents/pull/93), from `claude/eager-hawking-pb2cr7` into `main`, merged as `fb88ec5974f1cb9f6f51e59d47c621015bba70ef`. The blocking merge-SHA follow-up recorded at implementation is discharged by Lane S above.
 
@@ -172,16 +255,14 @@ This is **operator-local evidence, not production evidence**: no stage is enable
 
 **Unresolved follow-ups.**
 
-- PR #93 `main` push run 217's final conclusion if it remains pending when Lane S opens its PR.
-- Lane S's own merge SHA (mutable-identifier exception).
+- ~~PR #93 `main` push run 217's final conclusion~~ — green on attempt 1 (see *State* above).
+- ~~Lane S's own merge SHA (mutable-identifier exception)~~ — `6f35079` (PR #94).
 - An owner-run live full run after merge, choosing a scope from `--list-tags`, to see whether the unbound-fact findings fall. Not an acceptance gate for this change.
 - A critic-prompt change: describe the identity records in `SCRIPT_CLAIMS` and `PLATFORM_CLAIMS`, and address the unflagged BMW highway attribution.
 - **Speed up the mutation harness**, carried from PR #92's record, now at 445 mutations.
 - Carried, out of scope here: `POLICY_EFFORT.critic` and `THINKING_RESERVE_TOKENS` per lens, and moving completed history out of this file.
 
 **Documents updated with implementation:** this file (this record; PR #92's record moved to *Merged repository change awaiting rollout* with its merge, CI and follow-ups reconciled; dated additions to the `maxIds` decision, the 64-record-cap item and the local-CLI entry), [README](../README.md), [Status](STATUS.md), [Architecture](ARCHITECTURE.md), [Testing](TESTING.md), [AI handoff](AI_HANDOFF.md), [Security and continuity](SECURITY_AND_CONTINUITY.md), `agents/automotive-truth.md`, `agents/packaging-adaptation.md`, and the mutation harness's header. Each was reread in full.
-
-## Merged repository change awaiting rollout
 
 ### Writer restrictions — stage 2's caveats and forbidden claims bind stages 3–5, and every writer loads `claim-boundaries` with an attribution rule — `MERGED`
 
@@ -2377,6 +2458,12 @@ automotive facts, an unscoped run now projects 67 and is intentionally refused b
 call. Local runs therefore need `--scope-tags` including `approved-facts` and at least one relevant
 automotive tag; the cap remains unchanged. A fake-runner run scoped to `approved-facts,lane-s-auto`
 built 31 records and completed all six stages.
+
+*Dated addition, 2026-09-26 (stage 5 `claimUse` cap change):* the owner's scoped dry pass
+`2026-09-26T14-27-21-098Z` built a 44-record pack under its recorded `--scope-tags`, and the live
+run that followed reached stage 5, where the separate `claimUse` defect refused it (see the record
+at the top of this file). Scoping is working as intended; the cap remains 64 and this item stays
+open for the same reason as before.
 
 ## Model lineage — Claude Opus 5 is now legacy
 
