@@ -71,11 +71,11 @@ When a caption credits a statement to a source, follow the attribution rules in 
 
 ## Per-platform shape
 
-Each caption ceiling below is already reduced by the room reserved for the fixed contact line code appends after you answer, so the finished text still fits the platform.
+Each caption figure below is the most to write, not a length to reach. It already leaves room for the fixed contact line code appends after you answer, so the finished text still fits the platform. Each figure counts the caption **plus** the two-newline separator **plus** the canonical hashtag list, together — not the caption alone.
 
-- **`instagram`** — hook in the first line or two. **8–15 hashtags**, each unique. Caption, plus the two-newline separator and the canonical hashtag list, at most 2,136 characters — Instagram's 2,200 less 64 reserved for the contact line.
-- **`facebook`** — tighter caption. **At most 2 hashtags**; lean on plain language instead. Caption, separator and tags together at most 2,008 characters — this pipeline's own 2,200 ceiling, far below Facebook's provider limit, less 192 reserved for the contact line, and the one actually enforced here.
-- **`google_business_profile`** — caption, separator and tags together at most 1,500 characters. **No hashtags at all.** Nothing is reserved: a Business Profile post carries its booking link as a separate call to action, not as text.
+- **`instagram`** — hook in the first line or two. **8–15 hashtags**, each unique. Caption, plus the two-newline separator and the canonical hashtag list, at most 1,815 characters.
+- **`facebook`** — tighter caption. **At most 2 hashtags**; lean on plain language instead. Caption, separator and tags together at most 1,706 characters — this pipeline's own ceiling, far below Facebook's provider limit.
+- **`google_business_profile`** — caption, separator and tags together at most 1,275 characters. **No hashtags at all.** A Business Profile post carries its booking link as a separate call to action, not as text.
 
 Local keyword phrases belong in `localKeywords`, and only where `SCRIPT_CLAIMS` supports the place and the service named. The service-area record supports the place; the service still needs a record of its own. The ceiling is per platform:
 

@@ -612,11 +612,13 @@ export function criticLensSpecId(lens: CriticLens): string {
  *    are platform maxima from `packageMap.ts`, and `skills/platform-specs` is in
  *    places deliberately stricter than the platform (Instagram permits 30
  *    hashtags; the skill specifies 8–15). **These limits are not margins.** A
- *    product-bearing limit states exactly what it enforces — with one narrow,
- *    listed exception: a field whose *sole* reader is the internal human
+ *    product-bearing limit states exactly what it enforces — with two narrow,
+ *    listed exceptions: a field whose *sole* reader is the internal human
  *    reviewer, and which has no platform or provider consumer, may carry a
- *    margin (`REVIEWER_ONLY_MARGIN_FIELDS`). Text sent to a platform never
- *    gets one.
+ *    margin (`REVIEWER_ONLY_MARGIN_FIELDS`); and a platform field may be
+ *    *stated below* its enforced limit (`STATED_BELOW_ENFORCED_FIELDS`) —
+ *    never *enforced above* it. Text sent to a platform never gets a margin
+ *    over the platform's own limit.
  *  - **Internal plumbing.** A stage explaining itself, or a handoff to the next
  *    stage. No customer, platform or reviewer sees it, so no research specifies
  *    its length — `skills/script-craft` says in terms that it is "craft only"
@@ -901,12 +903,83 @@ export const REVIEWER_ONLY_MARGIN_FIELDS: ReadonlySet<string> = new Set(
 export const REVIEWER_ONLY_SLACK_MULTIPLIER = 1.5;
 
 /**
+ * The product-bearing fields whose prompt states a figure **below** the limit
+ * the validator enforces — **exactly one field, stage 5's per-platform
+ * caption** (caption, separator and canonical hashtags, measured together).
+ *
+ * **A deliberate extension of the classification above.** A product-bearing
+ * field may be *stated below* its enforced limit; it is never *enforced above*
+ * it. This is not the reviewer-only margin: the enforced figure is the
+ * platform's own limit less the contact-line reserve, and it does not move.
+ * What moves is only the aim point the model is shown. The validator still
+ * refuses at the real budget, so nothing a platform receives can grow; a
+ * caption between the stated target and the enforced budget is valid — it
+ * is simply longer than the model was asked for.
+ *
+ * **Why — the owner's run of 2026-09-26.** Run `2026-09-26T17-04-00-636Z`
+ * paid for stages 1–5, and stage 5 was refused: `"packages[0].caption"
+ * exceeds 2136 characters (actual 2279)`. The prompt stated 2,136 for
+ * Instagram's caption plus separator plus hashtags — the enforced figure —
+ * and the model returned 2,442 on that measure (1.143×), with the caption
+ * alone at 2,279 (1.067× of the stated figure). The run before it measured
+ * 2,034 (95%). A model aims at a stated number and lands around it, the same
+ * finding `STATED_FIELD_CEILINGS` records for stage 1 (+5%, +29%) and the
+ * critic's `issue` (+5%); for a platform field the aim point has to come
+ * down instead, because the ceiling may not go up.
+ *
+ * The one per-platform number is enforced twice — on the caption alone and
+ * on caption plus separator plus hashtags — so one stated target covers both.
+ * See `STATED_CAPTION_TARGET_PERCENT` for how far below.
+ *
+ * A regression asserts this set is exactly the caption; adding a field is a
+ * product decision and must change that regression too.
+ */
+export const STATED_BELOW_ENFORCED_FIELDS: ReadonlySet<string> = new Set([
+  "packaging-adaptation.packages[].caption",
+]);
+
+/**
+ * Stage 5's stated caption target, as a percentage of each platform's enforced
+ * caption budget: **85**.
+ *
+ * **Sized on the measurement, not rounded from a preference.** The one
+ * overshoot measured on this exact field is 2,442 / 2,136 = 1.143× (above).
+ * A target at 85% leaves 1 / 0.85 = 1.176× before the enforced budget, which
+ * clears that measurement under both readings of what the model did:
+ *
+ *  - overshooting the stated caption-plus-hashtags figure proportionally:
+ *    1,815 × 1.143 = 2,075 ≤ 2,136;
+ *  - aiming the caption alone at the figure (caption 1.067×) and adding
+ *    Instagram's 161 hashtag characters and separator: 1,815 × 1.067 + 163 =
+ *    2,100 ≤ 2,136.
+ *
+ * The owner suggested about 88%. That leaves 1 / 0.88 = 1.136× — **less** than
+ * the 1.143× already measured — so the same response to a 1,879 target would
+ * have reached 2,148 and been refused again. 85% is the nearest round
+ * percentage that covers the measurement with room; lower would take product
+ * room (roughly 290 words stay on Instagram) for no measured reason.
+ *
+ * Integer arithmetic, floored: the target never rounds up toward the budget.
+ */
+export const STATED_CAPTION_TARGET_PERCENT = 85;
+
+/**
+ * The caption figure a model-facing channel — the prompt and the response
+ * schema `description` — states for an enforced caption budget. The validator
+ * never reads this; it enforces the budget.
+ */
+export function statedCaptionTarget(enforcedBudget: number): number {
+  return Math.floor((enforcedBudget * STATED_CAPTION_TARGET_PERCENT) / 100);
+}
+
+/**
  * The figure a prompt — and any other model-facing channel, such as a response
  * schema `description` — states for a bounded field.
  *
  * Defaults to the enforced limit, which is the case for every product-bearing
  * field except the reviewer-only ones in `REVIEWER_ONLY_MARGIN_FIELDS`. Callers pass the enforced value so a field with no declared stated
- * figure is unaffected by this mechanism.
+ * figure is unaffected by this mechanism. Stage 5's caption is stated per
+ * platform, so it is not keyed here: see `statedCaptionTarget`.
  */
 export function statedCeiling(key: string, enforced: number): number {
   return (STATED_FIELD_CEILINGS as Record<string, number | undefined>)[key] ?? enforced;

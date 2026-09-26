@@ -134,7 +134,7 @@ import {
 } from "./stageExecution.js";
 import {
   PACKAGING_FIELD_LIMITS, EVIDENCE_LIMITS, HANDOFF_GUARDS, PACKAGING_OUTPUT, isBoundedSerializableText,
-  statedCeiling, CONTACT_LINE_RESERVE_CHARS,
+  statedCeiling, statedCaptionTarget, CONTACT_LINE_RESERVE_CHARS,
 } from "./payloadContract.js";
 
 export const PACKAGING_ADAPTATION_STAGE = "packaging-adaptation" as const;
@@ -280,6 +280,17 @@ export function effectiveCaptionBudget(platform: PackagingPlatform): number {
     - contactReserveChars(platform);
 }
 
+/**
+ * The caption figure the prompt and the response schema state on `platform`:
+ * a fixed fraction of `effectiveCaptionBudget`, derived in `payloadContract.ts`
+ * (`statedCaptionTarget`). Deliberately below the budget — the model's aim
+ * point, not the limit. The validator never reads it: it enforces
+ * `effectiveCaptionBudget`, unchanged, so a caption between the two is valid.
+ */
+export function statedCaptionBudget(platform: PackagingPlatform): number {
+  return statedCaptionTarget(effectiveCaptionBudget(platform));
+}
+
 /** The local keyword cap the validator applies on `platform`. */
 export function effectiveLocalKeywordMax(platform: PackagingPlatform): number {
   return Math.min(PLATFORM_LOCAL_KEYWORD_MAX[platform], PACKAGING_FIELD_LIMITS.maxLocalKeywords);
@@ -322,7 +333,10 @@ const ALLOWED_CLAIM_USE_FIELDS = ["platform", "factId", "summary"] as const;
  *
  * The caption ceiling is per platform and is the smaller of the provider policy
  * and this pipeline's narrowing, so it cannot be one number in a description
- * here; the prompt states it per platform and the validator computes it.
+ * here; the prompt states it per platform and the validator computes it. The
+ * description states each platform's **stated target** (`statedCaptionBudget`),
+ * the same figure the prompt states, never the enforced budget: a description
+ * is a model-facing channel.
  *
  * Internal-plumbing fields state `statedCeiling`, not the enforced limit: a
  * `description` is a model-facing channel, so it states what the prompt states.
@@ -337,7 +351,7 @@ export const PACKAGING_ADAPTATION_RESPONSE_FORMAT = schemaObject({
           + "(code appends a fixed contact line); caption plus separator plus hashtags, per-platform "
           + "ceiling: "
           + PACKAGING_PLATFORMS
-            .map((platform) => `at most ${effectiveCaptionBudget(platform).toLocaleString("en-US")} characters on ${platform}`)
+            .map((platform) => `at most ${statedCaptionBudget(platform).toLocaleString("en-US")} characters on ${platform}`)
             .join(", "),
       ),
       hashtags: schemaArray({ type: "string" }, '"#token" form; [] where the platform allows none'),

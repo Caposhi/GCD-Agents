@@ -48,6 +48,14 @@
  * (`evidenceScope`), and that scope is part of the pack fingerprint; a replay
  * rebuilds with the recorded scope and refuses a `--scope-tags` that differs.
  *
+ * `--resume-from packaging-adaptation <run-dir>` runs stage 5, the contact
+ * lines and the critic panel against a saved run's stage 1–4 outputs — for a
+ * run whose paid stages 1–4 validated and whose stage 5 was refused. It makes
+ * the same free checks as `--replay-critic` (fingerprints, recorded scope,
+ * revalidation of every reused output through its owning validator) with no
+ * unproven path, prices only the requests it makes, keeps the typed LIVE gate,
+ * and writes a new sibling directory; the source run is never modified.
+ *
  * Requires `npm run build` first (this script imports the compiled `dist/`
  * output, the same way `npm run test:offline` and the other `scripts/*.mjs`
  * tools in this repository do).
@@ -55,6 +63,7 @@
  * Usage:
  *   node scripts/local/content-run.mjs "<goal text>" [options]
  *   node scripts/local/content-run.mjs --replay-critic <run-dir> ["<goal text>"] [options]
+ *   node scripts/local/content-run.mjs --resume-from packaging-adaptation <run-dir> [options]
  *   node scripts/local/content-run.mjs --list-tags [--automotive-facts <path>] [--scope-tags a,b,c]
  *
  * Options:
@@ -75,6 +84,18 @@
  *                              call. The goal is read from the run's
  *                              run-meta.json when present, else from its
  *                              summary.md, else from the positional argument.
+ *   --resume-from packaging-adaptation <run-dir>
+ *                              Run stage 5, the contact lines and final-critic
+ *                              (five model requests) against an existing run's
+ *                              saved stage 1-4 outputs; stages 1-4 make no
+ *                              request. Writes to a new sibling directory and
+ *                              never touches the source run. Refuses unless
+ *                              run-meta.json records, and the rebuilt evidence
+ *                              matches, the approved-facts, automotive-facts and
+ *                              pack fingerprints, and unless every saved stage
+ *                              1-4 output is present and revalidates. Reuses the
+ *                              recorded goal, scope and platforms.
+ *                              packaging-adaptation is the only resume point.
  *   --scope-tags a,b,c         Narrow the evidence pack to records carrying any of
  *                              these tags. The contact-line and identity records
  *                              are always included. Default: no scope — every
@@ -94,7 +115,7 @@
 
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, writeFileSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
@@ -114,6 +135,7 @@ function usage() {
   console.log(`Usage: node scripts/local/content-run.mjs "<goal text>" [options]
 
        node scripts/local/content-run.mjs --replay-critic <run-dir> ["<goal text>"] [options]
+       node scripts/local/content-run.mjs --resume-from packaging-adaptation <run-dir> [options]
        node scripts/local/content-run.mjs --list-tags [--automotive-facts <path>] [--scope-tags a,b,c]
 
 Options:
@@ -121,6 +143,9 @@ Options:
                                    then typing LIVE at the prompt.
   --i-understand-this-costs-money  Required to use --runner live.
   --replay-critic <run-dir>        Run only final-critic against a saved run; writes a new sibling directory.
+  --resume-from packaging-adaptation <run-dir>
+                                   Run stage 5 and final-critic against a saved run's stage 1-4 outputs;
+                                   writes a new sibling directory. packaging-adaptation is the only resume point.
   --scope-tags a,b,c               Narrow the evidence pack to records with any of these tags. Contact-line and
                                    identity records are always included. Default: no scope (every record).
   --list-tags                      Print each tag and its record count (no claim text) and exit; no model call.
@@ -143,6 +168,7 @@ export function parseArgs(argv) {
     reviewedAt: new Date().toISOString(),
     reviewedAtExplicit: false,
     replayCritic: undefined,
+    resumeFrom: undefined,
     scopeTags: undefined,
     listTags: false,
     help: false,
@@ -158,6 +184,7 @@ export function parseArgs(argv) {
     if (token === "--out-dir") { args.outDir = resolve(process.cwd(), rest.shift()); continue; }
     if (token === "--reviewed-at") { args.reviewedAt = rest.shift(); args.reviewedAtExplicit = true; continue; }
     if (token === "--replay-critic") { args.replayCritic = resolve(process.cwd(), rest.shift() ?? ""); continue; }
+    if (token === "--resume-from") { args.resumeFrom = parseResumeFrom(rest.shift(), rest.shift()); continue; }
     if (token === "--scope-tags") { args.scopeTags = normalizeScopeTags(rest.shift()); continue; }
     if (token === "--list-tags") { args.listTags = true; continue; }
     if (token.startsWith("--")) { throw new Error(`unknown option: ${token}`); }
@@ -165,6 +192,21 @@ export function parseArgs(argv) {
     throw new Error(`unexpected extra argument: ${token}`);
   }
   return args;
+}
+
+/** The stages `--resume-from` accepts. Only packaging-adaptation in this change. */
+export const RESUME_POINTS = ["packaging-adaptation"];
+
+/** `--resume-from <stage> <run-dir>`, refused unless the stage is a resume point and a directory follows. */
+export function parseResumeFrom(stage, dir) {
+  if (!RESUME_POINTS.includes(stage)) {
+    throw new Error(`--resume-from accepts only ${RESUME_POINTS.join(", ")} as the resume point, `
+      + `got: ${stage === undefined ? "(nothing)" : JSON.stringify(stage)}`);
+  }
+  if (!dir || dir.startsWith("--")) {
+    throw new Error(`--resume-from ${stage} needs a run directory: --resume-from ${stage} <run-dir>`);
+  }
+  return { stage, dir: resolve(process.cwd(), dir) };
 }
 
 /**
@@ -563,6 +605,18 @@ export function allStagePolicies(rt) {
 }
 
 /**
+ * The model requests a run resumed at `stage` makes: every request from that
+ * stage on, as a full run would make them, and none before it. For
+ * packaging-adaptation, stage 5 and the four critic lenses.
+ */
+export function resumePolicies(rt, stage) {
+  const all = allStagePolicies(rt);
+  const at = all.findIndex(([label]) => label === stage);
+  if (at < 0 || !RESUME_POINTS.includes(stage)) throw new Error(`not a resume point: ${stage}`);
+  return all.slice(at);
+}
+
+/**
  * The records every run needs, whatever the scope: the contact-line records
  * (shop name, phone, booking link) and the identity records (makes, service
  * area), in that order. Read from the modules that use them, never retyped here.
@@ -718,7 +772,7 @@ function createRunRecorder(rt, runDir) {
   const { OUTPUT_FIELD_BOUNDS, statedCeiling } = rt.payloadContract;
   const {
     PLATFORM_PACKAGING_POLICY, PACKAGING_LIMITS, proposedProviderText, effectiveLocalKeywordMax,
-    effectiveCaptionBudget,
+    effectiveCaptionBudget, statedCaptionBudget,
   } = rt.packaging;
   // Validation runs after the provider returns, and one rejection ends the run
   // with no retry — so a response that fails a size ceiling is a response the
@@ -735,9 +789,12 @@ function createRunRecorder(rt, runDir) {
       bounds: OUTPUT_FIELD_BOUNDS, statedCeiling, providerText: proposedProviderText,
       // The same caps the stage 5 validator applies: the caption budget is the
       // smaller of the provider and pipeline limits, less the contact-line
-      // reserve that the deterministic contact line is appended into.
+      // reserve that the deterministic contact line is appended into. The
+      // prompt states a target below it (`statedCaptionBudget`), so the row
+      // reports both.
       platformCaps: (platform) => ({
         caption: PLATFORM_PACKAGING_POLICY[platform] ? effectiveCaptionBudget(platform) : 0,
+        captionStated: PLATFORM_PACKAGING_POLICY[platform] ? statedCaptionBudget(platform) : 0,
         hashtags: Math.min(PLATFORM_PACKAGING_POLICY[platform]?.hashtagMax ?? 0, PACKAGING_LIMITS.maxHashtags),
         localKeywords: PLATFORM_PACKAGING_POLICY[platform] ? effectiveLocalKeywordMax(platform) : 0,
       }),
@@ -812,7 +869,8 @@ function recordingRunner(transcript, stage, inner) {
  * binding size is UTF-8 bytes — every bound caps code units and bytes with one
  * number, and bytes are never fewer. Stage 5's caption and hashtag count are
  * measured per platform — the caption as the provider-visible text the
- * validator compares — against that platform's effective cap, and so is the
+ * validator compares — against that platform's effective cap and the lower
+ * target the prompt states, and so is the
  * local keyword count. Read-only:
  * nothing here changes a validation outcome.
  */
@@ -851,7 +909,7 @@ function measureFields(transcript, { bounds, statedCeiling, platformCaps, provid
       const caps = platformCaps(pkg.platform);
       const tags = Array.isArray(pkg.hashtags) ? pkg.hashtags.filter((t) => typeof t === "string") : [];
       row(stage, `packages[${pkg.platform}].caption+hashtags`, bytes(providerText(pkg.caption, tags)),
-        caps.caption, caps.caption, "product-bearing");
+        caps.caption, caps.captionStated, "product-bearing");
       row(stage, `packages[${pkg.platform}].hashtags`, tags.length, caps.hashtags, caps.hashtags, "product-bearing");
       if (Array.isArray(pkg.localKeywords)) {
         row(stage, `packages[${pkg.platform}].localKeywords`, pkg.localKeywords.length,
@@ -893,12 +951,16 @@ export function summaryFooter(runner) {
  * panel is rendered as the panel's computed verdict and counts, then one
  * section per lens: that lens's verdict, its own summary, and its findings.
  */
-export function markdownSummary({ goal, runner, timestamp, script, direction, packaging, critic }) {
+export function markdownSummary({ goal, runner, timestamp, script, direction, packaging, critic, resumedFrom }) {
   const lines = [];
   lines.push(`# Content Intelligence local run`, "");
   lines.push(`- Goal: ${goal}`);
   lines.push(`- Runner: ${runner}`);
   lines.push(`- Generated: ${timestamp}`);
+  if (resumedFrom) {
+    lines.push(`- Resumed at ${resumedFrom.stage} from ${resumedFrom.sourceRunDir}: stages 1-4 reused and `
+      + `revalidated, not re-requested; the runner above ran stage 5 and the critic only`);
+  }
   lines.push("", "## Hook", "", script.provisional.hook, "");
   lines.push("## Script", "", script.provisional.script, "");
   lines.push("## Shot list", "");
@@ -940,9 +1002,14 @@ export function markdownSummary({ goal, runner, timestamp, script, direction, pa
  */
 export async function main(argv = process.argv.slice(2)) {
   const args = parseArgs(argv);
-  if (args.help || (!args.goal && !args.replayCritic && !args.listTags)) { usage(); process.exit(args.help ? 0 : 1); }
+  if (args.help || (!args.goal && !args.replayCritic && !args.listTags && !args.resumeFrom)) {
+    usage(); process.exit(args.help ? 0 : 1);
+  }
   if (args.runner !== "fake" && args.runner !== "live") {
     throw new Error(`--runner must be "fake" or "live", got: ${args.runner}`);
+  }
+  if (args.resumeFrom && (args.replayCritic || args.listTags)) {
+    throw new Error("--resume-from cannot be combined with --replay-critic or --list-tags");
   }
   if (args.listTags && (args.replayCritic || args.goal !== undefined)) {
     throw new Error("--list-tags takes no goal and no --replay-critic: it only prints tag counts and exits");
@@ -953,6 +1020,7 @@ export async function main(argv = process.argv.slice(2)) {
   // Before any pack is built, any registry is loaded, or any runner exists.
   if (args.listTags) return listTags(rt, args);
   if (args.replayCritic) return replayCritic(rt, args);
+  if (args.resumeFrom) return resumeFromPackaging(rt, args);
 
   const { AgentRegistry, TARGET_STAGE_IDS } = rt.registryModule;
   const { createAnthropicStageRunner } = rt.stageExecution;
@@ -1122,9 +1190,9 @@ async function writeContactLines(dir, contacted) {
 }
 
 /** Read one saved stage file from a run directory, or fail naming it. */
-async function readSavedStage(runDir, name) {
+async function readSavedStage(runDir, name, purpose = "replay") {
   const path = resolve(runDir, `${name}.json`);
-  if (!existsSync(path)) throw new Error(`replay source is missing ${name}.json in ${runDir}`);
+  if (!existsSync(path)) throw new Error(`${purpose} source is missing ${name}.json in ${runDir}`);
   const parsed = JSON.parse(await readFile(path, "utf8"));
   if (!parsed || typeof parsed !== "object" || !("output" in parsed)) {
     throw new Error(`${name}.json in ${runDir} has no "output" — not a saved stage result`);
@@ -1132,43 +1200,72 @@ async function readSavedStage(runDir, name) {
   return parsed;
 }
 
+/** The saved stage 1–4 files a resumed run reuses, in stage order. */
+const REUSED_STAGE_FILES = [
+  "01-strategy-concept", "02-automotive-truth", "03-hook-story-script", "04-production-direction",
+];
+
 /**
- * Run ONLY final-critic against an existing run's saved stage outputs.
+ * Prove a saved run's evidence and outputs before anything is bought against
+ * them. Shared by the critic-only replay and the resumed run, so the two cannot
+ * drift apart.
  *
  * Fail-closed order, and why: every check below is free, so all of them run
  * before the spend guard and before any request exists.
  *
- *  1. The saved stage files load, and the source run is left untouched: output
- *     goes to a new sibling directory that must not already exist. The evidence
- *     scope is the one the source run recorded — none, for a run that recorded
- *     none — and a `--scope-tags` that differs from it is refused.
+ *  1. The saved stage files load — stages 1–5 for a replay, stages 1–4 for a
+ *     resume from packaging-adaptation — and the source run is left untouched:
+ *     output goes to a new sibling directory that must not already exist. The
+ *     evidence scope is the one the source run recorded — none, for a run that
+ *     recorded none — and a `--scope-tags` that differs from it is refused.
  *  2. `config/approved-facts.json` is byte-identical to the file the run used,
  *     by the sha256 the run recorded (run-meta.json, or — for runs that predate
  *     it — the per-asset sha256 every stage's metadata carries). Refused on any
  *     mismatch, or if no digest was recorded at all.
- *  3. The automotive facts file matches the run's recorded fingerprint. A run
- *     that predates the fingerprint cannot prove it; that is printed as a
- *     warning and requires typed confirmation.
+ *  3. The automotive facts file matches the run's recorded fingerprint. For a
+ *     replay, a run that predates the fingerprint cannot prove it; that is
+ *     printed as a warning and requires typed confirmation.
  *  4. The evidence pack is rebuilt at the run's own instant, and, where the run
  *     recorded one, its projection fingerprint must match.
  *  5. Every saved prior output is revalidated through its owning stage's own
  *     validator against the rebuilt pack.
- *  6. Only then the cost ceiling and the same live guard a full run uses.
+ *
+ * A resume makes **new** paid requests on top of the saved outputs, so it takes
+ * no unproven path: it refuses unless run-meta.json records all three
+ * fingerprints — approved facts, automotive facts, evidence pack — and each
+ * matches. The caller then runs the cost ceiling and the same live guard a full
+ * run uses.
  */
-async function replayCritic(rt, args) {
-  const { AgentRegistry } = rt.registryModule;
-  const { createAnthropicStageRunner } = rt.stageExecution;
-  const sourceDir = args.replayCritic;
-  if (!existsSync(sourceDir)) throw new Error(`replay source run directory not found: ${sourceDir}`);
+async function verifySourceRun(rt, args, sourceDir, resumeAt) {
+  const purpose = resumeAt ? "resume" : "replay";
+  if (!existsSync(sourceDir)) throw new Error(`${purpose} source run directory not found: ${sourceDir}`);
 
   const metaPath = resolve(sourceDir, "run-meta.json");
   const meta = existsSync(metaPath) ? JSON.parse(await readFile(metaPath, "utf8")) : undefined;
+  if (resumeAt) {
+    const unrecorded = meta
+      ? [
+        meta.approvedFacts?.sha256 ? null : "approvedFacts.sha256",
+        meta.automotiveFacts && "sha256" in meta.automotiveFacts ? null : "automotiveFacts.sha256",
+        meta.evidencePackSha256 ? null : "evidencePackSha256",
+        typeof meta.now === "number" ? null : "now",
+      ].filter(Boolean)
+      : ["run-meta.json"];
+    if (unrecorded.length) {
+      throw new Error(
+        `the resume source records no ${unrecorded.join(", ")}; a resumed run makes new paid requests on the `
+        + "saved outputs, so it must prove it rebuilt the same evidence. Refusing.",
+      );
+    }
+  }
   const saved = {
-    strategy: await readSavedStage(sourceDir, "01-strategy-concept"),
-    truth: await readSavedStage(sourceDir, "02-automotive-truth"),
-    script: await readSavedStage(sourceDir, "03-hook-story-script"),
-    direction: await readSavedStage(sourceDir, "04-production-direction"),
-    packaging: await readSavedStage(sourceDir, "05-packaging-adaptation"),
+    strategy: await readSavedStage(sourceDir, REUSED_STAGE_FILES[0], purpose),
+    truth: await readSavedStage(sourceDir, REUSED_STAGE_FILES[1], purpose),
+    script: await readSavedStage(sourceDir, REUSED_STAGE_FILES[2], purpose),
+    direction: await readSavedStage(sourceDir, REUSED_STAGE_FILES[3], purpose),
+    // A resume from packaging-adaptation reads no stage 5 file: the source run
+    // usually has none, because stage 5 is what failed.
+    ...(resumeAt ? {} : { packaging: await readSavedStage(sourceDir, "05-packaging-adaptation") }),
   };
 
   // --- 1a. the evidence scope: the source run's, and only the source run's --
@@ -1198,7 +1295,7 @@ async function replayCritic(rt, args) {
   if (args.scopeTags && JSON.stringify(args.scopeTags) !== JSON.stringify(recordedTags)) {
     throw new EvidenceScopeError(
       `--scope-tags ${args.scopeTags.join(",")} differs from the source run's recorded scope `
-      + `(${recordedTags ? recordedTags.join(",") : "none — the run was unscoped"}); a replay reuses the `
+      + `(${recordedTags ? recordedTags.join(",") : "none — the run was unscoped"}); a ${purpose} reuses the `
       + "source run's scope, so omit --scope-tags or pass exactly the recorded tags",
     );
   }
@@ -1236,7 +1333,7 @@ async function replayCritic(rt, args) {
   }
   const currentApproved = await fileFingerprint(resolve(REPO_ROOT, "config/approved-facts.json"));
   if (recordedApproved.size === 0) {
-    throw new Error("the source run records no sha256 of config/approved-facts.json, so the replay cannot prove it rebuilt the same evidence");
+    throw new Error(`the source run records no sha256 of config/approved-facts.json, so the ${purpose} cannot prove it rebuilt the same evidence`);
   }
   if (recordedApproved.size > 1) {
     throw new Error(`the source run records conflicting approved-facts digests: ${[...recordedApproved].join(", ")}`);
@@ -1293,9 +1390,9 @@ async function replayCritic(rt, args) {
   console.log(`Evidence pack rebuilt at the source run's instant ${new Date(now).toISOString()}: ${JSON.stringify(pack.counts)}`);
 
   // --- 5. revalidate every saved prior output ---------------------------
-  // Stage 1 is not an input to the critic, but it is a saved prior output, so
-  // it is revalidated too — through its own validator, rebuilt from its saved
-  // typed form exactly as automotive-truth rebuilds it.
+  // Stage 1 is not an input to the critic or to stage 5, but it is a saved
+  // prior output, so it is revalidated too — through its own validator,
+  // rebuilt from its saved typed form exactly as automotive-truth rebuilds it.
   const s1 = saved.strategy.output;
   rt.strategy.validateStrategyConceptOutput({
     angle: s1?.provisional?.angle,
@@ -1311,13 +1408,175 @@ async function replayCritic(rt, args) {
   const scriptOutput = rt.script.revalidateHookStoryScriptOutput(saved.script.output, truthOutput, pack);
   const directionOutput = rt.direction.revalidateProductionDirectionOutput(
     saved.direction.output, scriptOutput, truthOutput, pack);
-  const packagingOutput = rt.packaging.revalidatePackagingAdaptationOutput(
-    saved.packaging.output, scriptOutput, truthOutput, pack);
+  const packagingOutput = saved.packaging
+    ? rt.packaging.revalidatePackagingAdaptationOutput(saved.packaging.output, scriptOutput, truthOutput, pack)
+    : undefined;
+  console.log("Every saved prior output revalidated through its owning stage's validator.");
+
+  return {
+    meta, goal, now, reviewedAt, pack, scope, fingerprints, automotiveIdentity, currentApproved,
+    truthOutput, scriptOutput, directionOutput, packagingOutput,
+  };
+}
+
+/**
+ * Resume a saved run at packaging-adaptation: run stage 5, attach the contact
+ * lines, and run the critic panel against the run's saved stage 1–4 outputs.
+ *
+ * Why it exists: on 2026-09-26 two owner-run live runs paid for stages 1–4,
+ * kept every one of them validated, and then lost stage 5 to a validator
+ * refusal (`2026-09-26T14-28-27-677Z`, the `claimUse` cap; `2026-09-26T17-04-00-636Z`,
+ * the Instagram caption). Re-running from stage 1 would buy stages 1–4 again
+ * for outputs already paid for and already valid.
+ *
+ * Every free check `verifySourceRun` makes runs first, with no unproven path;
+ * then the free preflights a full run makes before stage 5 — the contact-line
+ * and identity records, and the evidence classes stages 5 and 6 require; then
+ * the cost ceiling for exactly the requests this makes (stage 5 and the four
+ * critic lenses) and the same typed LIVE guard. Output goes to a new sibling
+ * directory; the source run is never modified. The new directory also holds
+ * byte-for-byte copies of the source's run-meta.json and stage 1–4 files, so a
+ * later `--replay-critic` can verify it exactly as it verifies a full run.
+ *
+ * No stage 1–4 executor is called: those stages make no request.
+ */
+export async function resumeFromPackaging(rt, args) {
+  const { AgentRegistry } = rt.registryModule;
+  const { createAnthropicStageRunner } = rt.stageExecution;
+  const { stage: resumeAt, dir: sourceDir } = args.resumeFrom;
+  const {
+    meta, goal, now, reviewedAt, pack, scope, fingerprints, automotiveIdentity, currentApproved,
+    truthOutput, scriptOutput, directionOutput,
+  } = await verifySourceRun(rt, args, sourceDir, resumeAt);
+
+  // The run's recorded platforms, never re-derived. Stage 5's own request check
+  // refuses an unknown, repeated or excess platform.
+  if (!Array.isArray(meta.platforms)) throw new Error("the resume source's run-meta.json records no platforms");
+  const platforms = rt.packaging.validateRequestedPlatforms(meta.platforms);
+  if (args.platforms && args.platforms.join() !== platforms.join()) {
+    throw new Error(`--platforms ${args.platforms.join(",")} differs from the source run's recorded platforms `
+      + `(${platforms.join(",")}); a resume reuses the source run's platforms`);
+  }
+
+  // The free preflights a full run makes before any spend, for the stages this
+  // will run: the contact-line and identity records, and every evidence class
+  // stages 5 and 6 require.
+  rt.contact.assertContactFactsAvailable(pack, platforms);
+  rt.identity.assertIdentityFactsAvailable(pack);
+  const registry = new AgentRegistry();
+  await registry.verifyAllAssets();
+  const requests = resumePolicies(rt, resumeAt);
+  const availableKinds = new Set(pack.allowedFacts.map((r) => r.kind));
+  const unmet = [...new Set(requests.map(([label]) => label.split(":")[0]))].flatMap((stage) => {
+    const missing = registry.get(stage).requiredEvidenceKinds.filter((kind) => !availableKinds.has(kind));
+    return missing.length ? [`${stage} requires ${missing.join(", ")}`] : [];
+  });
+  if (unmet.length) {
+    throw new Error(`evidence pack cannot satisfy the resumed stages:\n  - ${unmet.join("\n  - ")}`);
+  }
+
+  // --- the spend guard --------------------------------------------------------
+  if (args.runner === "live") {
+    printCostCeiling(rt, requests, `one run resumed at ${resumeAt}`);
+    await requireLiveConsent(args);
+  }
+
+  const resumedAt = new Date();
+  const resumeDir = resolve(dirname(sourceDir),
+    `${basename(sourceDir)}-resume-${resumeAt}-${resumedAt.toISOString().replace(/[:.]/g, "-")}`);
+  if (existsSync(resumeDir)) throw new Error(`refusing to overwrite an existing directory: ${resumeDir}`);
+  await mkdir(resumeDir, { recursive: false });
+  for (const name of ["run-meta.json", ...REUSED_STAGE_FILES.map((n) => `${n}.json`)]) {
+    await copyFile(resolve(sourceDir, name), resolve(resumeDir, name));
+  }
+  const resumeMeta = {
+    schema: "gcd-content-resume/1",
+    sourceRunDir: displayPath(sourceDir),
+    resumedAt: resumedAt.toISOString(),
+    resumeFrom: resumeAt,
+    reusedStages: REUSED_STAGE_FILES,
+    runner: args.runner,
+    goal,
+    sourceNow: now,
+    reviewedAt,
+    platforms,
+    approvedFactsSha256: currentApproved,
+    automotiveFacts: { ...fingerprints.automotiveFacts, identity: automotiveIdentity },
+    ...(scope ? { evidenceScope: scope } : {}),
+    evidencePackSha256: fingerprints.evidencePackSha256,
+    evidencePackFingerprintChecked: true,
+  };
+  const writeResumeMeta = (extra = {}) => writeFile(resolve(resumeDir, "resume-meta.json"),
+    JSON.stringify({ ...resumeMeta, ...extra }, null, 2), "utf8");
+  await writeResumeMeta();
+  const writeStage = (name, payload) => writeFile(resolve(resumeDir, `${name}.json`), JSON.stringify(payload, null, 2), "utf8");
+
+  const { transcript, writeMeasurements } = createRunRecorder(rt, resumeDir);
+  failureContext = { runDir: resumeDir, transcript, writeMeasurements };
+  const fake = buildFakeStageResponses(goal, pack);
+  const liveRunner = args.runner === "live" ? createAnthropicStageRunner() : undefined;
+  const runnerFor = (stage, buildResponse) => recordingRunner(transcript, stage, liveRunner
+    ?? (async (request) => ({
+      text: JSON.stringify(buildResponse(request)), totalCostUsd: 0, usage: { input_tokens: 0, output_tokens: 0 },
+    })));
+
+  console.log(`Resuming at ${resumeAt}: stages 1-4 reused from ${sourceDir}, revalidated, not re-requested`);
+  console.log("Running stage 5/6: packaging-adaptation");
+  const packaging = await rt.packaging.executePackagingAdaptation({
+    scriptOutput, directionOutput, truthOutput,
+    evidencePack: pack, requestedPlatforms: platforms, registry,
+    runner: runnerFor("packaging-adaptation", () => fake.packagingAdaptation(scriptOutput, platforms)),
+  });
+  await writeStage("05-packaging-adaptation", packaging);
+
+  const contacted = rt.contact.attachContactLines(packaging.output, pack);
+  await writeContactLines(resumeDir, contacted);
+
+  console.log(`Running stage 6/6: final-critic — ${rt.payloadContract.CRITIC_LENSES.length} lens requests, concurrently`);
+  const critic = await rt.critic.executeFinalCritic({
+    scriptOutput, directionOutput, packagingOutput: contacted,
+    truthOutput, evidencePack: pack, requestedPlatforms: platforms, registry,
+    runner: runnerFor("final-critic", (request) => fake.finalCritic(contacted, platforms, request?.lens)),
+  });
+  await writeStage("06-final-critic", critic);
+
+  const summaryMd = markdownSummary({
+    goal, runner: args.runner, timestamp: new Date(now).toISOString(),
+    script: scriptOutput, direction: directionOutput, packaging: contacted, critic: critic.output,
+    resumedFrom: { sourceRunDir: displayPath(sourceDir), stage: resumeAt },
+  });
+  await writeFile(resolve(resumeDir, "summary.md"), summaryMd, "utf8");
+  writeMeasurements();
+  // Which requests this run actually made, from the transcript: stage 5 and the
+  // critic lenses, and nothing before the resume point.
+  await writeResumeMeta({ modelRequests: transcript.map((t) => (t.lens ? `${t.stage}:${t.lens}` : t.stage)) });
+
+  console.log(`\nDone. Wrote 05-packaging-adaptation.json, 05b-contact-lines.json, 06-final-critic.json, `
+    + `summary.md, resume-meta.json and field-measurements.md to: ${resumeDir}`);
+  console.log(`The source run at ${sourceDir} was not modified.`);
+  console.log(`Critic verdict: ${critic.output.provisional.verdict}`);
+}
+
+/**
+ * Run ONLY final-critic against an existing run's saved stage outputs.
+ *
+ * Every free check in `verifySourceRun` runs first — the approved-facts and
+ * automotive identity, the rebuilt pack's fingerprint, and the revalidation of
+ * every saved stage 1–5 output; then the contact-line and identity preflights;
+ * only then the cost ceiling and the same live guard a full run uses.
+ */
+async function replayCritic(rt, args) {
+  const { AgentRegistry } = rt.registryModule;
+  const { createAnthropicStageRunner } = rt.stageExecution;
+  const sourceDir = args.replayCritic;
+  const {
+    meta, goal, now, reviewedAt, pack, scope, fingerprints, automotiveIdentity, currentApproved,
+    truthOutput, scriptOutput, directionOutput, packagingOutput,
+  } = await verifySourceRun(rt, args, sourceDir, null);
   const platforms = packagingOutput.provisional.packages.map((p) => p.platform);
   if (Array.isArray(meta?.platforms) && meta.platforms.join() !== platforms.join()) {
     throw new Error(`saved stage 5 packages (${platforms.join(",")}) differ from the run's recorded platforms (${meta.platforms.join(",")})`);
   }
-  console.log("Every saved prior output revalidated through its owning stage's validator.");
 
   // The same deterministic step a full run applies, so the critic sees the same
   // package shape either way. Free, and before the spend guard.
