@@ -553,7 +553,7 @@ async function run(): Promise<void> {
     "approved-facts:engineoils",
   ];
   check("J1. adaptation is deterministic", JSON.stringify(first.records) === JSON.stringify(second.records));
-  check("J2. adaptation produces the expected 27 records", first.records.length === 27);
+  check("J2. adaptation produces the expected 30 records", first.records.length === 30);
   check("J3. every adapted record validates", first.records.every((r) => validateEvidenceRecord(r).ok));
   check("J4. adapted ids are derived from the field path",
     first.records.some((r) => r.id === approvedFactEvidenceId("warranty")));
@@ -7157,6 +7157,52 @@ async function run(): Promise<void> {
           && POLICY_MAX_TOKENS["reasoning-heavy"] === POLICY_OUTPUT_TOKEN_FLOORS["reasoning-heavy"]
           && POLICY_MAX_TOKENS["reasoning-heavy"] < 128_000);
     }
+  }
+
+  // --- CO. Lane S: owner-attested oil-change rationale ----------------------
+  // Appended after CN so existing check ids never move. The values are repeated
+  // deliberately: these are the owner-approved bytes the adapter must project,
+  // not looser keyword or substring checks.
+  {
+    const expected = {
+      oilChangeRationale: "German Car Depot recommends an oil change every 5,000 miles or 6 months as a deliberately conservative shop interval. It is not a BMW or Mercedes-Benz requirement. We set it shorter than many manufacturer intervals because of what our technicians see in German and European engines, including sludge, excessive carbon buildup and other common engine problems that undermine reliability, and to protect the long-term reliability of the engine and the components that depend on it. This is our professional judgment and hands-on experience, not the result of oil-analysis testing.",
+      oilChangeTimeLimit: "In our experience, moisture from condensation can collect in engine oil in South Florida's humid climate, especially in cars driven mostly on short trips that never fully warm up, or cars that sit for long periods. The 6-month limit keeps oil from staying in the engine long enough for that moisture and other contaminants to build up, even when a car is driven few miles. This is our professional judgment, not the result of oil-analysis testing.",
+      drivingConditionsView: "In our experience, city driving (short trips, stop-and-go traffic and idling) is harder on an engine and its components than steady highway driving, and components wear very differently under the two. This is our professional judgment, not a manufacturer statement.",
+    } as const;
+    const expectedFields = Object.keys(expected) as Array<keyof typeof expected>;
+    const expectedIds = expectedFields.map(approvedFactEvidenceId);
+    const laneSRecords = expectedFields.map((field) =>
+      first.records.find((record) => record.id === approvedFactEvidenceId(field)));
+
+    check("CO1. the three Lane S ids exist deterministically as verified business facts",
+      JSON.stringify(expectedIds) === JSON.stringify([
+        "approved-facts:oilchangerationale",
+        "approved-facts:oilchangetimelimit",
+        "approved-facts:drivingconditionsview",
+      ])
+        && laneSRecords.every((record) => record?.kind === "verified_business_fact")
+        && expectedIds.every((id) => second.records.some((record) => record.id === id)));
+    check("CO2. every Lane S record carries the exact owner-approved field and text",
+      expectedFields.every((field) => (JSON.parse(rawFacts) as Record<string, unknown>)[field] === expected[field]
+        && first.records.some((record) =>
+          record.id === approvedFactEvidenceId(field)
+            && record.claim === `${field}: ${expected[field]}`)));
+    check("CO3. the three records carry only approved-facts and gcd tags and fit claimChars",
+      laneSRecords.every((record) => record !== undefined
+        && JSON.stringify(record.tags) === JSON.stringify(["approved-facts", "gcd"])
+        && !record.tags.includes("automotive-capability")
+        && record.claim.length <= EVIDENCE_LIMITS.claimChars));
+
+    const changedFacts = JSON.parse(rawFacts) as Record<string, unknown>;
+    changedFacts.oilChangeRationale = `${expected.oilChangeRationale} Changed.`;
+    const changed = adaptApprovedFactsFile(JSON.stringify(changedFacts), {
+      reviewedAt: "2026-08-01T00:00:00Z", now: NOW,
+    });
+    check("CO4. changing an approved value changes both its exact claim and the file identity",
+      changed.contentSha256 !== first.contentSha256
+        && changed.records.some((record) =>
+          record.id === approvedFactEvidenceId("oilChangeRationale")
+            && record.claim !== `oilChangeRationale: ${expected.oilChangeRationale}`));
   }
 
 

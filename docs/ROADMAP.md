@@ -1,6 +1,6 @@
 # GCD Content Intelligence roadmap
 
-Last reviewed: 2026-09-25.
+Last reviewed: 2026-09-26.
 
 This roadmap is the canonical unfinished-work sequence and the current-phase cursor. It orders work; it does not grant authority to deploy, migrate, call providers, change external configuration, or begin a phase. [Status](STATUS.md) records what is verified true now. Where this file and verified production evidence disagree, resolve the discrepancy rather than following this text. Roadmap continuity is binding — see [`AGENTS.md`](../AGENTS.md).
 
@@ -23,11 +23,48 @@ These are not interchangeable and must not be collapsed into "done". `MERGED` in
 
 ## Implemented repository change awaiting merge
 
-### Evidence-pack scoping in the local CLI, the shop's identity records bound on every stage 5 platform, and stage 2's whitelist at 16 — `IMPLEMENTED`
+### Lane S — CTO-attested oil-interval rationale and driving-conditions facts — `IMPLEMENTED`
 
-**State:** `IMPLEMENTED` on branch `claude/eager-hawking-pb2cr7`, based on `main` at `f2a58785c8a9aa2605dda3c7f7daf34ffdf16007` (the PR #92 merge). **Not `MERGED`, not `DEPLOYED`, not `ENABLED`, not `PRODUCTION-VALIDATED`.** All six stages remain `executionEnabled: false` and no production path reaches any of them. The change is the operator-local CLI, dormant stage code, the pack builder's optional always-included list, the stage 2 and stage 5 prompts, the payload contract, the offline and mutation suites, and documentation. It authorizes no release: the partial-release interval in [Status](STATUS.md) (current bound `2026-10-22T18:52Z`) still prohibits any release of any service. No deployed legacy path changed: `src/harness/orchestrator.ts`, `packageMap.ts`, `src/api`, `src/scheduler`, `agents/brand-compliance-critic.md` and `.github/` are untouched, and so is the tracked `.DS_Store`. **`config/approved-facts.json` is unchanged** — the "why" facts follow in a separate Lane S change — and so are stage 1, every critic prompt, every model and effort setting, and every `executionEnabled`. No model was called.
+**State:** `IMPLEMENTED` on branch `codex/lane-s-approved-facts`, based directly on `origin/main` at `fb88ec5974f1cb9f6f51e59d47c621015bba70ef`. **Not `MERGED`, not `DEPLOYED`, not `ENABLED`, and not `PRODUCTION-VALIDATED`.** This change is limited to three owner-attested strings in `config/approved-facts.json`, adapter and mutation regressions, and documentation. It changes no schema, application code, prompt, approval gate, workflow, provider authority, or deployed service. The current partial-release interval (bound `2026-10-22T18:52Z`; see [Status](STATUS.md)) prohibits any release, so even after merge this remains `MERGED`-only until a separately authorized release. The live worker at `44d7336…` does not carry it. No model was called.
 
-**PR / merge:** [PR #93](https://github.com/Caposhi/GCD-Agents/pull/93), from `claude/eager-hawking-pb2cr7` into `main`. **The merge SHA is not knowable before merging.** It is a **blocking follow-up** under the mutable-identifier exception in [`AGENTS.md`](../AGENTS.md), to be reconciled in the first change after merge.
+**PR / merge:** this change's PR is opened after validation. Its merge SHA is necessarily unknown before merge and is the **blocking follow-up** permitted by the mutable-identifier rule in [`AGENTS.md`](../AGENTS.md). Never treat the eventual PR merge as a release.
+
+**Authorization and delivered scope.** Michael Capote, GCD CTO, attested `oilChangeRationale`, `oilChangeTimeLimit`, and `drivingConditionsView` on 2026-09-26 as the shop's professional judgment, not measured data, and authorized their repository addition with the supplied wording byte for byte. They are not sourced from the website. `_note` records that provenance. The existing deterministic adapter produces ids `approved-facts:oilchangerationale`, `approved-facts:oilchangetimelimit`, and `approved-facts:drivingconditionsview`; each claim is exactly `"<field>: <value>"`, each is `verified_business_fact`, each is within `claimChars` 1,000, and each carries exactly `approved-facts` and `gcd` — no `automotive-capability` tag. The file now projects 30 approved facts and has sha256 `f8cebefd5e4bbab676bb64884f4ee79a02c43064e14f729a9c7de262343ae58d`.
+
+**Production-path impact.** A future, separately authorized worker release carrying this file would let the deployed copywriter say that GCD deliberately recommends 5,000 miles or 6 months as a conservative shop interval, not a BMW or Mercedes-Benz requirement; explain that shop judgment by the technicians' experience with sludge, excessive carbon buildup, other common engine problems, and long-term engine/component reliability while saying it is not based on oil-analysis testing; explain the six-month limit by GCD's South Florida experience with condensation moisture and contaminants in short-trip or long-sitting cars, again not as oil-analysis testing; and state that GCD considers city short-trip, stop-and-go and idling use harder than steady highway use, with different component wear, as professional judgment rather than a manufacturer statement. The deployed orchestrator reads the JSON, removes metadata keys, caches and deep-freezes the canonical facts, discards caller-supplied alternatives, gives the same brief to the copywriter, and gives the exact generated provider payload plus that brief to `brand-compliance-critic`; the critic may accept only faithful claims grounded in those strings. Phase A still requires a live, durable human approval whose hash matches the exact provider-bound subject before every provider call. That gate is untouched.
+
+**Pack-size and replay consequence.** With the owner's 37 local automotive records, the 30 approved facts produce 67 projected records. An unscoped local run therefore correctly exceeds `EVIDENCE_LIMITS.maxProjectedRecords` 64 and refuses before any paid call. Local runs now need `--scope-tags` including `approved-facts` and one or more relevant automotive tags; a fake-runner demonstration with one selected synthetic automotive tag builds a 31-record pack. Runs recorded before Lane S carry the earlier approved-facts hash and correctly refuse replay against this file.
+
+**Evidence-review conclusions — source list, not transcripts.** These titles and links preserve the reviewed source inventory and its disposition; they do not replace the owner's attestation or turn the statements into measured findings.
+
+1. Anderson's Garage, “Changing Your Oil is CRITICAL…” — [YouTube](https://www.youtube.com/watch?v=hKeVk070u50); low weight.
+2. The Motor Oil Geek, “The FACTS About Oil Changes (What The Owner's Manual DIDN'T Tell You)” — URL not supplied.
+3. Challenger Auto and Truck Service, “The Oil Change Interval Crisis” — URL not supplied.
+4. Auto Care Pro, “I Tested 3,000 vs 7,500 vs 10,000…” — URL not supplied; **rejected**.
+5. Royalty Auto Service, “We Are Adjusting Our Oil Change Intervals At The Shop!” — URL not supplied.
+6. Auto Care Pro, “The TRUTH About 5,000 vs 15,000…” — [YouTube](https://www.youtube.com/watch?v=tQn0PelA-9o); **rejected**.
+7. AutomotivePress, “HOW OFTEN SHOULD YOU CHANGE YOUR OIL? ENGINEER & FORMER NISSAN GT-R LEADER EXPLAINS” — [YouTube](https://www.youtube.com/watch?v=FlmTPH_5UmQ).
+8. Endless Money Pits, “Does Oil Really Need to be Replaced Every Year?” — [YouTube](https://www.youtube.com/watch?v=7hJU112oUg8).
+9. Project Farm, “Will Annual Oil Change Damage Your Car?” — [YouTube](https://www.youtube.com/watch?v=T-yt5a1cWd4).
+10. Endless Money Pits, “Are You Changing Oil Too Often? … BMW Oil Analysis PART 1” — [YouTube](https://www.youtube.com/watch?v=z1ZJJyfph4M).
+11. SprinterFix × The Motor Oil Geek, “How Often Should You Change Your Oil? The Truth From An Oil Expert” — [YouTube](https://www.youtube.com/watch?v=JUxlxx4dKXk).
+12. Engineering Explained, “What If You Forget To Change Your Oil?” — [YouTube](https://www.youtube.com/watch?v=eVyPWP5t09c).
+
+**Owner wording decision.** “High heat” was deliberately left out of `oilChangeTimeLimit`: sources 8, 9, and 11 contradict heat-driven oil degradation, and stage 2 forbids that claim. The approved sentence is the owner's narrower professional judgment about condensation moisture and contaminants.
+
+**Design decisions, rejected alternatives, and safety.** The canonical JSON remains the only fact authority; the generic adapter remains unchanged; these statements stay `verified_business_fact` because they are owner-attested shop judgment rather than measured automotive data. Adding `automotive-capability`, changing another approved field or `automotive-facts`, widening the 64-record cap, weakening the Phase-A gate, editing a prompt, importing evidence, or releasing were rejected as out of scope. The change introduces no credential, customer data, platform export, database dump, new URL, migration, durable write, or external-system dependency. Rollback is a repository revert; the hash check makes incompatible replays refuse rather than silently drift.
+
+**Validation.** Build and typecheck passed. All nine offline suites passed, 1,755 checks total: posting 52, image 18, orchestrator 119, gate 56, API 51, render identity one invariant-suite pass, ownership/recovery 112, content intelligence 1,252, and interval monitor 94. The payload-mutation harness passed all 446 mutations (444 prohibited and 2 coordinated updates), including appended `M446` changing a Lane S value and being caught by appended `CO2`; the Lane S self-tests are `CO1`–`CO4`. Simulated dry run, deployment-controller fixtures, the 461-check M1 readiness offline suite, production dependency audit (zero vulnerabilities), AgentShield 1.4.0 (exit zero, B/87, no critical/high; nine pre-existing oversized-agent medium and nine pre-existing unspecified-model low findings), Markdown links (65 files), environment coverage (35 variables), sensitive scan (185 tracked text files, manually triaged clean), whitespace review, and both fake-runner pack-size cases passed. The unscoped run refused 67 records before a stage call; `--scope-tags approved-facts,lane-s-auto` built 31 and completed all six fake stages. Complete final diff review is required again after the PR number is recorded. No live model call was made. Full detail is in [Testing](TESTING.md).
+
+**Unresolved follow-up:** this PR's merge SHA. No release is authorized; the interval's release prohibition must be resolved and a release separately authorized before production can carry these facts.
+
+**Documents updated:** [README](../README.md), this file, [Status](STATUS.md), and [Testing](TESTING.md). Each modified document is reread as a whole before push.
+
+### Evidence-pack scoping in the local CLI, the shop's identity records bound on every stage 5 platform, and stage 2's whitelist at 16 — `MERGED`
+
+**State:** `MERGED` through [PR #93](https://github.com/Caposhi/GCD-Agents/pull/93) at `fb88ec5974f1cb9f6f51e59d47c621015bba70ef`. Its ordered parents are `f2a58785c8a9aa2605dda3c7f7daf34ffdf16007` and then reviewed head `00c9cde019a349000e0b9e767823c409c8d98000`. **Not `DEPLOYED`, not `ENABLED`, not `PRODUCTION-VALIDATED`.** All six stages remain `executionEnabled: false` and no production path reaches any of them. CI [run 216](https://github.com/Caposhi/GCD-Agents/actions/runs/36178128557) on head `00c9cde` passed all five jobs on attempt 1: 445 mutations, mutation step 33m50s, quality job 35m10s. The `main` push [run 217](https://github.com/Caposhi/GCD-Agents/actions/runs/36244544876), head `fb88ec5`, attempt 1, was still pending in its payload-mutation step when this documentation was written; its completed jobs were green. Final conclusion remains a follow-up if it is not complete before this PR is opened. The rest of this record preserves the implementation detail; where it says unmerged or that the merge SHA is unknown, this paragraph supersedes it.
+
+**PR / merge:** [PR #93](https://github.com/Caposhi/GCD-Agents/pull/93), from `claude/eager-hawking-pb2cr7` into `main`, merged as `fb88ec5974f1cb9f6f51e59d47c621015bba70ef`. The blocking merge-SHA follow-up recorded at implementation is discharged by Lane S above.
 
 **Why — the owner's run after PR #92 (motivating evidence).** Run `2026-09-25T16-21-51-293Z`, a full six-stage live run by the owner after PR #92 merged, cost **$1.172956**. The critic panel returned **31 findings, 17 blocking** (the run before PR #92, `2026-09-24T18-01-36-439Z`, cost $1.161138 with 28 findings, 14 blocking). **Patterns (A), (B) and (C) from PR #92's record were gone from the copy.** The remaining blocking findings were, as the owner reported them:
 
@@ -135,8 +172,8 @@ This is **operator-local evidence, not production evidence**: no stage is enable
 
 **Unresolved follow-ups.**
 
-- **Blocking:** this change's merge SHA (mutable-identifier exception).
-- The Lane S change adding the "why" facts to `config/approved-facts.json`, with the evidence review's source titles and URLs.
+- PR #93 `main` push run 217's final conclusion if it remains pending when Lane S opens its PR.
+- Lane S's own merge SHA (mutable-identifier exception).
 - An owner-run live full run after merge, choosing a scope from `--list-tags`, to see whether the unbound-fact findings fall. Not an acceptance gate for this change.
 - A critic-prompt change: describe the identity records in `SCRIPT_CLAIMS` and `PLATFORM_CLAIMS`, and address the unflagged BMW highway attribution.
 - **Speed up the mutation harness**, carried from PR #92's record, now at 445 mutations.
@@ -2334,6 +2371,12 @@ and identity records always included, and `--list-tags` to see what each tag wou
 *Evidence-pack scoping in the local CLI …* at the top of this file. The cap is unchanged at 64, and
 an unscoped run still projects every loaded record, so this item stays open until the owner chooses
 scopes — or a cap change — for the facts files as they grow.
+
+*Dated addition, 2026-09-26:* Lane S raises approved facts from 27 to 30. With the owner's 37 local
+automotive facts, an unscoped run now projects 67 and is intentionally refused before any paid
+call. Local runs therefore need `--scope-tags` including `approved-facts` and at least one relevant
+automotive tag; the cap remains unchanged. A fake-runner run scoped to `approved-facts,lane-s-auto`
+built 31 records and completed all six stages.
 
 ## Model lineage — Claude Opus 5 is now legacy
 

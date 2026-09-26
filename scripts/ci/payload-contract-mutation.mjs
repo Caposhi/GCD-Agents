@@ -4,7 +4,7 @@
  *
  * A regression that cannot fail is decoration. This script proves each
  * load-bearing derivation in `src/harness/agents/payloadContract.ts` and the
- * related repository-authority controls is actually load-bearing across twenty-four
+ * related repository-authority controls is actually load-bearing across twenty-five
  * captured paths: it applies one focused mutation in a disposable no-Git copy,
  * rebuilds there, runs the Content Intelligence offline suite, and
  * requires the NAMED check that owns that derivation to fail. Then it restores
@@ -184,6 +184,11 @@
  * module; the CLI, the pack builder, stage 5, the contract and both prompts
  * were already captured.
  *
+ * The final appended mutation (M446) changes one of Lane S's owner-approved
+ * values in `config/approved-facts.json` and requires the exact-text regression
+ * to name the drift. The configuration file is captured and restored like every
+ * other target; no authoritative byte is ever mutated.
+ *
  * It is offline and deterministic: no network, no database, no provider, no
  * credential. The authoritative checkout is read-only after a disposable copy
  * is prepared. Catchable signals clean that copy when possible; SIGKILL may
@@ -247,6 +252,7 @@ const CLAIM_BOUNDARIES_SKILL = "skills/claim-boundaries/SKILL.md";
 const TRUTH_PROMPT = "agents/automotive-truth.md";
 // The shop's identity records, bound on every stage 5 platform by code.
 const IDENTITY_FACTS_MODULE = "src/harness/agents/identityFacts.ts";
+const APPROVED_FACTS = "config/approved-facts.json";
 
 /**
  * Each mutation names the derivation it breaks, the single edit that breaks it,
@@ -3927,10 +3933,20 @@ const IDENTITY_SCOPE_MUTATIONS = [
   },
 ];
 
+const LANE_S_APPROVED_FACTS_MUTATIONS = [
+  {
+    name: "a Lane S owner-approved value changes",
+    file: APPROVED_FACTS,
+    from: "This is our professional judgment and hands-on experience, not the result of oil-analysis testing.",
+    to: "This is our professional judgment and documented analysis, not the result of oil-analysis testing.",
+    expect: ["CO2."],
+  },
+];
+
 const MUTATIONS = [
   ...LEGACY_MUTATIONS, ...RAW_IDENTITY_MUTATIONS, ...FIELD_MARGIN_MUTATIONS, ...CRITIC_POLICY_MUTATIONS,
   ...CONTACT_LINE_MUTATIONS, ...CRITIC_PANEL_MUTATIONS, ...CRITIC_PANEL_FOLLOW_UP_MUTATIONS,
-  ...WRITER_RESTRICTION_MUTATIONS, ...IDENTITY_SCOPE_MUTATIONS,
+  ...WRITER_RESTRICTION_MUTATIONS, ...IDENTITY_SCOPE_MUTATIONS, ...LANE_S_APPROVED_FACTS_MUTATIONS,
 ];
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");

@@ -138,8 +138,8 @@ export function isBoundedSerializableText(value: string, max: number): boolean {
  *     empty, so no existing row constrains any bound. The audit rules a
  *     compatibility problem out; it does not by itself justify a number.
  *  2. **The existing product contract.** The only evidence source in the
- *     repository today is `config/approved-facts.json`, whose 27 adapted
- *     records measure: claim 481 characters at most, subject 16, attribute 24,
+ *     repository today is `config/approved-facts.json`, whose 30 adapted
+ *     records measure: claim 598 characters at most, subject 16, attribute 24,
  *     id 39, sourceRef 51, provenance 122, reviewedBy 18, at most 3 tags of at
  *     most 21 characters, and detail serializing to at most 119 characters.
  *  3. **Worst-case payload requirements.** A claim is restated downstream into
@@ -180,7 +180,7 @@ export const EVIDENCE_LIMITS = {
    * both stages.
    *
    * This bounds the pack *in total*, across every classified section and every
-   * unusable list — not per section. The checked-in source holds 27 adapted
+   * unusable list — not per section. The checked-in source holds 30 adapted
    * records today; 64 is more than twice that, and a brief needing more than 64
    * classified records needs a narrower brief, not a larger payload.
    */
