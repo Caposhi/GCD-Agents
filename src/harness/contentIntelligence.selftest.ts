@@ -6687,6 +6687,32 @@ async function run(): Promise<void> {
           && truthPromptCM.includes("Neither list is a filter anything runs, so a claim you leave out of "
             + "`forbiddenClaims` is not thereby permitted. Nothing is permitted except what you bound to a fact id.")
           && !truthPromptCM.includes("It is not a filter anything runs"));
+
+      // Four owner-run live runs (2026-09-26, operator-local) credited a
+      // manufacturer with a comparison its record does not make: the
+      // comparison was the shop's own record's, and no lens flagged it. The
+      // rule stays fact-free (CM9); it reaches the three writers and the critic's
+      // evidence lens through the skill they already load.
+      const comparisonSectionCM = claimSkillCM.split("## A comparison is a claim")[1]?.split("\n## ")[0] ?? "";
+      check("CM12. claim-boundaries treats a comparison as its own claim: it names the comparison forms, needs a "
+        + "record that states the comparison (not one that describes one side), is credited only to the source "
+        + "whose record makes it, and is checked on its own, without the motivating runs' wording; the writers and "
+        + "the evidence lens load the skill",
+        claimSkillCM.includes("## A comparison is a claim")
+          && ["\"more than\"", "\"less than\"", "\"harder than\"", "\"better than\"", "\"worse than\"",
+            "\"versus\"", "any other \"than\""].every((form) => comparisonSectionCM.includes(form))
+          && comparisonSectionCM.includes("makes a claim of\nits own, separate from anything said about either side.")
+          && comparisonSectionCM.includes("**A comparison needs a record that states that comparison.**")
+          && /A record that\s+describes one side says nothing about how it compares with the other/
+            .test(comparisonSectionCM)
+          && /If no citable record states the\s+comparison, it may not be made\./.test(comparisonSectionCM)
+          && comparisonSectionCM.includes("**Credit a comparison to the source whose record makes it.**")
+          && /the comparison belongs to the second record's source\./.test(comparisonSectionCM)
+          && /Never\s+attach a comparison to a source whose own record does not make it/.test(comparisonSectionCM)
+          && comparisonSectionCM.includes("**Check every comparison on its own**")
+          && !/highway|city|driving|long-distance|steady/i.test(claimSkillCM)
+          && WRITERS.every((id) => registry.get(id).skillPaths.includes(CLAIM_SKILL))
+          && CRITIC_LENS_ASSETS["evidence-fidelity"].skills.includes(CLAIM_SKILL));
     }
 
     // ========================================================================
