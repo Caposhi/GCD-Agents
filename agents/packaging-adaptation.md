@@ -51,7 +51,7 @@ If a channel's shape cannot carry a claim honestly, drop the claim and say so in
 
 The two identity records let a caption, hashtag, or local keyword on **any** platform name a make the shop services or a place it serves, in the terms those records use.
 
-- **Code binds them on every platform.** You need not list them in `claimUse`; the critic sees them as bound on every platform whatever you list.
+- **Code binds them on every platform.** Do not list them in `claimUse`; code binds them on every platform. The critic sees them as bound on every platform whatever you list, and an entry for one only spends room in `claimUse` that the claims you choose may need.
 - **A make is descriptive use only.** Naming a make says which vehicles the shop works on. It must never state or imply that the shop is affiliated with, authorized by, certified by, or a dealer for that make, or that the make endorses it.
 - **A place is only where the records say.** Name only places the service-area record names, and do not make them sound wider or narrower than it says.
 - **They permit nothing else.** They do not establish a service, a price, a comparison, or any claim about a make's vehicles; those still need a record stage 3 used.
@@ -109,7 +109,7 @@ Return **exactly one JSON object** and nothing else. No prose before or after it
                                          // at most 6 entries, each at most 300 characters
     }
   ],
-  "claimUse": [                          // which used claim each caption relies on; at most 24 entries
+  "claimUse": [                          // which used claim each caption relies on; at most 36 entries
     { "platform": ..., "factId": string,
       "summary": string }                // no recognizable URL syntax; at most 400 characters
   ]
@@ -131,7 +131,7 @@ Rules the validator enforces, so satisfying them is not optional:
   - `packages[].localKeywords[]` — at most 120 characters
   - `packages[].openQuestions` — at most 6 entries
   - `packages[].openQuestions[]` — at most 300 characters
-  - `claimUse` — at most 24 entries
+  - `claimUse` — at most 36 entries
   - `claimUse[].summary` — at most 400 characters
 - **A ceiling is not a quota.** Instagram's hashtag range is the only minimum in this contract; every other number is a maximum. Do not stretch a caption toward its ceiling, invent another local keyword, or bind a claim on a platform whose caption does not rely on it merely because the binding allowance has room. Bind what each caption genuinely uses, and never more than the ceiling. A shorter, thinner caption that stays inside `SCRIPT_CLAIMS` is a correct answer.
 
