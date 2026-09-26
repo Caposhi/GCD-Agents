@@ -253,6 +253,15 @@ export const STRATEGY_ID_CHANNELS = 3;
  * and enforce three times their stated figure (see `STATED_FIELD_CEILINGS`).
  * `forbiddenClaimChars` and `openQuestionChars` are product-bearing — the prompt
  * names a human reviewer as their reader — and state exactly what they enforce.
+ *
+ * `maxAllowedClaims` is 16, raised from 12 by the owner on 2026-09-25. In the
+ * run of 2026-09-25 stage 2 permitted 12 of 12, and the facts it left out — the
+ * makes, the oil specification, the records — came back as blocking critic
+ * findings about claims no stage had bound. Stage 2 may permit any citable fact
+ * in the pack, not only stage 1's, so the wider whitelist is usable. Stage 1's
+ * `maxIds` and stage 3's `maxClaimUses` stay 12. Widening this count widens
+ * stage 3's `PERMITTED_CLAIMS` and stage 2's own output contract, and so the
+ * `reasoning-heavy` output-token floor that `POLICY_MAX_TOKENS` is derived from.
  */
 export const TRUTH_FIELD_LIMITS = {
   assessmentChars: 6_000,
@@ -260,7 +269,7 @@ export const TRUTH_FIELD_LIMITS = {
   forbiddenClaimChars: 400,
   caveatChars: 900,
   openQuestionChars: 300,
-  maxAllowedClaims: 12,
+  maxAllowedClaims: 16,
   maxForbiddenClaims: 12,
   maxCaveats: 6,
   maxOpenQuestions: 6,
@@ -439,6 +448,20 @@ export const CONTACT_CTA_URL_CHARS = 200;
  * Profile's structured call to action uses the booking link alone.
  */
 export const CONTACT_LINE_MAX_SOURCE_FACTS = 3;
+
+/**
+ * The shop's identity records code binds on every stage 5 platform: the makes
+ * it services and its service area (`identityFacts.ts`).
+ *
+ * Supplied deterministically, the way the contact line is attached, and never
+ * chosen by a model: stage 5 receives them in `SCRIPT_CLAIMS` after the records
+ * stage 3 used, and `packagingClaimRecords` binds them on every requested
+ * platform, so a make- or place-naming hashtag or local keyword is supported
+ * wherever it appears. They are counted here, beside stage 3's own claim-use
+ * cardinality, in every block that carries them. A regression asserts this
+ * equals the number of records `identityFacts.ts` names.
+ */
+export const IDENTITY_CLAIM_MAX_RECORDS = 2;
 
 /**
  * Stage 6 — final-critic, output fields only.
@@ -763,7 +786,9 @@ export const OUTPUT_FIELD_BOUNDS: Readonly<Record<string, OutputFieldBound>> = {
  * every policy keeps at least a fifth of its model's 128,000-token output cap
  * unallocated (≤ 102,400):
  *
- *  - **3×** — stages 1 and 2 (`reasoning-heavy`, 74,000) and stages 3 and 4
+ *  - **3×** — stages 1 and 2 (`reasoning-heavy`, 87,000 since stage 2's
+ *    `maxAllowedClaims` was raised from 12 to 16 on 2026-09-25; 74,000 before),
+ *    and stages 3 and 4
  *    (72,621 and 87,531 transport characters), which sit below stage 5 and so do
  *    not move the `reasoning-standard` budget at all.
  *  - **2×** — stage 5, which *sets* the `reasoning-standard` budget (99,000); 2.5×
@@ -1011,8 +1036,18 @@ function claimListChars(maxRecords: number): number {
 /** Stage 3's `PERMITTED_CLAIMS`: at most stage 2's whitelist. */
 export const PERMITTED_CLAIMS_BLOCK_CHARS = claimListChars(TRUTH_FIELD_LIMITS.maxAllowedClaims);
 
-/** Stages 4, 5 and 6's `SCRIPT_CLAIMS`: at most stage 3's used-claim set. */
+/** Stage 4's `SCRIPT_CLAIMS`: at most stage 3's used-claim set. */
 export const SCRIPT_CLAIMS_BLOCK_CHARS = claimListChars(SCRIPT_FIELD_LIMITS.maxClaimUses);
+
+/**
+ * Stage 5's `SCRIPT_CLAIMS`, and the critic's evidence lens's: stage 3's
+ * used-claim set followed by the identity records code binds on every platform
+ * (`IDENTITY_CLAIM_MAX_RECORDS`). Counted as if none of the identity records
+ * were already among stage 3's, which over-approximates when one is.
+ */
+export const PACKAGING_SCRIPT_CLAIMS_BLOCK_CHARS = claimListChars(
+  SCRIPT_FIELD_LIMITS.maxClaimUses + IDENTITY_CLAIM_MAX_RECORDS,
+);
 
 /**
  * Stage 6's `PLATFORM_CLAIMS`, **narrowed**.
@@ -1022,11 +1057,14 @@ export const SCRIPT_CLAIMS_BLOCK_CHARS = claimListChars(SCRIPT_FIELD_LIMITS.maxC
  * three platforms was projected three times. That duplication was the single
  * largest block in the pipeline and bought the critic nothing: the authoritative
  * records are already present, exactly once, in `SCRIPT_CLAIMS`, and every
- * Stage 5 binding is by construction a member of Stage 3's used-claim set.
+ * Stage 5 binding is by construction a member of Stage 5's claim set — Stage
+ * 3's used claims plus the identity records code binds on every platform.
  *
  * The block now carries only what the critique contract needs that
  * `SCRIPT_CLAIMS` does not already say: **which** of those records Stage 5
- * bound, **on which platform**, in Stage 5's own order. Evidence ids remain the
+ * bound, **on which platform**, in Stage 5's own order, followed on every
+ * platform by the identity records Stage 5 did not already bind there
+ * (`IDENTITY_CLAIM_MAX_RECORDS`). Evidence ids remain the
  * factual channel and the authoritative records remain in the payload; the
  * critic gains no authority it did not have, and loses no binding it needs.
  *
@@ -1039,10 +1077,12 @@ export const SCRIPT_CLAIMS_BLOCK_CHARS = claimListChars(SCRIPT_FIELD_LIMITS.maxC
 export const PLATFORM_CLAIMS_BLOCK_CHARS = serializedCeiling(
   times(PACKAGING_FIELD_LIMITS.maxRequestedPlatforms, () => ({
     platform: "google_business_profile",
-    factIds: times(PACKAGING_FIELD_LIMITS.maxClaimUses, () => ""),
+    // Stage 5's own bindings, then the identity records code binds on every
+    // platform.
+    factIds: times(PACKAGING_FIELD_LIMITS.maxClaimUses + IDENTITY_CLAIM_MAX_RECORDS, () => ""),
   })),
   PACKAGING_FIELD_LIMITS.maxRequestedPlatforms
-    * PACKAGING_FIELD_LIMITS.maxClaimUses
+    * (PACKAGING_FIELD_LIMITS.maxClaimUses + IDENTITY_CLAIM_MAX_RECORDS)
     * EVIDENCE_LIMITS.idChars,
 );
 
@@ -1580,7 +1620,7 @@ export const CRITIC_LENS_BLOCKS: Readonly<Record<CriticLens, ReadonlyArray<{ lab
     { label: "SCRIPT_COPY", bodyChars: SCRIPT_COPY_BLOCK_CHARS },
     { label: "OVERLAY_TEXT", bodyChars: OVERLAY_TEXT_BLOCK_CHARS },
     { label: "PACKAGING_COPY", bodyChars: PACKAGING_COPY_BLOCK_CHARS },
-    { label: "SCRIPT_CLAIMS", bodyChars: SCRIPT_CLAIMS_BLOCK_CHARS },
+    { label: "SCRIPT_CLAIMS", bodyChars: PACKAGING_SCRIPT_CLAIMS_BLOCK_CHARS },
     { label: "PLATFORM_CLAIMS", bodyChars: PLATFORM_CLAIMS_BLOCK_CHARS },
     { label: "REQUIRED_CAVEATS", bodyChars: REQUIRED_CAVEATS_BLOCK_CHARS },
     { label: "FORBIDDEN_CLAIMS", bodyChars: FORBIDDEN_CLAIMS_BLOCK_CHARS },
@@ -1633,7 +1673,7 @@ export const STAGE_ASSEMBLED_CEILINGS: Record<string, number> = {
       { label: "SCRIPT_OUTPUT", bodyChars: SCRIPT_OUTPUT.transportChars },
       { label: "PRODUCTION_OUTPUT", bodyChars: DIRECTION_OUTPUT.transportChars },
       { label: "REQUESTED_PLATFORMS", bodyChars: REQUESTED_PLATFORMS_BLOCK_CHARS },
-      { label: "SCRIPT_CLAIMS", bodyChars: SCRIPT_CLAIMS_BLOCK_CHARS },
+      { label: "SCRIPT_CLAIMS", bodyChars: PACKAGING_SCRIPT_CLAIMS_BLOCK_CHARS },
       ...WRITER_RESTRICTION_BLOCKS,
     ]),
     "final-critic": Math.max(...CRITIC_LENSES.map((lens) => CRITIC_LENS_ASSEMBLED_CEILINGS[lens])),
@@ -1792,7 +1832,7 @@ export const STAGE_REQUEST_SETUP_TIMEOUT_MS = 60_000;
  * return — from opening the request to the last event of the final message.
  *
  * The 90-second non-streaming budget this replaces could not carry the output
- * contracts it was paired with: at the per-policy budgets — 74,000
+ * contracts it was paired with: at the per-policy budgets — 87,000
  * tokens for `reasoning-heavy`, 99,000 for `reasoning-standard`, 128,000 for
  * `critic` (its model's whole output cap, because the critic thinks and its
  * thinking shares `max_tokens`) — a contract-valid maximum response cannot be generated in 90

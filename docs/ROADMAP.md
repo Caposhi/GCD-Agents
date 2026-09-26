@@ -1,6 +1,6 @@
 # GCD Content Intelligence roadmap
 
-Last reviewed: 2026-09-24.
+Last reviewed: 2026-09-25.
 
 This roadmap is the canonical unfinished-work sequence and the current-phase cursor. It orders work; it does not grant authority to deploy, migrate, call providers, change external configuration, or begin a phase. [Status](STATUS.md) records what is verified true now. Where this file and verified production evidence disagree, resolve the discrepancy rather than following this text. Roadmap continuity is binding — see [`AGENTS.md`](../AGENTS.md).
 
@@ -23,11 +23,134 @@ These are not interchangeable and must not be collapsed into "done". `MERGED` in
 
 ## Implemented repository change awaiting merge
 
-### Writer restrictions — stage 2's caveats and forbidden claims bind stages 3–5, and every writer loads `claim-boundaries` with an attribution rule — `IMPLEMENTED`
+### Evidence-pack scoping in the local CLI, the shop's identity records bound on every stage 5 platform, and stage 2's whitelist at 16 — `IMPLEMENTED`
 
-**State:** `IMPLEMENTED` on branch `claude/great-archimedes-2oysf0`, based on `main` at `cd56907505e2f5d68fd2e052b7ccb659caad0579` (the PR #91 merge). **Not `MERGED`, not `DEPLOYED`, not `ENABLED`, not `PRODUCTION-VALIDATED`.** All six stages remain `executionEnabled: false` and no production path reaches any of them. The change is dormant stage code, three writer prompts, one fact-free skill, the offline and mutation suites, and documentation. It authorizes no release: the partial-release interval in [Status](STATUS.md) (current bound `2026-10-22T18:52Z`) still prohibits any release of any service. No deployed legacy path changed: `src/harness/orchestrator.ts`, `packageMap.ts`, `src/api`, `src/scheduler` and `agents/brand-compliance-critic.md` are untouched, and so is the tracked `.DS_Store`. No stage 1 prompt or skill, critic behaviour, config file, approved fact, evidence-pack cap, model or effort changed; one sentence of the evidence-lens prompt and two of the stage 2 prompt were corrected (Delivered, item 6), and the CI quality job's time limit moved from 30 to 45 minutes (item 5). No model was called.
+**State:** `IMPLEMENTED` on branch `claude/eager-hawking-pb2cr7`, based on `main` at `f2a58785c8a9aa2605dda3c7f7daf34ffdf16007` (the PR #92 merge). **Not `MERGED`, not `DEPLOYED`, not `ENABLED`, not `PRODUCTION-VALIDATED`.** All six stages remain `executionEnabled: false` and no production path reaches any of them. The change is the operator-local CLI, dormant stage code, the pack builder's optional always-included list, the stage 2 and stage 5 prompts, the payload contract, the offline and mutation suites, and documentation. It authorizes no release: the partial-release interval in [Status](STATUS.md) (current bound `2026-10-22T18:52Z`) still prohibits any release of any service. No deployed legacy path changed: `src/harness/orchestrator.ts`, `packageMap.ts`, `src/api`, `src/scheduler`, `agents/brand-compliance-critic.md` and `.github/` are untouched, and so is the tracked `.DS_Store`. **`config/approved-facts.json` is unchanged** — the "why" facts follow in a separate Lane S change — and so are stage 1, every critic prompt, every model and effort setting, and every `executionEnabled`. No model was called.
 
-**PR / merge:** [PR #92](https://github.com/Caposhi/GCD-Agents/pull/92), from `claude/great-archimedes-2oysf0` into `main`. **The merge SHA is not knowable before merging.** It is a **blocking follow-up** under the mutable-identifier exception in [`AGENTS.md`](../AGENTS.md), to be reconciled in the first change after merge.
+**PR / merge:** [PR #93](https://github.com/Caposhi/GCD-Agents/pull/93), from `claude/eager-hawking-pb2cr7` into `main`. **The merge SHA is not knowable before merging.** It is a **blocking follow-up** under the mutable-identifier exception in [`AGENTS.md`](../AGENTS.md), to be reconciled in the first change after merge.
+
+**Why — the owner's run after PR #92 (motivating evidence).** Run `2026-09-25T16-21-51-293Z`, a full six-stage live run by the owner after PR #92 merged, cost **$1.172956**. The critic panel returned **31 findings, 17 blocking** (the run before PR #92, `2026-09-24T18-01-36-439Z`, cost $1.161138 with 28 findings, 14 blocking). **Patterns (A), (B) and (C) from PR #92's record were gone from the copy.** The remaining blocking findings were, as the owner reported them:
+
+- **8 about facts not bound**: no stated rationale, and the makes, the oil specification and the records squeezed out of stage 2's twelve-claim whitelist;
+- **9 writing errors**: ASSYST overreach, BMW "never meant", the shot-3 attribution, shot order, and a garbled sentence.
+
+This is **operator-local evidence, not production evidence**: no stage is enabled or reachable. The run's outputs exist only on the owner's machine and were not re-examined from this repository; the figures are as the owner reported them.
+
+**Owner decisions, 2026-09-25.**
+
+- **Brand names in hashtags and keywords are approved** as descriptive use, with no affiliation implied.
+- **Identity facts are attached by code**, and **stage 2's `allowedClaims` cap is raised to 16.**
+- **The "why" facts** (the missing rationale) **follow in a separate Lane S change** to `config/approved-facts.json`, after this one merges.
+
+**Verified in source before the change** (at `f2a5878`):
+
+- `buildEvidencePack` already accepted `tags` and `subjects` (`matchesScope` in `pack.ts`), but `content-run.mjs` never passed them, so every run projected every loaded record — the 64-record cap problem recorded under *Open — the evidence pack is at its 64-record cap*.
+- The identity records are `approved-facts:makes` and **`approved-facts:servicearea`** — the adapter's `approvedFactEvidenceId("serviceArea")` lower-cases the field name, so there is no hyphen and no "aerea". Both are `verified_business_fact` records with attributes `makes` and `serviceArea`.
+- Stage 5's whole factual authority was stage 3's used-claim set (`scriptUsedClaimRecordsForPackaging`), and the critic's `PLATFORM_CLAIMS` listed only stage 5's own model bindings, so a make- or place-naming hashtag or keyword was supported only on a platform where stage 5 had bound a record stage 3 happened to use.
+- `TRUTH_FIELD_LIMITS.maxAllowedClaims` was 12, and stage 2 may permit any citable fact in the pack, not only stage 1's — so a wider whitelist is usable. `POLICY_MAX_TOKENS["reasoning-heavy"]` is *derived* from stage 2's output contract (`POLICY_OUTPUT_TOKEN_FLOORS`), so it moves with the cap.
+
+**Delivered.**
+
+1. **Evidence-pack scoping in the CLI** (`scripts/local/content-run.mjs`).
+   - **`--scope-tags a,b,c`** narrows the pack to records carrying at least one of the tags, through the pack builder's own `tags` scope. The tags are trimmed, deduplicated and sorted; an empty list is refused rather than read as no scope. **With no flag the pack, its fingerprint and `run-meta.json` are exactly what they were before** (`CN1`, `CN3`).
+   - **Always included, whatever the scope:** the contact-line records (`approved-facts:shop`, `approved-facts:phone`, `approved-facts:bookingurl`) and the identity records (`approved-facts:makes`, `approved-facts:servicearea`), read from `CONTACT_FACTS` and `IDENTITY_FACT_IDS` rather than retyped. `buildEvidencePack` gains an optional `alwaysIncludeIds`, consulted only when a scope is given; a kept record is validated, sorted, counted and classified like any other (`CN2`). A scoped run refuses with `EvidenceScopeError`, naming the record, if any of the five was not loaded — before any pack exists, so before the cost gate (`CN13`).
+   - **Recorded and fingerprinted.** A scoped run writes `evidenceScope` — `{ schema: "gcd-evidence-scope/1", tags, alwaysIncludedIds }` — into `run-meta.json` (and `replay-meta.json`), and the pack fingerprint becomes the sha256 of that scope's JSON, a newline, then the stage projection. An unscoped run writes no `evidenceScope` and its fingerprint is the projection's plain sha256, as before (`CN3`, `CN4`).
+   - **`--replay-critic` reuses the source run's recorded scope**, with or without an identical `--scope-tags`; a different `--scope-tags`, one given against an unscoped run, an always-included set that differs from this CLI's, and a malformed `evidenceScope` are refused before any output directory exists. An edited or removed recorded scope is refused by the fingerprint (`CN6`–`CN8`).
+   - **`--list-tags`** prints each tag and how many loaded records carry it, sorted, plus the total — and, with `--scope-tags`, how many records that scope would include. It prints no claim text and no record id, takes no goal and no `--replay-critic`, and returns before any pack, registry, runner or cost estimate, even with `--runner live` (`CN9`–`CN12`). The automotive-facts file is local-only, so its tags were not seen by this change; the owner chooses scopes from `--list-tags`.
+   - **An identity preflight**, `assertIdentityFactsAvailable`, runs beside the contact-line preflight: in a full run before the cost ceiling and the live prompt, and in a replay before its spend guard (`CN14`).
+   - `main` is exported and takes `argv`, and the evidence helpers are exported, so the offline suite drives fake runs in-process rather than as child processes (see *Design decisions*).
+2. **The identity records, bound on every stage 5 platform by code** (`src/harness/agents/identityFacts.ts`, `packagingAdaptation.ts`, `finalCritic.ts`).
+   - `identityFacts.ts`, modelled on `contactLine.ts`, reads both records from the pack's `allowedFacts`. Either one absent, conflicted, stale or inactive, not a verified business fact, carrying another attribute, or not reading `"<field>: <value>"` is an `IdentityFactError` (`CN17`). The module states no make or place (`CN23`).
+   - **Stage 5's claim set** (`packagingClaimUniverse`) is stage 3's used records, in stage 3's order, then the identity records stage 3 did not already use. It is what stage 5's `SCRIPT_CLAIMS` renders — each record's id, kind, claim and attribute, the evidence system's own wording — and what stage 5's `claimUse` validator accepts (`CN19`, `CN22`).
+   - **`packagingClaimRecords` binds the identity records on every requested platform**, after that platform's own model bindings, never twice. So the critic's `PLATFORM_CLAIMS` always shows them, and both claim-binding lenses may bind a finding to them on any platform (`CN20`, `CN21`). The model does not choose them and need not list them.
+   - Stage 5 and the critic fail closed on a pack without them, before any model call (`CN18`). The zero-used-claims refusal still counts stage 3's used claims alone, so the identity records never rescue an empty script (`CN22`; mutation `M439`).
+   - **Prompts.** `agents/packaging-adaptation.md` describes the identity records in `SCRIPT_CLAIMS` and adds *The identity records*: code binds them on every platform; **a make is descriptive use only** — naming one never states or implies affiliation, authorization, certification, dealer status or endorsement; a place is only where the service-area record says; and they permit nothing else (`CN24`). `agents/automotive-truth.md` says the identity records reach stage 5 by code, so stage 2 need not spend a whitelist entry on them for the packaging stage alone (`CN25`). Neither prompt names a value.
+3. **Stage 2's `allowedClaims` cap: 12 → 16** (`TRUTH_FIELD_LIMITS.maxAllowedClaims`). Stage 2's validator, response schema and prompt say 16 and refuse 17; stage 1's `supportingFactIds` (`maxIds`) and stage 3's `claimUse` stay 12 (`CN26`). Every derived ceiling and floor was recomputed from the contract (below); none exceeds its limit, so no limit was raised by hand.
+4. **Tests and mutations.** `CN1`–`CN28` (below) and mutations `M418`–`M445`.
+
+**Before → after — every affected figure** (from `payloadContract.ts` and `modelPolicy.ts`, built at `f2a5878` and at this change).
+
+| Value | Before (`main` at `f2a5878`) | After |
+|---|---:|---:|
+| `TRUTH_FIELD_LIMITS.maxAllowedClaims` | 12 | **16** |
+| `TRUTH_OUTPUT` transport (stage 3's `TRUTH_OUTPUT` block, `HANDOFF_GUARDS.truthOutputChars`) | 73,859 | **86,011** |
+| `PERMITTED_CLAIMS_BLOCK_CHARS` (stage 3) | 32,882 | **43,842** |
+| `SCRIPT_CLAIMS` — stage 4 (`SCRIPT_CLAIMS_BLOCK_CHARS`) | 32,882 | 32,882 — unchanged |
+| `SCRIPT_CLAIMS` — stage 5 and the evidence lens (`PACKAGING_SCRIPT_CLAIMS_BLOCK_CHARS`, 12 + 2 records) | 32,882 | **38,362** |
+| `PLATFORM_CLAIMS_BLOCK_CHARS` (24 + 2 ids per platform) | 29,744 | **32,204** |
+| `hook-story-script` assembled ceiling | 173,030 | **196,142** |
+| `packaging-adaptation` assembled ceiling | 214,895 | **220,375** |
+| Critic lens ceilings: evidence / platform / voice / production | 215,524 / 134,966 / 26,153 / 265,277 | **223,464 / 137,426** / 26,153 / 265,277 |
+| `strategy-concept` / `automotive-truth` / `production-direction` / `final-critic` assembled ceilings | 341,520 / 403,564 / 127,081 / 265,277 | unchanged |
+| `MAX_PAYLOAD_CHARS` | 410,000 | 410,000 — unchanged (still set by `automotive-truth`, 403,564) |
+| Headroom under `MAX_PAYLOAD_CHARS`: stage 3 / stage 5 | 236,970 / 195,105 | 213,858 / 189,625 |
+| `POLICY_OUTPUT_TOKEN_FLOORS`: `reasoning-heavy` / `reasoning-standard` / `critic` | 74,000 / 99,000 / 111,000 | **87,000** / 99,000 / 111,000 |
+| `POLICY_MAX_TOKENS["reasoning-heavy"]` (derived from its floor) / model output cap | 74,000 / 128,000 | **87,000** / 128,000 |
+| `reasoning-heavy` stream deadline (`POLICY_STREAM_DEADLINE_MS`) | 63 min | **74 min** |
+| Critic lens output-token floors | 111,000 / 111,000 / 46,000 / 46,000 | unchanged |
+| Prompt characters: `agents/packaging-adaptation.md` / `agents/automotive-truth.md` (each stage's instruction channel grows by the same) | 13,729 / 8,568 | 15,067 / 8,904 (`MAX_INSTRUCTION_CHARS` 200,000 unchanged) |
+| CLI ceiling estimate: full run / critic-only replay | ~$20.19 / ~$11.88 | **~$20.84** / ~$11.88 |
+
+`reasoning-heavy`'s 87,000 is still under the one-fifth-unallocated rule the plumbing margins were sized against (at most 102,400 of the 128,000 cap). The contact-line reserves, caption budgets and every output contract other than stage 2's are unchanged.
+
+**Migrations / schema impact:** none. No SQL, no durable state.
+
+**Material design decisions.**
+
+- **Identity records are part of stage 5's claim set, and bound per platform by code.** This is the smallest design that fits the existing claim-binding contract: `SCRIPT_CLAIMS` is already where stage 5 and the evidence lens read the evidence system's wording, `PLATFORM_CLAIMS` is already how the critic learns what is bound where, and `packagingClaimRecords` is already the one function both read. Appending two records to the first and binding them in the second changes no block label, no output shape and no saved-file format, so every stage 5 output saved before this change still revalidates, and no critic prompt had to change.
+- **Code binds them; the model may also cite them.** Refusing a model binding to an identity record would discard a paid response for citing a record it was shown; allowing it and never binding twice keeps the result deterministic either way.
+- **The scope lives in the pack builder, with an always-included list.** Filtering in the CLI would have skipped the builder's validate-every-record-before-scoping rule; the builder already had the tag scope, so the list is one optional field there.
+- **An unscoped run is byte-identical.** No `evidenceScope` key and the old fingerprint formula, so every earlier run still replays, and a scoped run's fingerprint makes an older CLI that ignores the scope refuse to replay it.
+- **The CLI checks run in-process.** Every one of the harness's mutations reruns the whole content-intelligence suite, and the CI job's limit is 45 minutes; spawning the CLI for each CN check added about 2.2 s to the suite (5.9 s against 3.7 s), which at run 213's pace would have pushed the harness past the limit. In-process, CN adds about 0.25 s.
+
+**Material rejected alternatives.**
+
+- **A separate `IDENTITY_CLAIMS` block.** Rejected: the critic's lens prompts are out of scope, and a block they do not describe would reach the lenses unexplained; the evidence lens needs the wording in `SCRIPT_CLAIMS` to check a make- or place-naming tag at all.
+- **Having stages 1–3 cite the identity records.** Rejected on the same grounds as the contact line: they would compete for the twelve citation slots the piece's own claims need — the competition that squeezed the makes out on 2026-09-25.
+- **Refusing a model's `claimUse` entry naming an identity record.** Rejected: a paid response would die for citing a record it was given.
+- **Raising stage 1's `maxIds` or stage 3's `maxClaimUses` too.** Not done: the owner decided only stage 2's cap. Stage 3's twelve uses may now be the binding constraint, as the `maxIds` decision warned (see *Accepted limitations*).
+- **Always writing `evidenceScope: null` for an unscoped run.** Rejected: it would change every unscoped run's `run-meta.json` for no information a replay needs — an absent scope already means none.
+
+**Automated validation (on the head that was pushed).** Build and typecheck clean. `npm run test:offline` **ALL PASS** on all nine suites — **1,751 checks** (1,723 before): posting 52, image 18, orchestrator 119, gate 56, API 51, render-identity one invariant pass, ownership/recovery 112, content-intelligence **1,248** (was 1,220), interval monitor 94. New checks `CN1`–`CN28`, appended after the last group: the always-included option changes nothing unscoped (`CN1`) and keeps the five records under any scope (`CN2`); an unscoped CLI run is today's run exactly (`CN3`); a scoped run records and fingerprints its scope (`CN4`); an empty scope is refused (`CN5`); a replay reuses the recorded scope (`CN6`) and refuses a different one (`CN7`) or an edited, removed or differently-always-included one (`CN8`); `--list-tags` prints counts only, reaches no pack, registry, stage or runner, and refuses a goal (`CN9`–`CN12`); a scoped run refuses a missing always-included record (`CN13`); the identity preflight precedes both spend gates (`CN14`); the identity ids are the adapter's own, read unchanged, and fail closed (`CN15`–`CN18`); stage 5's `SCRIPT_CLAIMS` carries them (`CN19`); code binds them on every platform and the critic accepts them there (`CN20`, `CN21`); they rescue no empty script (`CN22`); the module is deterministic and value-free (`CN23`); both prompts (`CN24`, `CN25`); the cap is 16 and enforced, with stage 1 and stage 3 at 12 (`CN26`); the claim blocks and the `reasoning-heavy` floor are derived from the contract (`CN27`, `CN28`). **Re-specified, not loosened:** `BK6`, `BK13`, `BK14`, `BO3`, `BR14`, `BR16`–`BR18`, `BU7`–`BU9` (stage 5's claim set and per-platform bindings now end with the identity records), `CM10` (stage 5's ceiling uses the wider claim block), `AF5` (the module list gains `identityFacts.ts`), and the source markers of `CE2`, `CE4`, `CE9` and `CD0g` (`main` is now `export async function main(argv …)`). Fixture packs for stages 5 and 6 gain the two identity records exactly as the adapter projects them, and the CC maximal pack gains two maximal identity records and sixteen maximal facts so stage 2's output is measured at its new maximum. `npm run test:payload-mutation` derives **445 mutations** (443 prohibited, 2 coordinated); the twenty-eight new ones, `M418`–`M445`, are appended after every earlier group and were each run and caught locally; the full-harness result and its duration are taken from CI on push (see *Harness duration* below). A fake-runner CLI full run with and without `--scope-tags`, a critic-only replay of each, the replay refusals, and a `--list-tags` run were driven by hand against synthetic automotive facts. Also: simulated dry run, deployment-controller fixtures, `npm audit --omit=dev`, Markdown links, environment coverage, the sensitive-content scan with manual triage, AgentShield, and `git diff --check` — results in the PR. **No live model call was made.**
+
+**Harness duration.** Recorded in the PR and in [Testing](TESTING.md) once CI has run it on the final head. Suite time is measured in-process at about 3.9 s against 3.7 s before this change.
+
+**Production evidence:** none, and none is possible — no stage is enabled or reachable. The motivating runs above are operator-local evidence.
+
+**Rollback / recovery:** revert the commit. No migration and no durable state. A scoped run's `run-meta.json` is a local record; after a revert its `evidenceScope` is ignored and its fingerprint no longer matches, so a replay of it is refused rather than rebuilt with the wrong pack.
+
+**Security and privacy implications.** The identity records are public business identity already in `config/approved-facts.json`; they add no credential, customer data or new data flow. Stage 5 and the evidence lens now see two more records in the evidence system's own wording. The descriptive-use rule is a prompt rule, not a deterministic check. `--list-tags` prints tag names and counts only — no claim text, no ids — and the local automotive-facts file's tags stay on the operator's machine. No tool, provider, publishing, scheduling, approval, credential, model, effort, thinking or autonomy setting changed. The Phase-A approval gate and the live `brand-compliance-critic` are untouched.
+
+**Accepted limitations.**
+
+- **The critic's lens prompts still describe `SCRIPT_CLAIMS` as "every evidence record stage 3 bound".** It now also holds the two identity records, and the prompts are out of scope here; a lens could misattribute an identity record to stage 3. Recorded as a follow-up.
+- **Descriptive use is not verified by code.** Whether a make-naming tag implies affiliation is a prompt rule stage 5 is given and the critic may flag; nothing detects it.
+- **Stage 3's twelve claim uses may now be the bottleneck.** Stage 2 may permit sixteen, but the script may use twelve; whether the extra permissions are spent is **unverified** until the owner runs again.
+- **Scoping is by tag only.** `subjects` scoping exists in the builder but is not exposed; a scope that omits a record a stage needs is the operator's choice, and the stages' own required-evidence preflight still refuses before the cost gate if a needed evidence class is missing.
+- **The oil specification and the rationale** in the 2026-09-25 findings are not addressed by the identity records; the oil specification needs stage 2 to permit its record (now possible at 16), and the rationale needs the Lane S facts.
+
+**Known critic gap (recorded, not fixed here).** In three runs the copy attributed a city-versus-"long, steady highway" comparison to BMW, which the BMW record does not contain, and no lens flagged it. The critic prompts are out of scope for this change.
+
+**Evidence review for the "why" facts (summary for the Lane S change).** The owner reviewed 12 YouTube sources. Conclusions, as the owner reported them: **no source measured 5,000 miles as optimal**; the claims **"time alone degrades oil"** and **"heat degrades oil"** were **contradicted** — the latter is also forbidden by stage 2; and **two Auto Care Pro videos were rejected as unreliable.** No transcript is recorded. **The source titles and URLs were not supplied to this change**, so they are not listed here; recording them is a follow-up for the Lane S change.
+
+**Unresolved follow-ups.**
+
+- **Blocking:** this change's merge SHA (mutable-identifier exception).
+- The Lane S change adding the "why" facts to `config/approved-facts.json`, with the evidence review's source titles and URLs.
+- An owner-run live full run after merge, choosing a scope from `--list-tags`, to see whether the unbound-fact findings fall. Not an acceptance gate for this change.
+- A critic-prompt change: describe the identity records in `SCRIPT_CLAIMS` and `PLATFORM_CLAIMS`, and address the unflagged BMW highway attribution.
+- **Speed up the mutation harness**, carried from PR #92's record, now at 445 mutations.
+- Carried, out of scope here: `POLICY_EFFORT.critic` and `THINKING_RESERVE_TOKENS` per lens, and moving completed history out of this file.
+
+**Documents updated with implementation:** this file (this record; PR #92's record moved to *Merged repository change awaiting rollout* with its merge, CI and follow-ups reconciled; dated additions to the `maxIds` decision, the 64-record-cap item and the local-CLI entry), [README](../README.md), [Status](STATUS.md), [Architecture](ARCHITECTURE.md), [Testing](TESTING.md), [AI handoff](AI_HANDOFF.md), [Security and continuity](SECURITY_AND_CONTINUITY.md), `agents/automotive-truth.md`, `agents/packaging-adaptation.md`, and the mutation harness's header. Each was reread in full.
+
+## Merged repository change awaiting rollout
+
+### Writer restrictions — stage 2's caveats and forbidden claims bind stages 3–5, and every writer loads `claim-boundaries` with an attribution rule — `MERGED`
+
+**State:** `MERGED` through [PR #92](https://github.com/Caposhi/GCD-Agents/pull/92) at `f2a58785c8a9aa2605dda3c7f7daf34ffdf16007` (recorded 2026-09-25). Its ordered parents are `cd56907505e2f5d68fd2e052b7ccb659caad0579` (the PR #91 merge) and then the PR head `afdea1be9ceb0c02e85c855340d66247c6b34c00`. **Not `DEPLOYED`, not `ENABLED`, and not `PRODUCTION-VALIDATED`**: the live worker does not carry it, all six stages remain `executionEnabled: false`, and no production path reaches any of them. **CI:** [run 213](https://github.com/Caposhi/GCD-Agents/actions/runs/36058433478) on the PR head `afdea1b` passed all five jobs on attempt 1, with 417 mutations in a mutation step of 33m59s (the quality job took 35m22s against its 45-minute limit); the `main` push [run 214](https://github.com/Caposhi/GCD-Agents/actions/runs/36147811190) on `f2a5878` passed on attempt 1. The rest of this record is preserved as written at implementation, with dated additions marked; where it says the change is unmerged or that its merge SHA is a blocking follow-up, this line supersedes it. *As written at implementation:* `IMPLEMENTED` on branch `claude/great-archimedes-2oysf0`, based on `main` at `cd56907505e2f5d68fd2e052b7ccb659caad0579` (the PR #91 merge). **Not `MERGED`, not `DEPLOYED`, not `ENABLED`, not `PRODUCTION-VALIDATED`.** All six stages remain `executionEnabled: false` and no production path reaches any of them. The change is dormant stage code, three writer prompts, one fact-free skill, the offline and mutation suites, and documentation. It authorizes no release: the partial-release interval in [Status](STATUS.md) (current bound `2026-10-22T18:52Z`) still prohibits any release of any service. No deployed legacy path changed: `src/harness/orchestrator.ts`, `packageMap.ts`, `src/api`, `src/scheduler` and `agents/brand-compliance-critic.md` are untouched, and so is the tracked `.DS_Store`. No stage 1 prompt or skill, critic behaviour, config file, approved fact, evidence-pack cap, model or effort changed; one sentence of the evidence-lens prompt and two of the stage 2 prompt were corrected (Delivered, item 6), and the CI quality job's time limit moved from 30 to 45 minutes (item 5). No model was called.
+
+**PR / merge:** [PR #92](https://github.com/Caposhi/GCD-Agents/pull/92), from `claude/great-archimedes-2oysf0` into `main`, merged as `f2a58785c8a9aa2605dda3c7f7daf34ffdf16007`. The blocking merge-SHA follow-up recorded at implementation is **discharged** by the scoping and identity-facts change (its record, *Evidence-pack scoping in the local CLI …*, is at the top of this file). *As written at implementation:* **the merge SHA is not knowable before merging.** It is a **blocking follow-up** under the mutable-identifier exception in [`AGENTS.md`](../AGENTS.md), to be reconciled in the first change after merge.
 
 **Why — the owner's third complete live run (motivating evidence).** Run `2026-09-24T18-01-36-439Z`, a full six-stage live run by the owner, cost **$1.161138**. The critic panel returned **28 findings: 14 blocking and 14 advisory**. Nearly all the blocking findings trace to rules the critic enforces but the writing stages were never given:
 
@@ -109,15 +232,13 @@ The owner's brief calls these "the four patterns"; they are recorded here as giv
 
 **Unresolved follow-ups.**
 
-- **Blocking:** this change's merge SHA (mutable-identifier exception).
+- ~~**Blocking:** this change's merge SHA (mutable-identifier exception).~~ **Discharged 2026-09-25:** merge `f2a58785c8a9aa2605dda3c7f7daf34ffdf16007`.
 - ~~An owner decision on the evidence-lens prompt sentence and the stage 2 prompt's "advisory" wording.~~ **Fixed in this change** by the owner-directed addendum (Delivered, item 6; `CM11`).
-- An owner-run live full run after merge, to see whether (A)–(C) and the caveat findings fall. Not an acceptance gate for this change.
-- **Speed up the mutation harness** before it approaches about 650 mutations. Its runtime grows about 3.5 s per mutation, so at that size it would near the new 45-minute limit. One option is to run mutations in parallel inside the same job; the five-job CI shape the M1 readiness gate requires must not change.
+- ~~An owner-run live full run after merge, to see whether (A)–(C) and the caveat findings fall. Not an acceptance gate for this change.~~ **Done 2026-09-25 (operator-local evidence):** run `2026-09-25T16-21-51-293Z`, $1.172956, 31 findings (17 blocking), against run `2026-09-24T18-01-36-439Z`'s $1.161138 and 28 findings (14 blocking). As the owner reported it, (A), (B) and (C) were gone from the copy; the remaining blocking findings were 8 about facts not bound and 9 writing errors. The follow-up change is *Evidence-pack scoping in the local CLI …* at the top of this file.
+- **Speed up the mutation harness** before it approaches about 650 mutations. Its runtime grows about 3.5 s per mutation, so at that size it would near the new 45-minute limit. *Dated addition, 2026-09-25:* run 213 took 33m59s for 417 mutations — about 4.9 s each, against about 3.4 s on run 210 — so on a slow runner the limit is nearer than 650. The scoping and identity-facts change brings the count to 445 and keeps the suite's own time almost flat to stay inside it. One option is to run mutations in parallel inside the same job; the five-job CI shape the M1 readiness gate requires must not change.
 - Carried, out of scope here: tune `POLICY_EFFORT.critic` and `THINKING_RESERVE_TOKENS` per lens (two per-lens output samples now exist; see PR #90's record), the evidence pack's 64-record cap, and moving completed history out of this file.
 
 **Documents updated with implementation:** this file (this record; PR #91's record moved to *Merged repository change awaiting rollout* and its merge SHA recorded; PR #90's second replay's per-lens output tokens and base commit; the stale "at the top of this file" pointers in the PR #87, `maxIds`, PR #89 and PR #90 records), [README](../README.md), [Status](STATUS.md), [Architecture](ARCHITECTURE.md), [Testing](TESTING.md), [AI handoff](AI_HANDOFF.md), [Security and continuity](SECURITY_AND_CONTINUITY.md), `agents/hook-story-script.md`, `agents/production-direction.md`, `agents/packaging-adaptation.md`, `agents/final-critic-evidence.md` (one sentence), `agents/automotive-truth.md` (two sentences), `.github/workflows/ci.yml` (one timeout), `skills/claim-boundaries/SKILL.md`, and the mutation harness's header. Each was reread in full.
-
-## Merged repository change awaiting rollout
 
 ### Documentation reconciliation — PR #90 recorded as merged, with its second owner-run replay — `MERGED`
 
@@ -2166,6 +2287,8 @@ as the dated snapshot it is), [Security and continuity](SECURITY_AND_CONTINUITY.
 
 ## Decided — stage 1 `maxIds` stays 12 — `DECIDED`
 
+**Dated addition, 2026-09-25: stage 2's `maxAllowedClaims` is raised to 16 by the owner; `maxIds` stays 12.** After the run of 2026-09-25, in which stage 2's twelve-claim whitelist squeezed out the makes, the oil specification and the records, the owner raised stage 2's cap only — stage 1's `maxIds` and stage 3's `maxClaimUses` stay 12 — and had the identity records attached by code (*Evidence-pack scoping in the local CLI …*, at the top of this file). That supersedes the half of the rejected alternative below that concerned `maxAllowedClaims`; the rest of this decision stands.
+
 **Decided 2026-09-23 by the owner: keep `STRATEGY_LIMITS.maxIds` at 12.** This closes the item
 previously recorded here as *Open — decide stage 1 `maxIds` (12) after the next complete run*,
 whose text is preserved below.
@@ -2205,6 +2328,12 @@ projects every record it loads. **The next fact added to either file will be ref
 CLI scopes the pack to the brief or the cap changes. Which of those to do — and, for a cap change,
 its derivation review, since the cap sizes the `EVIDENCE` block and the stage 1 and 2 payloads — is
 **open, and not decided here.**
+
+*Dated addition, 2026-09-25:* the CLI can now scope the pack (`--scope-tags`, with the contact-line
+and identity records always included, and `--list-tags` to see what each tag would bring in); see
+*Evidence-pack scoping in the local CLI …* at the top of this file. The cap is unchanged at 64, and
+an unscoped run still projects every loaded record, so this item stays open until the owner chooses
+scopes — or a cap change — for the facts files as they grow.
 
 ## Model lineage — Claude Opus 5 is now legacy
 
@@ -3889,6 +4018,10 @@ that change the CLI runs `main()` only when executed as a script, so importing i
 critic panel then made full runs and `--replay-critic` run four lens requests, grouped `summary.md`
 by lens, tagged every saved response and `field-measurements` row with its lens, and counted four
 critic requests in the printed cost ceiling (*Narrow critic panel*, under *Merged repository change awaiting rollout*).
+Evidence-pack scoping (`--scope-tags`, recorded in `run-meta.json` and the fingerprint and reused by
+`--replay-critic`), `--list-tags`, and the free identity-record preflight were added by
+*Evidence-pack scoping in the local CLI …* (under *Implemented repository change awaiting merge*),
+which also made `main` exported and `argv`-driven so the offline suite runs it in-process.
 
 **Documents updated with this entry:** `docs/ROADMAP.md` (this section) and `.gitignore` (excludes
 the operator-supplied automotive facts file and the tool's local output directory). `README.md` was

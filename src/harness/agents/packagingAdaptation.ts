@@ -21,8 +21,17 @@
  *
  * ## The authority boundary
  *
- * **Stage 3's actually used claims remain the complete factual authority**, and
- * this stage widens nothing:
+ * **Stage 3's actually used claims remain the complete factual authority**,
+ * with one deterministic addition, and this stage widens nothing else:
+ *
+ *  - **The addition: the shop's identity records.** `approved-facts:makes` and
+ *    `approved-facts:servicearea` follow stage 3's used records in this stage's
+ *    claim set (`packagingClaimUniverse`) and are bound by code on every
+ *    requested platform (`packagingClaimRecords`), so a make- or place-naming
+ *    hashtag or local keyword is supported on any platform. Code supplies them
+ *    from the pack, in the evidence system's own wording; no model chooses them.
+ *    Either record missing or unusable is an `IdentityFactError` before any
+ *    request (`identityFacts.ts`).
  *
  *  - Not stage 2's wider whitelist, not the complete evidence pack, not model
  *    knowledge, and not the rejected platform/local-SEO assets.
@@ -40,7 +49,8 @@
  * rendered exactly as stage 4 and the critic's evidence-fidelity lens receive
  * them (`renderWriterRestrictionBlocks`). They are **binding restrictions**
  * that only ever narrow what a caption, hashtag or keyword may say; they permit
- * nothing, and `SCRIPT_CLAIMS` stays the only source of assertable fact. The
+ * nothing, and `SCRIPT_CLAIMS` — stage 3's used records, then the two identity
+ * records — stays the only source of assertable fact. The
  * complete pack, stage 2's assessment and restatements, stage 2's wider
  * whitelist, raw references, active environment configuration, and
  * provider/account/location configuration are never rendered.
@@ -58,8 +68,9 @@
  * ## What this stage guarantees, exactly
  *
  * **Guaranteed:**
- *  - Every entry in the typed claim-use channel names an id stage 3 actually
- *    used. Fabricated ids, pack-only ids, stage-2-permitted-but-unused ids,
+ *  - Every entry in the typed claim-use channel names an id in this stage's
+ *    claim set: one stage 3 actually used, or one of the two identity records.
+ *    Fabricated ids, other pack-only ids, stage-2-permitted-but-unused ids,
  *    wrong-class ids, and within-platform duplicates all fail.
  *  - Exactly one package per requested platform, in the requested order.
  *  - Captions contain no hashtag token; canonical tags live only in the separate
@@ -112,6 +123,7 @@ import type { HookStoryScriptOutput } from "./hookStoryScript.js";
 import { revalidateHookStoryScriptOutput, scriptClaimRecords } from "./hookStoryScript.js";
 import type { ProductionDirectionOutput } from "./productionDirection.js";
 import { renderWriterRestrictionBlocks, revalidateProductionDirectionOutput } from "./productionDirection.js";
+import { identityFactRecords } from "./identityFacts.js";
 import {
   StageExecutionError,
   StageExecutionMetadata,
@@ -554,10 +566,33 @@ export function scriptUsedClaimRecordsForPackaging(
 }
 
 /**
- * The bounded projection this stage's model is shown.
+ * This stage's whole claim set: the records stage 3 actually used, in stage 3's
+ * order, followed by the shop's identity records (`identityFacts.ts`) that stage
+ * 3 did not already use, in their fixed order.
  *
- * Only the used records, each with the evidence system's own wording and its
- * authoritative `kind`. Never the pack, never stage 2's wider whitelist.
+ * The identity records are supplied by code, never chosen by a model, and are
+ * read from the pack in the evidence system's own wording. Either one missing or
+ * unusable is an `IdentityFactError`, so every caller — this stage's renderer
+ * and validator, and the critic — fails closed before any request. Stage 2's
+ * wider whitelist and the rest of the pack stay out.
+ */
+export function packagingClaimUniverse(
+  scriptOutput: HookStoryScriptOutput,
+  truthOutput: AutomotiveTruthOutput,
+  pack: EvidencePack,
+): EvidenceRecord[] {
+  const used = scriptUsedClaimRecordsForPackaging(scriptOutput, truthOutput, pack);
+  const usedIds = new Set(used.map((record) => record.id));
+  return [...used, ...identityFactRecords(pack).filter((record) => !usedIds.has(record.id))];
+}
+
+/**
+ * The bounded projection this stage's model is shown as `SCRIPT_CLAIMS`.
+ *
+ * This stage's claim set (`packagingClaimUniverse`): the used records, then the
+ * identity records, each with the evidence system's own wording and its
+ * authoritative `kind`. Never the rest of the pack, never stage 2's wider
+ * whitelist.
  */
 export function renderPackagingScriptClaims(
   scriptOutput: HookStoryScriptOutput,
@@ -565,7 +600,7 @@ export function renderPackagingScriptClaims(
   pack: EvidencePack,
 ): string {
   return JSON.stringify(
-    scriptUsedClaimRecordsForPackaging(scriptOutput, truthOutput, pack).map((record) => ({
+    packagingClaimUniverse(scriptOutput, truthOutput, pack).map((record) => ({
       id: record.id,
       kind: record.kind,
       claim: record.claim,
@@ -582,7 +617,8 @@ export function renderPackagingScriptClaims(
  * **Scope of this function, stated precisely.** It validates *shape*, *bounds*,
  * *enums*, *per-platform provider-visible caption and hashtag policy*,
  * *recognizable URL syntax in model prose*, *exact requested-platform membership
- * and order*, and *membership in stage 3's used-claim set*. It does
+ * and order*, and *membership in this stage's claim set* (stage 3's used claims
+ * plus the identity records). It does
  * not evaluate whether a caption preserves the script, whether a shortening kept
  * the meaning, whether a hashtag or keyword is relevant or truthful, whether a
  * recommended time is useful, or whether the copy asserts something factual that
@@ -724,9 +760,9 @@ export function validatePackagingAdaptationOutput(
     };
   });
 
-  // --- binding: stage 3's USED claims remain the boundary --------------------
+  // --- binding: stage 3's USED claims, plus the identity records, are the boundary
   const usedById = new Map(
-    scriptUsedClaimRecordsForPackaging(scriptOutput, truthOutput, pack).map((r) => [r.id, r]),
+    packagingClaimUniverse(scriptOutput, truthOutput, pack).map((r) => [r.id, r]),
   );
   const requestedSet = new Set<string>(requestedPlatforms);
 
@@ -751,7 +787,7 @@ export function validatePackagingAdaptationOutput(
     const record = usedById.get(factId);
     if (!record) {
       fail(
-        `claimUse cites "${factId}", which hook-story-script did not use `
+        `claimUse cites "${factId}", which hook-story-script did not use and which is not an identity record `
         + "(a fabricated id, a pack fact, or a claim automotive-truth permitted but the script never bound)",
       );
     }
@@ -927,6 +963,13 @@ export function revalidatePackagingAdaptationOutput(
  * Reads the platform and the bound ids and nothing else. It never reads a
  * caption, a hashtag, a local keyword, a timing note, an open question, a
  * summary, or any stage 4 direction.
+ *
+ * The platform's own model bindings come first, in stage 5's order; then, on
+ * **every** platform, each identity record the model did not already bind
+ * there, in `identityFacts.ts` order. That second part is code, not the model:
+ * the identity records are bound on every platform whatever the model cited,
+ * which is what lets the critic's `PLATFORM_CLAIMS` show a make- or
+ * place-naming tag or keyword as supported.
  */
 export function packagingClaimRecords(
   output: PackagingAdaptationOutput,
@@ -936,12 +979,14 @@ export function packagingClaimRecords(
   pack: EvidencePack,
 ): EvidenceRecord[] {
   const usedById = new Map(
-    scriptUsedClaimRecordsForPackaging(scriptOutput, truthOutput, pack).map((r) => [r.id, r]),
+    packagingClaimUniverse(scriptOutput, truthOutput, pack).map((r) => [r.id, r]),
   );
-  return output.claimUse.used
+  const modelBound = output.claimUse.used
     .filter((binding) => binding.platform === platform)
     .map((binding) => usedById.get(binding.factId))
     .filter((r): r is EvidenceRecord => r !== undefined);
+  const boundIds = new Set(modelBound.map((record) => record.id));
+  return [...modelBound, ...identityFactRecords(pack).filter((record) => !boundIds.has(record.id))];
 }
 
 /**
@@ -978,10 +1023,11 @@ export function assertRequiredPackagingEvidence(pack: EvidencePack, registry: Ag
  *
  * Fails closed on: a malformed, incompletely branded, evidence-inconsistent or
  * oversized prior-stage value; an empty, duplicated, oversized or unknown
- * requested-platform set; an empty stage 3 used-claim set; a missing asset; a
+ * requested-platform set; an empty stage 3 used-claim set; a missing or
+ * unusable identity record (`IdentityFactError`); a missing asset; a
  * runner error or timeout; non-strict JSON; any structural or policy violation;
- * and any claim use that is fabricated, wrong-class, outside stage 3's used set,
- * duplicated within a platform, or attached to an unrequested platform. Performs
+ * and any claim use that is fabricated, wrong-class, outside this stage's claim
+ * set, duplicated within a platform, or attached to an unrequested platform. Performs
  * no retry and no second model call.
  *
  * **The zero-used-claims decision, made explicitly.** A legitimate stage 4 run
@@ -990,7 +1036,9 @@ export function assertRequiredPackagingEvidence(pack: EvidencePack, registry: Ag
  * Adapting a piece whose captions could assert nothing would produce
  * finished-looking channel copy with no factual authority behind it, at the
  * widest point of the funnel. **Authority is never widened back to stage 2's
- * whitelist, the evidence pack, or stage 4's prose to rescue the request.**
+ * whitelist, the evidence pack, or stage 4's prose to rescue the request**, and
+ * the identity records do not rescue it either: the refusal counts stage 3's
+ * used claims alone.
  *
  * It does **not** verify that any caption preserves the script, that a hashtag
  * or keyword is truthful, or that a time is useful - see this module's header.
@@ -1053,6 +1101,8 @@ export async function executePackagingAdaptation(
       { label: "REQUESTED_PLATFORMS", body: JSON.stringify(requestedPlatforms, null, 2) },
       {
         label: "SCRIPT_CLAIMS",
+        // Reads both identity records from the pack: a missing or unusable one
+        // is an `IdentityFactError` here, before the request exists.
         body: renderPackagingScriptClaims(scriptOutput, truthOutput, pack),
       },
       ...restrictionBlocks,
