@@ -23,7 +23,87 @@ These are not interchangeable and must not be collapsed into "done". `MERGED` in
 
 ## Implemented repository change awaiting merge
 
-### Stage 5's `claimUse` cap derived from the contract (24 → 36), and "Do not list" the identity records — `IMPLEMENTED`
+### Stage 5's caption stated below its enforced budget, and `--resume-from packaging-adaptation` in the local CLI — `IMPLEMENTED`
+
+**State:** `IMPLEMENTED` on branch `claude/friendly-hypatia-1a2im5`, based directly on `origin/main` at `09b4cc7fa138164123e4ffa97755d3144c0338cb` (the merge of PR #95). **Not `MERGED`, not `DEPLOYED`, not `ENABLED`, not `PRODUCTION-VALIDATED`.** All six stages remain `executionEnabled: false`, no production path reaches any of them, and the partial-release interval (bound `2026-10-22T18:52Z`; see [Status](STATUS.md)) prohibits any release. The change is dormant stage code, one prompt, the operator-local CLI, the offline and mutation suites, and documentation. No enforced limit moved, no model, effort, critic, stage 1–4 prompt, `config/` file, `.github/` file or deployed path changed, and the tracked `.DS_Store` is untouched. No model was called.
+
+**PR / merge:** opened from `claude/friendly-hypatia-1a2im5` into `main`; its number and CI run are recorded in the PR itself. **This PR's merge SHA is the blocking follow-up** permitted by the mutable-identifier rule in [`AGENTS.md`](../AGENTS.md).
+
+**Why — two owner-run live runs on 2026-09-26, both lost at stage 5 (motivating evidence).** Both are **operator-local evidence, not production evidence**; the figures are as the owner reported them and were not re-examined from this repository.
+
+1. **`2026-09-26T14-28-27-677Z`** spent **$0.530567** on stages 1–5; stage 5 was refused at `"claimUse" exceeds 24 entries` (27 legitimate entries). Fixed by PR #95 (below).
+2. **`2026-09-26T17-04-00-636Z`**, the first run after PR #95 merged, paid for stages 1–5 again (five paid responses, saved to its `rejected-responses.json`), and stage 5 was refused at **`"packages[0].caption" exceeds 2136 characters (actual 2279)`**. 2,136 is Instagram's 2,200 provider limit less the 64-character contact-line reserve. Its `field-measurements` record Instagram's caption plus separator plus hashtags at **2,442 / 2,136**. The owner's previous run measured the same field at **2,034 / 2,136 (95%)**.
+
+**Both failed runs kept validated stage 1–4 outputs** — only stage 5 was refused — so re-running from stage 1 would buy four stages again for outputs already paid for and already valid.
+
+**Diagnosis.** The prompt stated 2,136 — the enforced figure itself — as the Instagram caption-plus-hashtags length. A model aims at a stated number and lands around it: 2,442 / 2,136 = **1.143×** on the stated measure, and the caption alone at 2,279 = 1.067× of it. The repository already records the same behaviour on other fields — stage 1 `concept` +5% and `rationale` +29% (*Output-field classification*), the critic's `issue` +5% (419 / 400). For internal-plumbing fields the answer was a hidden margin above the stated figure; for a platform field the ceiling may not rise, so the aim point has to come down.
+
+**Delivered.**
+
+1. **A stated caption target, derived in the contract** (`payloadContract.ts`). `STATED_CAPTION_TARGET_PERCENT` = **85** and `statedCaptionTarget(enforced) = floor(enforced × 85 / 100)`, in integer arithmetic so it never rounds toward the budget. Stage 5 reads it per platform as `statedCaptionBudget(platform)` = `statedCaptionTarget(effectiveCaptionBudget(platform))`. Each platform has one enforced caption budget, applied twice by the validator — to the caption alone and to caption + separator + hashtags — so one stated target covers both.
+2. **The enforced budget is unchanged.** `effectiveCaptionBudget` and the validator are untouched: the smaller of the provider limit and `pipelineCaptionChars`, less `CONTACT_LINE_RESERVE_CHARS`. A caption between the stated target and the budget validates; one character over the budget is refused exactly as before.
+3. **Every model-facing channel states the target** — the prompt's *Per-platform shape* (now also saying the figure counts caption, separator and hashtags **together, not the caption alone**, and no longer spelling out the enforced arithmetic) and the response schema's caption description. The prompt now states **no** enforced caption figure.
+4. **A deliberate extension of the output-field classification**, recorded in `payloadContract.ts` as `STATED_BELOW_ENFORCED_FIELDS` = exactly `packaging-adaptation.packages[].caption`: **a product-bearing field may be *stated below* its enforced limit; it is never *enforced above* it.** This is distinct from `REVIEWER_ONLY_MARGIN_FIELDS` (a reviewer-only field enforced *above* its stated figure) — here the enforced figure is the platform's own limit less the reserve, and nothing a platform receives can grow.
+5. **The run's measurement reports both figures.** `field-measurements` rows for `packages[<platform>].caption+hashtags` now carry the stated target in `stated` and the budget in `enforced`, so `% of stated` shows the aim-point overshoot directly.
+6. **`--resume-from packaging-adaptation <run-dir>`** in `scripts/local/content-run.mjs`, built on the `--replay-critic` machinery. The replay's free checks moved — unchanged in order, and for a replay unchanged in wording — into one shared `verifySourceRun`, which both modes call before their spend guard:
+   - it rebuilds the evidence pack with the run's **recorded scope** (a different `--scope-tags` is refused) at the run's recorded instant and review time, and **refuses unless `run-meta.json` records, and the rebuilt evidence matches, the approved-facts, automotive-facts and evidence-pack fingerprints** — a resume has **no** typed-`UNPROVEN` path, because it makes new paid requests;
+   - it **revalidates the saved stage 1–4 outputs** through their owning validators (`validateStrategyConceptOutput`, `revalidateAutomotiveTruthOutput`, `revalidateHookStoryScriptOutput`, `revalidateProductionDirectionOutput`) and **refuses if any is missing, malformed or invalid**; it reads no stage 5 file, because the source run usually has none;
+   - it then checks the contact-line and identity records and the evidence classes stages 5 and 6 require, prints the **cost ceiling for only the five requests it makes** (`resumePolicies`: stage 5 plus the four critic lenses — **~$13.35**, against ~$21.65 for a full run and ~$11.88 for a critic-only replay), and keeps the cost flag and the **typed `LIVE` gate**;
+   - it writes stage 5, `05b-contact-lines.json`, the critic panel, `summary.md` (with a *Resumed at* line), field measurements and `resume-meta.json` (including the `modelRequests` it actually made) into a **new sibling directory** `<run>-resume-packaging-adaptation-<instant>`, which also holds **byte-for-byte copies** of the source's `run-meta.json` and stage 1–4 files so a later `--replay-critic` verifies it like any run. **The source run is never modified**, and no stage 1–4 executor is called.
+   - Only `packaging-adaptation` is accepted as the resume point (`RESUME_POINTS`); it cannot be combined with `--replay-critic` or `--list-tags`, and it reuses the recorded goal and platforms.
+
+**Figures — stated and enforced, per platform.**
+
+| Platform | Enforced budget (unchanged) | Stated target (85%, floored) | Room between them |
+|---|---:|---:|---:|
+| `instagram` | 2,136 (2,200 − 64) | **1,815** | 321 (1.177×) |
+| `facebook` | 2,008 (`min(63,206, 2,200)` − 192) | **1,706** | 302 (1.177×) |
+| `google_business_profile` | 1,500 (1,500 − 0) | **1,275** | 225 (1.176×) |
+
+**Material design decision — why 85% and not the owner's suggested ~88%.** The one measurement on this exact field is 1.143×. At 85% the headroom is 1 / 0.85 = 1.176×, which clears that measurement under both readings of what the model did: overshooting the stated total proportionally (1,815 × 1.143 = 2,075 ≤ 2,136), or aiming the caption alone at the figure and then adding the 163 characters of separator and hashtags that run carried (1,815 × 1.067 + 163 = 2,100 ≤ 2,136). At 88% the headroom is 1 / 0.88 = 1.136× — **below** the 1.143× already measured — so the same response to an 1,879 target would reach 2,148 and be refused again; `CQ4` asserts both. 85% is the nearest round percentage that clears the measurement with room; lower would take product room (about 290 words stay on Instagram) for no measured reason.
+
+**Material rejected alternatives.**
+
+- **Raising any enforced limit.** Out of scope, and never above a platform limit: the budget is the platform's own limit less the contact reserve.
+- **88%.** Rejected on the measurement above.
+- **A margin model like `REVIEWER_ONLY_MARGIN_FIELDS`** (state the budget, enforce more). Impossible for platform text: the enforced figure is already at the platform limit less the reserve.
+- **Keying the caption in `STATED_FIELD_CEILINGS`.** That table holds one stated figure per field and enforces `CEILING_SLACK_MULTIPLIER`; the caption is per platform and stated *below* the enforced figure, so it has its own constant and set.
+- **Resuming with the replay's `UNPROVEN` path for runs without fingerprints.** Rejected: a resume buys new stages on top of the saved outputs, so evidence identity must be proven. Both motivating runs record all three fingerprints.
+- **Resuming inside the source directory.** Rejected: the source run is evidence of what was paid for and must stay byte-identical.
+- **Accepting other resume points now.** Out of scope; `RESUME_POINTS` is a one-entry list and a mutation (`M462`) asserts widening it fails `CR7`.
+
+**Migrations / schema impact:** none. No SQL, no durable state. In local run files, the `stated` value of the `field-measurements` caption rows now carries the target rather than the budget, and resumed directories add one new file, `resume-meta.json` (`gcd-content-resume/1`); `run-meta.json` and `replay-meta.json` are unchanged. Every stage 5 output that validated before this change still validates.
+
+**Limit check.** No payload ceiling, output-token floor, `max_tokens`, handoff guard or `MAX_PAYLOAD_CHARS` moved (stage 5's output contract is sized on the enforced `pipelineCaptionChars`, which is unchanged); `CP5` and `CC19a` pass unchanged. The prompt goes from 15,117 to 15,120 characters (`MAX_INSTRUCTION_CHARS` 200,000 unchanged).
+
+**Automated validation.** See *Validation* in the PR and [Testing](TESTING.md). `CQ1`–`CQ7` and `CR1`–`CR10` are new (content intelligence 1,257 → **1,274**); `CD6`, `CK14` and `CE7` were re-specified, not loosened, and the four fixtures that build a caption at the full budget (`BQ33`, `BQ33f`, and the fixtures behind `BX19` and `CQ7`) now fail by name instead of aborting the suite when a validator narrows the budget (details in Testing). Mutations **`M454`–`M465`** are appended after `M453` (453 → **465**).
+
+**Production evidence:** none, and none is possible — no stage is enabled or reachable. The motivating runs are operator-local evidence.
+
+**Rollback / recovery:** revert the commit. No migration and no durable state. A resumed directory is an ordinary local run directory; deleting it loses nothing the source run holds.
+
+**Security and privacy implications:** none new. No credential, customer data, provider, publishing, scheduling, approval, model, effort, thinking or autonomy setting changed; the Phase-A approval gate and the live `brand-compliance-critic` are untouched. `--resume-from` spends only behind the same cost flag and typed `LIVE` gate as a full run, and only after every free check.
+
+**Accepted limitations.**
+
+- **The fraction is sized on one measurement of this field.** A model that overshoots a stated caption target by more than 1.176× will still be refused; the field measurements now show the overshoot against the target on every run, so the next data point arrives as data.
+- **The prompt's size-ceiling rule still says one character over any ceiling discards the response.** For the caption that now overstates the risk (there are 225–321 characters of room), exactly as it already did for the plumbing fields with hidden margins; it is deliberate, so the model is not told about the room.
+- **A resume reuses stages 1–4 as the source run produced them.** It cannot correct a weak stage 1–4 output; that still needs a full run.
+
+**Unresolved follow-ups.**
+
+- **This PR's merge SHA** (mutable-identifier exception) — **blocking**.
+- **Recover `reasoning-standard` headroom by shrinking the `claimUse[].summary` allowance.** Stage 5 sets the `reasoning-standard` budget at **126,000 of the model's 128,000** output tokens since PR #95; its plumbing `claimUse[].summary` (stated 400, enforced 800) across 36 entries is the largest contributor that is not product. A narrower enforced allowance (still at least `CEILING_SLACK_MULTIPLIER` × its stated figure) or a lower stated figure would recover headroom; it moves an enforced limit, so it was out of scope here.
+- An owner-run live `--resume-from packaging-adaptation` on `2026-09-26T17-04-00-636Z` after merge, to see stage 5 validate against the new target and the critic run. Not an acceptance gate for this change.
+- Carried: the critic-prompt change for the identity records and the unflagged BMW highway attribution; speeding up the mutation harness (now 465); `POLICY_EFFORT.critic` and `THINKING_RESERVE_TOKENS` per lens; moving completed history out of this file.
+
+**Documents updated:** this file (this record; PR #95's record moved to *Merged repository change awaiting rollout* with its merge and CI reconciled; dated additions to *Output-field classification* and the local-CLI entry), [README](../README.md), [Status](STATUS.md), [Architecture](ARCHITECTURE.md), [Testing](TESTING.md), [AI handoff](AI_HANDOFF.md), [Security and continuity](SECURITY_AND_CONTINUITY.md), `agents/packaging-adaptation.md`, and the mutation harness's header. Each was reread in full.
+
+## Merged repository change awaiting rollout
+
+### Stage 5's `claimUse` cap derived from the contract (24 → 36), and "Do not list" the identity records — `MERGED`
+
+**Merge reconciliation (recorded 2026-09-26 by the stage 5 caption-target and `--resume-from` change above):** `MERGED` through [PR #95](https://github.com/Caposhi/GCD-Agents/pull/95) at `09b4cc7fa138164123e4ffa97755d3144c0338cb`, whose ordered parents are `6f350792fdd8fd65d01c6fcb786b95dab0b819aa` (the PR #94 merge) and then reviewed head `6cfc6da314c6bf572ef3fd1998911ea7451f6b10`. PR CI [run 221](https://github.com/Caposhi/GCD-Agents/actions/runs/36251559892) on head `6cfc6da` passed all five jobs on attempt 1, with **453 mutations** in a mutation step of **28m03s** (15:20:18–15:48:21Z). The `main` push [run 222](https://github.com/Caposhi/GCD-Agents/actions/runs/36257672883) on `09b4cc7` also passed all five jobs on attempt 1 (mutation step 27m44s), and the `deploy-production` workflow ([run 60](https://github.com/Caposhi/GCD-Agents/actions/runs/36259414681)) refused at its "Refuse while production automation is disabled" step, as on every `main` merge during the interval — no release. **Not `DEPLOYED`, not `ENABLED`, not `PRODUCTION-VALIDATED`.** The blocking merge-SHA follow-up below is discharged by this paragraph; where the record says unmerged, this paragraph supersedes it. *After merge:* the owner's live run `2026-09-26T17-04-00-636Z` lost stage 5 on the Instagram caption instead — see the record above. Whether that response's `claimUse` would have validated is not known: the validator checks every package before `claimUse`. The rest of this record is preserved as written at implementation.
 
 **State:** `IMPLEMENTED` on branch `claude/cool-shannon-3rf47s`, based directly on `origin/main` at `6f350792fdd8fd65d01c6fcb786b95dab0b819aa` (the merge of PR #94). **Not `MERGED`, not `DEPLOYED`, not `ENABLED`, not `PRODUCTION-VALIDATED`.** All six stages remain `executionEnabled: false`, no production path reaches any of them, and the partial-release interval (bound `2026-10-22T18:52Z`; see [Status](STATUS.md)) prohibits any release. No model was called.
 
@@ -101,8 +181,6 @@ These are not interchangeable and must not be collapsed into "done". `MERGED` in
 - Carried: the critic-prompt change for the identity records and the unflagged BMW highway attribution; speeding up the mutation harness (now 453); `POLICY_EFFORT.critic` and `THINKING_RESERVE_TOKENS` per lens; moving completed history out of this file.
 
 **Documents updated:** this file (this record; Lane S and PR #93 moved to *Merged repository change awaiting rollout* with their merge and CI reconciled; a dated addition to the 64-record-cap item), [README](../README.md), [Status](STATUS.md), [Architecture](ARCHITECTURE.md), [Testing](TESTING.md), [AI handoff](AI_HANDOFF.md), [Security and continuity](SECURITY_AND_CONTINUITY.md), `agents/packaging-adaptation.md`, and the mutation harness's header. Stale "`IMPLEMENTED`, not merged" markers for PR #88, #89, #92 and #93 work in the README, Architecture, AI handoff and Security and continuity were reconciled to `MERGED` where this change touched those passages; the README's guard and assembled-ceiling figures, which predated PR #92 and PR #93, were refreshed. Each was reread in full.
-
-## Merged repository change awaiting rollout
 
 ### Lane S — CTO-attested oil-interval rationale and driving-conditions facts — `MERGED`
 
@@ -1798,6 +1876,8 @@ reviewed and need no change — the former's `MANAGER_MODEL` note describes the 
 thinking resolution, which this change does not touch, and the latter describes no model policy.
 
 ## Output-field classification — product limits kept, internal-plumbing limits given hidden margins — `MERGED`
+
+*Dated addition, 2026-09-26 (stage 5 caption-target change, at the top of this file):* the rule below that "a product-bearing field states exactly what it enforces" gains a second, listed exception. `STATED_BELOW_ENFORCED_FIELDS` — exactly stage 5's per-platform caption — may be **stated below** its enforced limit (85% of it, floored), and is **never enforced above** it. The enforced figure stays the platform limit less the contact reserve. `CQ5` pins the set.
 
 **State:** `MERGED` through PR #85 (reconciled 2026-09-23; recorded at implementation as
 "`IMPLEMENTED` on branch `claude/upbeat-heisenberg-qmitew` … `MERGED` only on merge"). **Not
@@ -4150,8 +4230,12 @@ by lens, tagged every saved response and `field-measurements` row with its lens,
 critic requests in the printed cost ceiling (*Narrow critic panel*, under *Merged repository change awaiting rollout*).
 Evidence-pack scoping (`--scope-tags`, recorded in `run-meta.json` and the fingerprint and reused by
 `--replay-critic`), `--list-tags`, and the free identity-record preflight were added by
-*Evidence-pack scoping in the local CLI …* (under *Implemented repository change awaiting merge*),
+*Evidence-pack scoping in the local CLI …* (now under *Merged repository change awaiting rollout*),
 which also made `main` exported and `argv`-driven so the offline suite runs it in-process.
+*Dated addition, 2026-09-26:* `--resume-from packaging-adaptation <run-dir>` runs stage 5, the
+contact lines and the critic panel against a saved run's revalidated stage 1–4 outputs, after the
+replay's own free checks (now shared as `verifySourceRun`), into a new sibling directory
+(*Stage 5's caption stated below its enforced budget, and `--resume-from` …*, at the top of this file).
 
 **Documents updated with this entry:** `docs/ROADMAP.md` (this section) and `.gitignore` (excludes
 the operator-supplied automotive facts file and the tool's local output directory). `README.md` was

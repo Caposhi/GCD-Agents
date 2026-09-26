@@ -12,7 +12,7 @@ import {
 } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
@@ -82,12 +82,15 @@ import {
   MIN_OUTPUT_TOKENS_PER_SECOND,
   REVIEWER_ONLY_MARGIN_FIELDS,
   REVIEWER_ONLY_SLACK_MULTIPLIER,
+  STATED_BELOW_ENFORCED_FIELDS,
+  STATED_CAPTION_TARGET_PERCENT,
   STAGE_REQUEST_MAX_RETRIES,
   STAGE_REQUEST_SETUP_TIMEOUT_MS,
   STRATEGY_OUTPUT,
   TRUTH_OUTPUT,
   stageStreamDeadlineMs,
   statedCeiling,
+  statedCaptionTarget,
   isSerializableText,
   minimumOutputTokens,
   utf8ByteLength,
@@ -234,6 +237,8 @@ import {
   PLATFORM_LOCAL_KEYWORD_MAX,
   effectiveLocalKeywordMax,
   effectiveCaptionBudget,
+  statedCaptionBudget,
+  proposedProviderText,
   contactReserveChars,
   RECOMMENDED_TIME_PATTERN,
   assertPackagingPlatformBijection,
@@ -4177,9 +4182,11 @@ async function run(): Promise<void> {
         await rejectsWithStageError(() => patchPackage(0, { caption: "x".repeat(INSTAGRAM_CAPTION_MAX + 1) })));
       check("BQ32. an over-limit GBP caption fails",
         await rejectsWithStageError(() => patchPackage(2, { caption: "x".repeat(GBP_SUMMARY_MAX + 1) })));
+      // Captured, so a validator that wrongly narrows the budget reports BQ33 by
+      // name instead of aborting the suite.
       check("BQ33. a GBP caption at the limit passes",
-        (await patchPackage(2, { caption: "x".repeat(GBP_SUMMARY_MAX) }))
-          .output.provisional.packages[2]!.caption.length === GBP_SUMMARY_MAX);
+        await patchPackage(2, { caption: "x".repeat(GBP_SUMMARY_MAX) })
+          .then((r) => r.output.provisional.packages[2]!.caption.length === GBP_SUMMARY_MAX, () => false));
 
       check("BQ33a. a GBP caption cannot hide a hashtag when its hashtag array is empty",
         await rejectsWithStageError(() => patchPackage(2, {
@@ -4209,9 +4216,9 @@ async function run(): Promise<void> {
           caption: `${exactInstagramCaption}x`, hashtags: IG_TAGS,
         })));
       check("BQ33f. Instagram caption plus separator and canonical tags at the exact limit passes",
-        (await patchPackage(0, {
+        await patchPackage(0, {
           caption: exactInstagramCaption, hashtags: IG_TAGS,
-        })).output.provisional.packages[0]!.caption.length + 2 + instagramTagText.length
+        }).then((r) => r.output.provisional.packages[0]!.caption.length + 2 + instagramTagText.length, () => -1)
           === effectiveCaptionBudget("instagram")
           && effectiveCaptionBudget("instagram")
                === INSTAGRAM_CAPTION_MAX - CONTACT_LINE_RESERVE_CHARS.instagram);
@@ -5195,10 +5202,10 @@ async function run(): Promise<void> {
       // This is the input that used to be refused by a bound measured in code
       // units, and it is the reason `MAX_JSON_ESCAPE_EXPANSION` is 2 rather
       // than 1 — the escaping is provided for, not hoped away.
-      const escapingRaw = {
+      const escapingRawAt = (length: number) => ({
         packages: [{
           platform: "facebook",
-          caption: '"'.repeat(effectiveCaptionBudget("facebook")),
+          caption: '"'.repeat(length),
           hashtags: [],
           localKeywords: [],
           recommendedTime: "09:30 ET",
@@ -5207,10 +5214,19 @@ async function run(): Promise<void> {
         claimUse: [
           { platform: "facebook", factId: "auto-1", summary: "The caption uses the moisture fact." },
         ],
-      };
-      const escapingPackaging = validatePackagingAdaptationOutput(
-        escapingRaw, ["facebook"], scriptForPackaging, truthForPackaging, packPack,
-      );
+      });
+      // A validator that wrongly narrows the budget refuses this; the fixture then
+      // falls back to the stated target so BX19 reports it by name rather than
+      // the suite aborting.
+      const escapingPackaging = (() => {
+        try {
+          return validatePackagingAdaptationOutput(
+            escapingRawAt(effectiveCaptionBudget("facebook")), ["facebook"], scriptForPackaging, truthForPackaging, packPack);
+        } catch {
+          return validatePackagingAdaptationOutput(
+            escapingRawAt(statedCaptionBudget("facebook")), ["facebook"], scriptForPackaging, truthForPackaging, packPack);
+        }
+      })();
       // What the critic receives: the same package with its contact line.
       const escapingContacted = attachContactLines(escapingPackaging, packPack);
       const escapingSerializedLength = JSON.stringify(escapingContacted, null, 2).length;
@@ -6431,10 +6447,13 @@ async function run(): Promise<void> {
       // The response schema, the prompt and the validator agree on each budget.
       const captionDescription = String(((PACKAGING_ADAPTATION_RESPONSE_FORMAT as Record<string, any>)
         .properties.packages.items.properties.caption.description));
-      check("CK14. stage 5's response schema states each platform's caption budget — the value the "
-        + "validator applies — and tells the model code appends the contact line",
+      check("CK14. stage 5's response schema states each platform's caption target — the figure the "
+        + "prompt states, derived below the budget the validator applies — never the budget itself, and "
+        + "tells the model code appends the contact line",
         PACKAGING_PLATFORMS.every((platform) => captionDescription.includes(
-          `at most ${effectiveCaptionBudget(platform).toLocaleString("en-US")} characters on ${platform}`))
+          `at most ${statedCaptionBudget(platform).toLocaleString("en-US")} characters on ${platform}`)
+          && !captionDescription.includes(
+            `at most ${effectiveCaptionBudget(platform).toLocaleString("en-US")} characters`))
           && /code appends a fixed contact line/.test(captionDescription));
 
       const promptText = async (file: string) => readFile(resolve(REPO_ROOT, file), "utf8");
@@ -6936,6 +6955,205 @@ async function run(): Promise<void> {
             && replayPreflight > preflight
             && replayPreflight < cliSource.indexOf("printCostCeiling(rt, criticLensPolicies(rt)")
             && cliSource.indexOf("async function replayCritic(") < replayPreflight);
+
+        // --- CR. --resume-from packaging-adaptation --------------------------
+        // Both of the owner's 2026-09-26 failed runs kept validated stage 1-4
+        // outputs and lost stage 5. A resume runs stage 5, the contact lines and
+        // the critic against those saved outputs, after the replay's own free
+        // checks, into a new sibling directory. Every source here is a COPY in
+        // its own parent, so the CN runs above are untouched.
+        // Every CR fixture tolerates a missing file or directory, so a broken full
+        // run upstream is reported by name here rather than aborting the suite.
+        const crTree = (dir: string): string => {
+          if (!existsSync(dir)) return "missing";
+          const hash = createHash("sha256");
+          for (const name of readdirSync(dir).sort()) hash.update(name).update(readFileSync(join(dir, name)));
+          return hash.digest("hex");
+        };
+        const crCopy = (label: string, from: string, edit: (dir: string) => void = () => {}): string => {
+          const dir = join(cnWork, label, basename(from));
+          if (existsSync(from)) cpSync(from, dir, { recursive: true });
+          else mkdirSync(dir, { recursive: true });
+          try { edit(dir); } catch { /* a fixture edit on a broken run: the checks below fail by name */ }
+          return dir;
+        };
+        const crResume = (dir: string, extra: string[] = []) =>
+          runCn(["--resume-from", "packaging-adaptation", dir, "--automotive-facts", factsPath, ...extra]);
+        const crSibling = (dir: string): string | undefined => {
+          const others = cnDirs(dirname(dir)).filter((n) => n !== basename(dir));
+          return others.length === 1 ? join(dirname(dir), others[0]!) : undefined;
+        };
+        const crJson = (path: string) => (existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : undefined);
+        const crRefused = (dir: string, result: { ok: boolean; error: string }, message: RegExp) =>
+          !result.ok && message.test(result.error) && cnDirs(dirname(dir)).length === 1;
+        const crLensRequests = CRITIC_LENSES.map((lens) => `final-critic:${lens}`);
+
+        const crSource = crCopy("cr-plain", plainRun);
+        const crBefore = crTree(crSource);
+        const crResult = await crResume(crSource);
+        const crDir = crSibling(crSource);
+        const crMeta = crDir ? crJson(join(crDir, "resume-meta.json")) : undefined;
+        const crSummary = crDir && existsSync(join(crDir, "summary.md")) ? readFileSync(join(crDir, "summary.md"), "utf8") : "";
+        check("CR1. a fake resume from packaging-adaptation writes stage 5, the contact lines, the critic panel and a "
+          + "summary into a new sibling directory, copies run-meta.json and stages 1-4 byte for byte, and leaves "
+          + "every byte of the source run unchanged",
+          crResult.ok && crDir !== undefined
+            && basename(crDir).startsWith(`${basename(crSource)}-resume-packaging-adaptation-`)
+            && ["05-packaging-adaptation.json", "05b-contact-lines.json", "06-final-critic.json", "summary.md",
+              "field-measurements.md"].every((name) => existsSync(join(crDir, name)))
+            && ["run-meta.json", "01-strategy-concept.json", "02-automotive-truth.json", "03-hook-story-script.json",
+              "04-production-direction.json"].every((name) =>
+              readFileSync(join(crDir, name)).equals(readFileSync(join(crSource, name))))
+            && crJson(join(crDir, "05-packaging-adaptation.json"))?.metadata?.stage === "packaging-adaptation"
+            && crJson(join(crDir, "06-final-critic.json"))?.metadata?.modelRequests === CRITIC_LENSES.length
+            && crMeta?.schema === "gcd-content-resume/1" && crMeta?.resumeFrom === "packaging-adaptation"
+            && crMeta?.evidencePackFingerprintChecked === true
+            && crMeta?.evidencePackSha256 === plainMeta.evidencePackSha256
+            && crMeta?.automotiveFacts?.identity === "matched"
+            && crSummary.includes("- Resumed at packaging-adaptation from ")
+            && crTree(crSource) === crBefore);
+
+        const crRows = (crDir ? crJson(join(crDir, "field-measurements.json")) : undefined) as
+          Array<{ stage: string; field: string; stated?: number; enforced?: number }> | undefined;
+        // The runtime a resume is handed throws on any stage 1-4 executor, so a
+        // stage 1-4 request cannot happen silently; their validators stay reachable.
+        const crNoEarlyRt = new Proxy(cnRt, {
+          get(target, key) {
+            const value = (target as Record<string, unknown>)[key as string];
+            if (!["strategy", "truth", "script", "direction"].includes(String(key))) return value;
+            return new Proxy(value as object, {
+              get(mod, name) {
+                if (/^execute/.test(String(name))) throw new Error(`a resume reached rt.${String(key)}.${String(name)}`);
+                return (mod as Record<string, unknown>)[name as string];
+              },
+            });
+          },
+        });
+        const crGuarded = crCopy("cr-guarded", plainRun);
+        const crGuardedRun = await cnQuiet(() => cliModule.resumeFromPackaging(crNoEarlyRt, cliModule.parseArgs([
+          "--resume-from", "packaging-adaptation", crGuarded, "--automotive-facts", factsPath])));
+        // Stage 5 first; the four lenses run concurrently, so they are recorded in
+        // completion order.
+        const crRequestsOk = (requests: unknown): boolean => Array.isArray(requests)
+          && requests[0] === "packaging-adaptation"
+          && requests.slice(1).map(String).sort().join() === [...crLensRequests].sort().join();
+        check("CR2. a resume makes no stage 1-4 request: its recorded requests and every measured response are "
+          + "stage 5 and the four critic lenses only, and it completes with every stage 1-4 executor made to throw",
+          crRequestsOk(crMeta?.modelRequests)
+            && Array.isArray(crRows) && crRows.length > 0
+            && crRows.every((r) => r.stage === "packaging-adaptation" || crLensRequests.includes(r.stage))
+            && crRows.some((r) => r.stage === "packaging-adaptation")
+            && crGuardedRun.ok && crSibling(crGuarded) !== undefined
+            && crRequestsOk(crJson(join(crSibling(crGuarded)!, "resume-meta.json"))?.modelRequests));
+        check("CQ6. the run's field measurements report stage 5's caption at both figures: the stated target the "
+          + "prompt names and the budget the validator enforces",
+          Array.isArray(crRows) && PACKAGING_PLATFORMS.every((platform) => crRows.some((r) =>
+            r.field === `packages[${platform}].caption+hashtags`
+              && r.stated === statedCaptionBudget(platform) && r.enforced === effectiveCaptionBudget(platform))));
+
+        // The motivating case: a run that paid for stages 1-4 and lost stage 5
+        // has no 05, 05b, 06 or summary — only its raw rejected responses.
+        const crFailed = crCopy("cr-failed", plainRun, (dir) => {
+          for (const name of ["05-packaging-adaptation.json", "05b-contact-lines.json", "06-final-critic.json",
+            "summary.md", "field-measurements.json", "field-measurements.md"]) rmSync(join(dir, name), { force: true });
+          writeFileSync(join(dir, "rejected-responses.json"), "[]", "utf8");
+        });
+        const crFailedBefore = crTree(crFailed);
+        const crFailedRun = await crResume(crFailed);
+        check("CR3. a run whose stage 5 was refused — no stage 5, contact, critic or summary file — resumes, and the "
+          + "source directory is left exactly as it was",
+          crFailedRun.ok && crSibling(crFailed) !== undefined
+            && existsSync(join(crSibling(crFailed)!, "06-final-critic.json"))
+            && !existsSync(join(crSibling(crFailed)!, "rejected-responses.json"))
+            && crTree(crFailed) === crFailedBefore);
+
+        const crEdit = (path: string, edit: (value: any) => void) => {
+          const value = JSON.parse(readFileSync(path, "utf8"));
+          edit(value);
+          writeFileSync(path, JSON.stringify(value, null, 2), "utf8");
+        };
+        const crApproved = crCopy("cr-approved", plainRun, (dir) => {
+          crEdit(join(dir, "run-meta.json"), (m) => { m.approvedFacts.sha256 = "0".repeat(64); });
+          for (const name of readdirSync(dir).filter((n) => /^0[1-5]-.*\.json$/.test(n))) {
+            crEdit(join(dir, name), (stage) => {
+              for (const asset of stage.metadata?.assets ?? []) {
+                if (asset.path === "config/approved-facts.json") asset.sha256 = "0".repeat(64);
+              }
+            });
+          }
+        });
+        const crOtherFacts = join(cnWork, "cr-other-facts.json");
+        writeFileSync(crOtherFacts, cnSynthetic(() => ["synthetic-cn", "cr-edited"]), "utf8");
+        const crAutomotive = crCopy("cr-automotive", plainRun);
+        const crPack = crCopy("cr-pack", plainRun, (dir) =>
+          crEdit(join(dir, "run-meta.json"), (m) => { m.evidencePackSha256 = "f".repeat(64); }));
+        const crNoPackSha = crCopy("cr-nopacksha", plainRun, (dir) =>
+          crEdit(join(dir, "run-meta.json"), (m) => { delete m.evidencePackSha256; }));
+        const crNoMeta = crCopy("cr-nometa", plainRun, (dir) => rmSync(join(dir, "run-meta.json"), { force: true }));
+        check("CR4. a resume refuses a changed approved-facts.json, a different automotive facts file, a rebuilt "
+          + "pack that does not match the recorded fingerprint, and a run that records no pack fingerprint or no "
+          + "run-meta.json at all — each before any output directory, with no unproven path",
+          crRefused(crApproved, await crResume(crApproved), /config\/approved-facts\.json has changed since the source run/)
+            && crRefused(crAutomotive, await runCn(["--resume-from", "packaging-adaptation", crAutomotive,
+              "--automotive-facts", crOtherFacts]), /does not match the source run/)
+            && crRefused(crPack, await crResume(crPack), /the rebuilt evidence pack does not match the source run/)
+            && crRefused(crNoPackSha, await crResume(crNoPackSha), /records no evidencePackSha256/)
+            && crRefused(crNoMeta, await crResume(crNoMeta), /records no run-meta\.json/));
+
+        const crScoped = crCopy("cr-scoped", scopedRun);
+        const crScopedRun = await crResume(crScoped);
+        const crScopedMeta = crSibling(crScoped) ? crJson(join(crSibling(crScoped)!, "resume-meta.json")) : undefined;
+        const crScopedMatching = await crResume(crCopy("cr-scoped-flag", scopedRun), ["--scope-tags", "cn-scope"]);
+        const crScopedOther = crCopy("cr-scoped-other", scopedRun);
+        const crPlainScoped = crCopy("cr-plain-scoped", plainRun);
+        check("CR5. a resume reuses the source run's recorded scope — with no --scope-tags or exactly the same "
+          + "ones — rebuilds the same pack, and refuses a different scope or a scope on an unscoped run",
+          crScopedRun.ok && crScopedMatching.ok
+            && JSON.stringify(crScopedMeta?.evidenceScope) === JSON.stringify(expectedScope)
+            && crScopedMeta?.evidencePackSha256 === scopedMeta.evidencePackSha256
+            && crRefused(crScopedOther, await crResume(crScopedOther, ["--scope-tags", "synthetic-cn"]),
+              /EvidenceScopeError: --scope-tags synthetic-cn differs from the source run's recorded scope \(cn-scope\); a resume/)
+            && crRefused(crPlainScoped, await crResume(crPlainScoped, ["--scope-tags", "cn-scope"]),
+              /none — the run was unscoped/));
+
+        const crMissing = crCopy("cr-missing", plainRun, (dir) => rmSync(join(dir, "03-hook-story-script.json"), { force: true }));
+        const crInvalid = crCopy("cr-invalid", plainRun, (dir) =>
+          crEdit(join(dir, "04-production-direction.json"), (stage) => {
+            stage.output.claimVisuals.used[0].factId = "fabricated-fact-id";
+          }));
+        const crNoOutput = crCopy("cr-nooutput", plainRun, (dir) =>
+          writeFileSync(join(dir, "01-strategy-concept.json"), "{}", "utf8"));
+        check("CR6. a resume refuses a missing, invalid or malformed saved stage 1-4 output before any model call "
+          + "and before any output directory",
+          crRefused(crMissing, await crResume(crMissing), /resume source is missing 03-hook-story-script\.json/)
+            && crRefused(crInvalid, await crResume(crInvalid), /StageExecutionError|production-direction/)
+            && crRefused(crNoOutput, await crResume(crNoOutput), /01-strategy-concept\.json .* has no "output"/));
+
+        const crParseError = (argv: string[]): string => {
+          try { cliModule.parseArgs(argv); return ""; } catch (e) { return (e as Error).message; }
+        };
+        const crCombined = await runCn(["--resume-from", "packaging-adaptation", crSource, "--replay-critic", crSource]);
+        const crPolicies = cliModule.resumePolicies(cnRt, "packaging-adaptation") as Array<[string, string]>;
+        check("CR7. packaging-adaptation is the only resume point: any other stage, a missing directory, or a "
+          + "resume combined with --replay-critic is refused; its requests are exactly a full run's from stage 5 on",
+          ["strategy-concept", "hook-story-script", "production-direction", "final-critic", "bogus"].every((stage) =>
+            crParseError(["--resume-from", stage, crSource]).includes("accepts only packaging-adaptation"))
+            && crParseError(["--resume-from", "packaging-adaptation"]).includes("needs a run directory")
+            && crParseError(["--resume-from", "packaging-adaptation", "--runner"]).includes("needs a run directory")
+            && JSON.stringify(cliModule.RESUME_POINTS) === JSON.stringify(["packaging-adaptation"])
+            && !crCombined.ok && /cannot be combined with --replay-critic/.test(crCombined.error)
+            && JSON.stringify(crPolicies)
+              === JSON.stringify((cliModule.allStagePolicies(cnRt) as Array<[string, string]>).slice(-crPolicies.length))
+            && crPolicies.map(([label]) => label).join() === ["packaging-adaptation", ...crLensRequests].join()
+            && crParseError([]) === "" && (() => {
+              try { cliModule.resumePolicies(cnRt, "final-critic"); return false; } catch { return true; }
+            })());
+
+        const crReplay = crDir ? await runCn(["--replay-critic", crDir, "--automotive-facts", factsPath]) : undefined;
+        check("CR10. a resumed directory is a complete run: --replay-critic verifies it — the copied fingerprints, "
+          + "and the new stage 5 through its validator — and replays it",
+          crReplay?.ok === true && crDir !== undefined
+            && cnDirs(dirname(crDir)).some((n) => n.startsWith(`${basename(crDir)}-critic-replay-`)));
       } finally {
         rmSync(cnWork, { recursive: true, force: true });
       }
@@ -8226,14 +8444,14 @@ async function run(): Promise<void> {
       google_business_profile: Math.min(GBP_HASHTAG_MAX, PACKAGING_LIMITS.maxHashtags),
     };
     const ccUsesPerPlatform = Math.floor(PACKAGING_LIMITS.maxClaimUses / ALL_PLATFORMS.length);
-    const ccPackaging = validatePackagingAdaptationOutput({
+    const ccPackagingAt = (captionTotal: (platform: PackagingPlatform) => number) => validatePackagingAdaptationOutput({
       packages: ALL_PLATFORMS.map((platform) => {
         const tags = Array.from({ length: ccPlatformHashtagMax[platform] },
           (_, i) => `#${"t".repeat(28)}${String(i).padStart(2, "0")}`);
         const joined = tags.length ? tags.join(" ").length + 2 : 0;
         return {
           platform,
-          caption: "W".repeat(ccPlatformCaptionMax[platform] - joined),
+          caption: "W".repeat(captionTotal(platform) - joined),
           hashtags: tags,
           localKeywords: Array.from({ length: effectiveLocalKeywordMax(platform) }, (_, i) =>
             `${"k".repeat(PACKAGING_LIMITS.localKeywordChars - 3)}${String(i).padStart(3, "0")}`),
@@ -8247,6 +8465,19 @@ async function run(): Promise<void> {
           platform, factId: r.id, summary: "M".repeat(PACKAGING_LIMITS.summaryChars),
         }))),
     }, ALL_PLATFORMS, ccScript, ccTruth, ccPack);
+    // Every caption at its platform's full enforced budget. A validator that
+    // wrongly narrows the budget refuses it; the fixture then falls back to the
+    // stated target so `CQ7` reports the refusal by name instead of the suite
+    // aborting.
+    let ccPackagingAtBudget = true;
+    const ccPackaging = (() => {
+      try {
+        return ccPackagingAt((platform) => ccPlatformCaptionMax[platform]);
+      } catch {
+        ccPackagingAtBudget = false;
+        return ccPackagingAt((platform) => statedCaptionBudget(platform));
+      }
+    })();
 
     // Each critic lens at its own maximum: every finding at its maximal length,
     // in that lens's longest category, and — for the two claim-binding lenses —
@@ -9531,6 +9762,110 @@ async function run(): Promise<void> {
           && Object.values(STAGE_ASSEMBLED_CEILINGS).every((c) => c <= MAX_PAYLOAD_CHARS)
           && MAX_PAYLOAD_CHARS === 410_000);
     }
+
+    // --- CQ. stage 5's caption is stated below its enforced budget ----------
+    // Appended after CP so existing check ids never move.
+    //
+    // On 2026-09-26 the owner's run `2026-09-26T17-04-00-636Z` paid for stages
+    // 1-5 and stage 5 was refused: `"packages[0].caption" exceeds 2136
+    // characters (actual 2279)`. The prompt stated 2,136 — the enforced figure —
+    // and the model returned 2,442 on caption plus separator plus hashtags. The
+    // prompt now states a target derived below the budget; the validator still
+    // enforces the budget, unchanged.
+    {
+      const cqEnforced = { instagram: 2_136, facebook: 2_008, google_business_profile: 1_500 } as const;
+      const cqStated = { instagram: 1_815, facebook: 1_706, google_business_profile: 1_275 } as const;
+      const cqPackSource = await readFile(resolve(REPO_ROOT, "src/harness/agents/packagingAdaptation.ts"), "utf8");
+      const cqValidatorStart = cqPackSource.indexOf("export function validatePackagingAdaptationOutput(");
+      const cqValidator = cqValidatorStart >= 0
+        ? cqPackSource.slice(cqValidatorStart, cqPackSource.indexOf("\nexport ", cqValidatorStart + 1)) : "";
+      check("CQ1. each platform's stated caption target is derived — the enforced budget times "
+        + "STATED_CAPTION_TARGET_PERCENT, floored — not hand-kept: 1,815 / 1,706 / 1,275",
+        Number(STATED_CAPTION_TARGET_PERCENT) === 85
+          && PACKAGING_PLATFORMS.every((platform) =>
+            statedCaptionBudget(platform) === Math.floor(effectiveCaptionBudget(platform) * STATED_CAPTION_TARGET_PERCENT / 100)
+              && statedCaptionBudget(platform) === statedCaptionTarget(effectiveCaptionBudget(platform))
+              && statedCaptionBudget(platform) === cqStated[platform])
+          && /return statedCaptionTarget\(effectiveCaptionBudget\(platform\)\);/.test(cqPackSource)
+          && /return Math\.floor\(\(enforcedBudget \* STATED_CAPTION_TARGET_PERCENT\) \/ 100\);/.test(payloadSource));
+      check("CQ2. the enforced caption budget is unchanged — the platform limit (or the pipeline's, if "
+        + "smaller) less the contact reserve, never above the platform limit — and the validator reads "
+        + "the budget, never the stated target",
+        PACKAGING_PLATFORMS.every((platform) =>
+          effectiveCaptionBudget(platform) === cqEnforced[platform]
+            && effectiveCaptionBudget(platform) === Math.min(PLATFORM_PACKAGING_POLICY[platform].captionMax,
+              PACKAGING_LIMITS.pipelineCaptionChars) - CONTACT_LINE_RESERVE_CHARS[platform]
+            && effectiveCaptionBudget(platform) <= PLATFORM_PACKAGING_POLICY[platform].captionMax)
+          && OUTPUT_FIELD_BOUNDS["packaging-adaptation.packages[].caption"]!.enforced
+            === PACKAGING_LIMITS.pipelineCaptionChars
+          && cqValidator.includes("    const captionBudget = captionMax - contactReserve;")
+          && !/statedCaption/.test(cqValidator));
+      // A package whose caption plus separator plus hashtags is exactly `total`
+      // characters on one platform; the others stay short.
+      const cqRaw = (target: PackagingPlatform, total: number) => ({
+        packages: ALL_PLATFORMS.map((platform) => {
+          const hashtags = Array.from({ length: PLATFORM_PACKAGING_POLICY[platform].hashtagMin }, (_, i) => `#tag${i}`);
+          const tagText = hashtags.length ? hashtags.join(" ").length + 2 : 0;
+          return {
+            platform,
+            caption: platform === target ? "c".repeat(total - tagText) : "A caption.",
+            hashtags, localKeywords: [], recommendedTime: "09:00 ET", openQuestions: [],
+          };
+        }),
+        claimUse: [],
+      });
+      const cqOutcome = (target: PackagingPlatform, total: number): string => {
+        try {
+          const out = validatePackagingAdaptationOutput(cqRaw(target, total), ALL_PLATFORMS, ccScript, ccTruth, ccPack);
+          const pkg = out.provisional.packages.find((p) => p.platform === target)!;
+          return proposedProviderText(pkg.caption, pkg.hashtags).length === total ? "valid" : "WRONG LENGTH";
+        } catch (error) {
+          return error instanceof StageExecutionError ? `refused: ${error.message}` : `WRONG TYPE: ${String(error)}`;
+        }
+      };
+      check("CQ3. a caption between the stated target and the enforced budget still validates on every "
+        + "platform — one over the target, midway, and exactly at the budget — and one over the budget "
+        + "is refused",
+        PACKAGING_PLATFORMS.every((platform) => {
+          const stated = statedCaptionBudget(platform);
+          const enforced = effectiveCaptionBudget(platform);
+          return stated < enforced
+            && cqOutcome(platform, stated + 1) === "valid"
+            && cqOutcome(platform, Math.floor((stated + enforced) / 2)) === "valid"
+            && cqOutcome(platform, enforced) === "valid"
+            && cqOutcome(platform, enforced + 1).startsWith(`refused: `)
+            && cqOutcome(platform, enforced + 1).includes(`exceeds ${enforced} characters`);
+        }));
+      // The measurement the fraction is sized on: Instagram's caption plus
+      // separator plus hashtags 2,442 against a stated 2,136 (1.143x), the
+      // caption alone 2,279 (1.067x), so 163 characters of separator and tags.
+      const cqObserved = { total: 2_442, caption: 2_279, stated: 2_136 } as const;
+      const cqFits = (target: number) =>
+        target * cqObserved.total / cqObserved.stated <= effectiveCaptionBudget("instagram")
+          && target * cqObserved.caption / cqObserved.stated + (cqObserved.total - cqObserved.caption)
+            <= effectiveCaptionBudget("instagram");
+      check("CQ4. the stated fraction clears the overshoot measured on 2026-09-26T17-04-00-636Z under both "
+        + "readings — proportional on the stated total, or the caption alone aimed at it plus the tags — "
+        + "and the 88% alternative would not have",
+        cqObserved.stated === effectiveCaptionBudget("instagram")
+          && cqFits(statedCaptionBudget("instagram"))
+          && !cqFits(Math.floor(effectiveCaptionBudget("instagram") * 88 / 100)));
+      check("CQ5. the classification extension is exactly stage 5's caption: product-bearing, a platform "
+        + "field, stated below its enforced limit on every platform, carried by no STATED_FIELD_CEILINGS "
+        + "entry — stated below, never enforced above",
+        [...STATED_BELOW_ENFORCED_FIELDS].join() === "packaging-adaptation.packages[].caption"
+          && OUTPUT_FIELD_BOUNDS["packaging-adaptation.packages[].caption"]!.class === "product-bearing"
+          && /platform:/.test(OUTPUT_FIELD_BOUNDS["packaging-adaptation.packages[].caption"]!.basis)
+          && !("packaging-adaptation.packages[].caption" in STATED_FIELD_CEILINGS)
+          && !REVIEWER_ONLY_MARGIN_FIELDS.has("packaging-adaptation.packages[].caption")
+          && PACKAGING_PLATFORMS.every((platform) => statedCaptionBudget(platform) < effectiveCaptionBudget(platform))
+          && payloadSource.includes("never *enforced above* it"));
+      check("CQ7. the maximal stage 5 fixture — every caption, separator and hashtag list at its platform's "
+        + "full enforced budget — validates: the budget, not the stated target, is what the validator applies",
+        ccPackagingAtBudget
+          && ccPackaging.provisional.packages.every((pkg) =>
+            proposedProviderText(pkg.caption, pkg.hashtags).length === effectiveCaptionBudget(pkg.platform)));
+    }
   }
 
     const evidencePackSource = await readFile(
@@ -10207,7 +10542,9 @@ async function run(): Promise<void> {
           ["claimUse[].summary", PACKAGING_LIMITS.summaryChars, "characters"],
         ],
         elsewhere: [
-          ...PACKAGING_PLATFORMS.map((p) => [effectiveCaptionMax(p), "characters"] as const),
+          // The caption figure the prompt states is the stated target, derived
+          // below the enforced budget (`statedCaptionTarget`), never the budget.
+          ...PACKAGING_PLATFORMS.map((p) => [statedCaptionTarget(effectiveCaptionMax(p)), "characters"] as const),
           // Instagram's is a stated range and Google Business Profile's is
           // zero ("no hashtags at all"); only Facebook's reads as "at most N".
           [effectiveHashtagMax("facebook"), "hashtags"],
@@ -10435,8 +10772,10 @@ async function run(): Promise<void> {
       .split("\n");
     for (const platform of PACKAGING_PLATFORMS) {
       const captions = statedFor(packagingPrompt, platform, "characters");
-      check(`CD6 (${platform}). the enforced caption ceiling is stated for this platform`,
-        captions.length === 1 && captions[0] === groupDigits(effectiveCaptionMax(platform)));
+      check(`CD6 (${platform}). the caption target derived from the enforced budget is stated for this `
+        + "platform, and the enforced budget itself is not",
+        captions.length === 1 && captions[0] === groupDigits(statedCaptionTarget(effectiveCaptionMax(platform)))
+          && !packagingPrompt.join("\n").includes(`at most ${groupDigits(effectiveCaptionMax(platform))} characters`));
     }
     // Local keyword entries are per platform too: Google Business Profile's
     // cap is the skill's "1–2", narrower than the pipeline ceiling.
@@ -10556,6 +10895,10 @@ async function run(): Promise<void> {
       const replayCost = inReplay('printCostCeiling(rt, criticLensPolicies(rt)');
       const replayGuard = inReplay("await requireLiveConsent(args);");
       const replayMkdir = inReplay("await mkdir(replayDir");
+      // The free checks live in `verifySourceRun`, shared with --resume-from; the
+      // replay calls it before its cost ceiling.
+      const verifyBody = bodyOf("async function verifySourceRun(", "\nexport async function resumeFromPackaging(");
+      const replayVerify = inReplay("await verifySourceRun(rt, args, sourceDir, null);");
       check("CE7. the replay runs every free check — approved-facts identity, automotive identity, "
         + "pack fingerprint, revalidation of every saved output — before the cost ceiling, the "
         + "live guard, and the output directory",
@@ -10568,9 +10911,36 @@ async function run(): Promise<void> {
           "revalidateProductionDirectionOutput(",
           "revalidatePackagingAdaptationOutput(",
           "validateStrategyConceptOutput(",
-        ].every((marker) => inReplay(marker) > 0 && inReplay(marker) < replayCost)
+        ].every((marker) => verifyBody.indexOf(marker) > 0)
+          && replayVerify > 0 && replayVerify < replayCost
           && replayCost > 0 && replayCost < replayGuard && replayGuard < replayMkdir
           && /requireLiveConsent[\s\S]{0,400}typed !== "LIVE"/.test(cli));
+
+      // --resume-from packaging-adaptation: the same verifier, then the free
+      // stage 5 and critic preflights, then the cost ceiling for only its own
+      // requests, the live guard and the output directory — and no stage 1-4
+      // executor anywhere in its body.
+      const resumeBody = bodyOf("async function resumeFromPackaging(", "\nasync function replayCritic(");
+      const inResume = (needle: string): number => resumeBody.indexOf(needle);
+      const resumeOrder = [
+        "await verifySourceRun(rt, args, sourceDir, resumeAt);",
+        "rt.contact.assertContactFactsAvailable(pack, platforms);",
+        "rt.identity.assertIdentityFactsAvailable(pack);",
+        ".requiredEvidenceKinds",
+        "printCostCeiling(rt, requests,",
+        "await requireLiveConsent(args);",
+        "await mkdir(resumeDir, { recursive: false });",
+        "rt.packaging.executePackagingAdaptation(",
+        "rt.critic.executeFinalCritic(",
+      ].map(inResume);
+      check("CR9. a resume verifies the source run, then checks the contact, identity and evidence-class "
+        + "preflights, then prices only its own requests, then the typed LIVE guard, then the output "
+        + "directory, then stage 5 and the critic — and calls no stage 1-4 executor",
+        resumeOrder.every((at, i) => at > 0 && (i === 0 || at > resumeOrder[i - 1]!))
+          && /const requests = resumePolicies\(rt, resumeAt\);/.test(resumeBody)
+          && ["executeStrategyConcept", "executeAutomotiveTruth", "executeHookStoryScript",
+            "executeProductionDirection"].every((name) => !resumeBody.includes(name))
+          && verifyBody.includes("a resumed run makes new paid requests on the"));
 
       const work = mkdtempSync(join(tmpdir(), "gcd-critic-replay-"));
       try {
@@ -10791,6 +11161,23 @@ async function run(): Promise<void> {
           "--out-dir", liveRuns, "--runner", "live", "--i-understand-this-costs-money"], "");
         check("CG10. the full run uses the same live guard: the cost flag alone is not enough",
           liveFull.status !== 0 && /live run cancelled/.test(liveFull.stderr) && dirsIn(liveRuns).length === 0);
+        const liveResumeSource = copyOf("live-resume", () => {});
+        // Both cases spawn the CLI with no API key and an unreachable base URL, so
+        // even a mutation that removed the guard could not reach a provider.
+        const resumeNoFlag = runCli(["--resume-from", "packaging-adaptation", liveResumeSource,
+          "--automotive-facts", factsPath, "--runner", "live"]);
+        const resumeWrongWord = runCli(["--resume-from", "packaging-adaptation", liveResumeSource,
+          "--automotive-facts", factsPath, "--runner", "live", "--i-understand-this-costs-money"], "live\n");
+        check("CR8. a live resume shows the cost ceiling for exactly its five requests — stage 5 and the four "
+          + "critic lenses, none from stages 1-4 — and keeps the cost flag and the typed LIVE guard, "
+          + "refusing before any output directory",
+          refusedWithoutOutput(liveResumeSource, resumeNoFlag, /requires --i-understand-this-costs-money/)
+            && refusedWithoutOutput(liveResumeSource, resumeWrongWord, /live run cancelled: expected the exact word LIVE/)
+            && resumeWrongWord.stdout.includes("Estimated ceiling for one run resumed at packaging-adaptation (5 model requests)")
+            && /^ {2}packaging-adaptation /m.test(resumeWrongWord.stdout)
+            && CRITIC_LENSES.every((lens) => resumeWrongWord.stdout.includes(`final-critic:${lens}`))
+            && !/^ {2}(strategy-concept|automotive-truth|hook-story-script|production-direction) /m
+              .test(resumeWrongWord.stdout));
 
         // The deterministic contact line, as the full fake run above rendered it
         // for the human reviewer, and the footer naming the runner that ran.

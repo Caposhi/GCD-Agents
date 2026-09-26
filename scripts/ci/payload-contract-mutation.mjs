@@ -189,7 +189,7 @@
  * to name the drift. The configuration file is captured and restored like every
  * other target; no authoritative byte is ever mutated.
  *
- * The final appended group (M447-M453) covers stage 5's `claimUse` cap, derived
+ * The next appended group (M447-M453) covers stage 5's `claimUse` cap, derived
  * as stage 3's claim-use cardinality times the contract's maximum
  * requested-platform count: the cap going back to a fixed 24, being hand-kept
  * at today's product, or multiplying a typed platform count; the validator
@@ -197,6 +197,15 @@
  * one entry past it; and the prompt stating the old cap or letting the model
  * list the identity records again.
  * It adds no captured path.
+ *
+ * The final appended group (M454-M465) covers stage 5's caption target stated
+ * below its enforced budget, and `--resume-from packaging-adaptation`: the
+ * target collapsing onto the budget, moving to 88% or rounding up; the
+ * validator enforcing the target instead of the budget; the response schema or
+ * the prompt stating the budget; the run's measurement reporting the budget as
+ * the stated figure; and a resume no longer requiring the pack fingerprint,
+ * accepting another resume point, pricing a whole run, skipping stage 4's
+ * revalidation, or dropping the typed LIVE guard. It adds no captured path.
  *
  * It is offline and deterministic: no network, no database, no provider, no
  * credential. The authoritative checkout is read-only after a disposable copy
@@ -4007,11 +4016,101 @@ const PACKAGING_CLAIM_USE_CAP_MUTATIONS = [
   },
 ];
 
+// Stage 5's stated caption target and `--resume-from packaging-adaptation`.
+// Appended after every earlier group so no existing mutation id moves.
+const STATED_CAPTION_AND_RESUME_MUTATIONS = [
+  {
+    name: "stage 5's caption target collapses back onto the enforced budget",
+    file: PAYLOAD,
+    from: "export const STATED_CAPTION_TARGET_PERCENT = 85;",
+    to: "export const STATED_CAPTION_TARGET_PERCENT = 100;",
+    expect: ["CQ1.", "CQ5."],
+  },
+  {
+    name: "stage 5's caption target moves to the 88% the measurement does not support",
+    file: PAYLOAD,
+    from: "export const STATED_CAPTION_TARGET_PERCENT = 85;",
+    to: "export const STATED_CAPTION_TARGET_PERCENT = 88;",
+    expect: ["CQ1.", "CQ4."],
+  },
+  {
+    name: "stage 5's caption target rounds up toward the budget",
+    file: PAYLOAD,
+    from: "  return Math.floor((enforcedBudget * STATED_CAPTION_TARGET_PERCENT) / 100);",
+    to: "  return Math.ceil((enforcedBudget * STATED_CAPTION_TARGET_PERCENT) / 100);",
+    expect: ["CQ1."],
+  },
+  {
+    name: "stage 5's validator enforces the stated target instead of the budget",
+    file: PACKAGING,
+    from: "    const captionBudget = captionMax - contactReserve;",
+    to: "    const captionBudget = statedCaptionTarget(captionMax - contactReserve);",
+    expect: ["CQ2.", "CQ3.", "CQ7.", "BQ33."],
+  },
+  {
+    name: "stage 5's response schema states the enforced budget instead of the target",
+    file: PACKAGING,
+    from: "  return statedCaptionTarget(effectiveCaptionBudget(platform));",
+    to: "  return effectiveCaptionBudget(platform);",
+    expect: ["CQ1.", "CK14."],
+  },
+  {
+    name: "stage 5's prompt states Instagram's enforced budget again",
+    file: PACKAGING_PROMPT,
+    from: "and the canonical hashtag list, at most 1,815 characters.",
+    to: "and the canonical hashtag list, at most 2,136 characters.",
+    expect: ["CD6 (instagram).", "CD3 (packaging-adaptation)."],
+  },
+  {
+    name: "the run's caption measurement reports the budget as the stated figure",
+    file: CONTENT_RUN_CLI,
+    from: "        caps.caption, caps.captionStated, \"product-bearing\");",
+    to: "        caps.caption, caps.caption, \"product-bearing\");",
+    expect: ["CQ6."],
+  },
+  {
+    name: "a resume stops requiring a recorded evidence-pack fingerprint",
+    file: CONTENT_RUN_CLI,
+    from: "        meta.evidencePackSha256 ? null : \"evidencePackSha256\",\n",
+    to: "",
+    expect: ["CR4."],
+  },
+  {
+    name: "a resume accepts a resume point other than packaging-adaptation",
+    file: CONTENT_RUN_CLI,
+    from: "export const RESUME_POINTS = [\"packaging-adaptation\"];",
+    to: "export const RESUME_POINTS = [\"packaging-adaptation\", \"production-direction\"];",
+    expect: ["CR7."],
+  },
+  {
+    name: "a resume prices a whole run instead of only its own requests",
+    file: CONTENT_RUN_CLI,
+    from: "  const requests = resumePolicies(rt, resumeAt);",
+    to: "  const requests = allStagePolicies(rt);",
+    expect: ["CR8.", "CR9."],
+  },
+  {
+    name: "a resume or replay stops revalidating the saved stage 4 output",
+    file: CONTENT_RUN_CLI,
+    from: "  const directionOutput = rt.direction.revalidateProductionDirectionOutput(\n"
+      + "    saved.direction.output, scriptOutput, truthOutput, pack);",
+    to: "  const directionOutput = saved.direction.output;",
+    expect: ["CR6.", "CE7."],
+  },
+  {
+    name: "a live resume drops the typed LIVE guard",
+    file: CONTENT_RUN_CLI,
+    from: "    printCostCeiling(rt, requests, `one run resumed at ${resumeAt}`);\n    await requireLiveConsent(args);\n",
+    to: "    printCostCeiling(rt, requests, `one run resumed at ${resumeAt}`);\n",
+    expect: ["CR8.", "CR9."],
+  },
+];
+
 const MUTATIONS = [
   ...LEGACY_MUTATIONS, ...RAW_IDENTITY_MUTATIONS, ...FIELD_MARGIN_MUTATIONS, ...CRITIC_POLICY_MUTATIONS,
   ...CONTACT_LINE_MUTATIONS, ...CRITIC_PANEL_MUTATIONS, ...CRITIC_PANEL_FOLLOW_UP_MUTATIONS,
   ...WRITER_RESTRICTION_MUTATIONS, ...IDENTITY_SCOPE_MUTATIONS, ...LANE_S_APPROVED_FACTS_MUTATIONS,
-  ...PACKAGING_CLAIM_USE_CAP_MUTATIONS,
+  ...PACKAGING_CLAIM_USE_CAP_MUTATIONS, ...STATED_CAPTION_AND_RESUME_MUTATIONS,
 ];
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
