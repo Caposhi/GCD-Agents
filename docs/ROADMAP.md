@@ -23,7 +23,108 @@ These are not interchangeable and must not be collapsed into "done". `MERGED` in
 
 ## Implemented repository change awaiting merge
 
-### A single opt-in revision pass — `--revise-from <run-dir>` and `--revise-once` in the local CLI, each writing stage's findings cap derived from the contract; stage 4's prompt keeps contact details out of overlays — `IMPLEMENTED`
+### Documentation reconciliation — PR #98 recorded as merged, the revision pass's two owner-run rounds, and a corrected "critic gap" — `IMPLEMENTED`
+
+**State:** `IMPLEMENTED` on branch `claude/dazzling-meitner-i0w1bq`, based directly on `origin/main` at `07b6435318011748b876015432f94e3ef73eb853` (the merge of PR #98). **Documentation only:** it changes `*.md` files and nothing else — no source, prompt, skill, test, mutation, configuration, migration or workflow — so it moves no roadmap scope, enables nothing and authorizes no release. All six stages remain `executionEnabled: false`, and the partial-release interval (bound `2026-10-22T18:52Z`; see [Status](STATUS.md)) is unchanged. The tracked `.DS_Store` is untouched. No model was called.
+
+**PR / merge:** opened from `claude/dazzling-meitner-i0w1bq` into `main`; its number and CI run are recorded in the PR. **This PR's merge SHA is the blocking follow-up** permitted by the mutable-identifier rule in [`AGENTS.md`](../AGENTS.md).
+
+**Delivered.**
+
+1. **PR #98 recorded as `MERGED`** at `07b6435…`, with its PR CI run, its `main` push run and the `deploy-production` run that refused (see the revision-pass record under *Merged repository change awaiting rollout* below). Its record moved there from this section; its blocking merge-SHA follow-up and its PR-CI follow-up are discharged. It is recorded as **not `DEPLOYED`, not `ENABLED` and not `PRODUCTION-VALIDATED`**. The same state change is made wherever another document called the revision pass `IMPLEMENTED` or not merged: [Status](STATUS.md), [README](../README.md), [AI handoff](AI_HANDOFF.md), [Testing](TESTING.md), [Architecture](ARCHITECTURE.md) and [Security and continuity](SECURITY_AND_CONTINUITY.md).
+2. **The revision pass's acceptance evidence**, two owner-run rounds on 2026-09-28, recorded in its record as operator-local evidence: the first live revision, and a second, deliberate one on the first round's output.
+3. **The "critic gap" statements corrected.** Earlier records said the copy's city-versus-long-distance comparison was credited to BMW although the BMW record contains no such comparison, and that no lens flagged it. That claim came from memory and was wrong: the owner verified on 2026-09-28 that the local BMW record `bmw-my2025-conditions-more-frequent-service` compares city use with "a vehicle that is driven long distances at moderate engine speeds", so the copy's "than steady long-distance driving" was supported and the critic was right not to flag it. Every instance outside `docs/archive/` now carries a dated correction beside the original wording, which is kept as history: this file's PR #97, PR #96, PR #95 and PR #93 records, [Status](STATUS.md), [AI handoff](AI_HANDOFF.md), [Testing](TESTING.md) and [README](../README.md). `CM12` and the comparison rule in `skills/claim-boundaries` stay exactly as they are; their motivation is restated as precautionary. The "unflagged BMW highway attribution" follow-up is withdrawn wherever it appeared; the separate follow-up to describe the identity records in `SCRIPT_CLAIMS` / `PLATFORM_CLAIMS` stays open.
+4. **A stage-2 limitation recorded** (record only, no fix) beside the existing "model prose is not verified" limitation in the Phase 0B.2 record below, and in [AI handoff](AI_HANDOFF.md): stage 2's `forbiddenClaims` and `requiredCaveats` bind stages 3–5, but they are model prose and can misdescribe the evidence. See *Stage 2's restrictions can misdescribe the evidence* in the revision-pass record.
+5. **The missing YouTube URLs.** The owner's twelve-source evidence review is recorded in the Lane S record below; a dated note there now records that the URLs for sources 2, 3, 4 and 5 are still missing. None is inferred.
+6. **The cursor.** No next phase is chosen here; see *Next repository change — not chosen* below.
+
+**Migrations / schema impact:** none.
+
+**Material design decisions.**
+
+- **Correct in place, never delete.** Each wrong statement keeps its original wording, followed by a dated correction naming what was wrong, why, and who verified it and when — the same practice as the replay-input correction in the narrow critic panel record.
+- **The comparison rule stays.** It states a correct rule (a comparison needs a record that makes it, credited to that record's source) and nothing in it depends on the mistaken premise, so only its recorded motivation changes.
+
+**Material rejected alternatives.**
+
+- **Deleting the wrong statements.** Rejected: [`AGENTS.md`](../AGENTS.md) preserves rationale and evidence, and a reader of the older records must be able to see what was believed and why it changed.
+- **Removing `CM12`, the rule or `M466`–`M468`.** Rejected, and out of scope: the rule is sound as a precaution, and this change touches no source, skill, check or mutation.
+- **Fixing the stage-2 limitation now.** Out of scope: it would change a prompt or add a check; it is recorded as a follow-up candidate.
+
+**Automated validation.** Build and typecheck clean. `npm run test:offline` passed all nine suites, unchanged because no source changed — posting 52, image 18, orchestrator 119, gate 56, API 51, render identity one invariant-suite pass, ownership/recovery 112, content intelligence 1,301, interval monitor 94: **1,804** checks. Simulated dry run, deployment-controller fixtures, Markdown links (65 files), environment coverage (35 variables), the sensitive-content scan (187 tracked text files; manual triage: the only URLs added are this repository's pull-request and Actions-run links, and no credential, token value, phone number, booking link, customer datum or raw output is added), `npm audit --omit=dev` (zero vulnerabilities), `git diff --check`, a check that the diff touches only `*.md`, and a full diff review. AgentShield 1.4.0 exited zero at B/87 with the same 18 findings (9 medium, 9 low). The mutation harness was not re-run: it mutates source, prompts and SQL, none of which changed. Details in [Testing](TESTING.md); CI on the final head is recorded in the PR.
+
+**Production evidence:** none; this change records operator-local evidence only.
+
+**Rollback / recovery:** revert the commit.
+
+**Security and privacy implications:** none. The evidence recorded is run-folder names, finding counts, costs and record ids; no customer data, credential, booking-URL token beyond what `config/approved-facts.json` already holds, raw run output or archive is committed.
+
+**Accepted limitations.**
+
+- **The acceptance evidence is operator-local**, as the owner reported it; the run folders exist only on the owner's machine and were not re-examined from this repository.
+- **Two source comments still carry the original, mistaken motivation for the comparison rule**: `CM12`'s comment in `src/harness/contentIntelligence.selftest.ts` ("credited a manufacturer with a comparison its record does not make") and the comment above `COMPARISON_CLAIM_MUTATIONS` in `scripts/ci/payload-contract-mutation.mjs` ("credited a manufacturer with a comparison the shop's own record made, and no lens flagged it"). This change is documentation only and may not edit source, so they are recorded here rather than silently left; see the follow-ups.
+
+**Unresolved follow-ups.**
+
+- **This PR's merge SHA** (mutable-identifier exception) — **blocking**.
+- **This PR's own CI** — whether all five jobs pass on attempt 1 on the final head — recorded in the PR; to be reconciled into this record with the merge SHA.
+- **Re-word the two source comments above** so they state the rule's motivation as precautionary. A comment-only source change; it needs its own authorization, and must not change `CM12`'s logic or any mutation.
+- **The stage-2 limitation** — a follow-up candidate, not built (see *Next repository change — not chosen*).
+- **The URLs for sources 2, 3, 4 and 5** of the owner's twelve-source review — to be supplied by the owner.
+
+**Documents updated:** this file (this record; PR #98's record moved to *Merged repository change awaiting rollout* with its merge, CI and acceptance evidence reconciled; dated corrections in the PR #97, PR #96, PR #95 and PR #93 records; a dated addition to the Lane S record and to the Phase 0B.2 record; the *Next repository change* entry), [Status](STATUS.md), [README](../README.md), [AI handoff](AI_HANDOFF.md), [Testing](TESTING.md), [Architecture](ARCHITECTURE.md), [Security and continuity](SECURITY_AND_CONTINUITY.md). Each was reread in full.
+
+## Next repository change — not chosen
+
+**No next phase is selected.** With the revision pass `MERGED`, no owner decision names the next repository change, and this file does not choose one; the owner decides. Nothing here authorizes enabling any stage, any release, or any change to the Phase-A approval gate. Open items carried unchanged, for that decision:
+
+- **The stage 4 contact-in-overlay rule is prompt-only.** Nothing in code detects a phone number or "book online" in overlay text; a deterministic check is a candidate, not built.
+- **`reasoning-standard` output headroom:** 126,000 of the model's 128,000 output tokens since PR #95; recovering it by narrowing the `claimUse[].summary` allowance is open.
+- **`brand-compliance-critic` is still on `claude-sonnet-4-6`** (`agents/brand-compliance-critic.md`) — Lane S work; routing it, and the two `sdk.ts` fallbacks with it, is open (see the legacy model migration record).
+- **The M1→M2 interval ends `2026-10-22T18:52Z`**; the expiry is a decision point for the owner (see [Status](STATUS.md)).
+- **AgentShield grade B/87** (9 medium oversized-agent, 9 low unspecified-model findings; no critical or high).
+- **Splitting completed phases out of this file** into `docs/COMPLETED_ROADMAP_PHASES.md`, a separate documentation change.
+- **Stage 2's restrictions can misdescribe the evidence** — a follow-up candidate recorded by the documentation reconciliation above; no fix is chosen.
+- Carried from the revision-pass record: describing the identity records in `SCRIPT_CLAIMS` and `PLATFORM_CLAIMS` in the critic prompts; tuning `POLICY_EFFORT.critic` and `THINKING_RESERVE_TOKENS` per lens.
+- **`DEFERRED`, as the owner listed them on 2026-09-28** (not previously recorded in this repository; recorded here so they are not lost): Mercedes 223.2 and the round-2 fluids; the DPF/GPF bulk-oil question; the Spanish version.
+
+## Merged repository change awaiting rollout
+
+### A single opt-in revision pass — `--revise-from <run-dir>` and `--revise-once` in the local CLI, each writing stage's findings cap derived from the contract; stage 4's prompt keeps contact details out of overlays — `MERGED`
+
+**Merge reconciliation (recorded 2026-09-28 by the documentation reconciliation above):** `MERGED` through [PR #98](https://github.com/Caposhi/GCD-Agents/pull/98) at `07b6435318011748b876015432f94e3ef73eb853` (merged 2026-09-28T17:36:30Z), whose ordered parents are `610e230e78209fe1d3ca4d83216ed3ff18deec21` (the PR #97 merge) and then reviewed head `2db65a412888b0dbbafdfc9bba2812ab2272fec6`. PR CI [run 36454119958](https://github.com/Caposhi/GCD-Agents/actions/runs/36454119958) (run 227) on head `2db65a4` passed all five jobs on attempt 1 — *Node 22 offline quality gates*, *PostgreSQL 16 integration*, *PostgreSQL 18 integration*, *AgentShield 1.4.0* and *Workflow and YAML static validation*: quality job **23m09s** of 60 (16:52:14–17:15:23Z), mutation step **21m48s** (16:52:38–17:14:26Z). The `main` push [run 36459335061](https://github.com/Caposhi/GCD-Agents/actions/runs/36459335061) (run 228) on `07b6435` passed the same five jobs on attempt 1: quality job **22m11s** (17:36:36–17:58:47Z), mutation step **20m55s** (17:36:56–17:57:51Z). Each run's harness log ends `ALL PASS — 492 mutations, 4 workers` (21m47s and 20m54s by its own clock). The `deploy-production` workflow ([run 63](https://github.com/Caposhi/GCD-Agents/actions/runs/36461959280)) passed its CI-provenance step, refused at its "Refuse while production automation is disabled" step, skipped release selection, and skipped the serialized API, worker, scheduler release job, as on every `main` merge during the interval — no release. **Not `DEPLOYED`, not `ENABLED`, not `PRODUCTION-VALIDATED`**; all six stages keep `executionEnabled: false`. The blocking merge-SHA follow-up and the PR-CI follow-up below are discharged by this paragraph; where the record says unmerged, that no live revision has run, or that its CI figures are yet to be recorded, this paragraph and the acceptance evidence below supersede it. The rest of this record is preserved as written at implementation.
+
+**Acceptance evidence — two owner-run rounds, 2026-09-28 (operator-local).** Figures as the owner reported them; the run folders exist only on the owner's machine, were not re-examined from this repository, and are **not production evidence**.
+
+| | Round 1 | Round 2 |
+|---|---|---|
+| Invocation | `--revise-from` on `2026-09-26T17-04-00-636Z-resume-packaging-adaptation-2026-09-26T19-26-43-383Z` | a second `--revise-from`, deliberately run on round 1's output folder (`…-revised-2026-09-28T17-52-05-407Z`) |
+| Output folder | `…-revised-2026-09-28T17-52-05-407Z` | `…-revised-2026-09-28T17-52-05-407Z-revised-2026-09-28T18-26-40-227Z` |
+| Findings before → after | 26 (9 blocking) → 19 (4 blocking) | 19 (4 blocking) → 13 (2 blocking) |
+| Cost | $0.853952 | $0.819536 |
+
+Common to both rounds: stages 3, 4 and 5 were re-run, and stages 1–2 were reused and revalidated; the critic panel ran fresh, with no round-1 findings sent; `findingsDropped` was empty; and the source folders were not modified. In round 2, finding F19 (`human_review`, `human_decision`) was held back as an owner item and never sent to a model.
+
+Round 2's cost per request:
+
+| Request | Cost |
+|---|---:|
+| hook-story-script | $0.07374 |
+| production-direction | $0.094022 |
+| packaging-adaptation | $0.103974 |
+| critic: platform-and-local | $0.110856 |
+| critic: voice-and-craft | $0.113828 |
+| critic: evidence-fidelity | $0.158424 |
+| critic: production-coherence | $0.164692 |
+
+The two findings still blocking after round 2:
+
+- **The script's hook** says "Both carmakers say that decision changes with how you actually drive." That breaks stage 2's forbidden "both say" claim. It is in the script only; the captions do not contain it.
+- **The ending contradicts the setup**: "it depends how you drive" is followed by "everyone hears the same 5,000/6". It affects the script and all three captions. It is a writing-quality finding, not a false claim.
+
+**One round per invocation, by design.** The pass makes exactly one round each time it is invoked and never plans from the round-2 panel. Running a second `--revise-from` on round 1's output was the owner's deliberate choice, and is exactly the "further round is a new, deliberate invocation" this record's limitations describe. This is recorded as evidence that the revision pass works as designed. **It is not production validation.**
+
+**Stage 2's restrictions can misdescribe the evidence (recorded 2026-09-28; a follow-up candidate, not fixed).** In the piece these rounds revised, stage 2's assessment said the G-Class list "adds mountainous terrain, poor road surfaces, dusty conditions and air-recirculation", and its second forbidden claim treated mountainous terrain and poor roads as G-Class-only items. The owner-verified E-Class record `mb-eclass-arduous-conditions-oil-frequency` includes "use in mountainous terrain or on poor road surfaces"; only dusty conditions and air recirculation are G-Class-only. As a result the writers credited those items to the E-Class — correctly, though that technically contradicted stage 2's text — and the critic correctly did not flag it. Stage 2's `forbiddenClaims` and `requiredCaveats` bind stages 3–5 (PR #92), but they are model prose, and nothing checks them against the records they describe. Recorded beside the Phase 0B.2 limitation below; no prompt or code changed.
 
 **State:** `IMPLEMENTED` on branch `claude/gallant-noether-wvvkda`, based directly on `origin/main` at `610e230e78209fe1d3ca4d83216ed3ff18deec21` (the merge of PR #97). **Not `MERGED`, not `DEPLOYED`, not `ENABLED`, not `PRODUCTION-VALIDATED`.** All six stages remain `executionEnabled: false`, no production path reaches any of them, and the partial-release interval (bound `2026-10-22T18:52Z`; see [Status](STATUS.md)) prohibits any release. The change is dormant stage code (stages 3–5 accept an optional revision input; the critic module gains a revalidator for its own saved output), two new modules (`src/harness/agents/revision.ts`, `src/harness/agents/revisionInput.ts`), derivations in `payloadContract.ts`, the three writing-stage prompts, the operator-local CLI, tests, mutations and documentation. No `config/` file, model, effort, `executionEnabled` value, critic lens prompt, stage 1–2 prompt, `.github/` file or deployed path changed; no enforced limit moved; the tracked `.DS_Store` is untouched. No model was called.
 
@@ -81,7 +182,7 @@ These are not interchangeable and must not be collapsed into "done". `MERGED` in
 
 **Automated validation.** See *Validation* in the PR and [Testing](TESTING.md). All nine offline suites pass; the full mutation harness passed all 492 mutations on 4 workers in 22m22s locally; two fake-runner rounds (`--revise-once`, and `--revise-from` on a saved run) each re-requested exactly stages 4 and 5 and the four lenses. Content intelligence **1,275 → 1,301**: `AF5d` (the two new modules are not executors; `AF5`'s module list gains them) and `CV1`–`CV25`. Mutations **468 → 492** (`M469`–`M492`); captured paths **25 → 27** (`revision.ts`, `revisionInput.ts`). Existing checks adjusted, not weakened: `AF5` (module list), `CN14` (it now finds the replay's own identity preflight rather than the file's last one, which is now the revision's).
 
-**Production evidence:** none, and none is possible — no stage is enabled or reachable. **No live revision has been run**; the owner's first live `--revise-from` on the resumed run above is the acceptance evidence still to come.
+**Production evidence:** none, and none is possible — no stage is enabled or reachable. **No live revision has been run**; the owner's first live `--revise-from` on the resumed run above is the acceptance evidence still to come. *(2026-09-28: the owner has since run it, and a second round on its output; see *Acceptance evidence* at the head of this record. Operator-local evidence, still no production evidence.)*
 
 **Rollback / recovery:** revert the commit. No migration and no durable state; revision directories are operator-local and can be deleted.
 
@@ -97,15 +198,13 @@ These are not interchangeable and must not be collapsed into "done". `MERGED` in
 
 **Unresolved follow-ups.**
 
-- **This PR's merge SHA** (mutable-identifier exception) — **blocking**.
-- **This PR's own CI** — whether all five jobs pass on attempt 1 on the final head, with the mutation step's duration — recorded in the PR; to be reconciled into this record with the merge SHA.
-- **The first live revision** (the owner's `--revise-from` on the resumed run) — acceptance evidence, operator-local.
+- ~~**This PR's merge SHA** (mutable-identifier exception) — **blocking**.~~ **Discharged 2026-09-28:** PR #98, merge `07b6435318011748b876015432f94e3ef73eb853`.
+- ~~**This PR's own CI** — whether all five jobs pass on attempt 1 on the final head, with the mutation step's duration — recorded in the PR; to be reconciled into this record with the merge SHA.~~ **Discharged 2026-09-28:** PR CI run 36454119958 and `main` push run 36459335061 each passed all five jobs on attempt 1 (mutation step 21m48s and 20m55s); see *Merge reconciliation* above.
+- ~~**The first live revision** (the owner's `--revise-from` on the resumed run) — acceptance evidence, operator-local.~~ **Done 2026-09-28 (operator-local):** 26 (9 blocking) → 19 (4 blocking) findings at $0.853952, then a deliberate second round, 19 (4 blocking) → 13 (2 blocking) at $0.819536; see *Acceptance evidence* above.
 - **A deterministic check for contact details in overlay text** — a candidate, not built; the rule is prompt-only.
 - Carried: the critic-prompt change for the identity records; recovering `reasoning-standard` headroom by shrinking the `claimUse[].summary` allowance; `POLICY_EFFORT.critic` and `THINKING_RESERVE_TOKENS` per lens; moving completed history out of this file.
 
 **Documents updated:** this file (this record; the `PLANNED` entry relocated into it; PR #97's record moved to *Merged repository change awaiting rollout* with its merge and CI reconciled), [README](../README.md), [Status](STATUS.md), [Architecture](ARCHITECTURE.md), [Testing](TESTING.md), [AI handoff](AI_HANDOFF.md), [Security and continuity](SECURITY_AND_CONTINUITY.md), the three writing-stage prompts, and the mutation harness's header. Each was reread in full.
-
-## Merged repository change awaiting rollout
 
 ### CI headroom — the payload-contract mutation harness runs in parallel and the quality job's timeout is 60 minutes; `claim-boundaries` treats a comparison as a claim — `MERGED`
 
@@ -119,6 +218,8 @@ These are not interchangeable and must not be collapsed into "done". `MERGED` in
 **Why — CI headroom.** PR #96's PR CI [run 36263299254](https://github.com/Caposhi/GCD-Agents/actions/runs/36263299254) (head `055901d`) passed all five jobs on attempt 1, but its *Node 22 offline quality gates* job took **43m59s** (18:39:16–19:23:15Z) against `timeout-minutes: 45`; its mutation step alone took **42m36s** (18:39:44–19:22:20Z) for 465 mutations. The harness ran every mutation one after another in a single disposable copy, so the job's duration grew with each appended mutation and one slower runner would have cancelled it. A cancelled quality job is a failed attempt 1, and the M1 readiness gate (`scripts/ops/m1-readiness/github.mjs`) accepts only a run whose five named jobs all succeed **on attempt 1** — so a re-run cannot repair it.
 
 **Why — the critic's blind spot (operator-local evidence).** In four owner-run live runs, copy credited BMW with comparing city driving to "long, steady highway/long-distance" driving. As the owner reported it, the BMW record contains no such comparison; the comparison is the shop's own `drivingConditionsView` record (Lane S, `config/approved-facts.json`, which this repository confirms states that city driving "is harder on an engine and its components than steady highway driving" as the shop's professional judgment). No critic lens flagged it, and `claim-boundaries` had no rule that a comparison is a claim of its own. The BMW record itself is operator-local automotive evidence and was not re-examined from this repository.
+
+*Corrected 2026-09-28 — the claim above was wrong; kept as written for history.* It said the BMW record contains no such comparison. That came from memory, not from the record. The owner verified the local BMW record `bmw-my2025-conditions-more-frequent-service` on 2026-09-28, and it compares city use with "a vehicle that is driven long distances at moderate engine speeds", so the copy's "than steady long-distance driving" was supported, and the critic was right not to flag it. There was no critic gap. **The motivation for the rule below is therefore precautionary**: a comparison is still its own claim and still needs a record that makes it, credited to that record's source, and `CM12`, the rule and `M466`–`M468` stay exactly as delivered. The follow-up to address an "unflagged BMW highway attribution" is withdrawn wherever this file carried it; the follow-up to describe the identity records in `SCRIPT_CLAIMS` / `PLATFORM_CLAIMS` stays open. Recorded by the documentation reconciliation at the top of this file.
 
 **Delivered.**
 
@@ -173,9 +274,9 @@ The two local runs were compared line by line: every `M1`–`M465` result and re
 - **A comparison rule is guidance to a model, not a deterministic check.** The writers and the evidence lens are told; nothing in code detects a comparison. Whether the next live run's critic flags one is the evidence.
 - **A `SIGKILL` of the harness itself still strands its copies** (and now any running build or suite in them) — unchanged in kind from before, and still unable to touch the authoritative checkout (`M-kill`).
 
-**Operator-local evidence — the resumed run of 2026-09-26.** Figures as the owner reported them, not re-examined from this repository and not production evidence. The owner's `--resume-from packaging-adaptation` of `2026-09-26T17-04-00-636Z`, written to `2026-09-26T17-04-00-636Z-resume-packaging-adaptation-2026-09-26T19-26-43-383Z`, cost **$0.73078** for the resume, reusing stage 1–4 outputs that had cost **$0.42916**. Stage 5 validated (the critic ran on it). The critic panel returned **26 findings: 9 blocking and 17 advisory**; the platform-and-local lens raised **0** blocking. Instagram's caption plus hashtags measured **1,940** characters against **1,815** stated and **2,136** enforced (1.069× the target, 91% of the budget — inside the room PR #96 sized). **Two errors the critic missed:** the BMW comparison above, and a stage 4 overlay typing the phone number and "Book online".
+**Operator-local evidence — the resumed run of 2026-09-26.** Figures as the owner reported them, not re-examined from this repository and not production evidence. The owner's `--resume-from packaging-adaptation` of `2026-09-26T17-04-00-636Z`, written to `2026-09-26T17-04-00-636Z-resume-packaging-adaptation-2026-09-26T19-26-43-383Z`, cost **$0.73078** for the resume, reusing stage 1–4 outputs that had cost **$0.42916**. Stage 5 validated (the critic ran on it). The critic panel returned **26 findings: 9 blocking and 17 advisory**; the platform-and-local lens raised **0** blocking. Instagram's caption plus hashtags measured **1,940** characters against **1,815** stated and **2,136** enforced (1.069× the target, 91% of the budget — inside the room PR #96 sized). **Two errors the critic missed:** the BMW comparison above, and a stage 4 overlay typing the phone number and "Book online". *(Corrected 2026-09-28: only the overlay was an error. The BMW comparison was supported by BMW's own record and correctly not flagged; see the correction under *Why* above.)*
 
-**Owner's decision, 2026-09-26: build a single revision pass — the next change** (`PLANNED` when written; now `IMPLEMENTED` — see the revision-pass record above, into which the planning entry was relocated).
+**Owner's decision, 2026-09-26: build a single revision pass — the next change** (`PLANNED` when written; now `IMPLEMENTED` — see the revision-pass record above, into which the planning entry was relocated). *(2026-09-28: `MERGED` through PR #98 at `07b6435…`; not deployed, enabled or production-validated.)*
 
 **Unresolved follow-ups.**
 
@@ -188,7 +289,7 @@ The two local runs were compared line by line: every `M1`–`M465` result and re
 
 ### Stage 5's caption stated below its enforced budget, and `--resume-from packaging-adaptation` in the local CLI — `MERGED`
 
-**Merge reconciliation (recorded 2026-09-26 by the CI-headroom and comparison-rule change above):** `MERGED` through [PR #96](https://github.com/Caposhi/GCD-Agents/pull/96) at `d1ffc5f189a742890b9629101c564baf0a91213d` (merged 2026-09-26T19:25:27Z), whose ordered parents are `09b4cc7fa138164123e4ffa97755d3144c0338cb` (the PR #95 merge) and then reviewed head `055901dc1c934945c04ef3c15a167c502033ae59`. PR CI [run 36263299254](https://github.com/Caposhi/GCD-Agents/actions/runs/36263299254) on head `055901d` passed all five jobs on attempt 1; its quality job took **43m59s** against `timeout-minutes: 45`, with **465 mutations** in a mutation step of **42m36s** — the headroom problem the change above addresses. The `main` push [run 224](https://github.com/Caposhi/GCD-Agents/actions/runs/36266004566) on `d1ffc5f` also passed all five jobs on attempt 1 (quality job 34m25s, mutation step 33m05s — the same 465 mutations 9m31s faster on another runner), and the `deploy-production` workflow ([run 61](https://github.com/Caposhi/GCD-Agents/actions/runs/36267966612)) refused at its "Refuse while production automation is disabled" step, as on every `main` merge during the interval — no release. **Not `DEPLOYED`, not `ENABLED`, not `PRODUCTION-VALIDATED`.** The blocking merge-SHA follow-up below is discharged by this paragraph; where the record says unmerged, this paragraph supersedes it. *After merge:* the owner's live `--resume-from packaging-adaptation` of `2026-09-26T17-04-00-636Z` ran, stage 5 validated with Instagram's caption plus hashtags at 1,940 against the 1,815 target and 2,136 budget, and the critic ran — the follow-up below asking for that run is discharged; see the record above. Of the carried follow-ups, the mutation-harness speed-up and the BMW attribution are addressed by the change above (the latter in `claim-boundaries`, not in a critic prompt). The rest of this record is preserved as written at implementation.
+**Merge reconciliation (recorded 2026-09-26 by the CI-headroom and comparison-rule change above):** `MERGED` through [PR #96](https://github.com/Caposhi/GCD-Agents/pull/96) at `d1ffc5f189a742890b9629101c564baf0a91213d` (merged 2026-09-26T19:25:27Z), whose ordered parents are `09b4cc7fa138164123e4ffa97755d3144c0338cb` (the PR #95 merge) and then reviewed head `055901dc1c934945c04ef3c15a167c502033ae59`. PR CI [run 36263299254](https://github.com/Caposhi/GCD-Agents/actions/runs/36263299254) on head `055901d` passed all five jobs on attempt 1; its quality job took **43m59s** against `timeout-minutes: 45`, with **465 mutations** in a mutation step of **42m36s** — the headroom problem the change above addresses. The `main` push [run 224](https://github.com/Caposhi/GCD-Agents/actions/runs/36266004566) on `d1ffc5f` also passed all five jobs on attempt 1 (quality job 34m25s, mutation step 33m05s — the same 465 mutations 9m31s faster on another runner), and the `deploy-production` workflow ([run 61](https://github.com/Caposhi/GCD-Agents/actions/runs/36267966612)) refused at its "Refuse while production automation is disabled" step, as on every `main` merge during the interval — no release. **Not `DEPLOYED`, not `ENABLED`, not `PRODUCTION-VALIDATED`.** The blocking merge-SHA follow-up below is discharged by this paragraph; where the record says unmerged, this paragraph supersedes it. *After merge:* the owner's live `--resume-from packaging-adaptation` of `2026-09-26T17-04-00-636Z` ran, stage 5 validated with Instagram's caption plus hashtags at 1,940 against the 1,815 target and 2,136 budget, and the critic ran — the follow-up below asking for that run is discharged; see the record above. Of the carried follow-ups, the mutation-harness speed-up and the BMW attribution are addressed by the change above (the latter in `claim-boundaries`, not in a critic prompt). *(Corrected 2026-09-28: the BMW attribution was not an error — BMW's own record makes that comparison — so that follow-up is withdrawn rather than addressed; see the correction in PR #97's record above.)* The rest of this record is preserved as written at implementation.
 
 **State:** `IMPLEMENTED` on branch `claude/friendly-hypatia-1a2im5`, based directly on `origin/main` at `09b4cc7fa138164123e4ffa97755d3144c0338cb` (the merge of PR #95). **Not `MERGED`, not `DEPLOYED`, not `ENABLED`, not `PRODUCTION-VALIDATED`.** All six stages remain `executionEnabled: false`, no production path reaches any of them, and the partial-release interval (bound `2026-10-22T18:52Z`; see [Status](STATUS.md)) prohibits any release. The change is dormant stage code, one prompt, the operator-local CLI, the offline and mutation suites, and documentation. No enforced limit moved, no model, effort, critic, stage 1–4 prompt, `config/` file, `.github/` file or deployed path changed, and the tracked `.DS_Store` is untouched. No model was called.
 
@@ -260,7 +361,7 @@ The two local runs were compared line by line: every `M1`–`M465` result and re
 - **This PR's merge SHA** (mutable-identifier exception) — **blocking**.
 - **Recover `reasoning-standard` headroom by shrinking the `claimUse[].summary` allowance.** Stage 5 sets the `reasoning-standard` budget at **126,000 of the model's 128,000** output tokens since PR #95; its plumbing `claimUse[].summary` (stated 400, enforced 800) across 36 entries is the largest contributor that is not product. A narrower enforced allowance (still at least `CEILING_SLACK_MULTIPLIER` × its stated figure) or a lower stated figure would recover headroom; it moves an enforced limit, so it was out of scope here.
 - An owner-run live `--resume-from packaging-adaptation` on `2026-09-26T17-04-00-636Z` after merge, to see stage 5 validate against the new target and the critic run. Not an acceptance gate for this change.
-- Carried: the critic-prompt change for the identity records and the unflagged BMW highway attribution; speeding up the mutation harness (now 465); `POLICY_EFFORT.critic` and `THINKING_RESERVE_TOKENS` per lens; moving completed history out of this file.
+- Carried: the critic-prompt change for the identity records ~~and the unflagged BMW highway attribution~~ *(withdrawn 2026-09-28: not an error — BMW's own record makes the comparison; see the correction in PR #97's record)*; speeding up the mutation harness (now 465); `POLICY_EFFORT.critic` and `THINKING_RESERVE_TOKENS` per lens; moving completed history out of this file.
 
 **Documents updated:** this file (this record; PR #95's record moved to *Merged repository change awaiting rollout* with its merge and CI reconciled; dated additions to *Output-field classification* and the local-CLI entry), [README](../README.md), [Status](STATUS.md), [Architecture](ARCHITECTURE.md), [Testing](TESTING.md), [AI handoff](AI_HANDOFF.md), [Security and continuity](SECURITY_AND_CONTINUITY.md), `agents/packaging-adaptation.md`, and the mutation harness's header. Each was reread in full.
 
@@ -341,7 +442,7 @@ The two local runs were compared line by line: every `M1`–`M465` result and re
 
 - **This PR's merge SHA** (mutable-identifier exception) — blocking.
 - An owner-run live full run after merge, to confirm stage 5 now validates; not an acceptance gate for this change.
-- Carried: the critic-prompt change for the identity records and the unflagged BMW highway attribution; speeding up the mutation harness (now 453); `POLICY_EFFORT.critic` and `THINKING_RESERVE_TOKENS` per lens; moving completed history out of this file.
+- Carried: the critic-prompt change for the identity records ~~and the unflagged BMW highway attribution~~ *(withdrawn 2026-09-28: not an error — BMW's own record makes the comparison; see the correction in PR #97's record)*; speeding up the mutation harness (now 453); `POLICY_EFFORT.critic` and `THINKING_RESERVE_TOKENS` per lens; moving completed history out of this file.
 
 **Documents updated:** this file (this record; Lane S and PR #93 moved to *Merged repository change awaiting rollout* with their merge and CI reconciled; a dated addition to the 64-record-cap item), [README](../README.md), [Status](STATUS.md), [Architecture](ARCHITECTURE.md), [Testing](TESTING.md), [AI handoff](AI_HANDOFF.md), [Security and continuity](SECURITY_AND_CONTINUITY.md), `agents/packaging-adaptation.md`, and the mutation harness's header. Stale "`IMPLEMENTED`, not merged" markers for PR #88, #89, #92 and #93 work in the README, Architecture, AI handoff and Security and continuity were reconciled to `MERGED` where this change touched those passages; the README's guard and assembled-ceiling figures, which predated PR #92 and PR #93, were refreshed. Each was reread in full.
 
@@ -373,6 +474,8 @@ The two local runs were compared line by line: every `M1`–`M465` result and re
 10. Endless Money Pits, “Are You Changing Oil Too Often? … BMW Oil Analysis PART 1” — [YouTube](https://www.youtube.com/watch?v=z1ZJJyfph4M).
 11. SprinterFix × The Motor Oil Geek, “How Often Should You Change Your Oil? The Truth From An Oil Expert” — [YouTube](https://www.youtube.com/watch?v=JUxlxx4dKXk).
 12. Engineering Explained, “What If You Forget To Change Your Oil?” — [YouTube](https://www.youtube.com/watch?v=eVyPWP5t09c).
+
+*Dated addition, 2026-09-28:* the URLs for sources **2, 3, 4 and 5** are still missing. They were never supplied to this repository, none is inferred or reconstructed here, and recording them is an open follow-up for the owner.
 
 **Owner wording decision.** “High heat” was deliberately left out of `oilChangeTimeLimit`: sources 8, 9, and 11 contradict heat-driven oil degradation, and stage 2 forbids that claim. The approved sentence is the owner's narrower professional judgment about condensation moisture and contaminants.
 
@@ -490,16 +593,16 @@ This is **operator-local evidence, not production evidence**: no stage is enable
 - **Scoping is by tag only.** `subjects` scoping exists in the builder but is not exposed; a scope that omits a record a stage needs is the operator's choice, and the stages' own required-evidence preflight still refuses before the cost gate if a needed evidence class is missing.
 - **The oil specification and the rationale** in the 2026-09-25 findings are not addressed by the identity records; the oil specification needs stage 2 to permit its record (now possible at 16), and the rationale needs the Lane S facts.
 
-**Known critic gap (recorded, not fixed here).** In three runs the copy attributed a city-versus-"long, steady highway" comparison to BMW, which the BMW record does not contain, and no lens flagged it. The critic prompts are out of scope for this change.
+**Known critic gap (recorded, not fixed here).** In three runs the copy attributed a city-versus-"long, steady highway" comparison to BMW, which the BMW record does not contain, and no lens flagged it. The critic prompts are out of scope for this change. *(Withdrawn 2026-09-28 — not a gap. The statement that the BMW record does not contain the comparison came from memory and was wrong: the owner verified the local BMW record `bmw-my2025-conditions-more-frequent-service` on 2026-09-28, and it compares city use with "a vehicle that is driven long distances at moderate engine speeds", so the copy's "than steady long-distance driving" was supported, and the critic was right not to flag it. Kept as written for history; see the correction in PR #97's record above.)*
 
-**Evidence review for the "why" facts (summary for the Lane S change).** The owner reviewed 12 YouTube sources. Conclusions, as the owner reported them: **no source measured 5,000 miles as optimal**; the claims **"time alone degrades oil"** and **"heat degrades oil"** were **contradicted** — the latter is also forbidden by stage 2; and **two Auto Care Pro videos were rejected as unreliable.** No transcript is recorded. **The source titles and URLs were not supplied to this change**, so they are not listed here; recording them is a follow-up for the Lane S change.
+**Evidence review for the "why" facts (summary for the Lane S change).** The owner reviewed 12 YouTube sources. Conclusions, as the owner reported them: **no source measured 5,000 miles as optimal**; the claims **"time alone degrades oil"** and **"heat degrades oil"** were **contradicted** — the latter is also forbidden by stage 2; and **two Auto Care Pro videos were rejected as unreliable.** No transcript is recorded. **The source titles and URLs were not supplied to this change**, so they are not listed here; recording them is a follow-up for the Lane S change. *(2026-09-28: the Lane S record above lists all twelve titles and eight URLs; the URLs for sources 2, 3, 4 and 5 are still missing.)*
 
 **Unresolved follow-ups.**
 
 - ~~PR #93 `main` push run 217's final conclusion~~ — green on attempt 1 (see *State* above).
 - ~~Lane S's own merge SHA (mutable-identifier exception)~~ — `6f35079` (PR #94).
 - An owner-run live full run after merge, choosing a scope from `--list-tags`, to see whether the unbound-fact findings fall. Not an acceptance gate for this change.
-- A critic-prompt change: describe the identity records in `SCRIPT_CLAIMS` and `PLATFORM_CLAIMS`, and address the unflagged BMW highway attribution.
+- A critic-prompt change: describe the identity records in `SCRIPT_CLAIMS` and `PLATFORM_CLAIMS`~~, and address the unflagged BMW highway attribution~~. *(The BMW half is withdrawn 2026-09-28: not an error — BMW's own record makes the comparison; see the correction in PR #97's record above. The identity-records half stays open.)*
 - **Speed up the mutation harness**, carried from PR #92's record, now at 445 mutations.
 - Carried, out of scope here: `POLICY_EFFORT.critic` and `THINKING_RESERVE_TOKENS` per lens, and moving completed history out of this file.
 
@@ -3499,6 +3602,8 @@ Support source, source type, provenance, confidence, freshness, `observed_at`, `
 - **What may be claimed is read back from the records**, through `allowedClaimRecords()` and `allowedClaimTexts()`. Neither reads model text. A restatement that overstates its fact is contained by exactly this: it never becomes the claim.
 
 **What is NOT guaranteed, stated plainly.** The model's prose is not verified, and a restatement is not checked for faithfulness to the fact it cites. `assessment`, `restatement`, `forbiddenClaims`, `requiredCaveats`, and `openQuestions` are length-bounded and nothing more. A restatement may overstate, mis-round, or add a superlative and still validate. **This stage does not make a language model a semantic prover of factual truth, and nothing in the code or these documents claims it does.** The gap is closed *structurally* rather than by keyword matching — which would be trivially evadable and would imply a check the code does not perform: prose returns branded `provisional_model_prose` (`verified: false`, `publishable: false`), each restatement is separately branded `restatementVerified: false`, and the permission channel is a separate branded type. `forbiddenClaims` is advisory prose in the provisional channel: nothing enforces it, and a claim absent from it is not thereby permitted. *(Since the writer-restriction change — `IMPLEMENTED`, not merged — stages 3–5 are told to honour `forbiddenClaims` and `requiredCaveats` as binding restrictions; still no code enforces either.)*
+
+*Dated addition, 2026-09-28 — a consequence of the limitation above, recorded, not fixed.* Because stages 3–5 are bound by `forbiddenClaims` and `requiredCaveats` (PR #92) while both remain unverified model prose, **they can misdescribe the evidence, and a writer that follows the records can then contradict stage 2's text.** In the piece the revision pass's owner-run rounds revised on 2026-09-28, stage 2's assessment said the G-Class list "adds mountainous terrain, poor road surfaces, dusty conditions and air-recirculation", and its second forbidden claim treated mountainous terrain and poor roads as G-Class-only; the owner-verified E-Class record `mb-eclass-arduous-conditions-oil-frequency` includes "use in mountainous terrain or on poor road surfaces", so only dusty conditions and air recirculation are G-Class-only. The writers credited those items to the E-Class correctly, which technically contradicted stage 2's text, and the critic correctly did not flag it. Nothing checks stage 2's restrictions against the records they describe. An open follow-up candidate; no prompt or code changed. See the revision-pass record under *Merged repository change awaiting rollout*.
 
 The limitation applies to **both stages**: Stage 1 does not semantically prove its angle, concept, rationale, hypotheses, or assumptions, and Stage 2 does not semantically prove either that inherited prose or its own assessment, restatements, caveats, questions, and forbidden-claim prose. The typed handoff and evidence-id binding contain what those strings can authorize; they do not make the strings true.
 

@@ -150,7 +150,7 @@ and the critic panel into a new sibling directory — with byte-for-byte copies 
 `run-meta.json` and stage 1–4 files, so `--replay-critic` can verify it — never touching the source
 run. No stage 1–4 executor is called.
 
-*(`IMPLEMENTED`, not merged:)* **The opt-in revision pass.** `--revise-from <run-dir>` — and
+*(`MERGED` through PR #98, merge `07b6435…`; not deployed:)* **The opt-in revision pass.** `--revise-from <run-dir>` — and
 `--revise-once` after a full run, through the same `reviseRun` — makes exactly one round. The
 source is verified first by `verifySourceRun` in revision mode (all three fingerprints, every saved
 stage 1–5 output revalidated, and the saved panel output re-proved by `revalidateFinalCriticOutput`,
