@@ -124,6 +124,7 @@ import { revalidateHookStoryScriptOutput, scriptClaimRecords } from "./hookStory
 import type { ProductionDirectionOutput } from "./productionDirection.js";
 import { renderWriterRestrictionBlocks, revalidateProductionDirectionOutput } from "./productionDirection.js";
 import { identityFactRecords } from "./identityFacts.js";
+import { revisionDataBlocks, type StageRevisionInput } from "./revisionInput.js";
 import {
   StageExecutionError,
   StageExecutionMetadata,
@@ -472,6 +473,14 @@ export interface PackagingAdaptationInvocation {
   evidencePack: EvidencePack;
   /** Channels to adapt for. Nonempty, unique, known, caller order preserved. */
   requestedPlatforms: PackagingPlatform[];
+  /**
+   * Present only on a revision request: this stage's own round-1 output and the
+   * round-1 critic findings it owns, sent after the ordinary blocks as
+   * `PREVIOUS_OUTPUT` and `CRITIC_FINDINGS`. Untrusted data that can only narrow
+   * or correct; it permits nothing, and every validator below applies unchanged.
+   * See `revisionInput.ts`.
+   */
+  revision?: StageRevisionInput;
   registry?: AgentRegistry;
   runner: StageRunner;
 }
@@ -1098,6 +1107,7 @@ export async function executePackagingAdaptation(
   }
 
   const restrictionBlocks = renderWriterRestrictionBlocks(truthOutput, fail);
+  const revisionBlocks = revisionDataBlocks(PACKAGING_ADAPTATION_STAGE, invocation.revision, fail);
 
   const { rawText, metadata } = await invokeStage({
     stage: PACKAGING_ADAPTATION_STAGE,
@@ -1120,6 +1130,8 @@ export async function executePackagingAdaptation(
         body: renderPackagingScriptClaims(scriptOutput, truthOutput, pack),
       },
       ...restrictionBlocks,
+      // A revision request only: PREVIOUS_OUTPUT, then CRITIC_FINDINGS.
+      ...revisionBlocks,
     ],
   });
 

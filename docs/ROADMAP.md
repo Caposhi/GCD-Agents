@@ -1,6 +1,6 @@
 # GCD Content Intelligence roadmap
 
-Last reviewed: 2026-09-26.
+Last reviewed: 2026-09-28.
 
 This roadmap is the canonical unfinished-work sequence and the current-phase cursor. It orders work; it does not grant authority to deploy, migrate, call providers, change external configuration, or begin a phase. [Status](STATUS.md) records what is verified true now. Where this file and verified production evidence disagree, resolve the discrepancy rather than following this text. Roadmap continuity is binding — see [`AGENTS.md`](../AGENTS.md).
 
@@ -23,7 +23,94 @@ These are not interchangeable and must not be collapsed into "done". `MERGED` in
 
 ## Implemented repository change awaiting merge
 
-### CI headroom — the payload-contract mutation harness runs in parallel and the quality job's timeout is 60 minutes; `claim-boundaries` treats a comparison as a claim — `IMPLEMENTED`
+### A single opt-in revision pass — `--revise-from <run-dir>` and `--revise-once` in the local CLI, each writing stage's findings cap derived from the contract; stage 4's prompt keeps contact details out of overlays — `IMPLEMENTED`
+
+**State:** `IMPLEMENTED` on branch `claude/gallant-noether-wvvkda`, based directly on `origin/main` at `610e230e78209fe1d3ca4d83216ed3ff18deec21` (the merge of PR #97). **Not `MERGED`, not `DEPLOYED`, not `ENABLED`, not `PRODUCTION-VALIDATED`.** All six stages remain `executionEnabled: false`, no production path reaches any of them, and the partial-release interval (bound `2026-10-22T18:52Z`; see [Status](STATUS.md)) prohibits any release. The change is dormant stage code (stages 3–5 accept an optional revision input; the critic module gains a revalidator for its own saved output), two new modules (`src/harness/agents/revision.ts`, `src/harness/agents/revisionInput.ts`), derivations in `payloadContract.ts`, the three writing-stage prompts, the operator-local CLI, tests, mutations and documentation. No `config/` file, model, effort, `executionEnabled` value, critic lens prompt, stage 1–2 prompt, `.github/` file or deployed path changed; no enforced limit moved; the tracked `.DS_Store` is untouched. No model was called.
+
+**PR / merge:** opened from `claude/gallant-noether-wvvkda` into `main`; its number and CI run are recorded in the PR. **This PR's merge SHA is the blocking follow-up** permitted by the mutable-identifier rule in [`AGENTS.md`](../AGENTS.md).
+
+**Why — the owner's decision of 2026-09-26.** The resumed run `2026-09-26T17-04-00-636Z-resume-packaging-adaptation-2026-09-26T19-26-43-383Z` (operator-local; see PR #97's record below) returned 26 critic findings, **9 blocking**, each naming the stage that owns it. The owner decided to build one opt-in revision pass that sends each owning stage its own findings once, and re-runs the critic on the result. *Relocated from the `PLANNED` entry, not deleted:* "Decided by the owner on 2026-09-26, after the resumed run above: the next change builds a single revision pass. Only the decision is recorded here; its design, scope, cost ceiling and acceptance evidence are not yet specified and must be settled in that change. It does not authorize enabling any stage, any release, or any change to the Phase-A approval gate." The design, the cap and the cost gate below are what the owner then specified (2026-09-28).
+
+**Delivered.**
+
+1. **Two entry points, one function (`reviseRun` in `scripts/local/content-run.mjs`).** `--revise-from <run-dir>` revises a completed run (it must hold `run-meta.json` with all three fingerprints, the saved stage 1–5 outputs and `06-final-critic.json`). `--revise-once`, given with a goal, makes a full run and then calls the same function on the directory it just wrote. With neither flag every path behaves exactly as before. `--revise-from` cannot be combined with `--replay-critic`, `--resume-from`, `--list-tags` or `--revise-once`; `--revise-once` needs a goal and a full run.
+2. **Source verification first, before any cost gate.** The shared verifier (`verifySourceRun`) runs in revision mode: `run-meta.json` must record the approved-facts, automotive-facts and pack fingerprints and the instant (no unproven path, as for a resume), each must match, the recorded scope is reused, and every saved stage 1–5 output is revalidated through its owning validator. It then revalidates the saved critic panel output (`revalidateFinalCriticOutput`, new in `finalCritic.ts`): the output is split back into its four lens answers, each run through `validateCriticLensOutput` against the packages the critic saw (stage 5 with its contact lines rebuilt from the pack), re-aggregated, and required to equal the saved output byte for byte.
+3. **What is revised (`planRevision` in `revision.ts`).** Only findings whose owner is in `REVISABLE_OWNERS` (now exported: `hook-story-script`, `production-direction`, `packaging-adaptation`) and whose category is not `human_decision` may reach a model. Every finding owned by `human_review`, and every `human_decision` finding, is an **owner item**: printed, recorded in `revision-meta.json` and listed in `summary.md`, never sent. If no *blocking* finding has a revisable owner, the pass prints that and makes **no request**; nothing is written.
+4. **Which stages re-run.** The earliest writing stage owning at least one blocking finding, and every later writing stage through stage 5, in order. Stages 1–2 never re-run. Stage 1–2 outputs, and any writing stage before the start, are copied byte for byte; an earlier stage owning only advisory findings is not re-run and its findings are recorded as not sent.
+5. **What a re-run stage receives.** Its ordinary inputs — with the revised upstream outputs where those changed — plus two untrusted data blocks, after the ordinary ones: `PREVIOUS_OUTPUT` (its own round-1 output as saved; stage 5's is its model output before contact lines) and `CRITIC_FINDINGS` (only the findings it owns, each with `id`, `severity`, `category`, `platform`, `lens`, `issue` and `suggestedAction`; ids are `F<n>`, the finding's 1-based position in the round-1 panel). The executor (`revisionDataBlocks` in `revisionInput.ts`) refuses, before the request, a finding owned by any other stage or by `human_review`, a `human_decision` finding, more findings than its cap, a repeated or malformed id, an over-long issue or suggested action, a `PREVIOUS_OUTPUT` over the stage's own output ceiling, and a rendered block over its derived ceiling. Every existing validator applies unchanged.
+6. **The prompts.** Stages 3, 4 and 5 each gain a *Revision requests* section: fix every blocking finding; weigh every other finding; change nothing else unnecessarily; a finding only narrows or corrects and never permits anything — the stage's claim block (`PERMITTED_CLAIMS` for stage 3, `SCRIPT_CLAIMS` for stages 4 and 5) stays the only source of assertable fact and stage 2's restrictions still bind; a finding asking for something not permitted is left out and raised as an open question; an empty `CRITIC_FINDINGS` means the stage re-runs only because an earlier one was revised. The section says every rule, validator and ceiling applies unchanged. The word "advisory" is not used for it: `CM6`/`CM7` keep that word out of the writer prompts, so the section says "every other finding — every one whose `severity` is not `blocking`".
+7. **After revision.** The contact lines are re-attached from the pack, and all four critic lenses run **fresh**: `executeFinalCritic` has no input for round-1 findings or verdicts, and is called with exactly its ordinary inputs. **Exactly one round**: nothing plans from the round-2 panel, whatever its verdict.
+8. **Output.** A new sibling `<source>-revised-<timestamp>` holding the reused files, the revised stage files, `05b-contact-lines.json`, the round-2 `06-final-critic.json`, `round-1-06-final-critic.json` (round 1's panel, copied), `revision-meta.json` (schema `gcd-content-revision/1`: source run, origin, start stage, re-run stages, reused files, the caps, finding ids sent per stage, dropped findings, findings not sent because their stage did not re-run, owner items, round-1 and round-2 verdicts, model requests, per-request and total cost, and a `status` of `started`, `completed` or `failed`), `summary.md` with a *Revision — one round* section showing round 1 and round 2 side by side (panel verdict, counts, each lens) and what each stage was sent, dropped, not sent, or kept for the owner, and `field-measurements.*`. The source run is never modified. If a revised stage fails validation, its paid response is saved to that directory's `rejected-responses.json` as in any run, `revision-meta.json` records the failure, no later request is made, and round 1 is left as it was. Under `--revise-once` the round-1 directory is never touched again: the failure handler is cleared before the revision starts, so even a refusal before the revision's own directory exists writes nothing into round 1's.
+9. **Cost gate.** `revisionPolicies` prices exactly the requests the round will make — the start stage, every later writing stage, and the four lenses; never stages 1–2 — with the same cost flag and typed `LIVE` gate. Under `--revise-once` live, the first gate covers round 1 and says the revision is not included; after round 1 the revision prints its own exact ceiling and asks for `LIVE` again.
+10. **Stage 4's prompt: no contact details in overlays.** "Overlay text never contains contact details: no phone number, no website or URL, and no "book online", "call us", "visit" or similar." Code attaches the contact line. Evidence: in the resumed run above, shot 7's overlay typed the phone number and "Book online", and no lens flagged it.
+11. **Supporting changes.** The fake runner's production-coherence lens now returns one blocking finding owned by `production-direction` (and keeps its human item), so a fake run exercises the revision path end to end. The failure handler's file-writing half is exported as `saveFailureRecords` so the offline suite can drive it in-process. Two earlier mutations (`M404`, `M410`) had their sites re-pointed because the code they target moved (`...revisionBlocks` now follows stage 5's restriction blocks; stage 4's ordinary blocks now live in `WRITER_STAGE_BLOCKS`), with the same edits and expected checks.
+
+**The cap (the owner's decision of 2026-09-28) and the budgets, before and after.** Derived in `payloadContract.ts` as `REVISION_FINDING_CAPS`: for each writing stage, the largest N for which that stage's worst-case assembled payload — its ordinary blocks (`WRITER_STAGE_BLOCKS`, the same definition `STAGE_ASSEMBLED_CEILINGS` now reads), `PREVIOUS_OUTPUT` at the stage's own output ceiling, and N worst-case findings (`criticFindingsBlockChars`, each at the critic's enforced 600-character issue and 300-character suggested action, escaping included, with the widest id and longest enums) — stays within `MAX_PAYLOAD_CHARS`, and never more than the 80 findings a panel can return (`MAX_PANEL_FINDINGS`). **`MAX_PAYLOAD_CHARS` stays 410,000**, derived from the six ordinary stages only; the revision ceilings (`REVISION_ASSEMBLED_CEILINGS`) are deliberately not part of that derivation.
+
+| Writing stage | Ordinary request (unchanged) | Revision with all 80 findings — **the reason for the cap** | Derived cap | Revision at its cap |
+|---|---:|---:|---:|---:|
+| 3, hook-story-script | 196,142 | **430,627** — over 410,000 by 20,627 | **69** | 408,396 |
+| 4, production-direction | 127,081 | 376,476 — fits | **80** (every finding) | 376,476 |
+| 5, packaging-adaptation | 220,375 | **507,371** — over 410,000 by 97,371 | **31** | 408,342 |
+
+`CRITIC_FINDINGS` with all 80 findings is 161,682 characters. No output contract changed, so no output floor moved: `reasoning-heavy` 87,000, `reasoning-standard` 126,000 and `critic` 111,000 against a 128,000 model cap each, with `POLICY_MAX_TOKENS` unchanged. The rough per-request input estimate the CLI prints is still `MAX_PAYLOAD_CHARS / 4`, so it did not move either.
+
+**Selection over a cap, and the refusal.** A stage owning more findings than its cap keeps blocking findings first, then advisory findings in lens order (evidence-fidelity, platform-and-local, voice-and-craft, production-coherence), then in original order; what does not fit is dropped — advisory only — and every dropped finding is recorded (id, lens, severity, stage) in `revision-meta.json` and listed in `summary.md`. A stage owning more **blocking** findings than its cap is refused with `RevisionCapError`, naming the stage, the count and the cap, before the cost gate and before any request.
+
+**Material design decisions.**
+
+- **One function for both flags**, so `--revise-once` verifies round 1 from disk exactly as `--revise-from` would, and the two cannot drift.
+- **Findings from a revalidated panel output, not a trusted file.** Round 1's findings decide what reaches a model, so they are re-proved lens by lens rather than read.
+- **Owner-only routing, enforced twice**: by the plan, and again by each executor before its request.
+- **Caps derived from the contract, not chosen**, with the shared boundary held fixed; blocking findings are never dropped — a stage that cannot carry them all is refused.
+- **A leaf module for the blocks** (`revisionInput.ts` imports no stage module) so the three writers can import it without an import cycle through the critic.
+- **The revision section is static prompt text**, present on every request and conditional on the two blocks, so a revision request uses the same registered, hashed instruction assets as any other.
+- **A second typed `LIVE` under `--revise-once`**, because the revision's exact requests are only known after round 1.
+
+**Material rejected alternatives.**
+
+- **Multi-round loops** (revise until the critic passes). Rejected: unbounded cost, and a critic that sees its own earlier verdicts converges on agreement rather than on correctness. One round, then a person.
+- **A separate "fixer" model rewriting the copy.** Rejected: it would be a writer with no claim block, stage-2 restrictions or validator of its own; the owning stage already has all three.
+- **Revising stages 1–2.** Rejected: they set the angle and the permitted claims — the evidence boundary — which a critic finding may narrow but must never widen or re-open.
+- **Showing round-1 findings or verdicts to the round-2 critic.** Rejected: it anchors the second review on the first, and a revision graded against its own brief can only look fixed.
+- **Automatic revision without opt-in.** Rejected: every revision is new paid requests; it runs only when a person asks, behind the same cost flag and typed `LIVE`.
+- **Raising `MAX_PAYLOAD_CHARS` to 510,000 to fit every finding (option 2 of 2026-09-28).** Rejected by the owner: it moves the shared boundary every stage is sized against, and every request's input estimate with it, for a worst case the resumed run (26 findings) is nowhere near.
+- **A smaller `PREVIOUS_OUTPUT` alone (option 3).** Rejected: stage 5's gap is 97,371 characters, and even its provider-facing copy alone is dominated by the captions, so it cannot close the gap without also narrowing what the stage is shown of its own answer.
+
+**Migrations / schema impact:** none. No SQL and no durable state. Two new operator-local run files (`revision-meta.json`, `round-1-06-final-critic.json`); every existing run file's format is unchanged.
+
+**Automated validation.** See *Validation* in the PR and [Testing](TESTING.md). Content intelligence **1,275 → 1,301**: `AF5d` (the two new modules are not executors; `AF5`'s module list gains them) and `CV1`–`CV25`. Mutations **468 → 492** (`M469`–`M492`); captured paths **25 → 27** (`revision.ts`, `revisionInput.ts`). Existing checks adjusted, not weakened: `AF5` (module list), `CN14` (it now finds the replay's own identity preflight rather than the file's last one, which is now the revision's).
+
+**Production evidence:** none, and none is possible — no stage is enabled or reachable. **No live revision has been run**; the owner's first live `--revise-from` on the resumed run above is the acceptance evidence still to come.
+
+**Rollback / recovery:** revert the commit. No migration and no durable state; revision directories are operator-local and can be deleted.
+
+**Security and privacy implications:** none new on any deployed path. The revision pass is operator-local, fake by default, and live only behind the cost flag and typed `LIVE`. Human-owned and `human_decision` findings are never sent to a model. Round 1 is never modified. No credential, provider, workflow or approval-gate change; the Phase-A approval gate and the live `brand-compliance-critic` are untouched.
+
+**Accepted limitations.**
+
+- **Revalidating the saved panel output is structural, not provenance.** An edit that keeps every lens consistent — one revisable owner swapped for another, say — is indistinguishable from a real answer and passes, exactly as for every other saved output.
+- **The revision rules and the overlay contact rule are instructions to a model, not deterministic checks.** Nothing in code detects a phone number or "book online" in overlay text, or proves a revised answer fixed a finding; the round-2 critic's verdict is the evidence.
+- **A dropped advisory finding reaches no model** (it is recorded for the person running the pass).
+- **Round 2 may still ask for revision**; a further round is a new, deliberate invocation, never automatic.
+- **`--revise-once` live asks for `LIVE` twice.**
+
+**Unresolved follow-ups.**
+
+- **This PR's merge SHA** (mutable-identifier exception) — **blocking**.
+- **This PR's own CI** — whether all five jobs pass on attempt 1 on the final head, with the mutation step's duration — recorded in the PR; to be reconciled into this record with the merge SHA.
+- **The first live revision** (the owner's `--revise-from` on the resumed run) — acceptance evidence, operator-local.
+- **A deterministic check for contact details in overlay text** — a candidate, not built; the rule is prompt-only.
+- Carried: the critic-prompt change for the identity records; recovering `reasoning-standard` headroom by shrinking the `claimUse[].summary` allowance; `POLICY_EFFORT.critic` and `THINKING_RESERVE_TOKENS` per lens; moving completed history out of this file.
+
+**Documents updated:** this file (this record; the `PLANNED` entry relocated into it; PR #97's record moved to *Merged repository change awaiting rollout* with its merge and CI reconciled), [README](../README.md), [Status](STATUS.md), [Architecture](ARCHITECTURE.md), [Testing](TESTING.md), [AI handoff](AI_HANDOFF.md), [Security and continuity](SECURITY_AND_CONTINUITY.md), the three writing-stage prompts, and the mutation harness's header. Each was reread in full.
+
+## Merged repository change awaiting rollout
+
+### CI headroom — the payload-contract mutation harness runs in parallel and the quality job's timeout is 60 minutes; `claim-boundaries` treats a comparison as a claim — `MERGED`
+
+**Merge reconciliation (recorded 2026-09-28 by the revision-pass change above):** `MERGED` through [PR #97](https://github.com/Caposhi/GCD-Agents/pull/97) at `610e230e78209fe1d3ca4d83216ed3ff18deec21` (merged 2026-09-28T12:14:35Z), whose ordered parents are `d1ffc5f189a742890b9629101c564baf0a91213d` (the PR #96 merge) and then reviewed head `df2322eaa572a3f0865fcd3f1d015ca1cc919eef`. PR CI [run 36271968177](https://github.com/Caposhi/GCD-Agents/actions/runs/36271968177) (run 225) on head `df2322e` passed all five jobs on attempt 1: quality job **14m23s** of 60, mutation step **13m28s** for 468 mutations on **4 workers**. The `main` push [run 36420578993](https://github.com/Caposhi/GCD-Agents/actions/runs/36420578993) (run 226) on `610e230` passed all five jobs on attempt 1: quality job **20m49s** (12:14:41–12:35:30Z), mutation step **19m26s** (12:15:09–12:34:35Z); its worker count was not read from the log. The `deploy-production` workflow ([run 62](https://github.com/Caposhi/GCD-Agents/actions/runs/36422817721)) refused at its "Refuse while production automation is disabled" step, as on every `main` merge during the interval — no release. **Not `DEPLOYED`, not `ENABLED`, not `PRODUCTION-VALIDATED`.** The blocking merge-SHA follow-up and the PR-CI follow-up below are discharged by this paragraph; where the record says unmerged, or that its CI figures are yet to be recorded, this paragraph supersedes it. Of its unresolved follow-ups, the stage 4 overlay that typed the phone number and "Book online" is addressed by the change above (a prompt rule, not a deterministic check). The rest of this record is preserved as written at implementation.
+
 
 **State:** `IMPLEMENTED` on branch `claude/optimistic-wright-zjl7pc`, based directly on `origin/main` at `d1ffc5f189a742890b9629101c564baf0a91213d` (the merge of PR #96). **Not `MERGED`, not `DEPLOYED`, not `ENABLED`, not `PRODUCTION-VALIDATED`.** All six stages remain `executionEnabled: false`, no production path reaches any of them, and the partial-release interval (bound `2026-10-22T18:52Z`; see [Status](STATUS.md)) prohibits any release. The change is the mutation harness (`scripts/ci/payload-contract-mutation.mjs`), one `timeout-minutes` value in `.github/workflows/ci.yml`, one fact-free skill (`skills/claim-boundaries/SKILL.md`), one offline check, three mutations, and documentation. No stage prompt, contract limit, `config/` file, model, effort, `executionEnabled` value or deployed path changed; no job was added, split, renamed or removed; the tracked `.DS_Store` is untouched. No model was called.
 
@@ -88,7 +175,7 @@ The two local runs were compared line by line: every `M1`–`M465` result and re
 
 **Operator-local evidence — the resumed run of 2026-09-26.** Figures as the owner reported them, not re-examined from this repository and not production evidence. The owner's `--resume-from packaging-adaptation` of `2026-09-26T17-04-00-636Z`, written to `2026-09-26T17-04-00-636Z-resume-packaging-adaptation-2026-09-26T19-26-43-383Z`, cost **$0.73078** for the resume, reusing stage 1–4 outputs that had cost **$0.42916**. Stage 5 validated (the critic ran on it). The critic panel returned **26 findings: 9 blocking and 17 advisory**; the platform-and-local lens raised **0** blocking. Instagram's caption plus hashtags measured **1,940** characters against **1,815** stated and **2,136** enforced (1.069× the target, 91% of the budget — inside the room PR #96 sized). **Two errors the critic missed:** the BMW comparison above, and a stage 4 overlay typing the phone number and "Book online".
 
-**Owner's decision, 2026-09-26: build a single revision pass — the next change** (`PLANNED`; see *Next repository change* below).
+**Owner's decision, 2026-09-26: build a single revision pass — the next change** (`PLANNED` when written; now `IMPLEMENTED` — see the revision-pass record above, into which the planning entry was relocated).
 
 **Unresolved follow-ups.**
 
@@ -98,12 +185,6 @@ The two local runs were compared line by line: every `M1`–`M465` result and re
 - Carried: the critic-prompt change for the identity records; recovering `reasoning-standard` headroom by shrinking the `claimUse[].summary` allowance; `POLICY_EFFORT.critic` and `THINKING_RESERVE_TOKENS` per lens; moving completed history out of this file.
 
 **Documents updated:** this file (this record; PR #96's record moved to *Merged repository change awaiting rollout* with its merge and CI reconciled; the *Next repository change* entry), [README](../README.md), [Status](STATUS.md), [Architecture](ARCHITECTURE.md), [Testing](TESTING.md), [AI handoff](AI_HANDOFF.md), [Security and continuity](SECURITY_AND_CONTINUITY.md), and the mutation harness's header. Each was reread in full.
-
-## Next repository change — a single revision pass — `PLANNED`
-
-**Decided by the owner on 2026-09-26**, after the resumed run above: the next change builds **a single revision pass**. Only the decision is recorded here; its design, scope, cost ceiling and acceptance evidence are not yet specified and must be settled in that change. It does not authorize enabling any stage, any release, or any change to the Phase-A approval gate.
-
-## Merged repository change awaiting rollout
 
 ### Stage 5's caption stated below its enforced budget, and `--resume-from packaging-adaptation` in the local CLI — `MERGED`
 

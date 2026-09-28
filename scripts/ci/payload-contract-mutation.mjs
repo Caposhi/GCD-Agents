@@ -4,7 +4,7 @@
  *
  * A regression that cannot fail is decoration. This script proves each
  * load-bearing derivation in `src/harness/agents/payloadContract.ts` and the
- * related repository-authority controls is actually load-bearing across twenty-five
+ * related repository-authority controls is actually load-bearing across twenty-seven
  * captured paths: it applies one focused mutation in a disposable no-Git copy,
  * rebuilds there, runs the Content Intelligence offline suite, and
  * requires the NAMED check that owns that derivation to fail. Then it restores
@@ -208,12 +208,27 @@
  * accepting another resume point, pricing a whole run, skipping stage 4's
  * revalidation, or dropping the typed LIVE guard. It adds no captured path.
  *
- * The final appended group (M466-M468) covers the comparison rule in
+ * The next appended group (M466-M468) covers the comparison rule in
  * `skills/claim-boundaries`: a comparison is its own claim, needing a record
  * that states it, credited to the source whose record makes it; the rule no
  * longer requiring that record, crediting the comparison to the source quoted
  * beside it, or carrying the motivating runs' own wording. It adds no captured
  * path.
+ *
+ * The final appended group (M469-M492) covers the opt-in revision pass: a
+ * stage's findings cap typed instead of derived, sized without PREVIOUS_OUTPUT,
+ * or its ceiling without the escaping allowance; MAX_PAYLOAD_CHARS raised to fit
+ * an uncapped request; a stage accepting another stage's, a human_decision or an
+ * over-cap finding; the plan sending a human_decision finding, starting at the
+ * latest blocking owner, not re-running later stages, keeping advisory findings
+ * ahead of blocking ones, or not refusing blocking findings over a cap; the CLI
+ * not recording dropped findings, handing round 2's critic round 1's findings,
+ * skipping the saved panel's revalidation or the recorded fingerprints, writing
+ * a failure into round 1's directory, proceeding with nothing to revise,
+ * dropping the typed LIVE gate, pricing a whole run, or making a second round;
+ * stage 4 not appending the blocks; and the prompts dropping stage 4's
+ * contact-in-overlay rule or letting a finding permit. It adds two captured
+ * paths: `revision.ts` and `revisionInput.ts`.
  *
  * It is offline and deterministic: no network, no database, no provider, no
  * credential. The mutations run in parallel on up to MAX_WORKERS workers (the
@@ -284,6 +299,9 @@ const TRUTH_PROMPT = "agents/automotive-truth.md";
 // The shop's identity records, bound on every stage 5 platform by code.
 const IDENTITY_FACTS_MODULE = "src/harness/agents/identityFacts.ts";
 const APPROVED_FACTS = "config/approved-facts.json";
+// The revision pass: its plan and the two blocks a writing stage appends.
+const REVISION_MODULE = "src/harness/agents/revision.ts";
+const REVISION_INPUT_MODULE = "src/harness/agents/revisionInput.ts";
 
 /**
  * Each mutation names the derivation it breaks, the single edit that breaks it,
@@ -3650,9 +3668,11 @@ const WRITER_RESTRICTION_MUTATIONS = [
   {
     name: "stage 5 is shown stage 2's complete output beside its restriction blocks",
     file: PACKAGING,
-    from: "      ...restrictionBlocks,\n    ],\n  });",
+    // Its site moved when the revision blocks were appended after the
+    // restriction blocks; the mutation and its expected checks are unchanged.
+    from: "      ...restrictionBlocks,\n      // A revision request only: PREVIOUS_OUTPUT, then CRITIC_FINDINGS.\n",
     to: "      ...restrictionBlocks,\n      { label: \"TRUTH_OUTPUT\", body: JSON.stringify(truthOutput, null, 2) },\n"
-      + "    ],\n  });",
+      + "      // A revision request only: PREVIOUS_OUTPUT, then CRITIC_FINDINGS.\n",
     expect: ["CM3.", "CM5.", "BK9."],
   },
   {
@@ -3694,9 +3714,11 @@ const WRITER_RESTRICTION_MUTATIONS = [
   {
     name: "stage 4's assembled ceiling stops counting the restriction blocks",
     file: PAYLOAD,
-    from: "      { label: \"SCRIPT_CLAIMS\", bodyChars: SCRIPT_CLAIMS_BLOCK_CHARS },\n"
-      + "      ...WRITER_RESTRICTION_BLOCKS,\n    ]),\n    \"packaging-adaptation\"",
-    to: "      { label: \"SCRIPT_CLAIMS\", bodyChars: SCRIPT_CLAIMS_BLOCK_CHARS },\n    ]),\n    \"packaging-adaptation\"",
+    // Its site moved into WRITER_STAGE_BLOCKS, which STAGE_ASSEMBLED_CEILINGS
+    // now reads; the mutation and its expected check are unchanged.
+    from: "    { label: \"SCRIPT_CLAIMS\", bodyChars: SCRIPT_CLAIMS_BLOCK_CHARS },\n"
+      + "    ...WRITER_RESTRICTION_BLOCKS,\n  ],\n  \"packaging-adaptation\"",
+    to: "    { label: \"SCRIPT_CLAIMS\", bodyChars: SCRIPT_CLAIMS_BLOCK_CHARS },\n  ],\n  \"packaging-adaptation\"",
     expect: ["CM10."],
   },
   {
@@ -4156,12 +4178,196 @@ const COMPARISON_CLAIM_MUTATIONS = [
   },
 ];
 
+/**
+ * The opt-in revision pass (the owner's decisions of 2026-09-26 and 2026-09-28):
+ * each writing stage's findings cap derived from the payload contract so no
+ * revision request exceeds an unmoved MAX_PAYLOAD_CHARS; only owned, non-human
+ * findings reach a stage; the earliest blocking owner starts the one round; the
+ * source is verified first; and the typed LIVE gate holds. Appended after every
+ * earlier group.
+ */
+const REVISION_PASS_MUTATIONS = [
+  {
+    name: "a stage's findings cap is typed instead of derived from the contract",
+    file: PAYLOAD,
+    from: "    let cap = 0;\n    while (cap < MAX_PANEL_FINDINGS\n"
+      + "      && assembledCeiling(revisionStageBlocks(stage, cap + 1)) <= MAX_PAYLOAD_CHARS) {\n"
+      + "      cap += 1;\n    }\n    return [stage, cap];",
+    to: "    return [stage, ({ \"hook-story-script\": 69, \"production-direction\": 80, \"packaging-adaptation\": 31 } "
+      + "as Record<string, number>)[stage]];",
+    expect: ["CV1."],
+  },
+  {
+    name: "a revision request is sized without its PREVIOUS_OUTPUT block",
+    file: PAYLOAD,
+    from: "    { label: \"PREVIOUS_OUTPUT\", bodyChars: REVISION_PREVIOUS_OUTPUT_CHARS[stage] },\n",
+    to: "",
+    expect: ["CV2."],
+  },
+  {
+    name: "the CRITIC_FINDINGS ceiling drops the escaping allowance",
+    file: PAYLOAD,
+    from: "    count * (CRITIC_FIELD_LIMITS.issueChars + CRITIC_FIELD_LIMITS.suggestedActionChars),\n  );\n}",
+    to: "    count * (CRITIC_FIELD_LIMITS.issueChars + CRITIC_FIELD_LIMITS.suggestedActionChars),\n    1,\n  );\n}",
+    expect: ["CV3."],
+  },
+  {
+    name: "MAX_PAYLOAD_CHARS is raised to fit an uncapped revision request",
+    file: PAYLOAD,
+    from: "  return Math.ceil(largest / 10_000) * 10_000;",
+    to: "  return Math.max(Math.ceil(largest / 10_000) * 10_000, 510_000);",
+    expect: ["CV2."],
+  },
+  {
+    name: "a stage accepts a finding owned by another stage",
+    file: REVISION_INPUT_MODULE,
+    from: "    if (f.owner !== stage) fail(`\"${at}\" is owned by ${JSON.stringify(f.owner)}, not this stage`);\n",
+    to: "",
+    expect: ["CV5."],
+  },
+  {
+    name: "a stage accepts a human_decision finding",
+    file: REVISION_INPUT_MODULE,
+    from: "    if (f.category === \"human_decision\") fail(`\"${at}\" is a human_decision finding; it never reaches a model`);\n",
+    to: "",
+    expect: ["CV5."],
+  },
+  {
+    name: "a stage accepts more findings than its derived cap",
+    file: REVISION_INPUT_MODULE,
+    from: "  if (revision.findings.length > cap) {",
+    to: "  if (revision.findings.length > cap + 1000) {",
+    expect: ["CV5."],
+  },
+  {
+    name: "the plan sends a human_decision finding owned by a writing stage",
+    file: REVISION_MODULE,
+    from: "  !REVISABLE_OWNERS.has(f.owner) || f.category === \"human_decision\";",
+    to: "  !REVISABLE_OWNERS.has(f.owner);",
+    expect: ["CV6.", "CV13."],
+  },
+  {
+    name: "the round starts at the latest blocking owner instead of the earliest",
+    file: REVISION_MODULE,
+    from: "  const startIndex = REVISABLE_STAGES.findIndex((stage) =>",
+    to: "  const startIndex = REVISABLE_STAGES.length - 1 - [...REVISABLE_STAGES].reverse().findIndex((stage) =>",
+    expect: ["CV7.", "CV16."],
+  },
+  {
+    name: "the later writing stages are not re-run after the start stage",
+    file: REVISION_MODULE,
+    from: "  const stages = REVISABLE_STAGES.slice(startIndex).map(",
+    to: "  const stages = REVISABLE_STAGES.slice(startIndex, startIndex + 1).map(",
+    expect: ["CV6.", "CV7."],
+  },
+  {
+    name: "over a cap, advisory findings are kept ahead of blocking ones",
+    file: REVISION_MODULE,
+    from: "        Number(b.finding.severity === \"blocking\") - Number(a.finding.severity === \"blocking\")",
+    to: "        Number(a.finding.severity === \"blocking\") - Number(b.finding.severity === \"blocking\")",
+    expect: ["CV8.", "CV21."],
+  },
+  {
+    name: "a stage owning more blocking findings than its cap is not refused",
+    file: REVISION_MODULE,
+    from: "    if (blocking > cap) throw new RevisionCapError(stage, blocking, cap);\n",
+    to: "",
+    expect: ["CV8.", "CV22."],
+  },
+  {
+    name: "revision-meta.json no longer records the findings dropped over a cap",
+    file: CONTENT_RUN_CLI,
+    from: "    findingsDropped: plan.stages.flatMap(",
+    to: "    findingsDropped: [].flatMap(",
+    expect: ["CV21."],
+  },
+  {
+    name: "round 2's critic panel is handed round 1's findings",
+    file: CONTENT_RUN_CLI,
+    from: "    scriptOutput: script, directionOutput: direction, packagingOutput: contacted,\n",
+    to: "    scriptOutput: script, directionOutput: direction, packagingOutput: contacted,\n"
+      + "    roundOneFindings: criticOutput.provisional.findings,\n",
+    expect: ["CV14."],
+  },
+  {
+    name: "a revision reads round 1's findings without revalidating the saved panel output",
+    file: CONTENT_RUN_CLI,
+    from: "    criticOutput = rt.critic.revalidateFinalCriticOutput(\n"
+      + "      saved.critic.output, platforms, contacted, scriptOutput, truthOutput, pack);",
+    to: "    criticOutput = saved.critic.output;",
+    expect: ["CV18."],
+  },
+  {
+    name: "a revision stops requiring the recorded fingerprints",
+    file: CONTENT_RUN_CLI,
+    from: "  if (resumeAt || revise) {",
+    to: "  if (resumeAt) {",
+    expect: ["CV18."],
+  },
+  {
+    name: "a failed revised stage's paid response is written into round 1's directory",
+    file: CONTENT_RUN_CLI,
+    from: "    runDir: revisionDir, transcript, writeMeasurements,",
+    to: "    runDir: sourceDir, transcript, writeMeasurements,",
+    expect: ["CV19."],
+  },
+  {
+    name: "a round with no revisable blocking finding still proceeds",
+    file: CONTENT_RUN_CLI,
+    from: "  if (plan.kind === \"no_revision\") {",
+    to: "  if (plan.kind === \"never\") {",
+    expect: ["CV20."],
+  },
+  {
+    name: "a live revision drops the typed LIVE gate",
+    file: CONTENT_RUN_CLI,
+    from: "    printCostCeiling(rt, requests, `one revision round from ${plan.startStage}`);\n    await requireLiveConsent(args);\n",
+    to: "    printCostCeiling(rt, requests, `one revision round from ${plan.startStage}`);\n",
+    expect: ["CV25."],
+  },
+  {
+    name: "a revision prices a whole run instead of only its own requests",
+    file: CONTENT_RUN_CLI,
+    from: "  const requests = revisionPolicies(rt, plan.startStage);",
+    to: "  const requests = allStagePolicies(rt);",
+    expect: ["CV25."],
+  },
+  {
+    name: "a revision makes a second round on its own output",
+    file: CONTENT_RUN_CLI,
+    from: "  return { revised: true, dir: revisionDir, plan };",
+    to: "  return origin === \"again\" ? { revised: true, dir: revisionDir, plan } : reviseRun(rt, args, revisionDir, \"again\");",
+    expect: ["CV17."],
+  },
+  {
+    name: "stage 4 no longer appends the revision blocks",
+    file: PRODUCTION_DIRECTION,
+    from: "      // A revision request only: PREVIOUS_OUTPUT, then CRITIC_FINDINGS.\n      ...revisionBlocks,\n",
+    to: "",
+    expect: ["CV4.", "CV12."],
+  },
+  {
+    name: "stage 4's prompt drops the no-contact-details-in-overlays rule",
+    file: DIRECTION_PROMPT,
+    from: "- **No contact details in overlays.** Overlay text never contains contact details",
+    to: "- **Contact details in overlays are allowed.** Overlay text may contain contact details",
+    expect: ["CV10."],
+  },
+  {
+    name: "stage 5's revision section lets a finding permit what it asks for",
+    file: PACKAGING_PROMPT,
+    from: "- **A finding can only narrow or correct; it never permits anything.**",
+    to: "- **A finding may add what it asks for.**",
+    expect: ["CV9."],
+  },
+];
+
 const MUTATIONS = [
   ...LEGACY_MUTATIONS, ...RAW_IDENTITY_MUTATIONS, ...FIELD_MARGIN_MUTATIONS, ...CRITIC_POLICY_MUTATIONS,
   ...CONTACT_LINE_MUTATIONS, ...CRITIC_PANEL_MUTATIONS, ...CRITIC_PANEL_FOLLOW_UP_MUTATIONS,
   ...WRITER_RESTRICTION_MUTATIONS, ...IDENTITY_SCOPE_MUTATIONS, ...LANE_S_APPROVED_FACTS_MUTATIONS,
   ...PACKAGING_CLAIM_USE_CAP_MUTATIONS, ...STATED_CAPTION_AND_RESUME_MUTATIONS,
-  ...COMPARISON_CLAIM_MUTATIONS,
+  ...COMPARISON_CLAIM_MUTATIONS, ...REVISION_PASS_MUTATIONS,
 ];
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");

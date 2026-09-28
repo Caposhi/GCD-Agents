@@ -76,6 +76,7 @@ import type { StrategyConceptOutput } from "./strategyConcept.js";
 import { validateStrategyConceptOutput } from "./strategyConcept.js";
 import type { AutomotiveTruthOutput } from "./automotiveTruth.js";
 import { revalidateAutomotiveTruthOutput } from "./automotiveTruth.js";
+import { revisionDataBlocks, type StageRevisionInput } from "./revisionInput.js";
 import {
   StageExecutionError,
   StageExecutionMetadata,
@@ -236,6 +237,14 @@ export interface HookStoryScriptInvocation {
   truthOutput: AutomotiveTruthOutput;
   /** The same pack that bound both prior outputs. Revalidated against it. */
   evidencePack: EvidencePack;
+  /**
+   * Present only on a revision request: this stage's own round-1 output and the
+   * round-1 critic findings it owns, sent after the ordinary blocks as
+   * `PREVIOUS_OUTPUT` and `CRITIC_FINDINGS`. Untrusted data that can only narrow
+   * or correct; it permits nothing, and every validator below applies unchanged.
+   * See `revisionInput.ts`.
+   */
+  revision?: StageRevisionInput;
   registry?: AgentRegistry;
   runner: StageRunner;
 }
@@ -695,6 +704,8 @@ export async function executeHookStoryScript(
     fail("automotive-truth permitted no claims: refusing to write copy with no factual authority");
   }
 
+  const revisionBlocks = revisionDataBlocks(HOOK_STORY_SCRIPT_STAGE, invocation.revision, fail);
+
   const { rawText, metadata } = await invokeStage({
     stage: HOOK_STORY_SCRIPT_STAGE,
     responseFormatSchema: HOOK_STORY_SCRIPT_RESPONSE_FORMAT,
@@ -708,6 +719,8 @@ export async function executeHookStoryScript(
       { label: "STRATEGY_OUTPUT", body: renderedStrategyOutput },
       { label: "TRUTH_OUTPUT", body: renderedTruthOutput },
       { label: "PERMITTED_CLAIMS", body: renderPermittedClaims(truthOutput, pack) },
+      // A revision request only: PREVIOUS_OUTPUT, then CRITIC_FINDINGS.
+      ...revisionBlocks,
     ],
   });
 

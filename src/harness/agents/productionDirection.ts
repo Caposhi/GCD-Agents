@@ -33,7 +33,8 @@
  *  - The model receives exactly four blocks: the complete stage 3 result as
  *    bounded untrusted data, `SCRIPT_CLAIMS` — the exact evidence records
  *    bound by stage 3's claim-use ids — then `REQUIRED_CAVEATS` and
- *    `FORBIDDEN_CLAIMS`.
+ *    `FORBIDDEN_CLAIMS`; a revision request (the local CLI's opt-in revision
+ *    pass) appends `PREVIOUS_OUTPUT` and `CRITIC_FINDINGS` after them.
  *
  * ## What this stage guarantees, exactly
  *
@@ -99,6 +100,7 @@ import {
 } from "./automotiveTruth.js";
 import type { HookStoryScriptOutput } from "./hookStoryScript.js";
 import { revalidateHookStoryScriptOutput, scriptClaimRecords } from "./hookStoryScript.js";
+import { revisionDataBlocks, type StageRevisionInput } from "./revisionInput.js";
 import {
   StageExecutionError,
   StageExecutionMetadata,
@@ -337,6 +339,14 @@ export interface ProductionDirectionInvocation {
   truthOutput: AutomotiveTruthOutput;
   /** The same pack that bound both prior outputs. Revalidated against it. */
   evidencePack: EvidencePack;
+  /**
+   * Present only on a revision request: this stage's own round-1 output and the
+   * round-1 critic findings it owns, sent after the ordinary blocks as
+   * `PREVIOUS_OUTPUT` and `CRITIC_FINDINGS`. Untrusted data that can only narrow
+   * or correct; it permits nothing, and every validator below applies unchanged.
+   * See `revisionInput.ts`.
+   */
+  revision?: StageRevisionInput;
   registry?: AgentRegistry;
   runner: StageRunner;
 }
@@ -834,6 +844,7 @@ export async function executeProductionDirection(
   }
 
   const restrictionBlocks = renderWriterRestrictionBlocks(truthOutput, fail);
+  const revisionBlocks = revisionDataBlocks(PRODUCTION_DIRECTION_STAGE, invocation.revision, fail);
 
   const { rawText, metadata } = await invokeStage({
     stage: PRODUCTION_DIRECTION_STAGE,
@@ -844,12 +855,15 @@ export async function executeProductionDirection(
     // adding one later is a deliberate reviewed act rather than something that
     // silently starts entering a channel.
     referenceChannel: "omit",
-    // Deliberately four blocks. Stage 2's restrictions are sent as binding
-    // restrictions; its assessment, restatements and wider whitelist are not.
+    // Deliberately four blocks (six on a revision request). Stage 2's
+    // restrictions are sent as binding restrictions; its assessment,
+    // restatements and wider whitelist are not.
     dataBlocks: [
       { label: "SCRIPT_OUTPUT", body: renderedScriptOutput },
       { label: "SCRIPT_CLAIMS", body: renderScriptClaims(scriptOutput, truthOutput, pack) },
       ...restrictionBlocks,
+      // A revision request only: PREVIOUS_OUTPUT, then CRITIC_FINDINGS.
+      ...revisionBlocks,
     ],
   });
 
