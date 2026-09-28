@@ -83,6 +83,24 @@ record, and it must match that record.
 - **When the records differ, say they differ** — or say only what one record
   says and credit that one. Do not smooth the difference into agreement.
 
+## A comparison is a claim
+
+Setting one thing against another — "more than", "less than", "harder than",
+"better than", "worse than", "versus", or any other "than" — makes a claim of
+its own, separate from anything said about either side.
+
+- **A comparison needs a record that states that comparison.** A record that
+  describes one side says nothing about how it compares with the other, however
+  naturally the comparison seems to follow. If no citable record states the
+  comparison, it may not be made.
+- **Credit a comparison to the source whose record makes it.** When one
+  source's record describes a thing and a different record compares it with
+  something else, the comparison belongs to the second record's source. Never
+  attach a comparison to a source whose own record does not make it, even when
+  that source's record is quoted in the same sentence.
+- **Check every comparison on its own**, even inside a sentence whose other
+  statements are each correctly credited.
+
 ## Your own words carry no authority
 
 Restating a fact does not create one. Your prose is recorded as provisional and

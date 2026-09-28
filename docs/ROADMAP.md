@@ -23,7 +23,91 @@ These are not interchangeable and must not be collapsed into "done". `MERGED` in
 
 ## Implemented repository change awaiting merge
 
-### Stage 5's caption stated below its enforced budget, and `--resume-from packaging-adaptation` in the local CLI — `IMPLEMENTED`
+### CI headroom — the payload-contract mutation harness runs in parallel and the quality job's timeout is 60 minutes; `claim-boundaries` treats a comparison as a claim — `IMPLEMENTED`
+
+**State:** `IMPLEMENTED` on branch `claude/optimistic-wright-zjl7pc`, based directly on `origin/main` at `d1ffc5f189a742890b9629101c564baf0a91213d` (the merge of PR #96). **Not `MERGED`, not `DEPLOYED`, not `ENABLED`, not `PRODUCTION-VALIDATED`.** All six stages remain `executionEnabled: false`, no production path reaches any of them, and the partial-release interval (bound `2026-10-22T18:52Z`; see [Status](STATUS.md)) prohibits any release. The change is the mutation harness (`scripts/ci/payload-contract-mutation.mjs`), one `timeout-minutes` value in `.github/workflows/ci.yml`, one fact-free skill (`skills/claim-boundaries/SKILL.md`), one offline check, three mutations, and documentation. No stage prompt, contract limit, `config/` file, model, effort, `executionEnabled` value or deployed path changed; no job was added, split, renamed or removed; the tracked `.DS_Store` is untouched. No model was called.
+
+**PR / merge:** opened from `claude/optimistic-wright-zjl7pc` into `main`; its number and CI run are recorded in the PR itself. **This PR's merge SHA is the blocking follow-up** permitted by the mutable-identifier rule in [`AGENTS.md`](../AGENTS.md).
+
+**Why — CI headroom.** PR #96's PR CI [run 36263299254](https://github.com/Caposhi/GCD-Agents/actions/runs/36263299254) (head `055901d`) passed all five jobs on attempt 1, but its *Node 22 offline quality gates* job took **43m59s** (18:39:16–19:23:15Z) against `timeout-minutes: 45`; its mutation step alone took **42m36s** (18:39:44–19:22:20Z) for 465 mutations. The harness ran every mutation one after another in a single disposable copy, so the job's duration grew with each appended mutation and one slower runner would have cancelled it. A cancelled quality job is a failed attempt 1, and the M1 readiness gate (`scripts/ops/m1-readiness/github.mjs`) accepts only a run whose five named jobs all succeed **on attempt 1** — so a re-run cannot repair it.
+
+**Why — the critic's blind spot (operator-local evidence).** In four owner-run live runs, copy credited BMW with comparing city driving to "long, steady highway/long-distance" driving. As the owner reported it, the BMW record contains no such comparison; the comparison is the shop's own `drivingConditionsView` record (Lane S, `config/approved-facts.json`, which this repository confirms states that city driving "is harder on an engine and its components than steady highway driving" as the shop's professional judgment). No critic lens flagged it, and `claim-boundaries` had no rule that a comparison is a claim of its own. The BMW record itself is operator-local automotive evidence and was not re-examined from this repository.
+
+**Delivered.**
+
+1. **The mutation harness runs its mutations in parallel inside the same job.**
+   - The worker count is `min(MAX_WORKERS, os.availableParallelism(), mutation count)` with `MAX_WORKERS` fixed at **4** (each worker runs a full `tsc` and suite, so memory bounds it as well as CPU). The log prints the count and the parallelism it was derived from.
+   - **Each worker owns one disposable no-Git copy**, prepared exactly as the single copy was (no `.git`, locked dependencies linked). No two workers share a copy, a `dist/`, a mutated file or a child process. Within its copy a worker runs one mutation at a time exactly as before — mutate, rebuild when needed, run the suite, restore byte-for-byte, verify the restoration by SHA-256 — and tracks its own stale `dist/`.
+   - Workers take the next mutation id from one shared queue. **Ids, expected-check matching and output order are fixed by position in `MUTATIONS`**: each mutation's results are buffered and printed strictly in id order, whichever worker ran it. No result depends on the assignment, because every copy starts from the same bytes and is restored before its worker takes the next mutation.
+   - Builds and suites run asynchronously, each as the leader of its **own process group**, so a catchable signal stops every build and suite **together with the processes they start** (`npx` runs `tsc` through a shell; the suite spawns the local CLI), then restores every in-flight file and removes every copy. Found while testing this change: killing only the direct child left `tsc` running, and it recreated a removed copy's `dist/`.
+   - Every existing guarantee is kept and each is still a named check: `M-isolation` (now over every worker's copy: none is the authoritative checkout or inside it, none has `.git`, no two share a directory), `M-capture`, `M-kill` (unchanged: a `SIGKILL`ed child with an actively mutated copy leaves the authoritative bytes and Git status unchanged during and after), `M0` (every copy builds and passes before any mutation), `M-end` (every copy passes again after), and `M-authority`. Two checks are new: **`M-order`** (every mutation ran exactly once and printed in id order) and **`M-copies`** (every worker's copy of every captured target is a regular file byte-identical to the authoritative bytes captured before the run).
+2. **The quality job's `timeout-minutes` is 60** (was 45), as a safety net only. It is still one of exactly the five jobs the M1 readiness gate requires by name; no job was added, split, renamed or removed, and no step changed.
+3. **`claim-boundaries` gains *A comparison is a claim*** — fact-free, after the attribution rules. Setting one thing against another ("more than", "less than", "harder than", "better than", "worse than", "versus", any other "than") is a claim of its own; it needs a record that states that comparison, not one that describes one side; it is credited only to the source whose record makes it, never to a source quoted beside it; and each comparison is checked on its own, even inside a sentence whose other statements are correctly credited. The three writers and the critic's evidence-fidelity lens already load the skill, so no prompt changed.
+4. **`CM12`** requires the section, every named comparison form and each rule sentence, requires the writers and the evidence lens to load the skill, and refuses the motivating runs' own wording (`highway`, `city`, `driving`, `long-distance`, `steady`) anywhere in the skill; `CM9` and `AL5`–`AL7` still keep it free of every approved value, make, service, place and digit. **`M466`–`M468`** drop the record requirement, credit the comparison to the source quoted beside it, and add the motivating wording; each must make `CM12` fail by name.
+
+**Figures — harness duration, before and after.**
+
+| Where | Before (sequential) | After (parallel) |
+|---|---:|---:|
+| CI mutation step | 42m36s, 465 mutations (PR run 36263299254); 33m05s on `main` run 224, same commit tree | recorded in this PR's CI run; reconciled here with the merge SHA |
+| CI quality job | 43m59s of 45 (PR run); 34m25s (`main` run 224) | recorded in this PR's CI run, now of 60 |
+| Local, this container (4 CPUs, Node 22.22.2) | **65m21s**, 465 mutations, all pass (`d1ffc5f` in its own worktree) | **20m57s**, 468 mutations, 4 workers, all pass — **3.1× faster** |
+
+The two local runs were compared line by line: every `M1`–`M465` result and restoration line is identical in content and order in both logs (939 lines); only `M0`'s wording changed (it now counts the copies). The sequential run was pinned to one CPU after its first minutes so two short parallel smoke runs could use the other three without slowing it; being sequential, it used one CPU at a time either way. Runner speed varies: the same 465 mutations took 42m36s and 33m05s on two GitHub runners the same afternoon. The CI speed-up depends on the runner's CPU count, which the log now prints.
+
+**Material design decisions.**
+
+- **Workers inside the one job, not more jobs.** The M1 readiness gate requires exactly five named jobs passing on attempt 1; a sharded matrix or a second mutation job would change that set.
+- **A shared queue, not a fixed partition.** Mutations differ widely in cost (a `src/` mutation rebuilds; a prompt or SQL mutation does not), so a fixed partition leaves workers idle. Assignment is free to vary because results cannot depend on it; output order is fixed separately.
+- **`MAX_WORKERS` = 4.** It covers the common GitHub-hosted runner sizes and bounds memory at four concurrent `tsc` runs and suites; the runner's own parallelism lowers it further.
+- **Timeout 60, not higher.** It is a net for runner variance, not the fix; the parallel harness is the fix.
+
+**Material rejected alternatives.**
+
+- **Splitting the mutation harness into its own job, or a matrix of shards.** Rejected: the five-job rule.
+- **Several workers in one copy.** Rejected: mutations would see each other's edits and `dist/`, and a restoration could not be attributed.
+- **`worker_threads`.** Unnecessary: the work is child processes; asynchronous execution in one process parallelizes it with less shared state.
+- **Only raising the timeout.** Rejected: it buys one or two more groups of mutations and leaves the growth in place.
+- **A comparison rule in the critic's lens prompt.** Out of scope (no stage prompt changes here), and the skill already reaches the writers and the evidence lens, so a rule there covers both sides.
+
+**Migrations / schema impact:** none. No SQL, no durable state, no run-file format change.
+
+**Automated validation.** See *Validation* in the PR and [Testing](TESTING.md). Content intelligence **1,274 → 1,275** (`CM12`); mutations **465 → 468** (`M466`–`M468`); the harness's own checks gain `M-order` and `M-copies`.
+
+**Production evidence:** none, and none is possible — no stage is enabled or reachable, and the harness is CI tooling.
+
+**Rollback / recovery:** revert the commit. No migration and no durable state. Reverting the harness restores sequential execution; reverting the timeout returns to 45, which the sequential harness nearly exhausted.
+
+**Security and privacy implications:** none new. The workflow's permissions, triggers, jobs and steps are unchanged; only one `timeout-minutes` value moved. The harness stays offline — no network, database, provider or credential — and still never writes the authoritative checkout. The skill states no fact. The Phase-A approval gate and the live `brand-compliance-critic` are untouched.
+
+**Accepted limitations.**
+
+- **The CI speed-up is bounded by the runner's CPU count.** A two-vCPU runner gets two workers; the log records the count.
+- **A comparison rule is guidance to a model, not a deterministic check.** The writers and the evidence lens are told; nothing in code detects a comparison. Whether the next live run's critic flags one is the evidence.
+- **A `SIGKILL` of the harness itself still strands its copies** (and now any running build or suite in them) — unchanged in kind from before, and still unable to touch the authoritative checkout (`M-kill`).
+
+**Operator-local evidence — the resumed run of 2026-09-26.** Figures as the owner reported them, not re-examined from this repository and not production evidence. The owner's `--resume-from packaging-adaptation` of `2026-09-26T17-04-00-636Z`, written to `2026-09-26T17-04-00-636Z-resume-packaging-adaptation-2026-09-26T19-26-43-383Z`, cost **$0.73078** for the resume, reusing stage 1–4 outputs that had cost **$0.42916**. Stage 5 validated (the critic ran on it). The critic panel returned **26 findings: 9 blocking and 17 advisory**; the platform-and-local lens raised **0** blocking. Instagram's caption plus hashtags measured **1,940** characters against **1,815** stated and **2,136** enforced (1.069× the target, 91% of the budget — inside the room PR #96 sized). **Two errors the critic missed:** the BMW comparison above, and a stage 4 overlay typing the phone number and "Book online".
+
+**Owner's decision, 2026-09-26: build a single revision pass — the next change** (`PLANNED`; see *Next repository change* below).
+
+**Unresolved follow-ups.**
+
+- **This PR's merge SHA** (mutable-identifier exception) — **blocking**.
+- **This PR's own CI**: whether all five jobs pass on attempt 1 on the final head, with the quality job's and mutation step's durations — recorded in the PR; to be reconciled into this record with the merge SHA.
+- **The stage 4 overlay that typed the phone number and "Book online"** was missed by every lens; it is not addressed here (stage prompts are out of scope).
+- Carried: the critic-prompt change for the identity records; recovering `reasoning-standard` headroom by shrinking the `claimUse[].summary` allowance; `POLICY_EFFORT.critic` and `THINKING_RESERVE_TOKENS` per lens; moving completed history out of this file.
+
+**Documents updated:** this file (this record; PR #96's record moved to *Merged repository change awaiting rollout* with its merge and CI reconciled; the *Next repository change* entry), [README](../README.md), [Status](STATUS.md), [Architecture](ARCHITECTURE.md), [Testing](TESTING.md), [AI handoff](AI_HANDOFF.md), [Security and continuity](SECURITY_AND_CONTINUITY.md), and the mutation harness's header. Each was reread in full.
+
+## Next repository change — a single revision pass — `PLANNED`
+
+**Decided by the owner on 2026-09-26**, after the resumed run above: the next change builds **a single revision pass**. Only the decision is recorded here; its design, scope, cost ceiling and acceptance evidence are not yet specified and must be settled in that change. It does not authorize enabling any stage, any release, or any change to the Phase-A approval gate.
+
+## Merged repository change awaiting rollout
+
+### Stage 5's caption stated below its enforced budget, and `--resume-from packaging-adaptation` in the local CLI — `MERGED`
+
+**Merge reconciliation (recorded 2026-09-26 by the CI-headroom and comparison-rule change above):** `MERGED` through [PR #96](https://github.com/Caposhi/GCD-Agents/pull/96) at `d1ffc5f189a742890b9629101c564baf0a91213d` (merged 2026-09-26T19:25:27Z), whose ordered parents are `09b4cc7fa138164123e4ffa97755d3144c0338cb` (the PR #95 merge) and then reviewed head `055901dc1c934945c04ef3c15a167c502033ae59`. PR CI [run 36263299254](https://github.com/Caposhi/GCD-Agents/actions/runs/36263299254) on head `055901d` passed all five jobs on attempt 1; its quality job took **43m59s** against `timeout-minutes: 45`, with **465 mutations** in a mutation step of **42m36s** — the headroom problem the change above addresses. The `main` push [run 224](https://github.com/Caposhi/GCD-Agents/actions/runs/36266004566) on `d1ffc5f` also passed all five jobs on attempt 1 (quality job 34m25s, mutation step 33m05s — the same 465 mutations 9m31s faster on another runner), and the `deploy-production` workflow ([run 61](https://github.com/Caposhi/GCD-Agents/actions/runs/36267966612)) refused at its "Refuse while production automation is disabled" step, as on every `main` merge during the interval — no release. **Not `DEPLOYED`, not `ENABLED`, not `PRODUCTION-VALIDATED`.** The blocking merge-SHA follow-up below is discharged by this paragraph; where the record says unmerged, this paragraph supersedes it. *After merge:* the owner's live `--resume-from packaging-adaptation` of `2026-09-26T17-04-00-636Z` ran, stage 5 validated with Instagram's caption plus hashtags at 1,940 against the 1,815 target and 2,136 budget, and the critic ran — the follow-up below asking for that run is discharged; see the record above. Of the carried follow-ups, the mutation-harness speed-up and the BMW attribution are addressed by the change above (the latter in `claim-boundaries`, not in a critic prompt). The rest of this record is preserved as written at implementation.
 
 **State:** `IMPLEMENTED` on branch `claude/friendly-hypatia-1a2im5`, based directly on `origin/main` at `09b4cc7fa138164123e4ffa97755d3144c0338cb` (the merge of PR #95). **Not `MERGED`, not `DEPLOYED`, not `ENABLED`, not `PRODUCTION-VALIDATED`.** All six stages remain `executionEnabled: false`, no production path reaches any of them, and the partial-release interval (bound `2026-10-22T18:52Z`; see [Status](STATUS.md)) prohibits any release. The change is dormant stage code, one prompt, the operator-local CLI, the offline and mutation suites, and documentation. No enforced limit moved, no model, effort, critic, stage 1–4 prompt, `config/` file, `.github/` file or deployed path changed, and the tracked `.DS_Store` is untouched. No model was called.
 
@@ -98,8 +182,6 @@ These are not interchangeable and must not be collapsed into "done". `MERGED` in
 - Carried: the critic-prompt change for the identity records and the unflagged BMW highway attribution; speeding up the mutation harness (now 465); `POLICY_EFFORT.critic` and `THINKING_RESERVE_TOKENS` per lens; moving completed history out of this file.
 
 **Documents updated:** this file (this record; PR #95's record moved to *Merged repository change awaiting rollout* with its merge and CI reconciled; dated additions to *Output-field classification* and the local-CLI entry), [README](../README.md), [Status](STATUS.md), [Architecture](ARCHITECTURE.md), [Testing](TESTING.md), [AI handoff](AI_HANDOFF.md), [Security and continuity](SECURITY_AND_CONTINUITY.md), `agents/packaging-adaptation.md`, and the mutation harness's header. Each was reread in full.
-
-## Merged repository change awaiting rollout
 
 ### Stage 5's `claimUse` cap derived from the contract (24 → 36), and "Do not list" the identity records — `MERGED`
 
@@ -431,7 +513,7 @@ The owner's brief calls these "the four patterns"; they are recorded here as giv
 - ~~**Blocking:** this change's merge SHA (mutable-identifier exception).~~ **Discharged 2026-09-25:** merge `f2a58785c8a9aa2605dda3c7f7daf34ffdf16007`.
 - ~~An owner decision on the evidence-lens prompt sentence and the stage 2 prompt's "advisory" wording.~~ **Fixed in this change** by the owner-directed addendum (Delivered, item 6; `CM11`).
 - ~~An owner-run live full run after merge, to see whether (A)–(C) and the caveat findings fall. Not an acceptance gate for this change.~~ **Done 2026-09-25 (operator-local evidence):** run `2026-09-25T16-21-51-293Z`, $1.172956, 31 findings (17 blocking), against run `2026-09-24T18-01-36-439Z`'s $1.161138 and 28 findings (14 blocking). As the owner reported it, (A), (B) and (C) were gone from the copy; the remaining blocking findings were 8 about facts not bound and 9 writing errors. The follow-up change is *Evidence-pack scoping in the local CLI …* at the top of this file.
-- **Speed up the mutation harness** before it approaches about 650 mutations. Its runtime grows about 3.5 s per mutation, so at that size it would near the new 45-minute limit. *Dated addition, 2026-09-25:* run 213 took 33m59s for 417 mutations — about 4.9 s each, against about 3.4 s on run 210 — so on a slow runner the limit is nearer than 650. The scoping and identity-facts change brings the count to 445 and keeps the suite's own time almost flat to stay inside it. One option is to run mutations in parallel inside the same job; the five-job CI shape the M1 readiness gate requires must not change.
+- **Speed up the mutation harness** before it approaches about 650 mutations. Its runtime grows about 3.5 s per mutation, so at that size it would near the new 45-minute limit. *Dated addition, 2026-09-25:* run 213 took 33m59s for 417 mutations — about 4.9 s each, against about 3.4 s on run 210 — so on a slow runner the limit is nearer than 650. The scoping and identity-facts change brings the count to 445 and keeps the suite's own time almost flat to stay inside it. One option is to run mutations in parallel inside the same job; the five-job CI shape the M1 readiness gate requires must not change. *Dated addition, 2026-09-26:* PR #96's run took 42m36s in its mutation step for 465 mutations, inside a 43m59s job; the CI-headroom change at the top of this file (`IMPLEMENTED`) runs the mutations in parallel inside the same job and raises the job's limit to 60 minutes, with the five jobs unchanged.
 - Carried, out of scope here: tune `POLICY_EFFORT.critic` and `THINKING_RESERVE_TOKENS` per lens (two per-lens output samples now exist; see PR #90's record), the evidence pack's 64-record cap, and moving completed history out of this file.
 
 **Documents updated with implementation:** this file (this record; PR #91's record moved to *Merged repository change awaiting rollout* and its merge SHA recorded; PR #90's second replay's per-lens output tokens and base commit; the stale "at the top of this file" pointers in the PR #87, `maxIds`, PR #89 and PR #90 records), [README](../README.md), [Status](STATUS.md), [Architecture](ARCHITECTURE.md), [Testing](TESTING.md), [AI handoff](AI_HANDOFF.md), [Security and continuity](SECURITY_AND_CONTINUITY.md), `agents/hook-story-script.md`, `agents/production-direction.md`, `agents/packaging-adaptation.md`, `agents/final-critic-evidence.md` (one sentence), `agents/automotive-truth.md` (two sentences), `.github/workflows/ci.yml` (one timeout), `skills/claim-boundaries/SKILL.md`, and the mutation harness's header. Each was reread in full.

@@ -13,10 +13,11 @@
  *
  * The rebuild is skipped only where it cannot matter: `dist/` is compiled from
  * `src/` alone, and the suite reads `state/**` at RUNTIME, so a mutation to a
- * SQL file needs no compile. It still rebuilds when the PREVIOUS mutation
- * touched `src/`, because that mutation's restore left `dist/` compiled from
- * mutated sources. Nothing else changes: every mutation still runs the whole
- * suite, and a `src/` mutation that fails to compile is still not a pass.
+ * SQL file needs no compile. It still rebuilds when the PREVIOUS mutation in
+ * the same worker's copy touched `src/`, because that mutation's restore left
+ * that copy's `dist/` compiled from mutated sources. Nothing else changes:
+ * every mutation still runs the whole suite, and a `src/` mutation that fails
+ * to compile is still not a pass.
  *
  * The final group is not a derivation but an epistemic invariant: migration
  * 007's live application state is UNKNOWN in either direction, and neither the
@@ -198,7 +199,7 @@
  * list the identity records again.
  * It adds no captured path.
  *
- * The final appended group (M454-M465) covers stage 5's caption target stated
+ * The next appended group (M454-M465) covers stage 5's caption target stated
  * below its enforced budget, and `--resume-from packaging-adaptation`: the
  * target collapsing onto the budget, moving to 88% or rounding up; the
  * validator enforcing the target instead of the budget; the response schema or
@@ -207,16 +208,29 @@
  * accepting another resume point, pricing a whole run, skipping stage 4's
  * revalidation, or dropping the typed LIVE guard. It adds no captured path.
  *
+ * The final appended group (M466-M468) covers the comparison rule in
+ * `skills/claim-boundaries`: a comparison is its own claim, needing a record
+ * that states it, credited to the source whose record makes it; the rule no
+ * longer requiring that record, crediting the comparison to the source quoted
+ * beside it, or carrying the motivating runs' own wording. It adds no captured
+ * path.
+ *
  * It is offline and deterministic: no network, no database, no provider, no
- * credential. The authoritative checkout is read-only after a disposable copy
- * is prepared. Catchable signals clean that copy when possible; SIGKILL may
- * strand the disposable directory, but cannot dirty the authoritative checkout.
+ * credential. The mutations run in parallel on up to MAX_WORKERS workers (the
+ * runner's available parallelism, capped), each worker in its OWN disposable
+ * no-Git copy; mutation ids, expected checks and the printed order are fixed by
+ * position in MUTATIONS and do not depend on which worker ran what (see
+ * `runMutation` and `main` below). The authoritative checkout is read-only after
+ * the copies are prepared. Catchable signals stop every child build and suite,
+ * restore every in-flight file and remove every copy when possible; SIGKILL may
+ * strand the disposable directories, but cannot dirty the authoritative
+ * checkout.
  *
  * Run: npm run test:payload-mutation
  */
 
 import { createHash } from "node:crypto";
-import { execFileSync, spawn } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import {
   cpSync,
   existsSync,
@@ -228,13 +242,12 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { availableParallelism, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const AUTHORITATIVE_REPO_ROOT = resolve(dirname(SCRIPT_PATH), "../..");
-let REPO_ROOT = AUTHORITATIVE_REPO_ROOT;
 
 const PAYLOAD = "src/harness/agents/payloadContract.ts";
 const MIGRATION = "state/migrations/007_evidence_bounds.sql";
@@ -4106,11 +4119,49 @@ const STATED_CAPTION_AND_RESUME_MUTATIONS = [
   },
 ];
 
+/**
+ * The comparison rule in `skills/claim-boundaries` (four owner-run live runs of
+ * 2026-09-26 credited a manufacturer with a comparison the shop's own
+ * record made, and no lens flagged it). Appended after every earlier group.
+ */
+const COMPARISON_CLAIM_MUTATIONS = [
+  {
+    name: "the comparison rule no longer needs a record that states the comparison",
+    file: CLAIM_BOUNDARIES_SKILL,
+    from: "- **A comparison needs a record that states that comparison.** A record that\n"
+      + "  describes one side says nothing about how it compares with the other, however\n"
+      + "  naturally the comparison seems to follow. If no citable record states the\n"
+      + "  comparison, it may not be made.",
+    to: "- **A comparison may follow from a record that describes one side**, where the\n"
+      + "  comparison naturally follows from it.",
+    expect: ["CM12."],
+  },
+  {
+    name: "a comparison is credited to the source quoted beside it",
+    file: CLAIM_BOUNDARIES_SKILL,
+    from: "something else, the comparison belongs to the second record's source. Never\n"
+      + "  attach a comparison to a source whose own record does not make it, even when\n"
+      + "  that source's record is quoted in the same sentence.",
+    to: "something else, the comparison may be credited to the first source, whose record\n"
+      + "  is quoted in the same sentence.",
+    expect: ["CM12."],
+  },
+  {
+    name: "the comparison rule carries the motivating runs' own wording",
+    file: CLAIM_BOUNDARIES_SKILL,
+    from: "its own, separate from anything said about either side.",
+    to: "its own, separate from anything said about either side — city driving versus long, steady "
+      + "highway driving, say.",
+    expect: ["CM12."],
+  },
+];
+
 const MUTATIONS = [
   ...LEGACY_MUTATIONS, ...RAW_IDENTITY_MUTATIONS, ...FIELD_MARGIN_MUTATIONS, ...CRITIC_POLICY_MUTATIONS,
   ...CONTACT_LINE_MUTATIONS, ...CRITIC_PANEL_MUTATIONS, ...CRITIC_PANEL_FOLLOW_UP_MUTATIONS,
   ...WRITER_RESTRICTION_MUTATIONS, ...IDENTITY_SCOPE_MUTATIONS, ...LANE_S_APPROVED_FACTS_MUTATIONS,
   ...PACKAGING_CLAIM_USE_CAP_MUTATIONS, ...STATED_CAPTION_AND_RESUME_MUTATIONS,
+  ...COMPARISON_CLAIM_MUTATIONS,
 ];
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -4167,31 +4218,67 @@ const restoreRaw = (path, original) => {
   writeFileSync(path, original);
 };
 
-const build = () => {
-  execFileSync("npx", ["tsc", "-p", "tsconfig.json"], {
-    cwd: REPO_ROOT, stdio: "pipe", encoding: "utf8",
+/**
+ * The mutations run in parallel, on WORKER_COUNT workers. Each worker owns one
+ * disposable no-Git copy and runs its mutations there one at a time, exactly as
+ * a single sequential run would: mutate, rebuild when needed, run the suite,
+ * restore byte-for-byte and verify the restoration. No two workers share a
+ * copy, a `dist/`, a mutated file or a child process. Workers take the next
+ * mutation id from one shared queue, so which worker runs which mutation varies
+ * with timing, but no result depends on it: every copy starts from the same
+ * bytes, every mutation is restored before its worker takes the next one, and
+ * each worker tracks its own stale `dist/`. Mutation ids are fixed by position
+ * in MUTATIONS, and results are printed strictly in id order.
+ *
+ * The worker count is the runner's available parallelism, capped at
+ * MAX_WORKERS (each worker runs a full `tsc` and suite, so memory, not only CPU,
+ * bounds it), and never more than the number of mutations.
+ */
+const MAX_WORKERS = 4;
+const WORKER_COUNT = Math.max(1, Math.min(MAX_WORKERS, availableParallelism(), MUTATIONS.length));
+
+// Each build and suite runs as the leader of its own process group, so a
+// signal can stop it together with everything it started (`npx` runs `tsc`
+// through a shell; the suite spawns the local CLI).
+const activeChildren = new Set();
+const runChild = (command, args, cwd) => new Promise((resolveRun) => {
+  const child = execFile(command, args, {
+    cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, detached: true,
+  }, (error, stdout) => {
+    activeChildren.delete(child);
+    resolveRun({ ok: error === null, stdout: `${stdout ?? ""}` });
   });
+  activeChildren.add(child);
+});
+
+const build = async (root) => (await runChild("npx", ["tsc", "-p", "tsconfig.json"], root)).ok;
+
+const runSuite = async (root) => {
+  const { ok, stdout } = await runChild("node", ["dist/harness/contentIntelligence.selftest.js"], root);
+  if (ok) return { failed: [], crashed: false };
+  const failed = stdout.split("\n")
+    .filter((line) => line.startsWith("FAIL  "))
+    .map((line) => line.slice("FAIL  ".length));
+  return { failed, crashed: failed.length === 0 };
 };
 
-const runSuite = () => {
-  let stdout = "";
-  try {
-    stdout = execFileSync("node", ["dist/harness/contentIntelligence.selftest.js"], {
-      cwd: REPO_ROOT, stdio: "pipe", encoding: "utf8", maxBuffer: 64 * 1024 * 1024,
-    });
-    return { failed: [], crashed: false };
-  } catch (error) {
-    stdout = `${error.stdout ?? ""}`;
-    const failed = stdout.split("\n")
-      .filter((line) => line.startsWith("FAIL  "))
-      .map((line) => line.slice("FAIL  ".length));
-    return { failed, crashed: failed.length === 0 };
-  }
-};
+const buildAndRunSuite = async (root) => ((await build(root))
+  ? runSuite(root)
+  : { failed: [], crashed: true, buildFailed: true });
 
 const inFlight = new Map();
-let disposableTempRoot = null;
+const disposableTempRoots = new Set();
 let restoringOnSignal = false;
+const stopChildren = () => {
+  for (const child of activeChildren) {
+    try {
+      process.kill(-child.pid, "SIGKILL");
+    } catch {
+      // The group has already exited.
+    }
+  }
+  activeChildren.clear();
+};
 const restoreAll = () => {
   for (const [path, original] of inFlight) {
     try {
@@ -4203,15 +4290,17 @@ const restoreAll = () => {
   inFlight.clear();
 };
 const cleanupDisposable = () => {
+  // Children first, so no build or suite still writes into a copy being removed.
+  stopChildren();
   restoreAll();
-  if (disposableTempRoot !== null) {
+  for (const tempRoot of disposableTempRoots) {
     try {
-      rmSync(disposableTempRoot, { recursive: true, force: true });
+      rmSync(tempRoot, { recursive: true, force: true });
     } catch {
       // Best effort during process teardown. The authoritative tree was never a write target.
     }
-    disposableTempRoot = null;
   }
+  disposableTempRoots.clear();
 };
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
   process.on(signal, () => {
@@ -4282,7 +4371,7 @@ const runAbruptInterruptionProof = async (authoritativeBefore) => {
   }
 };
 
-const mutationBytes = (mutation, original) => {
+const mutationBytes = (mutation, original, root) => {
   if (mutation.from !== undefined) {
     const originalText = decodeUtf8Strict(original);
     const occurrences = originalText.split(mutation.from).length - 1;
@@ -4306,7 +4395,7 @@ const mutationBytes = (mutation, original) => {
     return Buffer.from(decodeUtf8Strict(original).replace(/\r?\n/g, "\r\n"), "utf8");
   }
   if (mutation.replaceWithFile !== undefined) {
-    return readFileSync(resolve(REPO_ROOT, mutation.replaceWithFile));
+    return readFileSync(resolve(root, mutation.replaceWithFile));
   }
   if (mutation.symlinkTo !== undefined) return null;
   throw new Error(`mutation ${mutation.name} has no mutation operation`);
@@ -4318,19 +4407,135 @@ const check = (name, ok, detail = "") => {
   if (!ok) failures += 1;
 };
 
+/**
+ * One mutation, in one worker's copy. It returns its check results rather than
+ * printing them, so they can be printed in id order whichever worker ran it.
+ */
+const runMutation = async (worker, mutation, index) => {
+  const results = [];
+  const record = (name, ok, detail = "") => { results.push({ name, ok, detail }); };
+  const root = worker.workspace;
+  const id = `M${index + 1}`;
+  const path = resolve(root, mutation.file);
+  const original = readFileSync(path);
+  const touched = [];
+  let mutated;
+  try {
+    mutated = mutationBytes(mutation, original, root);
+  } catch (error) {
+    record(`${id}. ${mutation.name}`, false, error instanceof Error ? error.message : String(error));
+    return results;
+  }
+
+  const touch = (target, bytes) => {
+    if (!inFlight.has(target)) {
+      inFlight.set(target, bytes);
+      touched.push([target, bytes]);
+    }
+  };
+
+  try {
+    touch(path, original);
+    if (mutation.symlinkTo !== undefined) {
+      rmSync(path, { force: true });
+      symlinkSync(resolve(root, mutation.symlinkTo), path);
+    } else {
+      writeFileSync(path, mutated);
+    }
+
+    if (mutation.coordinatedAuthority) {
+      const manifestPath = resolve(root, SQL_AUTHORITY);
+      const manifestOriginal = readFileSync(manifestPath);
+      const manifestText = decodeUtf8Strict(manifestOriginal);
+      const oldArtifactDigest = sha256(original);
+      const artifactOccurrences = manifestText.split(oldArtifactDigest).length - 1;
+      record(`${id}a. the changed artifact has exactly one manifest digest to update`,
+        artifactOccurrences === 1, `found ${artifactOccurrences}`);
+      if (artifactOccurrences !== 1) return results;
+      touch(manifestPath, manifestOriginal);
+      const manifestMutated = Buffer.from(
+        manifestText.replace(oldArtifactDigest, sha256(mutated)), "utf8",
+      );
+      writeFileSync(manifestPath, manifestMutated);
+
+      const sourcePath = resolve(root, SQL_AUTHORITY_SOURCE);
+      const sourceOriginal = readFileSync(sourcePath);
+      const sourceText = decodeUtf8Strict(sourceOriginal);
+      const oldManifestDigest = sha256(manifestOriginal);
+      const pinOccurrences = sourceText.split(oldManifestDigest).length - 1;
+      record(`${id}b. the changed manifest has exactly one independent source pin to update`,
+        pinOccurrences === 1, `found ${pinOccurrences}`);
+      if (pinOccurrences !== 1) return results;
+      touch(sourcePath, sourceOriginal);
+      writeFileSync(sourcePath, Buffer.from(
+        sourceText.replace(oldManifestDigest, sha256(manifestMutated)), "utf8",
+      ));
+    }
+
+    const compiled = (mutation.file.startsWith("src/") && !mutation.file.endsWith(".json"))
+      || mutation.coordinatedAuthority;
+    let buildFailed = false;
+    if (compiled || worker.distStale) {
+      buildFailed = !(await build(root));
+    }
+    worker.distStale = compiled;
+    const result = buildFailed ? { failed: [], crashed: true } : await runSuite(root);
+
+    if (mutation.mustPass) {
+      record(`${id}. ${mutation.name} — the suite stays green with coordinated authority`,
+        !buildFailed && !result.crashed && result.failed.length === 0,
+        buildFailed ? "the mutated copy did not compile"
+          : result.crashed ? "the suite aborted"
+          : `wrongly reported: ${result.failed.map((line) => line.split(".")[0]).join(", ")}`);
+    } else {
+      const named = mutation.expect.filter((prefix) =>
+        result.failed.some((line) => line.startsWith(prefix)));
+      record(`${id}. ${mutation.name} — the suite reports it by name `
+        + `(${mutation.expect.join(", ")})`,
+      !buildFailed && !result.crashed && named.length === mutation.expect.length,
+      buildFailed ? "the mutated copy did not compile, so no check could report it"
+        : result.crashed ? "the suite aborted instead of naming a failing check"
+        : `reported: ${result.failed.map((line) => line.split(".")[0]).join(", ") || "nothing"}`);
+    }
+  } finally {
+    for (const [restorePath, restoreBytes] of [...touched].reverse()) {
+      restoreRaw(restorePath, restoreBytes);
+      inFlight.delete(restorePath);
+      const restored = readFileSync(restorePath);
+      record(`${id}r. ${restorePath.slice(root.length + 1)} is restored byte-for-byte`,
+        restored.equals(restoreBytes) && sha256(restored) === sha256(restoreBytes),
+        `sha256 before=${sha256(restoreBytes)} after=${sha256(restored)}`);
+    }
+  }
+  return results;
+};
+
 async function main() {
+  const startedAt = Date.now();
   console.log("Payload-contract mutation tests\n");
   const coordinatedCount = MUTATIONS.filter((mutation) => mutation.mustPass).length;
   const prohibitedCount = MUTATIONS.length - coordinatedCount;
   console.log(`Source inventory: ${MUTATIONS.length} mutations (${prohibitedCount} prohibited, `
-    + `${coordinatedCount} coordinated-authority-update)\n`);
+    + `${coordinatedCount} coordinated-authority-update)`);
+  console.log(`Workers: ${WORKER_COUNT} (available parallelism ${availableParallelism()}, `
+    + `maximum ${MAX_WORKERS}), each in its own disposable no-Git copy\n`);
 
   const authoritativeBefore = snapshotAuthoritative();
-  const prepared = prepareDisposableWorkspace();
-  disposableTempRoot = prepared.tempRoot;
-  REPO_ROOT = prepared.workspace;
-  check("M-isolation. every mutation, build, suite, and restoration targets a disposable no-Git copy",
-    REPO_ROOT !== AUTHORITATIVE_REPO_ROOT && !existsSync(resolve(REPO_ROOT, ".git")));
+  const workers = [];
+  for (let slot = 0; slot < WORKER_COUNT; slot += 1) {
+    const prepared = prepareDisposableWorkspace();
+    disposableTempRoots.add(prepared.tempRoot);
+    workers.push({ ...prepared, distStale: false });
+  }
+  const workspaces = workers.map((worker) => worker.workspace);
+  check("M-isolation. every mutation, build, suite, and restoration targets a disposable no-Git copy, "
+    + "one per worker, shared by no other worker",
+  workspaces.every((workspace) => workspace !== AUTHORITATIVE_REPO_ROOT
+    && !workspace.startsWith(`${AUTHORITATIVE_REPO_ROOT}/`)
+    && !existsSync(resolve(workspace, ".git")))
+    && new Set(workers.map((worker) => worker.tempRoot)).size === WORKER_COUNT
+    && workers.every((worker) => workers.every((other) => other === worker
+      || !worker.tempRoot.startsWith(`${other.tempRoot}/`))));
   check(`M-capture. captured raw bytes and Git status for all ${MUTATION_TARGETS.length} authoritative targets`,
     authoritativeBefore.files.size === MUTATION_TARGETS.length);
   const interruption = await runAbruptInterruptionProof(authoritativeBefore);
@@ -4340,127 +4545,61 @@ async function main() {
     && interruption.unchangedDuring
     && interruption.unchangedAfter);
 
-  build();
-  const baseline = runSuite();
-  check("M0. the unmutated disposable copy builds and the whole suite passes",
-    !baseline.crashed && baseline.failed.length === 0,
-    `failed: ${baseline.failed.join(" | ") || "(crashed)"}`);
+  const baselines = await Promise.all(workspaces.map(buildAndRunSuite));
+  check(`M0. every unmutated disposable copy (${WORKER_COUNT}) builds and the whole suite passes`,
+    baselines.every((baseline) => !baseline.crashed && baseline.failed.length === 0),
+    baselines.map((baseline, slot) => `copy ${slot + 1}: `
+      + (baseline.buildFailed ? "did not compile"
+        : baseline.crashed ? "crashed" : baseline.failed.join(" | ") || "green")).join("; "));
   if (failures) {
     console.log("\nBaseline or isolation proof is not green; mutation results would be meaningless.");
     process.exit(1);
   }
 
-  let distStale = false;
-  for (const [index, mutation] of MUTATIONS.entries()) {
-    const id = `M${index + 1}`;
-    const path = resolve(REPO_ROOT, mutation.file);
-    const original = readFileSync(path);
-    const touched = [];
-    let mutated;
-    try {
-      mutated = mutationBytes(mutation, original);
-    } catch (error) {
-      check(`${id}. ${mutation.name}`, false, error instanceof Error ? error.message : String(error));
-      continue;
+  const outcomes = new Array(MUTATIONS.length);
+  let nextIndex = 0;
+  let nextToPrint = 0;
+  const printInOrder = () => {
+    while (nextToPrint < outcomes.length && outcomes[nextToPrint] !== undefined) {
+      for (const { name, ok, detail } of outcomes[nextToPrint]) check(name, ok, detail);
+      nextToPrint += 1;
     }
-
-    const touch = (target, bytes) => {
-      if (!inFlight.has(target)) {
-        inFlight.set(target, bytes);
-        touched.push([target, bytes]);
-      }
-    };
-
-    try {
-      touch(path, original);
-      if (mutation.symlinkTo !== undefined) {
-        rmSync(path, { force: true });
-        symlinkSync(resolve(REPO_ROOT, mutation.symlinkTo), path);
-      } else {
-        writeFileSync(path, mutated);
-      }
-
-      if (mutation.coordinatedAuthority) {
-        const manifestPath = resolve(REPO_ROOT, SQL_AUTHORITY);
-        const manifestOriginal = readFileSync(manifestPath);
-        const manifestText = decodeUtf8Strict(manifestOriginal);
-        const oldArtifactDigest = sha256(original);
-        const artifactOccurrences = manifestText.split(oldArtifactDigest).length - 1;
-        check(`${id}a. the changed artifact has exactly one manifest digest to update`,
-          artifactOccurrences === 1, `found ${artifactOccurrences}`);
-        if (artifactOccurrences !== 1) continue;
-        touch(manifestPath, manifestOriginal);
-        const manifestMutated = Buffer.from(
-          manifestText.replace(oldArtifactDigest, sha256(mutated)), "utf8",
-        );
-        writeFileSync(manifestPath, manifestMutated);
-
-        const sourcePath = resolve(REPO_ROOT, SQL_AUTHORITY_SOURCE);
-        const sourceOriginal = readFileSync(sourcePath);
-        const sourceText = decodeUtf8Strict(sourceOriginal);
-        const oldManifestDigest = sha256(manifestOriginal);
-        const pinOccurrences = sourceText.split(oldManifestDigest).length - 1;
-        check(`${id}b. the changed manifest has exactly one independent source pin to update`,
-          pinOccurrences === 1, `found ${pinOccurrences}`);
-        if (pinOccurrences !== 1) continue;
-        touch(sourcePath, sourceOriginal);
-        writeFileSync(sourcePath, Buffer.from(
-          sourceText.replace(oldManifestDigest, sha256(manifestMutated)), "utf8",
-        ));
-      }
-
-      const compiled = (mutation.file.startsWith("src/") && !mutation.file.endsWith(".json"))
-        || mutation.coordinatedAuthority;
-      let buildFailed = false;
-      if (compiled || distStale) {
-        try {
-          build();
-        } catch {
-          buildFailed = true;
-        }
-      }
-      distStale = compiled;
-      const result = buildFailed ? { failed: [], crashed: true } : runSuite();
-
-      if (mutation.mustPass) {
-        check(`${id}. ${mutation.name} — the suite stays green with coordinated authority`,
-          !buildFailed && !result.crashed && result.failed.length === 0,
-          buildFailed ? "the mutated copy did not compile"
-            : result.crashed ? "the suite aborted"
-            : `wrongly reported: ${result.failed.map((line) => line.split(".")[0]).join(", ")}`);
-      } else {
-        const named = mutation.expect.filter((prefix) =>
-          result.failed.some((line) => line.startsWith(prefix)));
-        check(`${id}. ${mutation.name} — the suite reports it by name `
-          + `(${mutation.expect.join(", ")})`,
-        !buildFailed && !result.crashed && named.length === mutation.expect.length,
-        buildFailed ? "the mutated copy did not compile, so no check could report it"
-          : result.crashed ? "the suite aborted instead of naming a failing check"
-          : `reported: ${result.failed.map((line) => line.split(".")[0]).join(", ") || "nothing"}`);
-      }
-    } finally {
-      for (const [restorePath, restoreBytes] of [...touched].reverse()) {
-        restoreRaw(restorePath, restoreBytes);
-        inFlight.delete(restorePath);
-        const restored = readFileSync(restorePath);
-        check(`${id}r. ${restorePath.slice(REPO_ROOT.length + 1)} is restored byte-for-byte`,
-          restored.equals(restoreBytes) && sha256(restored) === sha256(restoreBytes),
-          `sha256 before=${sha256(restoreBytes)} after=${sha256(restored)}`);
-      }
+  };
+  const runWorker = async (worker) => {
+    while (nextIndex < MUTATIONS.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      outcomes[index] = await runMutation(worker, MUTATIONS[index], index);
+      printInOrder();
     }
-  }
+  };
+  await Promise.all(workers.map(runWorker));
+  printInOrder();
+  check("M-order. every mutation ran exactly once and its results were printed in id order",
+    nextToPrint === MUTATIONS.length && outcomes.every((outcome) => Array.isArray(outcome)));
 
-  build();
-  const restoredRun = runSuite();
-  check("M-end. after every raw mutation is reverted the disposable suite passes again",
-    !restoredRun.crashed && restoredRun.failed.length === 0,
-    `failed: ${restoredRun.failed.join(" | ") || "(crashed)"}`);
+  const restoredRuns = await Promise.all(workspaces.map(buildAndRunSuite));
+  check("M-end. after every raw mutation is reverted every disposable copy's suite passes again",
+    restoredRuns.every((run) => !run.crashed && run.failed.length === 0),
+    restoredRuns.map((run, slot) => `copy ${slot + 1}: `
+      + (run.buildFailed ? "did not compile"
+        : run.crashed ? "crashed" : run.failed.join(" | ") || "green")).join("; "));
+  check("M-copies. every worker's copy of every target is byte-identical to the authoritative bytes "
+    + "captured before the run",
+  workspaces.every((workspace) => [...authoritativeBefore.files].every(([file, before]) => {
+    const target = resolve(workspace, file);
+    if (!lstatSync(target).isFile()) return false;
+    const after = readFileSync(target);
+    return after.equals(before) && sha256(after) === sha256(before);
+  })));
   check("M-authority. authoritative target bytes and Git status stayed unchanged",
     authoritativeSnapshotMatches(authoritativeBefore));
 
+  const seconds = Math.round((Date.now() - startedAt) / 1000);
+  const duration = `${Math.floor(seconds / 60)}m${String(seconds % 60).padStart(2, "0")}s`;
   console.log(failures === 0
-    ? `\nALL PASS — ${MUTATIONS.length} mutations`
-    : `\n${failures} FAILURE(S) — ${MUTATIONS.length} mutations`);
+    ? `\nALL PASS — ${MUTATIONS.length} mutations, ${WORKER_COUNT} workers, ${duration}`
+    : `\n${failures} FAILURE(S) — ${MUTATIONS.length} mutations, ${WORKER_COUNT} workers, ${duration}`);
   process.exit(failures === 0 ? 0 : 1);
 }
 
