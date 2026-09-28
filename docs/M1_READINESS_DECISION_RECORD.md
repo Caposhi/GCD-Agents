@@ -67,6 +67,11 @@ this record's prerequisites exists on the branch `codex/m1-readiness-runner` and
 documented in [the M1 readiness runner](M1_READINESS_RUNNER.md). It is **not merged
 and not on `main`**, and it is **tooling only**.
 
+*Corrected 2026-09-28 — the heading and the paragraph above are kept as written:* the runner has
+since merged, through PR #66 (`codex/m1-readiness-runner`) at
+`508423adf186cd3a82164b08df4116703558d7e3`, and is on `main` as `scripts/ops/m1-readiness/`. It is
+still tooling only. The superseded shell-packet branch named below remains unmerged.
+
 **It changes nothing in this record.** It has never been run against production, no
 agent session holds a production credential, and its verdict is fixed in source at
 `M1 BLOCKED / NO-GO`. Every fact in the table above that is `NOT YET ESTABLISHED`
