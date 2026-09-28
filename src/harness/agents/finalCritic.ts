@@ -431,8 +431,12 @@ export const CRITIC_FINDING_OWNERS = [
 ] as const;
 export type CriticFindingOwner = (typeof CRITIC_FINDING_OWNERS)[number];
 
-/** The three owners naming an upstream stage that could revise its output. */
-const REVISABLE_OWNERS: ReadonlySet<CriticFindingOwner> = new Set([
+/**
+ * The three owners naming an upstream stage that could revise its output. The
+ * local CLI's opt-in revision pass sends a finding to a model only when its
+ * owner is in this set (and it is not a `human_decision` finding).
+ */
+export const REVISABLE_OWNERS: ReadonlySet<CriticFindingOwner> = new Set([
   "hook-story-script", "production-direction", "packaging-adaptation",
 ]);
 
@@ -1191,6 +1195,104 @@ export function aggregateCriticPanel(lensOutputs: readonly CriticLensOutput[]): 
     },
     claimFindingUse: { kind: "typed_critic_claim_use", used },
   };
+}
+
+/**
+ * Revalidate a saved panel output — what a later revision pass reads its
+ * round-1 findings from.
+ *
+ * The panel output is not model output: code aggregated it from four validated
+ * lens outputs. So it is proven the only way that means anything: split it back
+ * into its four lens answers exactly as they were returned — each lens's
+ * verdict, summary, findings and (for a claim-binding lens) its bindings, with
+ * finding indexes shifted back — run each through `validateCriticLensOutput`
+ * against the packages the critic saw, re-aggregate, and require the result to
+ * equal the saved output byte for byte. An edit that breaks any lens's
+ * contract — a severity, owner and verdict that no longer agree, a category
+ * outside the lens's own, an over-long or URL-bearing field, a count or a
+ * binding that no longer adds up — is refused.
+ *
+ * `packagingOutput` is stage 5's revalidated output with the contact lines
+ * attached — the packages the critic was shown.
+ *
+ * Structural validation, like every revalidator in this pipeline: it proves the
+ * value is one this stage could have produced against this evidence, not that a
+ * run produced it, and nothing about whether any finding is right. An edit that
+ * keeps every lens consistent — one revisable owner swapped for another, say —
+ * is indistinguishable from a real answer and passes.
+ */
+export function revalidateFinalCriticOutput(
+  value: unknown,
+  requestedPlatforms: PackagingPlatform[],
+  packagingOutput: PackagingAdaptationOutput,
+  scriptOutput: HookStoryScriptOutput,
+  truthOutput: AutomotiveTruthOutput,
+  pack: EvidencePack,
+  label = "criticOutput",
+): FinalCriticOutput {
+  const failHere = (message: string): never => fail(`"${label}" is invalid: ${message}`);
+  const obj = (v: unknown, name: string): Record<string, unknown> => {
+    if (!v || typeof v !== "object" || Array.isArray(v)) failHere(`"${name}" must be an object`);
+    return v as Record<string, unknown>;
+  };
+  const output = obj(value, label);
+  const provisional = obj(output.provisional, "provisional");
+  const claimFindingUse = obj(output.claimFindingUse, "claimFindingUse");
+  const lenses = provisional.lenses;
+  const findings = provisional.findings;
+  const used = claimFindingUse.used;
+  if (!Array.isArray(lenses) || lenses.length !== CRITIC_LENSES.length) {
+    failHere(`"provisional.lenses" must hold one entry per lens (${CRITIC_LENSES.length})`);
+  }
+  if (!Array.isArray(findings)) failHere('"provisional.findings" must be an array');
+  if (!Array.isArray(used)) failHere('"claimFindingUse.used" must be an array');
+
+  let offset = 0;
+  const lensOutputs = CRITIC_LENSES.map((lens, index) => {
+    const entry = obj((lenses as unknown[])[index], `provisional.lenses[${index}]`);
+    if (entry.lens !== lens) failHere(`"provisional.lenses[${index}]" is not lens ${lens}`);
+    const count = entry.findingCount;
+    if (typeof count !== "number" || !Number.isInteger(count) || count < 0
+        || offset + count > (findings as unknown[]).length) {
+      failHere(`"provisional.lenses[${index}].findingCount" does not match the findings`);
+    }
+    const own = (findings as unknown[]).slice(offset, offset + (count as number)).map((f, i) => {
+      const finding = obj(f, `provisional.findings[${offset + i}]`);
+      if (finding.lens !== lens) failHere(`"provisional.findings[${offset + i}]" is not lens ${lens}'s`);
+      return Object.fromEntries(ALLOWED_FINDING_FIELDS.map((field) => [field, finding[field]]));
+    });
+    const bindings = (used as unknown[])
+      .map((b, i) => obj(b, `claimFindingUse.used[${i}]`))
+      .filter((b) => b.lens === lens)
+      .map((b) => ({
+        findingIndex: typeof b.findingIndex === "number" ? b.findingIndex - offset : b.findingIndex,
+        platform: b.platform,
+        factId: b.factId,
+        summary: b.provisionalSummary,
+      }));
+    const raw: Record<string, unknown> = {
+      verdict: entry.verdict,
+      summary: entry.summary,
+      findings: own,
+      ...(CRITIC_LENS_BINDS_CLAIMS[lens] ? { claimFindingUse: bindings } : {}),
+    };
+    offset += count as number;
+    try {
+      return validateCriticLensOutput(
+        lens, raw, requestedPlatforms, packagingOutput, scriptOutput, truthOutput, pack,
+      );
+    } catch (error) {
+      return failHere(error instanceof Error ? error.message : String(error));
+    }
+  });
+  if (offset !== (findings as unknown[]).length) {
+    failHere("the lenses' finding counts do not account for every finding");
+  }
+  const rebuilt = aggregateCriticPanel(lensOutputs);
+  if (JSON.stringify(rebuilt) !== JSON.stringify(value)) {
+    failHere("it does not equal the deterministic aggregation of its own lens answers");
+  }
+  return rebuilt;
 }
 
 /**

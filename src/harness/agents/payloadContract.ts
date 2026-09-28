@@ -1750,6 +1750,39 @@ export const CRITIC_LENS_ASSEMBLED_CEILINGS: Readonly<Record<CriticLens, number>
  * one actually sends. `final-critic` sends one request per lens, so its entry is
  * the largest of its four lens payloads.
  */
+/**
+ * The three writing stages a revision pass may re-run, in pipeline order. The
+ * same three stages `finalCritic.ts` calls revisable owners.
+ */
+export const REVISABLE_STAGES = ["hook-story-script", "production-direction", "packaging-adaptation"] as const;
+export type RevisableStage = (typeof REVISABLE_STAGES)[number];
+
+/**
+ * The blocks each writing stage sends on an ordinary request, in order, at their
+ * maximum body sizes. One definition, read by `STAGE_ASSEMBLED_CEILINGS` below
+ * and by the revision pass's derivation, so a revision request is always
+ * measured on exactly the inputs the stage normally receives.
+ */
+export const WRITER_STAGE_BLOCKS: Readonly<Record<RevisableStage, ReadonlyArray<{ label: string; bodyChars: number }>>> = {
+  "hook-story-script": [
+    { label: "STRATEGY_OUTPUT", bodyChars: STRATEGY_OUTPUT.transportChars },
+    { label: "TRUTH_OUTPUT", bodyChars: TRUTH_OUTPUT.transportChars },
+    { label: "PERMITTED_CLAIMS", bodyChars: PERMITTED_CLAIMS_BLOCK_CHARS },
+  ],
+  "production-direction": [
+    { label: "SCRIPT_OUTPUT", bodyChars: SCRIPT_OUTPUT.transportChars },
+    { label: "SCRIPT_CLAIMS", bodyChars: SCRIPT_CLAIMS_BLOCK_CHARS },
+    ...WRITER_RESTRICTION_BLOCKS,
+  ],
+  "packaging-adaptation": [
+    { label: "SCRIPT_OUTPUT", bodyChars: SCRIPT_OUTPUT.transportChars },
+    { label: "PRODUCTION_OUTPUT", bodyChars: DIRECTION_OUTPUT.transportChars },
+    { label: "REQUESTED_PLATFORMS", bodyChars: REQUESTED_PLATFORMS_BLOCK_CHARS },
+    { label: "SCRIPT_CLAIMS", bodyChars: PACKAGING_SCRIPT_CLAIMS_BLOCK_CHARS },
+    ...WRITER_RESTRICTION_BLOCKS,
+  ],
+};
+
 export const STAGE_ASSEMBLED_CEILINGS: Record<string, number> = {
     "strategy-concept": assembledCeiling([
       { label: "GOAL", bodyChars: GOAL_BLOCK_CHARS },
@@ -1759,23 +1792,9 @@ export const STAGE_ASSEMBLED_CEILINGS: Record<string, number> = {
       { label: "STRATEGY_OUTPUT", bodyChars: STRATEGY_OUTPUT.transportChars },
       { label: "EVIDENCE", bodyChars: EVIDENCE_PACK_BLOCK_CHARS },
     ]),
-    "hook-story-script": assembledCeiling([
-      { label: "STRATEGY_OUTPUT", bodyChars: STRATEGY_OUTPUT.transportChars },
-      { label: "TRUTH_OUTPUT", bodyChars: TRUTH_OUTPUT.transportChars },
-      { label: "PERMITTED_CLAIMS", bodyChars: PERMITTED_CLAIMS_BLOCK_CHARS },
-    ]),
-    "production-direction": assembledCeiling([
-      { label: "SCRIPT_OUTPUT", bodyChars: SCRIPT_OUTPUT.transportChars },
-      { label: "SCRIPT_CLAIMS", bodyChars: SCRIPT_CLAIMS_BLOCK_CHARS },
-      ...WRITER_RESTRICTION_BLOCKS,
-    ]),
-    "packaging-adaptation": assembledCeiling([
-      { label: "SCRIPT_OUTPUT", bodyChars: SCRIPT_OUTPUT.transportChars },
-      { label: "PRODUCTION_OUTPUT", bodyChars: DIRECTION_OUTPUT.transportChars },
-      { label: "REQUESTED_PLATFORMS", bodyChars: REQUESTED_PLATFORMS_BLOCK_CHARS },
-      { label: "SCRIPT_CLAIMS", bodyChars: PACKAGING_SCRIPT_CLAIMS_BLOCK_CHARS },
-      ...WRITER_RESTRICTION_BLOCKS,
-    ]),
+    "hook-story-script": assembledCeiling(WRITER_STAGE_BLOCKS["hook-story-script"]),
+    "production-direction": assembledCeiling(WRITER_STAGE_BLOCKS["production-direction"]),
+    "packaging-adaptation": assembledCeiling(WRITER_STAGE_BLOCKS["packaging-adaptation"]),
     "final-critic": Math.max(...CRITIC_LENSES.map((lens) => CRITIC_LENS_ASSEMBLED_CEILINGS[lens])),
 };
 
@@ -1793,6 +1812,112 @@ export const MAX_PAYLOAD_CHARS = (() => {
   const largest = Math.max(...Object.values(STAGE_ASSEMBLED_CEILINGS));
   return Math.ceil(largest / 10_000) * 10_000;
 })();
+
+// ---------------------------------------------------------------------------
+// The revision pass — one opt-in round, sized inside the shared boundary
+// ---------------------------------------------------------------------------
+
+/**
+ * The most findings one critic panel can return: every lens at its cap. A
+ * revision request can never be sent more than this.
+ */
+export const MAX_PANEL_FINDINGS = CRITIC_LENSES.length * CRITIC_FIELD_LIMITS.maxFindings;
+
+/**
+ * A panel finding's id in a revision: `F` and its 1-based position in the
+ * round-1 panel's aggregated findings. Assigned by code, never by a model.
+ */
+export function revisionFindingId(index: number): string {
+  return `F${index + 1}`;
+}
+
+/**
+ * One `CRITIC_FINDINGS` entry, emptied, with every enum at its longest value:
+ * the widest id, the longest lens name, the longest category any lens can emit
+ * and the longest platform. Mirrors `renderCriticFindings` in
+ * `revisionInput.ts`; a regression renders a real worst-case block against it.
+ */
+const criticFindingEntryWitness = () => ({
+  id: revisionFindingId(MAX_PANEL_FINDINGS - 1),
+  severity: "advisory",
+  category: "hashtag_keyword_relevance",
+  platform: "google_business_profile",
+  lens: CRITIC_LENSES.reduce((a, b) => (b.length > a.length ? b : a)),
+  issue: "",
+  suggestedAction: "",
+});
+
+/**
+ * The `CRITIC_FINDINGS` block's ceiling for `count` findings: each at the
+ * critic's enforced `issue` and `suggestedAction` limits, escaping included.
+ */
+export function criticFindingsBlockChars(count: number): number {
+  return serializedCeiling(
+    times(count, criticFindingEntryWitness),
+    count * (CRITIC_FIELD_LIMITS.issueChars + CRITIC_FIELD_LIMITS.suggestedActionChars),
+  );
+}
+
+/**
+ * `PREVIOUS_OUTPUT`: a writing stage's own round-1 output, bounded by that
+ * stage's own output contract. Stage 5's is its model output as saved, before
+ * any contact line is attached.
+ */
+export const REVISION_PREVIOUS_OUTPUT_CHARS: Readonly<Record<RevisableStage, number>> = {
+  "hook-story-script": SCRIPT_OUTPUT.transportChars,
+  "production-direction": DIRECTION_OUTPUT.transportChars,
+  "packaging-adaptation": PACKAGING_OUTPUT.transportChars,
+};
+
+/**
+ * A revision request's blocks: the stage's ordinary blocks, unchanged and in
+ * order, then `PREVIOUS_OUTPUT`, then `CRITIC_FINDINGS` sized for `findingCount`.
+ */
+export function revisionStageBlocks(
+  stage: RevisableStage, findingCount: number,
+): ReadonlyArray<{ label: string; bodyChars: number }> {
+  return [
+    ...WRITER_STAGE_BLOCKS[stage],
+    { label: "PREVIOUS_OUTPUT", bodyChars: REVISION_PREVIOUS_OUTPUT_CHARS[stage] },
+    { label: "CRITIC_FINDINGS", bodyChars: criticFindingsBlockChars(findingCount) },
+  ];
+}
+
+/**
+ * The most findings each writing stage's `CRITIC_FINDINGS` block may carry:
+ * the largest N for which the stage's worst-case revision payload — its ordinary
+ * inputs, `PREVIOUS_OUTPUT`, and N worst-case findings — stays within
+ * `MAX_PAYLOAD_CHARS`, and never more than a panel can return.
+ *
+ * **Derived, never typed, and the boundary does not move.** The owner's
+ * decision of 2026-09-28: `MAX_PAYLOAD_CHARS` stays what the six ordinary
+ * stages derive (410,000), and no other limit changes. Sent every one of a
+ * panel's 80 findings, stage 3's revision request would reach 430,627 and
+ * stage 5's 507,371; so each stage is sent at most its cap. Which findings are
+ * kept, and the refusal when a stage owns more blocking findings than its cap,
+ * are in `revision.ts`.
+ */
+export const REVISION_FINDING_CAPS: Readonly<Record<RevisableStage, number>> = Object.fromEntries(
+  REVISABLE_STAGES.map((stage) => {
+    let cap = 0;
+    while (cap < MAX_PANEL_FINDINGS
+      && assembledCeiling(revisionStageBlocks(stage, cap + 1)) <= MAX_PAYLOAD_CHARS) {
+      cap += 1;
+    }
+    return [stage, cap];
+  }),
+) as Record<RevisableStage, number>;
+
+/**
+ * Each writing stage's revision payload at its cap. Deliberately NOT part of
+ * `STAGE_ASSEMBLED_CEILINGS`, so it can never raise `MAX_PAYLOAD_CHARS`: a
+ * regression asserts each is within it instead.
+ */
+export const REVISION_ASSEMBLED_CEILINGS: Readonly<Record<RevisableStage, number>> = Object.fromEntries(
+  REVISABLE_STAGES.map((stage) => [
+    stage, assembledCeiling(revisionStageBlocks(stage, REVISION_FINDING_CAPS[stage])),
+  ]),
+) as Record<RevisableStage, number>;
 
 /**
  * The shared ceiling on assembled instruction text.

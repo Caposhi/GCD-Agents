@@ -56,6 +56,21 @@
  * unproven path, prices only the requests it makes, keeps the typed LIVE gate,
  * and writes a new sibling directory; the source run is never modified.
  *
+ * `--revise-from <run-dir>` makes one opt-in revision round on a completed run,
+ * and `--revise-once` makes the same round right after a full run. It verifies
+ * the source exactly as a resume does — fingerprints, recorded scope, every
+ * saved stage 1–5 output — and also revalidates the saved critic panel output.
+ * Then it re-runs, once, the earliest writing stage that owns a blocking
+ * finding and every later writing stage through stage 5, each given its own
+ * round-1 output (`PREVIOUS_OUTPUT`) and only the findings it owns
+ * (`CRITIC_FINDINGS`, at most its derived cap); re-attaches the contact lines;
+ * and runs all four critic lenses fresh, shown no round-1 finding or verdict.
+ * Findings owned by `human_review`, and every `human_decision` finding, never
+ * reach a model: they are listed as owner items. No revisable blocking finding
+ * means no request at all. It prices only the requests it makes, keeps the typed
+ * LIVE gate, and writes a new `<source>-revised-<timestamp>` sibling; the
+ * source run is never modified. See `src/harness/agents/revision.ts`.
+ *
  * Requires `npm run build` first (this script imports the compiled `dist/`
  * output, the same way `npm run test:offline` and the other `scripts/*.mjs`
  * tools in this repository do).
@@ -64,6 +79,8 @@
  *   node scripts/local/content-run.mjs "<goal text>" [options]
  *   node scripts/local/content-run.mjs --replay-critic <run-dir> ["<goal text>"] [options]
  *   node scripts/local/content-run.mjs --resume-from packaging-adaptation <run-dir> [options]
+ *   node scripts/local/content-run.mjs --revise-from <run-dir> [options]
+ *   node scripts/local/content-run.mjs "<goal text>" --revise-once [options]
  *   node scripts/local/content-run.mjs --list-tags [--automotive-facts <path>] [--scope-tags a,b,c]
  *
  * Options:
@@ -96,6 +113,19 @@
  *                              1-4 output is present and revalidates. Reuses the
  *                              recorded goal, scope and platforms.
  *                              packaging-adaptation is the only resume point.
+ *   --revise-from <run-dir>    One revision round on a completed run (it must hold
+ *                              run-meta.json with all three fingerprints, saved
+ *                              stage 1-5 outputs and 06-final-critic.json). Re-runs
+ *                              the earliest writing stage owning a blocking finding
+ *                              and every later writing stage, then all four critic
+ *                              lenses fresh. Stages 1-2 are never re-run. No
+ *                              revisable blocking finding: no request. Writes
+ *                              <run-dir>-revised-<timestamp>; never touches the
+ *                              source run.
+ *   --revise-once              With a goal: a full run, then the same single
+ *                              revision round on it. Round 1's run directory is
+ *                              kept exactly as written. Live: the revision is
+ *                              priced after round 1 and asks for LIVE again.
  *   --scope-tags a,b,c         Narrow the evidence pack to records carrying any of
  *                              these tags. The contact-line and identity records
  *                              are always included. Default: no scope — every
@@ -136,6 +166,8 @@ function usage() {
 
        node scripts/local/content-run.mjs --replay-critic <run-dir> ["<goal text>"] [options]
        node scripts/local/content-run.mjs --resume-from packaging-adaptation <run-dir> [options]
+       node scripts/local/content-run.mjs --revise-from <run-dir> [options]
+       node scripts/local/content-run.mjs "<goal text>" --revise-once [options]
        node scripts/local/content-run.mjs --list-tags [--automotive-facts <path>] [--scope-tags a,b,c]
 
 Options:
@@ -146,6 +178,10 @@ Options:
   --resume-from packaging-adaptation <run-dir>
                                    Run stage 5 and final-critic against a saved run's stage 1-4 outputs;
                                    writes a new sibling directory. packaging-adaptation is the only resume point.
+  --revise-from <run-dir>          One revision round on a completed run: re-run the earliest writing stage that owns
+                                   a blocking finding and every later one, then the critic panel fresh. Human items
+                                   never reach a model. Writes <run-dir>-revised-<timestamp>.
+  --revise-once                    With a goal: a full run, then the same single revision round on it.
   --scope-tags a,b,c               Narrow the evidence pack to records with any of these tags. Contact-line and
                                    identity records are always included. Default: no scope (every record).
   --list-tags                      Print each tag and its record count (no claim text) and exit; no model call.
@@ -169,6 +205,8 @@ export function parseArgs(argv) {
     reviewedAtExplicit: false,
     replayCritic: undefined,
     resumeFrom: undefined,
+    reviseFrom: undefined,
+    reviseOnce: false,
     scopeTags: undefined,
     listTags: false,
     help: false,
@@ -185,6 +223,8 @@ export function parseArgs(argv) {
     if (token === "--reviewed-at") { args.reviewedAt = rest.shift(); args.reviewedAtExplicit = true; continue; }
     if (token === "--replay-critic") { args.replayCritic = resolve(process.cwd(), rest.shift() ?? ""); continue; }
     if (token === "--resume-from") { args.resumeFrom = parseResumeFrom(rest.shift(), rest.shift()); continue; }
+    if (token === "--revise-from") { args.reviseFrom = parseReviseFrom(rest.shift()); continue; }
+    if (token === "--revise-once") { args.reviseOnce = true; continue; }
     if (token === "--scope-tags") { args.scopeTags = normalizeScopeTags(rest.shift()); continue; }
     if (token === "--list-tags") { args.listTags = true; continue; }
     if (token.startsWith("--")) { throw new Error(`unknown option: ${token}`); }
@@ -207,6 +247,12 @@ export function parseResumeFrom(stage, dir) {
     throw new Error(`--resume-from ${stage} needs a run directory: --resume-from ${stage} <run-dir>`);
   }
   return { stage, dir: resolve(process.cwd(), dir) };
+}
+
+/** `--revise-from <run-dir>`, refused unless a directory follows. */
+export function parseReviseFrom(dir) {
+  if (!dir || dir.startsWith("--")) throw new Error("--revise-from needs a run directory: --revise-from <run-dir>");
+  return resolve(process.cwd(), dir);
 }
 
 /**
@@ -449,11 +495,18 @@ function buildFakeStageResponses(goal, pack) {
             summary: "Fake-runner voice lens: no voice concern raised by canned output.",
             findings: [],
           };
+        // One blocking finding owned by production-direction, so a fake run
+        // exercises the opt-in revision path (--revise-once, --revise-from) end
+        // to end; and one human item, which never reaches a model.
         case "production-coherence":
           return {
-            verdict: "provisional_pass",
+            verdict: "needs_revision",
             summary: "Fake-runner production lens: canned output, not a reviewed piece of content.",
             findings: [{
+              severity: "blocking", category: "production_coherence", platform: "cross_platform", owner: "production-direction",
+              issue: "Canned fake-runner finding: the shot list is not checked against the script, because nothing here was reviewed.",
+              suggestedAction: "Re-direct the shots against the script's beats, changing nothing else.",
+            }, {
               severity: "advisory", category: "human_decision", platform: "cross_platform", owner: "human_review",
               issue: "This is a canned, fake-runner demonstration output, not a reviewed piece of content.",
               suggestedAction: "A human must review the real evidence, the real script, and the real package before anything here is used.",
@@ -543,9 +596,10 @@ export async function loadRuntime() {
   const payloadContract = await import(resolve(DIST_HARNESS, "agents/payloadContract.js"));
   const contact = await import(resolve(DIST_HARNESS, "agents/contactLine.js"));
   const identity = await import(resolve(DIST_HARNESS, "agents/identityFacts.js"));
+  const revision = await import(resolve(DIST_HARNESS, "agents/revision.js"));
   return {
     approved, packModule, registryModule, stageExecution, strategy, truth, script, direction,
-    packaging, critic, modelPolicy, payloadContract, contact, identity,
+    packaging, critic, modelPolicy, payloadContract, contact, identity, revision,
   };
 }
 
@@ -613,6 +667,20 @@ export function resumePolicies(rt, stage) {
   const all = allStagePolicies(rt);
   const at = all.findIndex(([label]) => label === stage);
   if (at < 0 || !RESUME_POINTS.includes(stage)) throw new Error(`not a resume point: ${stage}`);
+  return all.slice(at);
+}
+
+/**
+ * The model requests one revision round starting at `startStage` makes: that
+ * writing stage and every later one through stage 5, then the four critic
+ * lenses — a full run's requests from `startStage` on. Never stage 1 or 2.
+ */
+export function revisionPolicies(rt, startStage) {
+  const all = allStagePolicies(rt);
+  const at = all.findIndex(([label]) => label === startStage);
+  if (at < 0 || !rt.revision.REVISABLE_STAGES.includes(startStage)) {
+    throw new Error(`not a revision start stage: ${startStage}`);
+  }
   return all.slice(at);
 }
 
@@ -951,7 +1019,9 @@ export function summaryFooter(runner) {
  * panel is rendered as the panel's computed verdict and counts, then one
  * section per lens: that lens's verdict, its own summary, and its findings.
  */
-export function markdownSummary({ goal, runner, timestamp, script, direction, packaging, critic, resumedFrom }) {
+export function markdownSummary({
+  goal, runner, timestamp, script, direction, packaging, critic, resumedFrom, revision,
+}) {
   const lines = [];
   lines.push(`# Content Intelligence local run`, "");
   lines.push(`- Goal: ${goal}`);
@@ -960,6 +1030,10 @@ export function markdownSummary({ goal, runner, timestamp, script, direction, pa
   if (resumedFrom) {
     lines.push(`- Resumed at ${resumedFrom.stage} from ${resumedFrom.sourceRunDir}: stages 1-4 reused and `
       + `revalidated, not re-requested; the runner above ran stage 5 and the critic only`);
+  }
+  if (revision) {
+    lines.push(`- Revised from ${revision.sourceRunDir} (one round, ${revision.origin}): re-ran `
+      + `${revision.rerunStages.join(", ")} and the critic panel; everything else reused byte for byte`);
   }
   lines.push("", "## Hook", "", script.provisional.hook, "");
   lines.push("## Script", "", script.provisional.script, "");
@@ -992,8 +1066,57 @@ export function markdownSummary({ goal, runner, timestamp, script, direction, pa
     });
     if (own.length) lines.push("");
   }
+  if (revision) lines.push(...revisionSummaryLines(revision));
   lines.push("---", summaryFooter(runner));
   return lines.join("\n");
+}
+
+/** "3 (1 blocking, 2 advisory)" for a panel output's findings. */
+function findingCounts(findings) {
+  const blocking = findings.filter((f) => f.severity === "blocking").length;
+  return `${findings.length} (${blocking} blocking, ${findings.length - blocking} advisory)`;
+}
+
+/**
+ * The revision section of a revised run's summary: round 1 and round 2 side by
+ * side, what each re-run stage was sent, what was dropped over a cap, what was
+ * not sent because its stage did not re-run, and the owner items no model saw.
+ */
+export function revisionSummaryLines({ round1, round2, plan, reusedFiles }) {
+  const lines = ["## Revision — one round", ""];
+  lines.push(`Started at **${plan.startStage}**. Re-run: ${plan.stages.map((s) => s.stage).join(", ")}, then all four `
+    + `critic lenses. Reused byte for byte: ${reusedFiles.join(", ")}.`, "");
+  lines.push("### Round 1 and round 2, side by side", "");
+  lines.push("| | Round 1 | Round 2 |", "|---|---|---|");
+  lines.push(`| Panel verdict | ${round1.verdict} | ${round2.verdict} |`);
+  lines.push(`| Findings | ${findingCounts(round1.findings)} | ${findingCounts(round2.findings)} |`);
+  round1.lenses.forEach((lens, i) => {
+    const other = round2.lenses[i];
+    const own = (panel, name) => panel.findings.filter((f) => f.lens === name);
+    lines.push(`| ${lens.lens} | ${lens.verdict}, ${findingCounts(own(round1, lens.lens))} | `
+      + `${other?.verdict ?? "?"}, ${findingCounts(own(round2, lens.lens))} |`);
+  });
+  lines.push("", "_Round 2's panel reviewed the revised outputs fresh: it was shown no round-1 finding or verdict. "
+    + "Round 1's panel output is kept as round-1-06-final-critic.json._", "");
+  lines.push("### Findings sent to each re-run stage", "");
+  for (const stage of plan.stages) {
+    lines.push(`- ${stage.stage} (cap ${stage.cap}): ${stage.sent.length
+      ? stage.sent.map((f) => `${f.id} (${f.lens}, ${f.severity})`).join(", ")
+      : "none — re-run because an earlier stage was revised"}`);
+  }
+  const dropped = plan.stages.flatMap((stage) => stage.dropped.map((f) => ({ ...f, stage: stage.stage })));
+  lines.push("", "### Findings dropped over a stage's cap", "");
+  if (!dropped.length) lines.push("None.");
+  dropped.forEach((f) => lines.push(`- ${f.id} (${f.lens}, ${f.severity}) — owned by ${f.stage}, over its cap`));
+  lines.push("", "### Findings not sent: their stage was not re-run", "");
+  if (!plan.notRerun.length) lines.push("None.");
+  plan.notRerun.forEach((f) => lines.push(`- ${f.id} (${f.lens}, ${f.severity}) — owned by ${f.owner}`));
+  lines.push("", "### Owner items — never sent to any model", "");
+  if (!plan.ownerItems.length) lines.push("None.");
+  plan.ownerItems.forEach((f) => lines.push(
+    `- ${f.id} [${f.severity}/${f.category}/${f.platform}/${f.owner}] ${f.issue} — ${f.suggestedAction}`));
+  lines.push("");
+  return lines;
 }
 
 /**
@@ -1002,7 +1125,7 @@ export function markdownSummary({ goal, runner, timestamp, script, direction, pa
  */
 export async function main(argv = process.argv.slice(2)) {
   const args = parseArgs(argv);
-  if (args.help || (!args.goal && !args.replayCritic && !args.listTags && !args.resumeFrom)) {
+  if (args.help || (!args.goal && !args.replayCritic && !args.listTags && !args.resumeFrom && !args.reviseFrom)) {
     usage(); process.exit(args.help ? 0 : 1);
   }
   if (args.runner !== "fake" && args.runner !== "live") {
@@ -1014,6 +1137,12 @@ export async function main(argv = process.argv.slice(2)) {
   if (args.listTags && (args.replayCritic || args.goal !== undefined)) {
     throw new Error("--list-tags takes no goal and no --replay-critic: it only prints tag counts and exits");
   }
+  if (args.reviseFrom && (args.replayCritic || args.listTags || args.resumeFrom || args.reviseOnce)) {
+    throw new Error("--revise-from cannot be combined with --replay-critic, --resume-from, --list-tags or --revise-once");
+  }
+  if (args.reviseOnce && (args.replayCritic || args.listTags || args.resumeFrom || args.goal === undefined)) {
+    throw new Error("--revise-once applies only to a full run: give a goal, and no --replay-critic, --resume-from or --list-tags");
+  }
 
   requireDist();
   const rt = await loadRuntime();
@@ -1021,6 +1150,7 @@ export async function main(argv = process.argv.slice(2)) {
   if (args.listTags) return listTags(rt, args);
   if (args.replayCritic) return replayCritic(rt, args);
   if (args.resumeFrom) return resumeFromPackaging(rt, args);
+  if (args.reviseFrom) return reviseRun(rt, args, args.reviseFrom, "revise-from");
 
   const { AgentRegistry, TARGET_STAGE_IDS } = rt.registryModule;
   const { createAnthropicStageRunner } = rt.stageExecution;
@@ -1074,6 +1204,11 @@ export async function main(argv = process.argv.slice(2)) {
 
   if (args.runner === "live") {
     printCostCeiling(rt, allStagePolicies(rt), "one full six-stage run");
+    if (args.reviseOnce) {
+      console.log(`--revise-once: the revision round is not included above. After round 1 it prints the ceiling for `
+        + `exactly the requests it will make (at most ${revisionPolicies(rt, rt.revision.REVISABLE_STAGES[0]).length}) `
+        + "and asks for LIVE again.");
+    }
     await requireLiveConsent(args);
   }
 
@@ -1174,6 +1309,13 @@ export async function main(argv = process.argv.slice(2)) {
   console.log(`Measured ${measured.length} field(s); largest share of a stated figure: `
     + `${Math.max(0, ...measured.map((r) => r.pctOfStated ?? 0))}%`);
   console.log(`Critic verdict: ${critic.output.provisional.verdict}`);
+
+  // Exactly one round, verified from what round 1 just wrote, exactly as
+  // --revise-from would verify it. Round 1's directory is never touched again.
+  if (args.reviseOnce) {
+    console.log("\n--revise-once: one revision round on the run above.");
+    await reviseRun(rt, args, runDir, "revise-once");
+  }
 }
 
 /**
@@ -1207,8 +1349,8 @@ const REUSED_STAGE_FILES = [
 
 /**
  * Prove a saved run's evidence and outputs before anything is bought against
- * them. Shared by the critic-only replay and the resumed run, so the two cannot
- * drift apart.
+ * them. Shared by the critic-only replay, the resumed run and the revision round,
+ * so they cannot drift apart.
  *
  * Fail-closed order, and why: every check below is free, so all of them run
  * before the spend guard and before any request exists.
@@ -1235,14 +1377,19 @@ const REUSED_STAGE_FILES = [
  * fingerprints — approved facts, automotive facts, evidence pack — and each
  * matches. The caller then runs the cost ceiling and the same live guard a full
  * run uses.
+ *
+ * A revision (`{ revise: true }`) makes new paid requests too, so it takes the
+ * same no-unproven-path rule; it reads stages 1–5 and `06-final-critic.json`,
+ * and adds a sixth free check: the saved critic panel output is revalidated
+ * (`revalidateFinalCriticOutput`) against the packages the critic saw.
  */
-async function verifySourceRun(rt, args, sourceDir, resumeAt) {
-  const purpose = resumeAt ? "resume" : "replay";
+async function verifySourceRun(rt, args, sourceDir, resumeAt, { revise = false } = {}) {
+  const purpose = revise ? "revision" : resumeAt ? "resume" : "replay";
   if (!existsSync(sourceDir)) throw new Error(`${purpose} source run directory not found: ${sourceDir}`);
 
   const metaPath = resolve(sourceDir, "run-meta.json");
   const meta = existsSync(metaPath) ? JSON.parse(await readFile(metaPath, "utf8")) : undefined;
-  if (resumeAt) {
+  if (resumeAt || revise) {
     const unrecorded = meta
       ? [
         meta.approvedFacts?.sha256 ? null : "approvedFacts.sha256",
@@ -1252,8 +1399,10 @@ async function verifySourceRun(rt, args, sourceDir, resumeAt) {
       ].filter(Boolean)
       : ["run-meta.json"];
     if (unrecorded.length) {
+      const why = revise ? "a revision makes new paid requests on the "
+        : "a resumed run makes new paid requests on the ";
       throw new Error(
-        `the resume source records no ${unrecorded.join(", ")}; a resumed run makes new paid requests on the `
+        `the ${purpose} source records no ${unrecorded.join(", ")}; ${why}`
         + "saved outputs, so it must prove it rebuilt the same evidence. Refusing.",
       );
     }
@@ -1265,7 +1414,9 @@ async function verifySourceRun(rt, args, sourceDir, resumeAt) {
     direction: await readSavedStage(sourceDir, REUSED_STAGE_FILES[3], purpose),
     // A resume from packaging-adaptation reads no stage 5 file: the source run
     // usually has none, because stage 5 is what failed.
-    ...(resumeAt ? {} : { packaging: await readSavedStage(sourceDir, "05-packaging-adaptation") }),
+    ...(resumeAt ? {} : { packaging: await readSavedStage(sourceDir, "05-packaging-adaptation", purpose) }),
+    // A revision reads round 1's findings from the saved panel output.
+    ...(revise ? { critic: await readSavedStage(sourceDir, "06-final-critic", purpose) } : {}),
   };
 
   // --- 1a. the evidence scope: the source run's, and only the source run's --
@@ -1394,7 +1545,7 @@ async function verifySourceRun(rt, args, sourceDir, resumeAt) {
   // prior output, so it is revalidated too — through its own validator,
   // rebuilt from its saved typed form exactly as automotive-truth rebuilds it.
   const s1 = saved.strategy.output;
-  rt.strategy.validateStrategyConceptOutput({
+  const strategyOutput = rt.strategy.validateStrategyConceptOutput({
     angle: s1?.provisional?.angle,
     concept: s1?.provisional?.concept,
     rationale: s1?.provisional?.rationale,
@@ -1413,9 +1564,30 @@ async function verifySourceRun(rt, args, sourceDir, resumeAt) {
     : undefined;
   console.log("Every saved prior output revalidated through its owning stage's validator.");
 
+  // --- 6. a revision: the saved critic panel output --------------------------
+  // Round 1's findings decide what a revision sends to a model, so the panel
+  // output is revalidated too: split back into its four lens answers, each
+  // through the lens validator against the packages the critic saw (stage 5
+  // with its contact lines rebuilt from the pack), re-aggregated, and required
+  // to equal the saved output exactly.
+  let platforms;
+  let criticOutput;
+  if (revise) {
+    if (!Array.isArray(meta.platforms)) throw new Error("the revision source's run-meta.json records no platforms");
+    platforms = rt.packaging.validateRequestedPlatforms(meta.platforms);
+    if (args.platforms && args.platforms.join() !== platforms.join()) {
+      throw new Error(`--platforms ${args.platforms.join(",")} differs from the source run's recorded platforms `
+        + `(${platforms.join(",")}); a revision reuses the source run's platforms`);
+    }
+    const contacted = rt.contact.attachContactLines(packagingOutput, pack);
+    criticOutput = rt.critic.revalidateFinalCriticOutput(
+      saved.critic.output, platforms, contacted, scriptOutput, truthOutput, pack);
+    console.log("The saved critic panel output revalidated: every lens answer, and its aggregation.");
+  }
+
   return {
     meta, goal, now, reviewedAt, pack, scope, fingerprints, automotiveIdentity, currentApproved,
-    truthOutput, scriptOutput, directionOutput, packagingOutput,
+    strategyOutput, truthOutput, scriptOutput, directionOutput, packagingOutput, platforms, criticOutput,
   };
 }
 
@@ -1643,9 +1815,16 @@ async function replayCritic(rt, args) {
 /**
  * Whatever went wrong, anything the provider already returned was billed. Write
  * it out before reporting the failure so the operator keeps what they bought and
- * can see exactly what the model produced.
+ * can see exactly what the model produced — into the directory of the run that
+ * failed, and nowhere else. Exported so the offline suite can drive it without
+ * exiting the process.
  */
-function reportFailure(err) {
+export function saveFailureRecords(err) {
+  try {
+    failureContext?.finalize?.(err);
+  } catch (finalizeErr) {
+    console.error(`could not record the failure: ${finalizeErr?.message ?? finalizeErr}`);
+  }
   if (failureContext?.transcript?.length) {
     try {
       const over = failureContext.writeMeasurements().filter((r) => r.over);
@@ -1664,6 +1843,11 @@ function reportFailure(err) {
       console.error(`could not save raw provider responses: ${writeErr?.message ?? writeErr}`);
     }
   }
+}
+
+/** Save what was paid for, name the failure, and exit non-zero. */
+function reportFailure(err) {
+  saveFailureRecords(err);
   if (err?.name === "EvidencePackBoundsError" || err?.name === "EvidencePackSemanticError") {
     console.error(`${err.name}: ${err.message}`);
     if (Array.isArray(err.violations)) for (const v of err.violations) console.error(`  - ${v}`);
@@ -1673,12 +1857,233 @@ function reportFailure(err) {
   } else if (err?.name === "StageExecutionError" || err?.name === "CriticPanelError") {
     console.error(`${err.name}: ${err.message}`);
   } else if (["StageOutputTruncatedError", "StageRefusalError", "StageUnexpectedStopError", "ContactLineError",
-    "IdentityFactError", "EvidenceScopeError"].includes(err?.name)) {
+    "IdentityFactError", "EvidenceScopeError", "RevisionCapError"].includes(err?.name)) {
     console.error(`${err.name}: ${err.message}`);
   } else {
     console.error(err?.stack ?? String(err));
   }
   process.exit(1);
+}
+
+/** Each writing stage's saved file name. */
+const WRITER_STAGE_FILES = {
+  "hook-story-script": "03-hook-story-script",
+  "production-direction": "04-production-direction",
+  "packaging-adaptation": "05-packaging-adaptation",
+};
+
+/**
+ * One revision round on a completed run — `--revise-from <run-dir>`, and the
+ * same function `--revise-once` calls on the run it just wrote.
+ *
+ * Fail-closed order; everything before the cost gate is free:
+ *
+ *  1. `verifySourceRun` in revision mode: run-meta.json with all three
+ *     fingerprints (no unproven path), the recorded scope, every saved stage
+ *     1–5 output revalidated through its owning validator, and the saved critic
+ *     panel output revalidated lens by lens and re-aggregated.
+ *  2. The plan (`planRevision`): owner items set aside, never sent; no
+ *     revisable blocking finding → print that, write nothing, make no request;
+ *     a stage owning more blocking findings than its derived cap → refused.
+ *  3. The free preflights for the stages this re-runs.
+ *  4. The cost ceiling for exactly the requests this makes, and the typed LIVE
+ *     gate.
+ *  5. A new `<source>-revised-<timestamp>` sibling. Reused files are copied
+ *     byte for byte; round 1's panel output is kept as
+ *     round-1-06-final-critic.json; the source run is never modified.
+ *  6. The start stage and every later writing stage re-run, in order, each with
+ *     its ordinary inputs (revised upstream outputs where those changed),
+ *     `PREVIOUS_OUTPUT` and only its own findings. Every validator applies
+ *     unchanged; a rejected response is saved as today and the run stops.
+ *  7. Contact lines re-attached from the pack; all four critic lenses run fresh
+ *     — the executor has no input for round-1 findings or verdicts.
+ *
+ * Exactly one round: nothing here plans from the round-2 panel.
+ */
+export async function reviseRun(rt, args, sourceDir, origin) {
+  // Whatever an earlier round recorded is not this round's to write: a failure
+  // before this round's directory exists must not add a file to round 1's.
+  failureContext = null;
+  const { AgentRegistry } = rt.registryModule;
+  const { createAnthropicStageRunner } = rt.stageExecution;
+  const {
+    goal, now, reviewedAt, pack, scope, fingerprints, automotiveIdentity, currentApproved,
+    strategyOutput, truthOutput, scriptOutput, directionOutput, packagingOutput, platforms, criticOutput,
+  } = await verifySourceRun(rt, args, sourceDir, null, { revise: true });
+
+  // --- 2. the plan ------------------------------------------------------------
+  const plan = rt.revision.planRevision(criticOutput);
+  if (plan.ownerItems.length) {
+    console.log(`Owner items — never sent to any model: ${plan.ownerItems
+      .map((f) => `${f.id} (${f.owner}, ${f.category}, ${f.severity})`).join(", ")}`);
+  }
+  if (plan.kind === "no_revision") {
+    console.log("No blocking finding has a revisable owner (hook-story-script, production-direction or "
+      + "packaging-adaptation): no revision request was made, and nothing was written.");
+    return { revised: false, plan };
+  }
+  for (const stage of plan.stages) {
+    console.log(`Revision plan: ${stage.stage} — sends ${stage.sent.length} of ${stage.owned} owned finding(s) `
+      + `(${stage.blocking} blocking; cap ${stage.cap})${stage.dropped.length
+        ? `; drops ${stage.dropped.map((f) => f.id).join(", ")} (advisory, over the cap)` : ""}`);
+  }
+
+  // --- 3. the free preflights for what this re-runs ---------------------------
+  rt.contact.assertContactFactsAvailable(pack, platforms);
+  rt.identity.assertIdentityFactsAvailable(pack);
+  const registry = new AgentRegistry();
+  await registry.verifyAllAssets();
+  const requests = revisionPolicies(rt, plan.startStage);
+  const availableKinds = new Set(pack.allowedFacts.map((r) => r.kind));
+  const unmet = [...new Set(requests.map(([label]) => label.split(":")[0]))].flatMap((stage) => {
+    const missing = registry.get(stage).requiredEvidenceKinds.filter((kind) => !availableKinds.has(kind));
+    return missing.length ? [`${stage} requires ${missing.join(", ")}`] : [];
+  });
+  if (unmet.length) throw new Error(`evidence pack cannot satisfy the revised stages:\n  - ${unmet.join("\n  - ")}`);
+
+  // --- 4. the spend guard -----------------------------------------------------
+  if (args.runner === "live") {
+    printCostCeiling(rt, requests, `one revision round from ${plan.startStage}`);
+    await requireLiveConsent(args);
+  }
+
+  // --- 5. the new directory ---------------------------------------------------
+  const revisedAt = new Date();
+  const revisionDir = resolve(dirname(sourceDir),
+    `${basename(sourceDir)}-revised-${revisedAt.toISOString().replace(/[:.]/g, "-")}`);
+  if (existsSync(revisionDir)) throw new Error(`refusing to overwrite an existing directory: ${revisionDir}`);
+  await mkdir(revisionDir, { recursive: false });
+  const rerun = plan.stages.map((s) => s.stage);
+  const reusedFiles = ["run-meta.json", "01-strategy-concept.json", "02-automotive-truth.json",
+    ...rt.revision.REVISABLE_STAGES.filter((stage) => !rerun.includes(stage)).map((stage) => `${WRITER_STAGE_FILES[stage]}.json`)];
+  for (const name of reusedFiles) await copyFile(resolve(sourceDir, name), resolve(revisionDir, name));
+  await copyFile(resolve(sourceDir, "06-final-critic.json"), resolve(revisionDir, "round-1-06-final-critic.json"));
+
+  const findingRef = ({ id, lens, severity }) => ({ id, lens, severity });
+  const revisionMeta = {
+    schema: "gcd-content-revision/1",
+    origin,
+    sourceRunDir: displayPath(sourceDir),
+    revisedAt: revisedAt.toISOString(),
+    runner: args.runner,
+    goal,
+    sourceNow: now,
+    reviewedAt,
+    platforms,
+    approvedFactsSha256: currentApproved,
+    automotiveFacts: { ...fingerprints.automotiveFacts, identity: automotiveIdentity },
+    ...(scope ? { evidenceScope: scope } : {}),
+    evidencePackSha256: fingerprints.evidencePackSha256,
+    evidencePackFingerprintChecked: true,
+    rounds: 1,
+    startStage: plan.startStage,
+    rerunStages: rerun,
+    reusedFiles,
+    findingCaps: { ...rt.revision.REVISION_FINDING_CAPS },
+    findingsSent: Object.fromEntries(plan.stages.map((stage) => [stage.stage, stage.sent.map((f) => f.id)])),
+    findingsDropped: plan.stages.flatMap((stage) => stage.dropped.map((f) => ({ ...findingRef(f), stage: stage.stage }))),
+    findingsNotRerun: plan.notRerun.map((f) => ({ ...findingRef(f), owner: f.owner })),
+    ownerItems: plan.ownerItems.map((f) => ({ ...findingRef(f), owner: f.owner, category: f.category })),
+    round1: { verdict: criticOutput.provisional.verdict, summary: criticOutput.provisional.summary },
+  };
+  const { transcript, writeMeasurements } = createRunRecorder(rt, revisionDir);
+  const writeRevisionMeta = (extra) => writeFileSync(resolve(revisionDir, "revision-meta.json"), JSON.stringify({
+    ...revisionMeta,
+    ...extra,
+    modelRequests: transcript.map((t) => (t.lens ? `${t.stage}:${t.lens}` : t.stage)),
+    costs: {
+      requests: transcript.map((t) => ({
+        request: t.lens ? `${t.stage}:${t.lens}` : t.stage, totalCostUsd: t.totalCostUsd ?? null, usage: t.usage ?? null,
+      })),
+      totalUsd: transcript.reduce((total, t) => total + (typeof t.totalCostUsd === "number" ? t.totalCostUsd : 0), 0),
+    },
+  }, null, 2), "utf8");
+  writeRevisionMeta({ status: "started" });
+  // A rejected revised stage: its raw response is saved here as in any run, the
+  // revision stops, and round 1 — the source directory — is left as it was.
+  failureContext = {
+    runDir: revisionDir, transcript, writeMeasurements,
+    finalize: (err) => writeRevisionMeta({ status: "failed", failure: `${err?.name ?? "Error"}: ${err?.message ?? err}` }),
+  };
+  const writeStage = (name, payload) => writeFile(resolve(revisionDir, `${name}.json`), JSON.stringify(payload, null, 2), "utf8");
+
+  const fake = buildFakeStageResponses(goal, pack);
+  const liveRunner = args.runner === "live" ? createAnthropicStageRunner() : undefined;
+  const runnerFor = (stage, buildResponse) => recordingRunner(transcript, stage, liveRunner
+    ?? (async (request) => ({
+      text: JSON.stringify(buildResponse(request)), totalCostUsd: 0, usage: { input_tokens: 0, output_tokens: 0 },
+    })));
+  const sentFor = (stage) => plan.stages.find((s) => s.stage === stage).sent;
+
+  // --- 6. the re-run writing stages, in order --------------------------------
+  console.log(`Revising from ${plan.startStage}. Reused from ${sourceDir}, revalidated, not re-requested: `
+    + reusedFiles.filter((name) => name !== "run-meta.json").join(", "));
+  let script = scriptOutput;
+  if (rerun.includes("hook-story-script")) {
+    console.log(`Revising stage 3/6: hook-story-script — ${sentFor("hook-story-script").length} finding(s)`);
+    const result = await rt.script.executeHookStoryScript({
+      strategyOutput, truthOutput, evidencePack: pack, registry,
+      revision: { previousOutput: scriptOutput, findings: sentFor("hook-story-script") },
+      runner: runnerFor("hook-story-script", () => fake.hookStoryScript(truthOutput)),
+    });
+    await writeStage(WRITER_STAGE_FILES["hook-story-script"], result);
+    script = result.output;
+  }
+  let direction = directionOutput;
+  if (rerun.includes("production-direction")) {
+    console.log(`Revising stage 4/6: production-direction — ${sentFor("production-direction").length} finding(s)`);
+    const result = await rt.direction.executeProductionDirection({
+      scriptOutput: script, truthOutput, evidencePack: pack, registry,
+      revision: { previousOutput: directionOutput, findings: sentFor("production-direction") },
+      runner: runnerFor("production-direction", () => fake.productionDirection(script)),
+    });
+    await writeStage(WRITER_STAGE_FILES["production-direction"], result);
+    direction = result.output;
+  }
+  console.log(`Revising stage 5/6: packaging-adaptation — ${sentFor("packaging-adaptation").length} finding(s)`);
+  const packaging = await rt.packaging.executePackagingAdaptation({
+    scriptOutput: script, directionOutput: direction, truthOutput,
+    evidencePack: pack, requestedPlatforms: platforms, registry,
+    revision: { previousOutput: packagingOutput, findings: sentFor("packaging-adaptation") },
+    runner: runnerFor("packaging-adaptation", () => fake.packagingAdaptation(script, platforms)),
+  });
+  await writeStage(WRITER_STAGE_FILES["packaging-adaptation"], packaging);
+
+  // --- 7. contact lines, then the critic panel, fresh ------------------------
+  const contacted = rt.contact.attachContactLines(packaging.output, pack);
+  await writeContactLines(revisionDir, contacted);
+  console.log(`Running stage 6/6: final-critic — ${rt.payloadContract.CRITIC_LENSES.length} lens requests, `
+    + "concurrently, fresh: no round-1 finding or verdict is sent");
+  const critic = await rt.critic.executeFinalCritic({
+    scriptOutput: script, directionOutput: direction, packagingOutput: contacted,
+    truthOutput, evidencePack: pack, requestedPlatforms: platforms, registry,
+    runner: runnerFor("final-critic", (request) => fake.finalCritic(contacted, platforms, request?.lens)),
+  });
+  await writeStage("06-final-critic", critic);
+
+  const summaryMd = markdownSummary({
+    goal, runner: args.runner, timestamp: new Date(now).toISOString(),
+    script, direction, packaging: contacted, critic: critic.output,
+    revision: {
+      sourceRunDir: displayPath(sourceDir), origin, rerunStages: rerun, reusedFiles, plan,
+      round1: criticOutput.provisional, round2: critic.output.provisional,
+    },
+  });
+  await writeFile(resolve(revisionDir, "summary.md"), summaryMd, "utf8");
+  writeMeasurements();
+  writeRevisionMeta({
+    status: "completed",
+    round2: { verdict: critic.output.provisional.verdict, summary: critic.output.provisional.summary },
+  });
+  failureContext = null;
+
+  console.log(`\nDone. Revised ${rerun.join(", ")} and re-ran the critic panel. Model requests made: `
+    + transcript.map((t) => (t.lens ? `${t.stage}:${t.lens}` : t.stage)).join(", "));
+  console.log(`Wrote ${rerun.map((stage) => `${WRITER_STAGE_FILES[stage]}.json`).join(", ")}, 05b-contact-lines.json, `
+    + `06-final-critic.json, round-1-06-final-critic.json, revision-meta.json, summary.md and field-measurements.md to: ${revisionDir}`);
+  console.log(`The source run at ${sourceDir} was not modified.`);
+  console.log(`Critic verdict: round 1 ${criticOutput.provisional.verdict} → round 2 ${critic.output.provisional.verdict}`);
+  return { revised: true, dir: revisionDir, plan };
 }
 
 /**

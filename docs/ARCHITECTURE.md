@@ -150,6 +150,27 @@ and the critic panel into a new sibling directory — with byte-for-byte copies 
 `run-meta.json` and stage 1–4 files, so `--replay-critic` can verify it — never touching the source
 run. No stage 1–4 executor is called.
 
+*(`IMPLEMENTED`, not merged:)* **The opt-in revision pass.** `--revise-from <run-dir>` — and
+`--revise-once` after a full run, through the same `reviseRun` — makes exactly one round. The
+source is verified first by `verifySourceRun` in revision mode (all three fingerprints, every saved
+stage 1–5 output revalidated, and the saved panel output re-proved by `revalidateFinalCriticOutput`,
+which splits it into its four lens answers, validates each and requires the re-aggregation to equal
+it). `planRevision` (`src/harness/agents/revision.ts`) sets aside every `human_review` and
+`human_decision` finding as an owner item that no model sees, makes no request when no blocking
+finding has a revisable owner, and otherwise starts at the earliest writing stage owning a blocking
+finding and re-runs every later one; stages 1–2 never re-run. Each re-run stage receives its ordinary
+blocks, with revised upstream outputs, then `PREVIOUS_OUTPUT` (its own round-1 output) and
+`CRITIC_FINDINGS` (only its own findings), added by `revisionDataBlocks`
+(`src/harness/agents/revisionInput.ts`), which refuses any finding not its own before the request.
+The findings a stage may carry are capped by `REVISION_FINDING_CAPS`, derived in
+`payloadContract.ts` as the most that keep its worst-case revision payload within the unchanged
+`MAX_PAYLOAD_CHARS` (410,000): 69 for stage 3, 80 for stage 4, 31 for stage 5. Blocking findings go
+first; advisory findings over a cap are dropped and recorded; more blocking findings than the cap is
+refused before the cost gate. Contact lines are then re-attached and the four lenses run fresh, shown
+nothing of round 1. The round prices only its own requests behind the cost flag and typed `LIVE`,
+and writes `<source>-revised-<timestamp>` with `revision-meta.json` and a side-by-side
+`summary.md`; the source run is never modified.
+
 ### Content Intelligence foundation (Phase 0B.0) — merged and deployed
 
 Additive and inert. It changes no production behavior: the scheduled pipeline below is untouched, and no reasoning stage executes.
