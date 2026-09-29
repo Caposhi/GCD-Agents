@@ -102,7 +102,16 @@ The mutation harness was not re-run: it mutates source, prompts, a skill, SQL an
 **Accepted limitations.**
 
 - **Every live fact the design relies on is `UNKNOWN / TO VERIFY`.** This includes Render plans, prices and blueprint fields; Google Workspace and OAuth settings; and Anthropic workspace limits. Above all, it includes **whether the live services are Blueprint-managed with auto-sync** (design §3.6), which could make merging S8 alone touch the live services.
-- **The design has not been independently reviewed.** The production-wiring design took nine review rounds. This one should be reviewed before S1 begins.
+- **The design has had one in-session adversarial review,** whose findings are folded in. They covered:
+  - cost accounting for in-flight and unknown-cost requests;
+  - serialized cap checks;
+  - quotes bound to the worker commit and fingerprints;
+  - the posting-tool validation import;
+  - the Blueprint path;
+  - download headers;
+  - byte-exact import.
+
+  It has not had an independent review; the production-wiring design took nine rounds. One should happen before S1 begins.
 - **PR #101's owner-acceptance follow-up stays open:** the free refusal on the `…19-26-43-383Z` folder.
 
 **Unresolved follow-ups.**

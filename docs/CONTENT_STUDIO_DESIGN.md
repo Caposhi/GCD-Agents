@@ -84,9 +84,14 @@ stays a manual copy-paste by the owner.
 
 - **No publishing, and no Instagram, Facebook or Google Business Profile credentials.** No Studio
   service carries `IG_*`, `FB_*`, `GOOGLE_ACCESS_TOKEN`, `GOOGLE_REFRESH_TOKEN`, `GBP_*`,
-  `IMAGEGEN_API_KEY` or `APPROVAL_CHANNEL_WEBHOOK`. No Studio module imports
-  `src/mcp/posting-tool/**`, `src/harness/publicationRunner.ts`, `src/harness/hitl.ts` or
-  `src/harness/igToken.ts`.
+  `IMAGEGEN_API_KEY` or `APPROVAL_CHANNEL_WEBHOOK`. No Studio module transitively reaches
+  `src/mcp/posting-tool/index.ts` at runtime, `src/mcp/posting-tool/native/**`, any provider module,
+  `src/harness/publicationRunner.ts`, `src/harness/hitl.ts` or `src/harness/igToken.ts`.
+  **VERIFIED exception, allowlisted by name:** calling the stages as the CLI does loads
+  `src/mcp/posting-tool/validation.ts`, which is pure package validation, through
+  `src/harness/packageMap.ts`. `contactLine.ts` and `packagingAdaptation.ts` also carry type-only
+  imports of `posting-tool/index.js`, which compile away. The S1 import-graph check allows exactly
+  these and nothing else.
 - **No access to `gcd-social-db`.** No Studio service receives the live `DATABASE_URL`, and no
   Studio module imports `src/harness/state.ts`.
 - **No approval path.** The Studio creates no `approval_queue` row. It sends no Slack message and
@@ -232,8 +237,23 @@ pick up a live value through a shared module, and a live process can never pick 
 **No Studio service carries** `DATABASE_URL`, `CONSOLE_TOKEN`, any `IG_*`, `FB_*` or `GBP_*`
 value, `GOOGLE_ACCESS_TOKEN`, `GOOGLE_REFRESH_TOKEN`, the live `GOOGLE_CLIENT_ID` or
 `GOOGLE_CLIENT_SECRET`, `IMAGEGEN_API_KEY`, `APPROVAL_CHANNEL_WEBHOOK`, `AUTONOMY_PHASE`,
-`PUBLIC_BASE_URL` or `ACTIVE_PLATFORMS`. S8 adds a static check that fails CI if a
-`gcd-studio-*` block in `render.yaml` names any of them.
+`PUBLIC_BASE_URL` or `ACTIVE_PLATFORMS`. Checking key names alone is not enough, so the rule is
+enforced three ways:
+
+- **S8's static check, over values as well as names.** It fails CI in any of these cases:
+  - a `gcd-studio-*` block names a forbidden key;
+  - any `fromDatabase.name` in a `gcd-studio-*` block is not `gcd-studio-db`;
+  - a `gcd-studio-*` block uses `fromGroup` or `fromService` pointing at a live resource;
+  - any `gcd-social-*` block references `gcd-studio-db`.
+- **A startup refusal.** Values set in the dashboard are invisible to CI, so the web and the worker
+  each refuse to start if any forbidden variable is present in their environment, whatever its
+  value.
+- **A database identity check at runtime.** The web and the worker each refuse to start unless
+  `current_database()` is `gcd_studio` and the `studio_database_identity` row matches. This is the
+  same check the migration runner makes, repeated at runtime.
+
+`src/studio/**` reads environment variables only in the dot form (`process.env.NAME`), which the
+coverage script can see.
 
 **Environment coverage.** **VERIFIED:** `scripts/ci/check-environment-coverage.mjs` compares only
 `process.env.X` reads in `src/**/*.ts` (and `num`/`requireEnv` calls) against `.env.example`. It
@@ -270,7 +290,9 @@ Before any deploy, the checklist requires that:
 
 - the commit is on `main`;
 - the `CI` run on that exact commit passed all five jobs on attempt 1;
-- the commit's diff since the live Studio commit touches no live-service path.
+- the commit's diff since the live Studio commit touches no live-service path;
+- the web service (which runs the Studio migrations) is deployed first, then the worker, at the
+  same commit ([§5.3](#53-the-job-queue), version skew).
 
 Why this, and not the alternatives:
 
@@ -322,7 +344,18 @@ too**. It can reconcile their settings to the file: for example an auto-deploy d
 does not state, or a plan. [Deployment control](DEPLOYMENT.md) already says: "Do not synchronize
 the Blueprint or re-enable a native setting as a substitute for the controlled proof." If
 auto-sync is on, **merging S8 alone** could create the Studio resources and touch the live ones,
-with no deploy step at all.
+with no deploy step at all. The live blocks state no auto-deploy setting, so a sync could apply
+Render's default and switch native auto-deploy back on (TO VERIFY).
+
+The unlinked case is not safe either. A new Blueprint created from this `render.yaml` also contains
+the `gcd-social-*` entries, and what Render does with existing services of the same name is
+TO VERIFY. Creating a service may also deploy it at once (TO VERIFY), which would happen before O5's
+exact-commit checklist.
+
+**Recommended default, put to the owner as an amendment to decision 2** (§11, question 2): declare
+the Studio in a **separate Blueprint file**, or create its resources by hand from a checked-in
+specification. Either way, applying it can name no `gcd-social-*` resource. If the owner keeps one
+`render.yaml`, the gate below applies in full.
 
 **PROPOSED gate, before S8 merges and again before the owner applies anything:**
 
@@ -343,7 +376,8 @@ with no deploy step at all.
 - it reads only `state/migrations/*.sql`, in lexical order;
 - it records names in `_migrations` (`CREATE TABLE IF NOT EXISTS`);
 - it applies each file inside `BEGIN` … `INSERT INTO _migrations` … `COMMIT`;
-- it runs only as `gcd-social-api`'s `preDeployCommand`, against `DATABASE_URL`.
+- against `DATABASE_URL`, it runs in production only as `gcd-social-api`'s `preDeployCommand`. CI
+  (`ci.yml`) and the disposable PostgreSQL self-test also run it, against disposable databases.
 
 **PROPOSED — five independent separations, so that neither runner can ever apply the other's
 migrations:**
@@ -391,8 +425,8 @@ database-side ones with constraints and triggers, and tests them on disposable P
 
 | Table | Columns (principal) | Invariants |
 |---|---|---|
-| `studio_users` | `id`, `email` (lower-cased, unique), `google_sub` (unique, set at first sign-in), `display_name`, `role` (`owner` \| `runner` \| `viewer`), `status` (`active` \| `disabled`), `daily_cap_usd` (nullable, per user), `created_by`, `created_at`, `updated_at` | `email` must end `@germancardepot.com`. At least one active `owner` always exists (a trigger refuses the change that would remove the last one). A `google_sub` never changes once set |
-| `studio_login_attempts` | `state_hash` (pk), `nonce_hash`, `pkce_verifier`, `created_at`, `expires_at` (10 min) | Single use: consumed by delete in the callback transaction. Expired rows are refused and purged |
+| `studio_users` | `id`, `email` (lower-cased, unique), `google_sub` (unique, set at first sign-in), `display_name`, `role` (`owner` \| `runner` \| `viewer`), `status` (`active` \| `disabled`), `daily_cap_usd` (nullable, per user), `created_by`, `created_at`, `updated_at` | `email` must end `@germancardepot.com`. Once an owner exists, at least one active `owner` always exists: a trigger refuses the change that would remove the last one. Until then the table may be empty, and only the bootstrap path of [§7.2](#72-allowlist-and-roles) can create the first owner. A `google_sub` never changes once set |
+| `studio_login_attempts` | `state_hash` (pk), `nonce_hash`, `pkce_verifier`, `created_at`, `expires_at` (10 min) | `state` and `nonce` are stored only as hashes. The PKCE verifier is stored as issued, because the token exchange needs it; it is worthless without the one-time code and expires in 10 minutes. Single use: consumed by delete in the callback transaction. Expired rows are refused and purged. Rows are created before authentication, so creation is rate-limited per client address ([§7.3](#73-sessions-csrf-and-logout)) |
 | `studio_sessions` | `id_hash` (pk, sha256 of the cookie value), `user_id`, `csrf_token_hash`, `created_at`, `last_seen_at`, `idle_expires_at`, `absolute_expires_at`, `revoked_at` | The cookie value itself is never stored. A disabled user's sessions are revoked in the same transaction that disables them |
 
 Roles, enforced server-side on every request:
@@ -408,9 +442,9 @@ The owner decides who is a `runner` (owner decision 3).
 
 | Table | Columns (principal) | Invariants |
 |---|---|---|
-| `studio_runs` | `id`; `kind` (`full` \| `revise` \| `replay_critic` \| `resume_packaging` \| `imported`); `source_run_id` (lineage); `state` (`queued` \| `running` \| `succeeded` \| `failed` \| `refused` \| `cancelled` \| `interrupted`); `requested_by`; `goal`; `platforms`; `scope_tags` (null means unscoped); `runner` (`live` \| `fake`); `fact_version_id`; `approved_facts_sha256`; `automotive_facts_sha256`; `evidence_pack_sha256`; `code_commit`; `quote_id`; `reserved_usd`; `actual_usd`; `verdict`; finding counts; `failure_class`; `failure_message`; `import_tier` (`verified` \| `archived_unverified`, imports only); `created_at` / `started_at` / `finished_at` | The three sha256 fingerprints are the ones the CLI records in `run-meta.json` (**VERIFIED**: `approvedFacts`, `automotiveFacts`, `evidencePackSha256`), computed the same way. A `live` run always has a `quote_id` and a reservation. A terminal state never changes. `source_run_id` must name an existing run, and a run cannot be its own ancestor |
-| `studio_run_artifacts` | `run_id`, `name`, `content` (bytea), `sha256`, `byte_length` | **The authoritative record of a run.** Its files are byte for byte the files the CLI writes: `run-meta.json`, `01-…` to `06-final-critic.json`, `05b-contact-lines.json`, `summary.md`, `field-measurements.md` / `.json`, `rejected-responses.json`, `revision-meta.json`. So a Studio run can be exported as a CLI folder and replayed locally, and a CLI folder can be imported. Immutable once written |
-| `studio_run_requests` | `run_id`, `seq`, `stage`, `lens`, `model`, `input_tokens`, `output_tokens`, `cost_usd`, `started_at`, `finished_at`, `outcome` | Committed **as each request returns**, before the next starts, so a crash never loses a paid request's cost. One row per provider request: five stages plus four lenses for a full run |
+| `studio_runs` | `id`; `kind` (`full` \| `revise` \| `replay_critic` \| `resume_packaging` \| `imported`); `source_run_id` (lineage); `state` (`queued` \| `running` \| `succeeded` \| `failed` \| `refused` \| `cancelled` \| `interrupted`); `requested_by`; `goal`; `platforms`; `scope_tags` (null means unscoped); `runner` (`live` \| `fake`); `fact_version_id`; `approved_facts_sha256`; `automotive_facts_sha256`; `evidence_pack_sha256`; `code_commit`; `quote_id`; `reserved_usd`; `actual_usd`; `verdict`; finding counts; `failure_class`; `failure_message`; `import_tier` (`verified` \| `archived_unverified`, imports only); `created_at` / `started_at` / `finished_at` | The three sha256 fingerprints are the ones the CLI records in `run-meta.json` (**VERIFIED**: `approvedFacts`, `automotiveFacts`, `evidencePackSha256`), computed the same way. A full run records them in `run-meta.json`. A resume, replay or revise records them in its own `resume-meta.json`, `replay-meta.json` or `revision-meta.json`, which the Studio reads from there. A `live` run always has a `quote_id` and a reservation. A terminal state never changes. `source_run_id` must name an existing run, and a run cannot be its own ancestor |
+| `studio_run_artifacts` | `run_id`, `name`, `content` (bytea), `sha256`, `byte_length` | **The authoritative record of a run.** Its files are byte for byte **every** file the CLI writes for that kind of run. **VERIFIED** today: `run-meta.json`, `resume-meta.json`, `replay-meta.json`, `revision-meta.json`, `01-…` to `06-final-critic.json`, `round-1-06-final-critic.json`, `05b-contact-lines.json`, `summary.md`, `field-measurements.md` / `.json` and `rejected-responses.json`. S1 derives the list from the library, not from this table. So a Studio run can be exported as a CLI folder and replayed locally, and a CLI folder can be imported. Immutable once written |
+| `studio_run_requests` | `run_id`, `seq`, `stage`, `lens`, `model`, `ceiling_usd`, `input_tokens`, `output_tokens`, `cost_usd`, `started_at`, `finished_at`, `outcome` | A `started` row carrying that request's own ceiling is committed **before** the request is sent. It is completed when the request returns. A request with no completed row, or with no known cost (for example a model with no price row, or a response without usage), is charged at its **full ceiling**. That way a crash or an unknown cost never frees money that was probably spent. One row per provider request: five stages plus four lenses for a full run. The four lenses run concurrently, so their rows are written through one serialized `RunSink` |
 | `studio_findings` | `run_id`, `idx`, `lens`, `severity`, `category`, `owner`, `issue`, `owner_item` (bool) | **Derived** from `06-final-critic.json` by the library's own accessors, and rebuildable from the artifact. `owner_item` is true exactly where `planRevision` would hold the finding back (a `human_review` owner or a `human_decision` category) |
 
 **Reports.** A report is not a table. The run report screen ([§8.2](#82-run-report)) renders it
@@ -429,7 +463,7 @@ behaviour, kept).
 
 | Table | Columns (principal) | Invariants |
 |---|---|---|
-| `studio_fact_versions` | `id`, `sha256` (unique), `content` (bytea, exactly as uploaded), `byte_length`, `record_count`, `tag_counts` (jsonb), `uploaded_by`, `uploaded_at`, `status` (`active` \| `retired`) | Owner-only insert. Never updated and never deleted while any run references it (restrictive foreign key). `sha256` is computed over the uploaded bytes, exactly as the CLI's `fileFingerprint` hashes the file, so a run's recorded `automotiveFacts.sha256` names the version it used |
+| `studio_fact_versions` | `id`, `sha256` (unique), `content` (bytea, exactly as uploaded), `byte_length`, `record_count`, `tag_counts` (jsonb), `uploaded_by`, `uploaded_at`, `status` (`active` \| `retired`) | Owner-only insert. `content`, `sha256` and the counts are immutable; only `status` may change. A version is never deleted while any run references it (restrictive foreign key). `sha256` is computed over the uploaded bytes, exactly as the CLI's `fileFingerprint` hashes the file, so a run's recorded `automotiveFacts.sha256` names the version it used |
 | `studio_settings` (singleton) | `active_fact_version_id`, `daily_cap_usd`, `monthly_cap_usd`, `scheduled_runs_enabled` (default `false`), `updated_by`, `updated_at` | Every change writes an audit row in the same transaction |
 
 **Each run pins exactly one fact version** (`studio_runs.fact_version_id`). Retiring or replacing
@@ -459,11 +493,11 @@ deployed commit, recorded by sha256 as the CLI already does.
 
 | Table | Columns (principal) | Invariants |
 |---|---|---|
-| `studio_audit_log` | `id`, `at`, `actor_user_id`, `action`, `target_type`, `target_id`, `detail` (jsonb) | Append-only (a trigger refuses `UPDATE` and `DELETE`). Records sign-in, sign-out, role and status changes, cap changes, fact uploads, imports, quotes, confirmations, cancellations and run state changes. `detail` never holds a goal, model text, fact text, an email body, a token or a secret |
-| `studio_quotes` | `id`, `user_id`, `action`, `params_sha256`, `ceiling_usd`, `breakdown` (jsonb: one line per request), `created_at`, `expires_at` (10 min), `consumed_at` | Single use: consumed in the same transaction that creates the job and the reservation. Bound to one user and one exact parameter set |
-| `studio_spend_ledger` | `id`, `entry` (`reserve` \| `reconcile` \| `release` \| `overrun`), `run_id`, `amount_usd`, `day_local`, `month_local`, `created_at` | Append-only. Day and month are in `America/New_York` (TO VERIFY that the owner wants shop-local time). Spend "used today" is the sum of reservations not yet released plus reconciled actual cost |
-| `studio_jobs` | `id`, `run_id` (unique), `state`, `claimed_at`, `heartbeat_at`, `cancel_requested_at`, `worker_commit` | One job per run. No `attempts` column: a job is never retried ([§5.3](#53-the-job-queue)) |
-| `studio_worker_heartbeat` (singleton) | `commit`, `beat_at` | |
+| `studio_audit_log` | `id`, `at`, `actor_user_id`, `action`, `target_type`, `target_id`, `detail` (jsonb) | Append-only (a trigger refuses `UPDATE` and `DELETE`). Records sign-in, sign-out, role and status changes, cap changes, fact uploads, imports, quotes, confirmations, cancellations and run state changes. `detail` never holds a goal, model text, fact text, an email body, a token or a secret. The only exception to append-only is the retention purge in [§4.7](#47-retention-and-backup). It is a separately reviewed migration or database function, never an application code path |
+| `studio_quotes` | `id`, `user_id`, `action`, `params_sha256`, `worker_commit`, `approved_facts_sha256`, `fact_version_id`, `price_table_sha256`, `ceiling_usd`, `breakdown` (jsonb: one line per request), `created_at`, `expires_at` (10 min), `consumed_at` | **Written by the worker's free preflight,** never computed by the web. Single use: consumed in the same transaction that creates the job and the reservation. Bound to one user, one exact parameter set, the worker commit that priced it, both fact fingerprints and the price table ([§6.1](#61-a-price-ceiling-confirmation-before-every-paid-action)) |
+| `studio_spend_ledger` | `id`, `entry` (`reserve` \| `release` \| `overrun`), `run_id`, `amount_usd`, `day_local`, `month_local`, `created_at` | Append-only (retention aside). Every entry of a run is booked to the day and month of its `reserve` entry, even when it is written after midnight. Day and month are in `America/New_York` (TO VERIFY that the owner wants shop-local time). **Spend for a day is Σ`reserve` − Σ`release` + Σ`overrun`** over that day's entries. For a finished run this equals its actual cost; for an unfinished one it is its full reservation |
+| `studio_jobs` | `id`, `run_id` (unique), `kind` (`preflight` \| `paid` \| `fake`), `state`, `created_at`, `expires_at`, `claimed_at`, `heartbeat_at`, `cancel_requested_at`, `worker_commit` | One job per run. No `attempts` column: a job is never retried ([§5.3](#53-the-job-queue)). A queued job past `expires_at` is never started |
+| `studio_worker_heartbeat` (singleton) | `commit`, `schema_version`, `approved_facts_sha256`, `approved_facts_tag_counts` (jsonb), `price_table_sha256`, `beat_at` | Written only by the worker. The web reads the tag counts and fingerprints from here, so the web never loads the fact files or the pricing code itself |
 
 ### 4.7 Retention and backup
 
@@ -543,6 +577,15 @@ library functions, not by re-implementing them:
   `validateProductionDirectionOutput`, so it applies to a live stage 4 response and to every
   revalidation.
 
+**One interactive confirmation cannot run on a worker, so it becomes a refusal.**
+
+- **VERIFIED:** `verifySourceRun` asks the operator to type `UNPROVEN` before it continues from a
+  source run that predates the automotive-facts fingerprint (`content-run.mjs`, around line 1520).
+- S1 injects that confirmation into the library, as it does the paid-action consent. The CLI keeps
+  the prompt, and the worker's implementation **always refuses**.
+- The Studio therefore never continues on an unproven facts file. That is a narrowing, not a
+  relaxation.
+
 **The worker adds checks, and never removes or relaxes one.** The only new gate between the free
 checks and the first paid request is the quote and reservation check in
 [§6](#6-cost-controls). A refusal before the cost gate records the run as `refused`, with the
@@ -558,7 +601,14 @@ library's own error message and no reservation.
   reused ([Data model](DATA_MODEL.md)); the Studio's is a different key in a different database.
   A worker that does not hold the lock consumes nothing and emits no readiness.
 - **Locking.** A job is claimed on the ownership session with `FOR UPDATE SKIP LOCKED`, so a claim
-  cannot commit after ownership is lost. One job runs at a time.
+  cannot commit after ownership is lost. One job runs at a time. Queued `preflight` jobs, which are
+  free and short, are claimed before queued `paid` jobs, so a check never waits behind a long run.
+- **Version skew.** At startup the worker refuses to run unless the database's Studio schema version
+  equals the one its code expects. At claim time it refuses a paid job whose quote names another
+  worker commit, approved-facts sha256, fact version or price table. The release checklist deploys
+  the web service (which runs the migrations) first, then the worker.
+- **Expiry.** A queued job expires one hour after creation (PROPOSED). An expired job is never
+  started; its run becomes `cancelled` and its reservation is released.
 - **Timeouts.** Every stage request already has its own budget-derived stream deadline
   (**VERIFIED**, `sdk.ts`). A job also has a wall-clock limit, the sum of its requests' deadlines
   plus a margin. A job over that limit terminalizes as `failed`
@@ -566,10 +616,12 @@ library's own error message and no reservation.
 - **Cancellation.** It is cooperative and checked between requests: a user presses Cancel, and no
   further request starts. **A request already in flight is not cancelled.** The critic panel's four
   lens requests are one unit. A cancelled run is `cancelled`. Its completed requests and their
-  cost are kept, and its unused reservation is released.
+  cost are kept, and its unused reservation is released. Cancelling a **queued** job cancels it
+  before it is claimed and releases its whole reservation.
 - **Restart recovery: refuse, don't resume.** At startup, after acquiring ownership, the worker
   terminalizes every `running` job as `interrupted`. It reconciles its reservation from the
-  durably recorded `studio_run_requests` rows and resumes nothing, matching the live worker's
+  durably recorded `studio_run_requests` rows: a request with a `started` row but no completed one
+  is charged at its full ceiling. It resumes nothing, matching the live worker's
   posture. The owner may then start a resume or revise from what was saved, as a new, separately
   priced run.
 - **Idempotency.** A quote is single use and is consumed in the same transaction that creates the
@@ -586,8 +638,10 @@ library's own error message and no reservation.
   `assertPreviewIsInert` asserts.
 - **No executor reads it,** and neither does `invokeStage` (production-wiring design §1.3).
 - **The CLI already calls all six executors today with the flag `false`.** It constructs an
-  `AgentRegistry` and passes a runner from `createAnthropicStageRunner()` or a fake. It reads only
-  `requiredEvidenceKinds` from the registry.
+  `AgentRegistry`, calls `verifyAllAssets()`, reads each stage's `requiredEvidenceKinds`, and passes
+  the registry and a runner (from `createAnthropicStageRunner()`, or a fake) into the executors.
+  `buildStagePlan` copies `executionEnabled` into the preview's stage plan, but nothing on that path
+  gates on it.
 
 So **the Studio worker can call the stages exactly as the CLI does, without changing any registry
 entry, any `executionEnabled` value or any guarded invariant.**
@@ -616,19 +670,27 @@ checks are smoke checks and "are not adequate protection for a design that has o
 
 1. **A transitive import-graph check.** From each live entry point (`dist/api/server.js`,
    `dist/worker/index.js`, `dist/scheduler/daily.js`, `dist/state/migrate.js`,
-   `dist/harness/evidence/syncCli.js`), no path may reach any of these:
+   `dist/harness/evidence/syncCli.js`, `dist/harness/dryrun.cli.js`), no path may reach any of these:
    - the six executor modules;
    - `stageExecution.js`, `revision.js`;
    - `src/harness/contentRun/**`, `src/studio/**`.
 
    **VERIFIED today** by a relative-import walk of the compiled `dist/` at `f111012`: none of those
-   entry points reaches any executor, `stageExecution.js`, `revision.js`, `contactLine.js` or
+   six entry points reaches any executor, `stageExecution.js`, `revision.js`, `contactLine.js` or
    `overlayContact.js`. The check is written so that an intermediary module cannot defeat it, which
    is the gap §1.3.1 names.
 2. **An allowlist of callers.** Only `scripts/local/content-run.mjs` and `src/studio/worker/**` may
    import `src/harness/contentRun/**`. Nothing under `src/studio/web/**` may import it, or
-   `stageExecution`, or any executor. The web service therefore has no code path to a model, as
-   well as no key.
+   `stageExecution`, or any executor, or the fact loader, or the pricing code. The web service
+   therefore has no code path to a model, as well as no key. Everything the web shows that needs
+   those modules is computed by the worker and stored: quotes, revision plans, tag counts and
+   fingerprints.
+2a. **A shared-module diff guard.** The library uses modules the live services already load:
+   `sdk.ts`, `config.ts`, `payloadContract.ts`, `modelPolicy.ts`, `registry.ts`, `pack.ts` and
+   `approvedFacts.ts`. An edit to any of these changes a live artifact even if nothing new is
+   reachable. For example, S1 may need `sdk.ts`'s `PRICE` table exported. So S1 adds a CI check
+   that lists every module the live entry points load, and fails a Studio PR that edits one unless
+   the PR names the edit as a live-path change, reviewed as such.
 3. **Executed tests** that the Studio web's paid-action routes, with no confirmed quote, reach no
    runner (zero runner invocations). This is proven by running the route, not by reading source.
 
@@ -657,18 +719,28 @@ P2, and it does not propose widening `executionEnabled`.
    no request. It covers the fingerprints, the scope, the evidence classes, the contact and
    identity records, and source verification for a revise, replay or resume. A refusal is shown
    with its reason and costs nothing.
-2. **The web shows a quote** with the ceiling for **exactly the requests this action will make**,
-   one line per request: the model, the maximum output tokens, and the estimated dollars. The
+2. **The worker's preflight writes a quote,** and the web shows it. The quote carries the ceiling
+   for **exactly the requests this action will make**, one line per request: the model, the maximum output tokens, and the estimated dollars. The
    numbers come from the same computation as the CLI's `printCostCeiling`. **VERIFIED:** it is
    described as "rough, not billing-accurate". It estimates input at four characters per token of
    `MAX_PAYLOAD_CHARS` and prices each request's `max_tokens` at the model's output price. The
    quote shows the total, the caps remaining today and this month, and an expiry.
+   - **A model with no price row makes no quote.** The preflight refuses, because an unknown price
+     cannot be reserved.
+   - **The critic's four lenses are one item,** priced as four concurrent requests whose summed
+     ceiling must fit, because they run together (**VERIFIED**: `Promise.allSettled` in
+     `finalCritic.ts`).
 3. **The user confirms the displayed amount** by a deliberate button press on the quote screen. The
-   confirmation posts the quote id. The server recomputes the ceiling from the stored parameters and
-   refuses if it differs, if the quote is expired, used or someone else's, if the user's role or
-   status changed, or if any cap would be exceeded.
+   confirmation posts the quote id. The web **does not recompute** the price, because it has no
+   pricing code. It refuses if:
+   - the quote is expired, used or someone else's;
+   - its fingerprints and worker commit differ from the worker's current heartbeat;
+   - the user's role or status changed;
+   - any cap would be exceeded.
 4. The job, the run and a `reserve` ledger entry equal to the ceiling are created **in one
-   transaction** with the quote's consumption.
+   transaction** with the quote's consumption. That transaction first takes
+   `SELECT … FOR UPDATE` on the `studio_settings` row, which serializes every confirmation. Two
+   users confirming at once therefore cannot both pass the cap check against the same headroom.
 
 `--revise-once`'s second prompt becomes a second quote. The revision round is priced after round 1
 from the requests it will actually make, as the CLI does today (**VERIFIED**).
@@ -686,18 +758,27 @@ from the requests it will actually make, as the CLI does today (**VERIFIED**).
 
 Caps are enforced in code at two points:
 
-1. **at confirmation** (the web), against the ledger: reserved spend not yet released, plus
-   reconciled actual spend, plus this quote's ceiling, must be at or below each cap;
-2. **before every paid request** (the worker), through a small check the `PaidActionConsent`
-   performs. The run's reservation must still be live, the job not cancelled, and the run's
-   cumulative actual cost still inside its reservation. A missing, unreadable or unparsable cap is
-   treated as **zero**, which fails closed.
+1. **at confirmation** (the web), under the settings-row lock: the day's and the month's spend (the
+   ledger formula in [§4.6](#46-audit-log-quotes-and-the-spend-ledger)) plus this quote's ceiling
+   must be at or below each effective cap;
+2. **before every paid request, or before the critic panel as one unit** (the worker), through the
+   check the `PaidActionConsent` performs. It re-checks everything independently of the web, so a
+   compromised web process or a row written directly cannot buy a request:
+   - the run's reservation is live, and the job is not cancelled;
+   - the ceiling the library computes **now**, for the requests still to make, fits what remains of
+     the reservation;
+   - the run's cumulative charged cost (actual, or full ceiling where unknown) is inside the
+     reservation;
+   - the ledger, re-summed by the worker, is within the worker's own `STUDIO_MAX_DAILY_USD` and
+     `STUDIO_MAX_MONTHLY_USD`.
+
+   A missing, unreadable or unparsable cap is treated as **zero**, which fails closed.
 
 **Reservation, then reconciliation.** Each completed request writes its measured cost to
 `studio_run_requests`, and the running total is compared with the reservation.
 
-- **If the ceiling held,** the run ends with a `reconcile` entry for the actual cost and a
-  `release` entry for the rest.
+- **If the ceiling held,** the run ends with a `release` entry for the unused part of its
+  reservation, leaving its actual (charged) cost booked.
 - **If the ceiling was exceeded,** which is possible because the ceiling is an estimate, the run
   starts no further request and terminalizes as `failed` (`cost_ceiling_exceeded`). An `overrun`
   entry is recorded, and every new confirmation is refused until the owner acknowledges it.
@@ -718,8 +799,10 @@ are wiring tests, are `owner`-only. They make no request and need no quote, and 
 
 **PROPOSED.** Every run report shows the reserved ceiling, the measured actual cost, and a
 per-request table: stage or lens, model, input and output tokens, and cost. A spend panel shows
-today and this month against each cap, per user, with every overrun. Costs are the SDK-reported
-measured cost, the same numbers the owner reports from local runs today. They are not Anthropic
+today and this month against each cap, per user, with every overrun. Costs are what `sdk.ts`'s
+`costUsd` computes: the provider-reported token usage times the repository's own price table, which
+`sdk.ts` itself calls rough and not billing-accurate. These are the same numbers the owner reports
+from local runs today. They are not Anthropic
 invoice figures. Reconciling against the Anthropic console is TO VERIFY and manual.
 
 ### 6.5 The provider-side backstop
@@ -737,7 +820,8 @@ shared with the Studio.
 
 **PROPOSED (S4).** The authorization-code flow with PKCE (S256), `state` and `nonce`:
 
-1. **`GET /auth/login`** creates a login attempt, stored as hashes, 10 minutes, single use. It sets
+1. **`GET /auth/login`** creates a login attempt: `state` and `nonce` stored as hashes, the PKCE
+   verifier as issued, 10 minutes, single use. It sets
    the short-lived `__Host-gcd_studio_login` cookie (Secure, HttpOnly, SameSite=Lax) and redirects
    to Google with `scope=openid email profile` and `hd=germancardepot.com`, a UI hint only.
 2. **`GET /auth/callback`** checks `state` against the cookie and the stored hash, then exchanges
@@ -752,6 +836,7 @@ shared with the Studio.
    - **`email_verified` is `true`;**
    - the lower-cased `email` ends `@germancardepot.com`;
    - an **active** `studio_users` row exists for that email, and, once set, the same `google_sub`.
+     The one exception is the bootstrap in [§7.2](#72-allowlist-and-roles), which creates that row.
 
    Any failure shows one generic "not authorized" page, writes an audit row naming the reason class
    but not the token, and creates no session. The `hd` claim is the control; the `hd` URL
@@ -765,9 +850,13 @@ shared with the Studio.
 
 **PROPOSED.** Signing in requires an owner-created allowlist entry. There is no self-registration.
 
-- **Bootstrap.** While no `owner` row exists, the first successful sign-in whose verified email
-  equals `STUDIO_BOOTSTRAP_OWNER_EMAIL` becomes the owner. The variable is ignored once an owner
-  exists.
+- **Bootstrap.** While no `owner` row exists, a sign-in that passes every other check, and whose
+  verified email equals `STUDIO_BOOTSTRAP_OWNER_EMAIL`, creates that user's row as `owner`. The
+  variable is ignored once an owner exists.
+- **Owner lockout.** Suppose the only owner is disabled by accident or loses their account. No
+  in-app path recovers from that, by design. Recovery is a database-level act by whoever holds the
+  Render account: a single audited statement through Render's database access (TO VERIFY), recorded
+  as an accepted limitation.
 - **Managing users.** The owner adds, disables and changes roles on the Users screen. Each change is
   audited, and disabling a user revokes their sessions at once.
 
@@ -783,6 +872,8 @@ shared with the Studio.
 - **CSRF:** a per-session synchronizer token, sent in a hidden form field or a header and compared
   with its stored hash. **Also**, the `Origin` header must equal `STUDIO_PUBLIC_ORIGIN` on every
   `POST`. State never changes on a `GET`.
+- **Rate limits:** `GET /auth/login`, the callback and failed sign-ins are rate-limited per client
+  address, in-process (the web is one instance). Unconsumed login attempts expire and are purged.
 - **Logout:** a `POST /auth/logout` with CSRF protection. It revokes the session row and clears the
   cookie. The owner can revoke any user's sessions.
 - **No shared tokens and no credentials in URLs.** No console token, no bearer URL, and no token in
@@ -846,8 +937,12 @@ In this order:
 2. **Captions, one card per platform.** Each card shows the caption, then the deterministic contact
    line. Google Business Profile shows its `BOOK` call to action, as the CLI's `summary.md` shows
    it. Then come the hashtags and the local keywords.
-   - A **Copy** button copies exactly the text the owner pastes: the caption, the separator, the
-     hashtags and the contact line, as the provider-visible text is assembled.
+   - A **Copy** button copies exactly the text the owner pastes, assembled by the same code that
+     assembles the contacted package (`contactLine.ts`), never re-implemented in the page. For
+     Instagram and Facebook that is the caption, the separator, the hashtags and the contact line.
+     Google Business Profile has no contact text, only the `BOOK` call to action, so its card
+     copies the caption and shows the booking call to action as a separate item.
+   - The Copy buttons are disabled on an `archived_unverified` import.
    - A second button copies the caption alone.
    - A banner states that the contact line is copied from approved facts, not written by a model,
      and that nothing here is approved or scheduled.
@@ -861,7 +956,11 @@ In this order:
    model (**VERIFIED**, `planRevision`). They are shown first on a phone if any exist.
 7. **Cost:** the reserved ceiling, the actual cost, and the per-request table
    ([§6.4](#64-what-was-spent-shown-plainly)).
-8. **Files:** download any artifact, or the whole run as a CLI-compatible folder bundle.
+8. **Files:** download any artifact, or the whole run as one JSON bundle in the import format of
+   [§8.6](#86-import-of-existing-local-output-runs). Every download is served with
+   `Content-Disposition: attachment`, a `text/plain` or `application/json` type, `nosniff` and a
+   sandboxing CSP. So no stored model text or imported content is ever rendered as a page on the
+   Studio's origin.
 
 A failed or refused run shows the library's error message, the stage it stopped at, and whatever
 it saved (for example `rejected-responses.json`). It also offers **Resume from packaging** when the
@@ -876,9 +975,12 @@ For an `owner` or a `runner`:
   checked by default (**VERIFIED**, `PACKAGING_PLATFORMS`).
 - **Scope tags:** chosen from the pack's tag list. This is what `--list-tags` prints today: each
   tag with its record count, no claim text (**VERIFIED**). It is computed from the active fact
-  version plus `config/approved-facts.json`. The screen shows how many records the chosen scope
-  would include against the 64-record cap, and refuses an unscoped or over-cap choice before any
-  quote.
+  version plus `config/approved-facts.json`; the worker computes the counts and the web reads them.
+  The screen shows how many records the chosen scope would include against the 64-record cap. It
+  refuses an over-cap choice before any quote, as the CLI's own pack cap already would. An unscoped
+  run is allowed, as in the CLI, whenever the whole pack fits the cap.
+- **Review time:** the run records the approved-facts review time exactly as the CLI's
+  `--reviewed-at` default does: the run's own instant. It is written to `run-meta.json`.
 
 Then **Check** runs the free preflight and **Get price** shows the quote
 ([§6.1](#61-a-price-ceiling-confirmation-before-every-paid-action)).
@@ -897,15 +999,21 @@ Both create a child run, and the source run is never modified.
 
 ### 8.5 Fact-file upload (owner only)
 
-1. The owner uploads one JSON file, up to 1 MB (PROPOSED bound).
+1. The owner uploads one JSON file, up to 1 MB (PROPOSED bound). Until it is validated, the bytes
+   are held in a single owner-only staging row (`studio_fact_uploads`), never in
+   `studio_fact_versions`.
 2. The worker validates it with the **existing loader**: the same required fields
    (`id, claim, subject, tags, sourceType, sourceRef, provenance, reviewedAt`) and the same
-   `facts`-array shape (**VERIFIED**, `loadAutomotiveFacts`). It then builds and checks a pack with
+   `facts`-array shape (**VERIFIED**, `loadAutomotiveFacts`). The loader ignores unknown fields,
+   and so does the Studio. Refusing them would force the owner to edit the file, which would
+   change its sha256 and orphan every local run already fingerprinted against it. Unknown field
+   names are listed to the owner as a warning instead. It then builds and checks a pack with
    `buildEvidencePack` and `assertUsableEvidencePack` over the uploaded records plus the approved
    facts, as a dry run.
 3. On success the Studio stores the exact bytes and their sha256. It shows the record count and the
    tag counts, never claim text, and the owner may then mark the version active.
-4. A refusal shows the loader's own message. Nothing is stored.
+4. A refusal shows the loader's own message, and the staging row is deleted. Nothing reaches
+   `studio_fact_versions`.
 
 Only the owner can download a version's bytes. Other users see its sha256, date, uploader and tag
 counts.
@@ -913,14 +1021,21 @@ counts.
 ### 8.6 Import of existing `local-output` runs
 
 The owner picks one run folder from `local-output/content-intelligence/` in the browser. The page
-reads the known file names client-side and posts them as one bounded JSON document (PROPOSED: at
-most 20 files and 10 MB). No archive format and no new parsing dependency is involved.
+reads the **known file names only** client-side. It posts them as one bounded JSON document
+(PROPOSED: at most 20 files and 10 MB), with each file **base64-encoded and accompanied by its
+sha256**, so no byte-order mark, line ending or invalid UTF-8 is altered on the way. The server
+recomputes every sha256 and refuses a mismatch or an unknown name. No archive format and no new
+parsing dependency is involved.
+
+An imported `run-meta.json` may record an absolute path from the owner's computer. The bytes are
+kept exactly, because the fingerprints depend on them, but the screens show only the file's base
+name.
 
 The worker then revalidates it with the **existing verifiers**. It runs `verifySourceRun` in
 revision mode against:
 
 - the approved-facts file at its deployed commit;
-- the fact version whose sha256 the folder's `run-meta.json` names.
+- the fact version whose sha256 the folder's meta file names.
 
 If both match and every saved output revalidates, including the saved critic panel lens by lens,
 the import is `verified`. Otherwise it is `archived_unverified`, with the refusal reason
@@ -949,7 +1064,8 @@ first.
 | A staff member escalates their role | The role is checked server-side on every route. The database refuses removing the last owner. Every change is audited |
 | A stolen session cookie | Secure, HttpOnly and `__Host-` cookie; idle and absolute expiry; revocation on logout, disable or owner action |
 | Cross-site request forgery | Synchronizer token plus an exact `Origin` check. No state change on `GET` |
-| Stored XSS through model prose (captions, findings) or a goal | All output escaped, a strict CSP with no inline script, no raw-HTML rendering |
+| Stored XSS through model prose (captions, findings) or a goal | All output escaped, a strict CSP with no inline script, no raw-HTML rendering. Downloads are served as attachments with `nosniff` and a sandboxing CSP ([§8.2](#82-run-report)) |
+| A compromised web process writes rows directly (a consumed quote, a reservation, a job) | The worker re-checks every quote binding, the ceiling, the reservation and its own deployment ceilings before each paid request ([§6.2](#62-daily-and-monthly-caps--enforced-before-every-paid-call)). PROPOSED for S2: a least-privilege database role for the web that cannot alter triggers or write the ledger outside the confirmation function; TO VERIFY that Render's plan allows a second role. Until then, the web holds the database owner's credential, and this is an accepted limitation |
 | Prompt injection through the goal | As today: the goal reaches models only as a labelled untrusted data block, and every output is validated by id (**VERIFIED**) |
 | Runaway spend | Quotes, caps, reservation and reconciliation, overrun lock-out, deployment ceilings, and the provider-side workspace limit |
 | The Studio publishes | Structurally impossible: no provider credential, no posting module ([§1.3](#13-non-goals)), and an import-graph test |
@@ -1005,8 +1121,9 @@ This design does not reproduce it.
 
 The fact loader's fields are sourced claims, not customer records. The Tekmetric probe
 (**VERIFIED**, [Roadmap](ROADMAP.md)) and every other customer-data source are out of scope. S7's
-upload validator refuses a file carrying fields outside the loader's known set, so a stray export
-cannot be stored by mistake.
+upload screen lists every field name outside the loader's known set as a warning before the owner
+activates a version. That way a stray export is noticed without the loader being made stricter than
+the CLI ([§8.5](#85-fact-file-upload-owner-only)).
 
 ### 9.5 What the Studio database holds, and who can read it
 
@@ -1043,7 +1160,7 @@ The names S1–S9 are new, so they cannot be confused with the production-wiring
 
 | # | Scope | Validation specific to it | Touches a live path? |
 |---|---|---|---|
-| **S1** | **Library extraction.** `src/harness/contentRun/**` takes the CLI's core. The CLI becomes a thin shell with every flag unchanged. The import-graph check and the caller allowlist from [§5.4](#54-executionenabled-and-the-registry--how-the-studio-worker-may-call-stages) land here. Mutations that target `content-run.mjs` are re-pointed at the moved code, each with the same expected checks | Offline counts **unchanged, plus the new checks**. Every existing CLI check keeps its name and its result. **A fake-runner golden test:** full, `--replay-critic`, `--resume-from`, `--revise-from` and `--revise-once` runs write byte-identical files before and after (timestamps pinned). `--list-tags` and every refused flag combination behave identically. Mutation count and captured paths recorded | No live service. New `dist/` modules that nothing live imports, as proven by the check |
+| **S1** | **Library extraction.** `src/harness/contentRun/**` takes the CLI's core. The CLI becomes a thin shell with every flag unchanged. The import-graph check and the caller allowlist from [§5.4](#54-executionenabled-and-the-registry--how-the-studio-worker-may-call-stages) land here. Mutations that target `content-run.mjs` are re-pointed at the moved code, each with the same expected checks | Offline counts **unchanged, plus the new checks**. Every existing CLI check keeps its name and its result. **A fake-runner golden test:** full, `--replay-critic`, `--resume-from`, `--revise-from` and `--revise-once` runs write byte-identical files before and after (timestamps pinned). `--list-tags` and every refused flag combination behave identically. Mutation count and captured paths recorded. The shared-module diff guard ([§5.4](#54-executionenabled-and-the-registry--how-the-studio-worker-may-call-stages), item 2a) lands here | No live service is redeployed. It adds new `dist/` modules that nothing live imports, as proven by the check. **Any edit to a module the live services load** (for example exporting `sdk.ts`'s price table) is a live-path change, named in S1 and reviewed as one |
 | **S2** | **Studio schema and migrations.** `studio/migrations/0001_*.sql` and on, `src/studio/db/migrate.ts`, `npm run studio:migrate`, and the database identity checks and tripwire | Disposable PostgreSQL 16 and 18: apply, enforce every invariant in [§4](#4-data-model), and re-run idempotently. **The cross-runner refusals in [§3.7](#37-studio-migrations--kept-strictly-separate-from-the-live-migrations).** No `state/migrations/**` change | No |
 | **S3** | **Worker and queue.** `src/studio/worker/**`: ownership, claim, recovery, heartbeat, the cancellation checks, the `RunSink` over the database, and the reservation and reconciliation primitives, with the check before each paid request | Offline and disposable PostgreSQL, with a **fake runner only**. Proofs: single consumer under contention; refuse-don't-resume after a kill; no request after cancel; cost recorded before the next request; overrun stops the run; zero runner calls without a reservation | No |
 | **S4** | **Authentication.** `src/studio/web/**` skeleton: `/healthz`, OIDC login, callback and logout, sessions, CSRF, roles, bootstrap owner, security headers. Adds `jose` | A local fake OIDC issuer with its own keys proves refusal of: a wrong `hd`, `email_verified: false`, a wrong `aud` or `iss`, a bad signature, expiry, a replayed `state`, a nonce mismatch and an unlisted email; and one accepted path. CSRF and `Origin` refusals. Cookie attributes. Zero dependency-audit findings | No |
@@ -1082,9 +1199,14 @@ because they describe current reality:
 at `2026-10-22T18:52Z`. Its standing prohibition reads "no unrelated release may occur, of any
 service, for any reason" ([Status](STATUS.md)).
 
-- **Default:** create the Studio services (O3) **after** that bound. Merging S1–S9 is not a release
-  (**VERIFIED**: `deploy-production` refuses at its disabled gate on every merge), so the PRs may
-  merge during the interval, **except** that S8 must also pass the Blueprint auto-sync check.
+- **Default:** create the Studio services (O3) only **after the interval is closed**, or under
+  whatever terms the owner's decision at the bound puts in force. The interval may be extended
+  again, so "after the bound" alone is not enough.
+- **Merging S1–S9 is not a release, on two conditions.** First, `deploy-production` must keep
+  refusing at its disabled gate (**VERIFIED** on every merge so far). Second, Render native
+  auto-deploy must stay off on all three live services. That was last verified on 2026-09-18
+  ([Status](STATUS.md)), and the daily interval monitor does not cover it. Both are re-verified
+  read-only before each Studio merge, and S8 must also pass the Blueprint auto-sync check.
 - **Exception:** earlier only if the owner decides, in writing, that the freeze does not cover new
   services. That decision is recorded in [Status](STATUS.md) before O3.
 
@@ -1098,12 +1220,14 @@ gate.
 ### 11.1 Open questions for the owner
 
 1. **Approve this design?** Studio PR 1 (S1) is the next repository change only after approval.
-2. **One `render.yaml` or a separate Blueprint file?** Owner decision 2 says one `render.yaml`. If
-   the live services are Blueprint-managed with auto-sync ([§3.6](#36-applying-the-blueprint--a-gate-not-a-formality)),
-   a separate Studio Blueprint file would keep any sync away from the live services. Keep the
-   decision, or amend it once the check is done?
+2. **One `render.yaml` or a separate Blueprint file?** Owner decision 2 says one `render.yaml`. This
+   design **recommends amending it**: declare the Studio in a separate Blueprint file, or create it
+   by hand from a checked-in specification
+   ([§3.6](#36-applying-the-blueprint--a-gate-not-a-formality)). Whether or not the live services
+   are Blueprint-managed, applying a file that also contains the `gcd-social-*` entries risks
+   touching them. Keep the decision (with the full §3.6 gate), or amend it?
 3. **Does the partial-release freeze cover new services?** The default is no Studio services
-   before `2026-10-22T18:52Z`.
+   until the interval (bound `2026-10-22T18:52Z`) is closed, or under the terms then in force.
 4. **Default caps.** One full run's printed ceiling is about $21.65 against about $1.17 actual. What
    daily and monthly caps, and what deployment ceilings? Should the reservation use the printed
    ceiling (safe, blocks sooner) or a tighter bound (a separate, reviewed change to the estimate)?
@@ -1121,6 +1245,12 @@ gate.
 ### 11.2 Accepted limitations (proposed)
 
 - **Deploys are manual,** one human step per Studio release, until the live controller is proven.
+- **Owner lockout has no in-app recovery.** It takes one audited database statement by the Render
+  account holder ([§7.2](#72-allowlist-and-roles)).
+- **Until S2 proves a least-privilege role, the web holds the database owner's credential.** The
+  worker's independent checks are the control ([§9.1](#91-threat-model)).
+- **A Studio source run that predates the automotive-facts fingerprint is always refused** as a
+  paid source, where the CLI would let an operator type `UNPROVEN`.
 - **The price ceiling is an estimate,** and the CLI itself calls it "rough, not billing-accurate". An
   overrun is possible. It is detected after the request that caused it, stops the run, and locks new
   confirmations; it is not prevented.
@@ -1160,11 +1290,16 @@ here so it can be reviewed, and reversed, on its own:
    ([§4.2](#42-runs-outputs-findings-costs-and-reports)).
 7. **Two import tiers:** `verified` and `archived_unverified`
    ([§4.5](#45-imported-legacy-runs)).
-8. **Caps:** reserve the printed ceiling, reconcile to the measured cost, and stop and lock on
-   overrun. The effective cap is the lower of the owner's cap and a deployment ceiling
-   ([§6.2](#62-daily-and-monthly-caps--enforced-before-every-paid-call)).
+8. **Caps:** reserve the printed ceiling, reconcile to the charged cost, and stop and lock on
+   overrun. An in-flight or unknown-cost request is charged at its full ceiling. Confirmations are
+   serialized on the settings row. The effective cap is the lower of the owner's cap and a
+   deployment ceiling ([§6.2](#62-daily-and-monthly-caps--enforced-before-every-paid-call)).
+8a. **Quotes are written by the worker,** bound to its commit, both fact fingerprints and the price
+   table. The worker re-checks them, and its own ceilings, before every paid request. The web
+   never prices anything ([§6.1](#61-a-price-ceiling-confirmation-before-every-paid-action)).
 9. **`jose` for token verification,** and Lax `__Host-` cookies with synchronizer CSRF tokens plus
    `Origin` checks ([§7](#7-authentication)).
-10. **The upload and import formats:** JSON only, read client-side, with no archive dependency
+10. **The upload and import formats:** JSON only, read client-side, each imported file base64-encoded
+    with its sha256, and no archive dependency
     ([§8.5](#85-fact-file-upload-owner-only), [§8.6](#86-import-of-existing-local-output-runs)).
 11. **Fake runs are owner-only** and labelled on every screen ([§6.3](#63-who-may-start-a-paid-run)).
