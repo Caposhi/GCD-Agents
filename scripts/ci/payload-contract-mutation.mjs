@@ -4,7 +4,7 @@
  *
  * A regression that cannot fail is decoration. This script proves each
  * load-bearing derivation in `src/harness/agents/payloadContract.ts` and the
- * related repository-authority controls is actually load-bearing across twenty-seven
+ * related repository-authority controls is actually load-bearing across twenty-eight
  * captured paths: it applies one focused mutation in a disposable no-Git copy,
  * rebuilds there, runs the Content Intelligence offline suite, and
  * requires the NAMED check that owns that derivation to fail. Then it restores
@@ -215,7 +215,7 @@
  * beside it, or carrying the motivating runs' own wording. It adds no captured
  * path.
  *
- * The final appended group (M469-M492) covers the opt-in revision pass: a
+ * The next appended group (M469-M492) covers the opt-in revision pass: a
  * stage's findings cap typed instead of derived, sized without PREVIOUS_OUTPUT,
  * or its ceiling without the escaping allowance; MAX_PAYLOAD_CHARS raised to fit
  * an uncapped request; a stage accepting another stage's, a human_decision or an
@@ -229,6 +229,16 @@
  * stage 4 not appending the blocks; and the prompts dropping stage 4's
  * contact-in-overlay rule or letting a finding permit. It adds two captured
  * paths: `revision.ts` and `revisionInput.ts`.
+ *
+ * The final appended group (M493-M507) covers stage 4's contact-in-overlay
+ * rule enforced in code: the validator no longer calling the check; the North
+ * American, 7-digit local and digit-run guards of the phone pattern, the
+ * approved phone digits, the bare-domain and email URL patterns and the
+ * approved booking host each dropped; a phrase removed from, or bare "visit"
+ * added to, the closed call-to-action list; NFKC, whitespace collapsing or
+ * case folding dropped; the refusal echoing the overlay text; and the prompt
+ * no longer saying code rejects it. It adds one captured path:
+ * `overlayContact.ts`.
  *
  * It is offline and deterministic: no network, no database, no provider, no
  * credential. The mutations run in parallel on up to MAX_WORKERS workers (the
@@ -302,6 +312,8 @@ const APPROVED_FACTS = "config/approved-facts.json";
 // The revision pass: its plan and the two blocks a writing stage appends.
 const REVISION_MODULE = "src/harness/agents/revision.ts";
 const REVISION_INPUT_MODULE = "src/harness/agents/revisionInput.ts";
+// Stage 4's deterministic contact-in-overlay check.
+const OVERLAY_CONTACT_MODULE = "src/harness/agents/overlayContact.ts";
 
 /**
  * Each mutation names the derivation it breaks, the single edit that breaks it,
@@ -4365,12 +4377,130 @@ const REVISION_PASS_MUTATIONS = [
   },
 ];
 
+/**
+ * Stage 4's contact-in-overlay rule enforced in code (the owner's decision of
+ * 2026-09-29): the validator calls the check on every overlay; the phone, URL
+ * and call-to-action patterns, the approved phone digits and booking host, and
+ * the normalization are each load-bearing; bare "visit" stays unmatched; the
+ * refusal never echoes the overlay; and the prompt says code rejects it.
+ * Appended after every earlier group.
+ */
+const CONTACT_IN_OVERLAY_MUTATIONS = [
+  {
+    name: "stage 4's validator no longer calls the contact-in-overlay check",
+    file: PRODUCTION_DIRECTION,
+    from: "    const categories = overlayContactViolations(overlay.text, pack);\n",
+    to: "    const categories: string[] = [];\n",
+    expect: ["CW6.", "CW7.", "CW8.", "CW9."],
+  },
+  {
+    name: "the North American phone pattern is dropped",
+    file: OVERLAY_CONTACT_MODULE,
+    from: "  if (NORTH_AMERICAN_PHONE.test(text)) return true;\n",
+    to: "",
+    expect: ["CW1."],
+  },
+  {
+    name: "the 7-digit local phone pattern is dropped",
+    file: OVERLAY_CONTACT_MODULE,
+    from: "  if (LOCAL_PHONE.test(text)) return true;\n",
+    to: "",
+    expect: ["CW1."],
+  },
+  {
+    name: "the phone pattern no longer refuses to start or end inside a longer digit run",
+    file: OVERLAY_CONTACT_MODULE,
+    from: "\\\\d{4}(?!\\\\d)`,\n);\n/** A 7-digit local",
+    to: "\\\\d{4}`,\n);\n/** A 7-digit local",
+    expect: ["CW4."],
+  },
+  {
+    name: "the approved phone number is no longer compared by its digits",
+    file: OVERLAY_CONTACT_MODULE,
+    from: "  const local = approvedPhoneLocalDigits(pack);\n",
+    to: "  const local = undefined as string | undefined;\n",
+    expect: ["CW5."],
+  },
+  {
+    name: "the bare-domain URL pattern is dropped",
+    file: OVERLAY_CONTACT_MODULE,
+    from: "  if (URL_BARE_DOMAIN.test(text)) return true;\n",
+    to: "",
+    expect: ["CW2."],
+  },
+  {
+    name: "the email pattern is dropped",
+    file: OVERLAY_CONTACT_MODULE,
+    from: "  if (URL_EMAIL.test(text)) return true;\n",
+    to: "",
+    expect: ["CW2."],
+  },
+  {
+    name: "the approved booking link's host is no longer matched",
+    file: OVERLAY_CONTACT_MODULE,
+    from: "  if (host && text.includes(host)) return true;\n",
+    to: "",
+    expect: ["CW5."],
+  },
+  {
+    name: "one phrase is removed from the call-to-action list",
+    file: OVERLAY_CONTACT_MODULE,
+    from: "  \"book online\",\n",
+    to: "",
+    expect: ["CW3."],
+  },
+  {
+    name: "the call-to-action list matches bare \"visit\"",
+    file: OVERLAY_CONTACT_MODULE,
+    from: "  \"visit us\",\n",
+    to: "  \"visit\",\n  \"visit us\",\n",
+    expect: ["CW4."],
+  },
+  {
+    name: "overlay text is no longer NFKC-normalized",
+    file: OVERLAY_CONTACT_MODULE,
+    from: "    .normalize(\"NFKC\")\n",
+    to: "",
+    expect: ["CW3."],
+  },
+  {
+    name: "overlay whitespace is no longer collapsed",
+    file: OVERLAY_CONTACT_MODULE,
+    from: "    .replace(/\\s+/g, \" \")\n",
+    to: "",
+    expect: ["CW3."],
+  },
+  {
+    name: "overlay text is no longer compared case-insensitively",
+    file: OVERLAY_CONTACT_MODULE,
+    from: "    .trim()\n    .toLowerCase();\n",
+    to: "    .trim();\n",
+    expect: ["CW2.", "CW3."],
+  },
+  {
+    name: "the refusal echoes the overlay text",
+    file: PRODUCTION_DIRECTION,
+    from: "\"code attaches the contact line, so an overlay may not carry a phone number, a URL or a call to action\");",
+    to: "\"code attaches the contact line, so an overlay may not carry a phone number, a URL or a call to action: \" "
+      + "+ overlay.text);",
+    expect: ["CW7.", "CW8."],
+  },
+  {
+    name: "stage 4's prompt no longer says code rejects an overlay carrying contact details",
+    file: DIRECTION_PROMPT,
+    from: " An overlay containing a phone number, a URL or web address, or a call to action such as \"book online\" "
+      + "or \"call us\" is rejected by code, and the whole response fails.",
+    to: "",
+    expect: ["CW10."],
+  },
+];
+
 const MUTATIONS = [
   ...LEGACY_MUTATIONS, ...RAW_IDENTITY_MUTATIONS, ...FIELD_MARGIN_MUTATIONS, ...CRITIC_POLICY_MUTATIONS,
   ...CONTACT_LINE_MUTATIONS, ...CRITIC_PANEL_MUTATIONS, ...CRITIC_PANEL_FOLLOW_UP_MUTATIONS,
   ...WRITER_RESTRICTION_MUTATIONS, ...IDENTITY_SCOPE_MUTATIONS, ...LANE_S_APPROVED_FACTS_MUTATIONS,
   ...PACKAGING_CLAIM_USE_CAP_MUTATIONS, ...STATED_CAPTION_AND_RESUME_MUTATIONS,
-  ...COMPARISON_CLAIM_MUTATIONS, ...REVISION_PASS_MUTATIONS,
+  ...COMPARISON_CLAIM_MUTATIONS, ...REVISION_PASS_MUTATIONS, ...CONTACT_IN_OVERLAY_MUTATIONS,
 ];
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");

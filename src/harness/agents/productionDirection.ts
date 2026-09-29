@@ -69,7 +69,11 @@
  *  - detect every uncited factual or visual implication.
  *
  * None of that is closed by keyword matching, which would be trivially evadable
- * and would imply a semantic check the code does not perform. It is contained by
+ * and would imply a semantic check the code does not perform. The one narrow,
+ * closed exception is contact details: an overlay carrying a phone number, a
+ * URL or a listed call to action is refused (`overlayContact.ts`), because code
+ * attaches the contact line and an overlay repeating it could contradict it.
+ * That rule proves nothing about wording's fidelity. The rest is contained by
  * type: direction returns branded `provisional_model_prose` carrying
  * `verified: false`, `publishable: false`, **and `executable: false`**; overlay
  * wording is separately branded `wordingVerified: false`; production
@@ -100,6 +104,7 @@ import {
 } from "./automotiveTruth.js";
 import type { HookStoryScriptOutput } from "./hookStoryScript.js";
 import { revalidateHookStoryScriptOutput, scriptClaimRecords } from "./hookStoryScript.js";
+import { overlayContactViolations } from "./overlayContact.js";
 import { revisionDataBlocks, type StageRevisionInput } from "./revisionInput.js";
 import {
   StageExecutionError,
@@ -485,7 +490,9 @@ export function renderWriterRestrictionBlocks(
  * Structural checks come first so a malformed shape fails before any id work.
  *
  * **Scope of this function, stated precisely.** It validates *shape*, *bounds*,
- * *enums*, *shot indices*, and *membership in stage 3's used-claim set*. It does
+ * *enums*, *shot indices*, *membership in stage 3's used-claim set*, and — for
+ * `overlayText[].text` only — the closed contact-detail rule in
+ * `overlayContact.ts` (a phone number, a URL or a listed call to action). It does
  * not evaluate whether a shot represents reality, whether a requested asset
  * exists or may lawfully be used, whether an action is safe, whether overlay
  * wording faithfully renders its cited record, or whether the plan asserts
@@ -541,6 +548,17 @@ export function validateProductionDirectionOutput(
       role: requireEnum(obj.role, OVERLAY_ROLES, "overlayText[].role"),
       wordingVerified: false,
     };
+  });
+  // No contact details in overlays — enforced here, not only asked for in the
+  // prompt (the owner's decision of 2026-09-29; see `overlayContact.ts`). The
+  // error names the index and the categories only: never the overlay text and
+  // never a contact value.
+  overlayText.forEach((overlay, index) => {
+    const categories = overlayContactViolations(overlay.text, pack);
+    if (categories.length) {
+      fail(`"overlayText[${index}].text" contains contact details (${categories.join(", ")}); `
+        + "code attaches the contact line, so an overlay may not carry a phone number, a URL or a call to action");
+    }
   });
 
   if (!Array.isArray(raw.productionRequirements)) fail('"productionRequirements" must be an array');
