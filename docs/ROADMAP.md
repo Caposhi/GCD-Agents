@@ -107,6 +107,17 @@ AgentShield 1.4.0 exited zero at B/87 with the same 18 findings (9 medium, 9 low
 
 The mutation harness was not re-run: it mutates source, prompts, a skill, SQL and the CLI, none of which changed. Details in [Testing](TESTING.md); CI on the final head is recorded in the PR.
 
+**Re-run after the owner's answers (item 6), 2026-09-29.** The checks were run again on the answers commits, and all passed:
+
+- build and typecheck;
+- `npm run test:offline`, counts unchanged at **1,815**;
+- Markdown links (66 files) and the design's internal anchors (78, all resolving), plus the two cross-document anchors from [PRODUCTION_WIRING_DESIGN.md](PRODUCTION_WIRING_DESIGN.md);
+- environment coverage (35 variables) and the sensitive-content scan (189 files);
+- `git diff --check`;
+- a check that only `*.md` files changed since `b33954b`.
+
+Manual triage of the added lines found no email address, URL, token, credential or phone number.
+
 **Production evidence:** none.
 
 **Rollback / recovery:** revert the commit.

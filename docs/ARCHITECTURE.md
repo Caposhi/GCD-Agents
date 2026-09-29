@@ -233,7 +233,7 @@ The owner then copies captions by hand.
 - It holds no provider credential and imports no posting module.
 - It has no approval path.
 - It never connects to `gcd-social-db`.
-- It changes nothing in the live runtime described above. The Blueprint-sync gate (design §3.6) and the import-graph check (design §5.4) are what keep that true.
+- It changes nothing in the live runtime described above. The Blueprint check and the stop condition on any `gcd-social-*` resource (design §3.6), and the import-graph check (design §5.4) are what keep that true.
 
 It is a recorded deviation from the production-wiring design's §5.2, and it implements none of P1–P8 and none of M2–M7. A cron job is also designed, but it would not be added to `render.studio.yaml` at launch.
 

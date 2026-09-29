@@ -79,7 +79,7 @@ See [Roadmap](ROADMAP.md).
 - **The next repository change** is Studio S1 (library extraction). It still needs its own authorization.
 - **The Studio could never publish.** It would hold no Instagram, Facebook or Google Business Profile credential, and it would hold no credential for, and never connect to, `gcd-social-db`.
 - **It is outside production wiring.** It implements none of the production-wiring design's P1–P8 and none of M2–M7.
-- **Its services would not be created until the M1→M2 interval (bound `2026-10-22T18:52Z`) is closed**, or under the terms then in force, The owner confirmed on 2026-09-29 that the release freeze covers new services.
+- **Its services would not be created until the M1→M2 interval (bound `2026-10-22T18:52Z`) is closed**, or under the terms then in force. The owner confirmed on 2026-09-29 that the release freeze covers new services.
 
 ## Production state
 
