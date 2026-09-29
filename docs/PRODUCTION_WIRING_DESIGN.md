@@ -978,7 +978,7 @@ in this session, and none was authorized.
 > 2026-09-29; declared in its own `render.studio.yaml`, with `render.yaml` unchanged) deliberately departs from
 > "no new Render service". It would be a separate, review-only web service, worker and database;
 > its cron is designed but not created at launch. It cannot publish, and it would hold no credential
-> for, and never connect to, `gcd-social-db`. Its worker would hold its own `ANTHROPIC_API_KEY`, and
+> for, and never connect to, `gcd-social-db`. Its worker would hold its own `ANTHROPIC_API_KEY`, in a separate Anthropic workspace (required), and
 > it would run its own migration runner against its own database. So the "only service" and
 > "single migration runner" rationales above describe the live services only. It implements none
 > of P1–P8 and changes none of the services above, subject to the Blueprint check in its §3.6. The
