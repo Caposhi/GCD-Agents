@@ -48,7 +48,14 @@ The current partial-release interval, bound `2026-10-22T18:52Z`, prohibits every
 
 ### Stage 4's contact-in-overlay rule enforced in code — repository only
 
-**`IMPLEMENTED` on branch `claude/jolly-edison-9d4rjc`, not merged; not deployed, enabled, or production-validated.** All six stages keep `executionEnabled: false`, and no release is possible during the interval. It is based directly on `e6333a8e17064329f26eb2f452d6bb94ea84f1bf`, the merge of PR #100. PR #100 is documentation plus two source comments and is `MERGED`: PR CI run 36487240746 on head `20c4ca9` passed all five jobs on attempt 1 (quality job 30m11s of 60, mutation step 28m50s). `main` push run 36567028496 (run 232) on `e6333a8` passed all five jobs on attempt 1 (quality job 28m07s, mutation step 26m44s); the `deploy-production` workflow (run 65) refused at its disabled-automation gate, as on every merge during the interval. PR #100's merge-SHA follow-up is discharged (`e6333a8`).
+**`MERGED` through [PR #101](https://github.com/Caposhi/GCD-Agents/pull/101) at `f11101265c1ea7aa771d7efd2f5fdd98f96ab702` (ordered parents `e6333a8…` then reviewed head `fcb901f…`); not deployed, enabled, or production-validated.** All six stages keep `executionEnabled: false`, and no release is possible during the interval.
+
+- PR CI run 36573197045 (run 233) on head `fcb901f` passed all five jobs on attempt 1 (quality job 23m32s of 60, mutation step 22m14s).
+- `main` push run 36606270013 (run 234) on `f111012` passed all five jobs on attempt 1 (quality job 32m06s, mutation step 30m43s).
+- The `deploy-production` workflow (run 66) refused at its disabled-automation gate, as on every merge during the interval.
+- Its merge-SHA follow-up is discharged (`f111012`).
+
+*As recorded at implementation:* it is based directly on `e6333a8e17064329f26eb2f452d6bb94ea84f1bf`, the merge of PR #100. PR #100 is documentation plus two source comments and is `MERGED`: PR CI run 36487240746 on head `20c4ca9` passed all five jobs on attempt 1 (quality job 30m11s of 60, mutation step 28m50s). `main` push run 36567028496 (run 232) on `e6333a8` passed all five jobs on attempt 1 (quality job 28m07s, mutation step 26m44s); the `deploy-production` workflow (run 65) refused at its disabled-automation gate, as on every merge during the interval. PR #100's merge-SHA follow-up is discharged (`e6333a8`).
 
 **What this change does.** It enforces in code the rule stage 4's prompt has carried since PR #98, the owner's decision of 2026-09-29. `src/harness/agents/overlayContact.ts` returns the contact-detail categories an overlay carries: `phone`, `url` and `call_to_action`, the last from a closed list of 17 phrases.
 
@@ -59,9 +66,20 @@ The current partial-release interval, bound `2026-10-22T18:52Z`, prohibits every
 - The phrase list is closed, so the critic remains the second line.
 - Only overlay text is checked. Stage 3, stage 5, the contact line, the critic, `config/approved-facts.json`, models and limits are unchanged.
 - Tests: `AF5e` and `CW1`–`CW10`. Mutations: `M493`–`M507`, for 507 in total.
-- **This change's merge SHA is a blocking follow-up.**
+- **This change's merge SHA is a blocking follow-up.** *(Discharged 2026-09-29: `f111012…`, above.)*
 
 See [Roadmap](ROADMAP.md).
+
+### Content Studio — planned, nothing built
+
+**`PLANNED`, repository design only.** On 2026-09-29 the owner decided to build a separate, review-only **Content Studio**. It would have its own Render web service, background worker and PostgreSQL database, declared in a separate `render.studio.yaml` (`render.yaml` is not modified at all), plus a cron job that is designed but not added at launch. It would let the owner and staff start and view pipeline runs in a browser, with Google sign-in restricted to `@germancardepot.com`, instead of running `scripts/local/content-run.mjs` in a terminal. The design is [CONTENT_STUDIO_DESIGN.md](CONTENT_STUDIO_DESIGN.md), and it was **approved by the owner on 2026-09-29** with the answers in its §11.1a. Approval is not implementation.
+
+- **Nothing exists yet.** No Studio code, migration, Render service, database, Google OAuth client, secret or Anthropic key exists.
+- **Nothing changes.** Production state below, the live services and the Phase-A gate are all unchanged.
+- **The next repository change** is Studio S1 (library extraction). It still needs its own authorization.
+- **The Studio could never publish.** It would hold no Instagram, Facebook or Google Business Profile credential, and it would hold no credential for, and never connect to, `gcd-social-db`.
+- **It is outside production wiring.** It implements none of the production-wiring design's P1–P8 and none of M2–M7.
+- **Its services would not be created until the M1→M2 interval (bound `2026-10-22T18:52Z`) is closed**, or under the terms then in force. The owner confirmed on 2026-09-29 that the release freeze covers new services.
 
 ## Production state
 
@@ -148,7 +166,8 @@ This closes the previously open item requiring observation of a normal scheduled
 | The opt-in revision pass — `--revise-from <run-dir>` and `--revise-once` in the local CLI: one round re-running the earliest writing stage owning a blocking finding and every later one with `PREVIOUS_OUTPUT` and only its own findings, then the critic fresh; per-stage findings caps derived from the contract (69 / 80 / 31) with `MAX_PAYLOAD_CHARS` unchanged at 410,000; stage 4's prompt keeps contact details out of overlays — [PR #98](https://github.com/Caposhi/GCD-Agents/pull/98), merge `07b6435318011748b876015432f94e3ef73eb853` | **`MERGED`** — **not `DEPLOYED`, not `ENABLED`, not `PRODUCTION-VALIDATED`**; PR CI run 36454119958 and `main` push run 36459335061 green on attempt 1 (mutation step 21m48s / 20m55s); dormant stage code, prompts, the local CLI and tests only; merge-SHA follow-up discharged. Owner-run acceptance, 2026-09-28 (operator-local): two rounds, 26 (9 blocking) → 19 (4) → 13 (2) findings at $0.853952 and $0.819536. See [Roadmap](ROADMAP.md) |
 | Documentation reconciliation — PR #98 recorded as merged, the revision pass's two owner-run rounds, and a corrected "critic gap" — [PR #99](https://github.com/Caposhi/GCD-Agents/pull/99), merge `a26101e466020fba5815b2ad378095dfbc4f866c` | **`MERGED`** — documentation only; no runtime effect. PR CI run 36470162601 and `main` push run 36481230729 green on attempt 1 (mutation step 28m21s and 17m40s); the `deploy-production` workflow (run 64) refused at its disabled-automation gate; merge-SHA follow-up discharged. See [Roadmap](ROADMAP.md) |
 | Documentation reconciliation — PR #99 recorded as merged, the comparison rule's two source comments restated as precautionary, stale state labels corrected — [PR #100](https://github.com/Caposhi/GCD-Agents/pull/100), merge `e6333a8e17064329f26eb2f452d6bb94ea84f1bf` | **`MERGED`** — documentation and two source comments only; no runtime effect. PR CI run 36487240746 green on attempt 1 (mutation step 28m50s); `main` push run 36567028496 green on attempt 1 (mutation step 26m44s); the `deploy-production` workflow (run 65) refused at its disabled-automation gate; merge-SHA follow-up discharged. See [Roadmap](ROADMAP.md) |
-| Stage 4's contact-in-overlay rule enforced in code — `overlayContact.ts` (phone, URL, closed call-to-action list), called by `validateProductionDirectionOutput` on every `overlayText[].text`; one stage 4 prompt sentence | **`IMPLEMENTED`**, not merged — **not `DEPLOYED`, not `ENABLED`, not `PRODUCTION-VALIDATED`**; dormant stage code, one prompt sentence and tests only; saved runs with a violating overlay are refused for replay, resume and revision; merge SHA is a blocking follow-up. See [Roadmap](ROADMAP.md) |
+| Stage 4's contact-in-overlay rule enforced in code — `overlayContact.ts` (phone, URL, closed call-to-action list), called by `validateProductionDirectionOutput` on every `overlayText[].text`; one stage 4 prompt sentence — [PR #101](https://github.com/Caposhi/GCD-Agents/pull/101), merge `f11101265c1ea7aa771d7efd2f5fdd98f96ab702` | **`MERGED`** — **not `DEPLOYED`, not `ENABLED`, not `PRODUCTION-VALIDATED`**; dormant stage code, one prompt sentence and tests only; saved runs with a violating overlay are refused for replay, resume and revision. PR CI run 36573197045 and `main` push run 36606270013 green on attempt 1 (mutation step 22m14s / 30m43s); the `deploy-production` workflow (run 66) refused at its disabled-automation gate; merge-SHA follow-up discharged. See [Roadmap](ROADMAP.md) |
+| Content Studio design — [CONTENT_STUDIO_DESIGN.md](CONTENT_STUDIO_DESIGN.md), a review-only web interface for the content pipeline (owner decisions of 2026-09-29) | The design document is **`IMPLEMENTED`**, not merged; documentation only. **The Studio itself is `PLANNED`**: nothing is built, and no Render service, database, OAuth client or secret exists. Approved by the owner on 2026-09-29 (design §11.1a); merge SHA is a blocking follow-up. See [Roadmap](ROADMAP.md) |
 | Worker lease/reaper | `SUPERSEDED` by ownership plus startup recovery; rationale and re-entry condition in [Roadmap](ROADMAP.md) |
 
 These states are not interchangeable. In particular: Phase 0B.0 is **merged and deployed**, and its migration 006 **has** been applied to production and all three services report the target commit. `MERGED` is a repository fact; `DEPLOYED` is a production fact; they happened to diverge for a period during this rollout (API deployed before worker and scheduler) and are recorded here as now reconciled. Migration 006 must never be manually re-run — the runner records it as applied and would skip it, but applying it by hand outside a transaction would silently disable its `SET LOCAL` timeout guards. See the [Phase 0B.0 rollout runbook](ROLLOUT_PHASE_0B0.md) for the completion record.
@@ -309,8 +328,9 @@ This is the second incident in the same family as the Phase 0A worker/migration-
 - production execution through `AgentRegistry`, production skill/reference injection, or research retrieval;
 - the complete target six-stage Content Intelligence reasoning architecture — all six executors are merged to `main` (`final-critic` through PR #52), and the payload-contract reconciliation that gates enablement is **`MERGED` through PR #54**, so that prerequisite is satisfied in repository state; **no stage is production-wired**; the production-wiring design is **`MERGED` as accepted design through PR #56** (merge `53e2c2bb6115e457670c1f99956d11a1a54530cd`) and remains **`UNIMPLEMENTED`** — the design document is on `main`, no implementation PR (P1–P8) exists, M1 has been performed and independently verified but M2–M7 have not, and neither the design's acceptance nor M1 authorizes production wiring;
 - populated production fact/evidence records, performance ingestion, active scorecard writes, hypothesis tracking, or governed improvement proposal generation;
-- autonomy B/C behavior; every parsed phase still requires the Phase A approval gate; and
-- browser-based video editing.
+- autonomy B/C behavior; every parsed phase still requires the Phase A approval gate;
+- browser-based video editing; and
+- the Content Studio — `PLANNED` only, with its design in [CONTENT_STUDIO_DESIGN.md](CONTENT_STUDIO_DESIGN.md); no Studio code, service or database exists.
 
 Brief leases and stale-work recovery are no longer listed here: stale-work recovery is merged and deployed, and the lease design was superseded. See [Roadmap](ROADMAP.md).
 
