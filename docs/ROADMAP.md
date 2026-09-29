@@ -185,7 +185,7 @@ Open items, carried unchanged except where the Studio design change at the top o
 **Gates recorded, not resolved:**
 
 - **Owner approval of the design.**
-- **The release-freeze gate.** The M1→M2 interval is bound at `2026-10-22T18:52Z`, and its prohibition covers "any service". The default is to create the Studio services (O3) only after that bound, unless the owner decides the freeze does not cover new services. Merging S1–S9 is not a release.
+- **The release-freeze gate.** The M1→M2 interval is bound at `2026-10-22T18:52Z`, and its prohibition covers "any service". The default is to create the Studio services (O3) only once the interval is closed, or under the terms then in force, unless the owner decides the freeze does not cover new services. Merging S1–S9 is not a release.
 - **The Blueprint check before S8 merges.** Is this repository linked to a Render Blueprint with auto-sync? If so, merging `render.yaml` could itself touch the live services (design §3.6).
 - **The P2 conflict** (design §5.4). The production-wiring design's P2, as written, would stop the Studio worker and today's CLI.
 
