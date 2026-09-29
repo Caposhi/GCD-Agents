@@ -6710,9 +6710,13 @@ async function run(): Promise<void> {
             + "`forbiddenClaims` is not thereby permitted. Nothing is permitted except what you bound to a fact id.")
           && !truthPromptCM.includes("It is not a filter anything runs"));
 
-      // Four owner-run live runs (2026-09-26, operator-local) credited a
-      // manufacturer with a comparison its record does not make: the
-      // comparison was the shop's own record's, and no lens flagged it. The
+      // Precautionary. Four owner-run live runs (2026-09-26, operator-local)
+      // were first recorded as crediting a manufacturer with a comparison its
+      // record does not make, unflagged by any lens; the owner's check of
+      // 2026-09-28 found BMW's own record makes that city-versus-long-distance
+      // comparison, so there was no critic gap (see PR #97's corrected record
+      // in docs/ROADMAP.md). The rule still holds: a comparison needs a record
+      // that makes it, credited to that record's source. The
       // rule stays fact-free (CM9); it reaches the three writers and the critic's
       // evidence lens through the skill they already load.
       const comparisonSectionCM = claimSkillCM.split("## A comparison is a claim")[1]?.split("\n## ")[0] ?? "";
