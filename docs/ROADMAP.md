@@ -74,7 +74,31 @@ These are not interchangeable and must not be collapsed into "done". `MERGED` in
 - **Checked-in golden digests in CI.** Rejected for S1: every stage file records the sha256 of its prompts and of `config/approved-facts.json`, so digests would break on every prompt change; and golden files themselves would copy the booking URL into new files. The before/after comparison is the S1 proof, repeatable with `--base`.
 - **Regular-expression import scanning.** Rejected in favour of the TypeScript parser, which does not mistake a comment or a string for an import.
 
-**Automated validation.** «VALIDATION»
+**Automated validation.** Build and typecheck clean. `npm run test:offline` passed all nine suites. Counts, before (on `4664515`) → after:
+
+- posting 52 → 52, image 18 → 18, orchestrator 119 → 119, gate 56 → 56, API 51 → 51;
+- render identity one invariant-suite pass → one;
+- ownership/recovery 112 → 112;
+- content intelligence **1,312 → 1,322** (+`CS1`, `CS1a`, `CS1b`, `CS1c`, `CS2`, `CS3`, `CS3a`, `CS4`, `CS5`, `CS6`);
+- interval monitor 94 → 94.
+
+That is **1,815 → 1,825** checks. Every existing check kept its name and passes.
+
+- **The golden test:** captured on `4664515` before any change, then compared after it: 0 differences in 240 files and 84 scenarios, and 59 stack-frame-only stderr differences (cosmetic). `--base 4664515 --allow-stack-frames` reproduced the result independently.
+- **`npm run test:payload-mutation`**, run locally on the final source in a clean worktree: **ALL PASS — 522 mutations (520 prohibited, 2 coordinated-authority), 4 workers, 32m52s**, on 4 CPUs with available parallelism 4 and **39 captured paths**. `M-isolation`, `M-capture`, `M-kill`, `M0`, `M-order`, `M-end`, `M-copies` and `M-authority` were green. A pre-check had run the 47 mutations of the CLI, the library and the guards alone, and each failed exactly its named checks.
+
+The other checks, all passing:
+
+- the M1 readiness offline suite (461 checks);
+- the simulated dry run;
+- the deployment-controller fixtures;
+- Markdown links (66 files);
+- environment coverage (35 variables; the library reads none);
+- the sensitive scan (203 tracked text files), with manual triage of the added lines: no email address, phone number, token, credential, booking link, customer datum or facts-file content;
+- `npm audit --omit=dev` (0 vulnerabilities);
+- `git diff --check`.
+
+AgentShield 1.4.0 exited zero at B/87 with the same 18 findings (9 medium, 9 low). CI on the final head is recorded in the PR.
 
 **Production evidence:** none.
 
