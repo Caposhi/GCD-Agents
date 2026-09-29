@@ -1,6 +1,6 @@
 # GCD Content Intelligence roadmap
 
-Last reviewed: 2026-09-28.
+Last reviewed: 2026-09-29.
 
 This roadmap is the canonical unfinished-work sequence and the current-phase cursor. It orders work; it does not grant authority to deploy, migrate, call providers, change external configuration, or begin a phase. [Status](STATUS.md) records what is verified true now. Where this file and verified production evidence disagree, resolve the discrepancy rather than following this text. Roadmap continuity is binding — see [`AGENTS.md`](../AGENTS.md).
 
@@ -23,7 +23,148 @@ These are not interchangeable and must not be collapsed into "done". `MERGED` in
 
 ## Implemented repository change awaiting merge
 
-### Documentation reconciliation — PR #99 recorded as merged, the comparison rule's two source comments restated as precautionary, and stale state labels corrected — `IMPLEMENTED`
+### Stage 4's contact-in-overlay rule enforced in code — `overlayContact.ts`, called by `validateProductionDirectionOutput` on every overlay — `IMPLEMENTED`
+
+**State:** `IMPLEMENTED` on branch `claude/jolly-edison-9d4rjc`, based directly on `origin/main` at `e6333a8e17064329f26eb2f452d6bb94ea84f1bf` (the merge of PR #100). Dormant stage code, one sentence in one stage prompt, tests, mutations and documentation. **Not `MERGED`, not `DEPLOYED`, not `ENABLED`, not `PRODUCTION-VALIDATED`.** All six stages keep `executionEnabled: false`; no production path reaches stage 4, and the partial-release interval (bound `2026-10-22T18:52Z`; see [Status](STATUS.md)) is unchanged, so no release is possible. Nothing else moved: shot fields, stages 3 and 5, the contact-line attachment, `config/approved-facts.json`, the critic, its aggregation, models, effort, limits, budgets and `executionEnabled` are unchanged. The tracked `.DS_Store` is untouched. No model was called.
+
+**PR / merge:** opened from `claude/jolly-edison-9d4rjc` into `main`; its number and CI run are recorded in the PR. **This PR's merge SHA is the blocking follow-up** permitted by the mutable-identifier rule in [`AGENTS.md`](../AGENTS.md).
+
+**Why.** The owner's decision of 2026-09-29. Since PR #98, stage 4's prompt has said an overlay never carries contact details, because code attaches a fixed contact line to every stage 5 package (`src/harness/agents/contactLine.ts`), copied exactly from the approved facts. Nothing in code enforced that. In the owner's operator-local run of 2026-09-26 a stage 4 overlay typed the shop's phone number and "Book online", and the critic did not flag it (see the PR #96 and PR #97 records and [Status](STATUS.md)). **This change addresses the cursor item "The stage 4 contact-in-overlay rule is prompt-only"**, which moves from *Next repository change — not chosen* into this record.
+
+**Delivered.**
+
+1. **A new module, `src/harness/agents/overlayContact.ts`.** `overlayContactViolations(text, pack)` is a pure function over one overlay string and the `EvidencePack`. It returns zero or more of three categories, always in this order: `phone`, `url`, `call_to_action`. It first normalizes the text: Unicode NFKC, invisible format characters (`\p{Cf}`) removed, curly quotes made straight, whitespace collapsed to one space, lower case.
+   - **`phone`:**
+     - a North American-shaped number: optional `+1`, an area code with or without parentheses, then 3 and 4 digits. Separators may be a space, a dot, a dash (hyphen, the Unicode dashes and minus) or nothing. The number may not start or end inside a longer digit run;
+     - a 7-digit local number with a dot or dash separator (`921-1515`);
+     - when the pack holds a usable `approved-facts:phone` record, that number's last seven digits inside any run of digits and phone separators, in any grouping.
+   - **`url`:** `http://` or `https://`; `www.`; a bare domain ending in `.com`, `.net`, `.org`, `.io`, `.app`, `.co`, `.us`, `.biz` or `.info` (`URL_TLDS`); an email address; and, when the pack holds a usable `approved-facts:bookingurl` record, that link's host.
+   - **`call_to_action`:** the closed list `CALL_TO_ACTION_PHRASES`, each matched as a whole phrase on word boundaries. The list, exactly: `book online`, `book now`, `book today`, `book your`, `schedule online`, `schedule now`, `call us`, `call now`, `call today`, `give us a call`, `contact us`, `visit us`, `visit our`, `text us`, `message us`, `dm us`, `link in bio`.
+   - **Not matched, by design:**
+     - bare `visit` and bare `call` ("each shop visit", "the driver's call");
+     - the shop's name, which is branding, not contact;
+     - `5,000`, `6 months`, `12,000`, model years and year ranges such as `2019–2024` and `2019-2024`;
+     - a model number followed by a year, such as `C300 2021` (a space does not separate the 7-digit local form).
+   - **Missing records never throw.** The approved values are read with the existing `readContactValue`, so the same usable-record rule applies. A record that is absent or unusable only removes that one extra match; the generic patterns always apply.
+2. **Wired into `validateProductionDirectionOutput`.** After the existing bounds checks, every `overlayText[].text` is checked. The first violating overlay throws the stage's existing `StageExecutionError`: `stage production-direction: "overlayText[<index>].text" contains contact details (<categories>); code attaches the contact line, so an overlay may not carry a phone number, a URL or a call to action`. **The message never contains the overlay text or any contact value.** Because `revalidateProductionDirectionOutput` goes through this validator, the check applies to:
+   - a live stage 4 response (refused like any other stage 4 validator refusal);
+   - stage 5's and the critic's revalidation of the stage 4 output;
+   - the local CLI's `verifySourceRun`, which serves `--replay-critic`, `--resume-from packaging-adaptation` and `--revise-from`, and runs before any cost gate. There the message reads `stage production-direction: "directionOutput" is invalid: stage production-direction: "overlayText[<index>].text" contains contact details (…)`.
+
+   Only `overlayText[].text` is checked. The module header and the validator's scope comment in `productionDirection.ts` now describe this one narrow, closed exception to "nothing here is keyword matching".
+3. **The prompt line.** `agents/production-direction.md` keeps its existing rule and adds one sentence: *An overlay containing a phone number, a URL or web address, or a call to action such as "book online" or "call us" is rejected by code, and the whole response fails.* `CV10`, which pins the existing rule, is unchanged and still passes; the new `CW10` pins the new sentence.
+4. **Checks** (content-intelligence suite):
+   - `AF5` now lists `overlayContact.ts`, and the new `AF5e` requires it to invoke no stage, hold no runner and not import the stage-execution boundary.
+   - `CW1`–`CW10`, placed after the `CV` group:
+     - `CW1` rejects each phone shape: the six the owner listed, and synthetic numbers with en dashes, no space after the area code, a leading `1` and a dotted local number. It runs with the pack's phone record and without it.
+     - `CW2` rejects each URL shape and an email.
+     - `CW3` pins the phrase list exactly. It rejects every phrase in mixed case, inside curly quotes, with doubled spaces, with a non-breaking space and in full-width characters.
+     - `CW4` accepts `5,000 miles or 6 months`, `Every 6 months`, `2019–2024 E-Class`, `2019-2024 E-Class`, `Model Year 2025`, `12,000 miles`, `Short trips`, `Stop-and-go traffic`, `Each shop visit`, `The driver's call` (both apostrophes), `German Car Depot` and the pack's own shop name, `C300 2021` and a 13-digit part number.
+     - `CW5` recognizes the pack's phone number in an unusual grouping and a synthetic booking host, each only when its record is present.
+     - `CW6` is a synthetic reproduction of the 2026-09-26 incident: one overlay with the pack's phone number and "Book online". It refuses the whole response and names index 1 and `phone, call_to_action`.
+     - `CW7` requires the message to contain neither the overlay text, the phone number, its digits, "book online" nor the URL.
+     - `CW8` shows revalidation refusing a saved stage 4 output with a violating overlay, while the same saved output with a clean overlay still revalidates.
+     - `CW9` uses a pack without the phone, booking and shop records. It still refuses a generic phone and URL, and the check never throws, even on a pack with no records.
+     - `CW10` pins the prompt sentence.
+5. **Mutations `M493`–`M507`** (`CONTACT_IN_OVERLAY_MUTATIONS`), appended after every earlier group. The harness now reports **507 mutations (505 prohibited, 2 coordinated)** and captures **28** paths (27 before; `overlayContact.ts` added). Each mutation and the named check it must fail:
+
+   | Mutation | Must fail |
+   |---|---|
+   | The validator no longer calls the check | `CW6`–`CW9` |
+   | The North American phone pattern dropped | `CW1` |
+   | The 7-digit local pattern dropped | `CW1` |
+   | The phone pattern's digit-run guard dropped | `CW4` |
+   | The approved phone digits dropped | `CW5` |
+   | The bare-domain URL pattern dropped | `CW2` |
+   | The email pattern dropped | `CW2` |
+   | The approved booking host dropped | `CW5` |
+   | `book online` removed from the list | `CW3` |
+   | Bare `visit` added to the list | `CW4`, an acceptance check |
+   | NFKC dropped | `CW3` |
+   | Whitespace collapsing dropped | `CW3` |
+   | Case folding dropped | `CW2`, `CW3` |
+   | The error echoing the overlay text | `CW7`, `CW8` |
+   | The prompt sentence dropped | `CW10` |
+6. **Housekeeping.**
+   - **PR #100 recorded as `MERGED`** at `e6333a8…`, with its runs. Its record moves to *Merged repository change awaiting rollout* below. Its merge-SHA and PR-CI follow-ups are discharged there and in [Status](STATUS.md), [AI handoff](AI_HANDOFF.md) and [Testing](TESTING.md).
+   - **The ambiguous reference fixed.** The cursor's "a follow-up candidate recorded by the documentation reconciliation above" now names the PR #99 record explicitly. Within the moved records, "the documentation reconciliation at the top of this file" and "… above" now name PR #100 and PR #99; that position is no longer theirs.
+   - **The cursor.** The prompt-only bullet is addressed here; this PR's merge SHA is the cursor's blocking follow-up, replacing PR #100's; `--resume-from production-direction` is added as a follow-up candidate. **No other phase is chosen.**
+
+**Migrations / schema impact:** none.
+
+**Material design decisions.**
+
+- **Refuse outright.** A violation fails stage 4's contract exactly as an over-long field or a fabricated id does, with the same error type, and there is no retry and no repair. Every other contract check does the same.
+- **Categories, never content.** The error names the index and the categories only. No overlay text or contact value can reach a console, a log, a saved failure or an issue this way.
+- **Generic patterns first; approved values only add.** The rule does not depend on the pack. With the records it also catches the shop's own number in an unusual grouping, and its booking host on any TLD. Without them it still refuses every generic shape and never throws.
+- **Reuse `readContactValue`** for the approved values, inside a guard that treats any refusal as "absent". The usable-record rule is the contact line's own, and `contactLine.ts` is unchanged. The import makes a module cycle: `productionDirection` → `overlayContact` → `contactLine` → `packagingAdaptation` → `productionDirection`. It is safe, because every cross-module use happens at call time, and the whole offline suite loads and runs through it.
+- **A closed phrase list, not a classifier.** Bare `visit` and bare `call` stay unmatched, and the list is pinned by `CW3`.
+- **The 7-digit local form needs a dot or a dash.** A space would read `C300 2021` as a phone number.
+- **Curly-quote normalization is kept but not load-bearing.** No current phrase contains a quote, so dropping it changes no result, and no mutation claims it. It is there so that a phrase added later behaves the same whichever quote a model types.
+
+**Material rejected alternatives.**
+
+- **A deterministic blocking finding routed to the revision pass instead of a refusal.** Rejected: it would change critic aggregation, and every other contract check refuses outright.
+- **Matching bare `visit` / `call`, or a wider keyword or semantic classifier.** Rejected: both have legitimate uses in overlays (`CW4`). A wider net would suggest a semantic check that the code does not perform.
+- **Space-separated 7-digit local numbers.** Rejected: model designations followed by a year would match.
+- **Checking shot fields, stage 3, stage 5, or the critic.** Out of scope by the owner's decision: only `overlayText[].text`.
+
+**Automated validation.** Build and typecheck clean. `npm run test:offline` passed all nine suites — posting 52, image 18, orchestrator 119, gate 56, API 51, render identity one invariant-suite pass, ownership/recovery 112, content intelligence **1,312** (1,301 on `e6333a8` before the change; +`AF5e`, +`CW1`–`CW10`), interval monitor 94: **1,815** checks (1,804 before). `npm run test:payload-mutation`, run locally on the final source: **ALL PASS — 507 mutations, 4 workers, 27m49s** (4 CPUs, available parallelism 4), with `M-isolation`, `M-capture` (**28** targets), `M-kill`, `M0`, `M-order`, `M-end`, `M-copies` and `M-authority` green and each of `M493`–`M507` failing exactly its named checks. No existing check or fixture overlay tripped the new rule before the `CW` group was added. End to end through the local CLI with the fake runner: a synthetic six-stage run was saved, and a copy was made with one stage 4 overlay changed to a phone number and "Book online". `--revise-from`, `--replay-critic`, `--resume-from packaging-adaptation` and `--revise-from --runner live --i-understand-this-costs-money` (no API key) each exited 1 with `"overlayText[0].text" contains contact details (phone, call_to_action)`, before any cost ceiling was printed. None wrote a directory, and no phone digit appeared in the output. The M1 readiness offline suite (461 checks), simulated dry run, deployment-controller fixtures, Markdown links (65 files), environment coverage (35 variables), the sensitive-content scan (188 tracked text files) and `npm audit --omit=dev` (zero vulnerabilities) passed. `git diff --check` and the repository-whitespace check also passed. Sensitive-scan manual triage: the scan first flagged the synthetic email fixture, which now uses the scanner's allowed `example.invalid`. The only contact values added are the shop's public phone shapes the owner specified, already in `config/approved-facts.json`. No booking-URL token, credential or customer datum is added. AgentShield 1.4.0 exited zero at B/87 with the same 18 findings as `main` (9 medium, 9 low). The only difference is `agents/production-direction.md`'s measured size, 12,098 → 12,264 characters, in its existing oversized-agent finding. Details in [Testing](TESTING.md); CI on the final head is recorded in the PR.
+
+**Production evidence:** none.
+
+**Rollback / recovery:** revert the commit. No data, schema, configuration or saved run is changed, so a revert also restores replay, resume and revision of the saved runs this change refuses.
+
+**Security and privacy implications:**
+
+- The refusal never echoes the overlay text or a contact value.
+- Tests read the shop name, phone number and booking link from the pack, or use synthetic values: `555` numbers, `examplegarage.*`, and a `.test` booking host.
+- The six phone shapes the owner listed appear in the test source and in `CW1`'s check name. They are the shop's public number, already in `config/approved-facts.json`.
+- No booking-URL token, credential, customer datum, run folder or archive is committed.
+
+**Accepted limitations.**
+
+- **A violation in a live run fails the run at stage 4, after stages 1–3 are paid.** `--resume-from` supports only `packaging-adaptation`, so a live run refused at stage 4 cannot be resumed from stage 4. `--resume-from production-direction` is a follow-up candidate, not built.
+- **Saved runs whose stage 4 overlay contains contact details are now refused** for replay, resume and revision, before any cost gate. The owner's operator-local run `2026-09-26T17-04-00-636Z` and its resume `2026-09-26T17-04-00-636Z-resume-packaging-adaptation-2026-09-26T19-26-43-383Z` are expected to be refused, because the resume reused stage 4 from the 17-04 run. This is recorded as an expectation: this repository has not examined those folders. Whether the owner's two 2026-09-28 revised runs are refused is not known here. They re-ran stage 4 under the prompt rule, and nothing in this repository shows their overlays.
+- **The phrase list is closed**, so an unlisted wording passes, such as "reserve a slot" or a number written in words. The critic remains the second line.
+- **The approved-phone comparison is a digit match.** An unrelated number that contains the shop's seven local digits would also be refused. No such case is known.
+
+**Unresolved follow-ups.**
+
+- **This PR's merge SHA** (mutable-identifier exception) — **blocking**.
+- **This PR's own CI**: whether all five jobs pass on attempt 1 on the final head. It is recorded in the PR, and reconciled into this record with the merge SHA.
+- **Owner acceptance after merge:** run the free refusal on the `…19-26-43-383Z` folder (the invocation is in the PR) and record the result.
+- **`--resume-from production-direction`**: a follow-up candidate, not built.
+- Carried unchanged from PR #99 and PR #100: the stage-2 limitation (a follow-up candidate), and the URLs for sources 2, 3, 4 and 5 of the owner's twelve-source review.
+
+**Documents updated:**
+
+- this file: this record; PR #100's record moved to *Merged repository change awaiting rollout* with its merge and CI reconciled; the moved records' references to "the documentation reconciliation at the top of this file" / "above" made explicit; the *Next repository change* entry;
+- [Status](STATUS.md), [README](../README.md) (the stage 4 section and the mutation count), [AI handoff](AI_HANDOFF.md), [Testing](TESTING.md) and [Architecture](ARCHITECTURE.md) (stage 4's validation paragraph);
+- the source comments in `productionDirection.ts` and the mutation harness's header.
+
+Each was reread in full.
+
+## Next repository change — not chosen
+
+**No next phase is selected.** With the revision pass `MERGED` and the contact-in-overlay change `IMPLEMENTED` at the top of this file, no owner decision names the next repository change, and this file does not choose one; the owner decides. Nothing here authorizes enabling any stage, any release, or any change to the Phase-A approval gate. Open items, for that decision (carried unchanged except where the contact-in-overlay change at the top of this file says otherwise):
+
+- **`reasoning-standard` output headroom:** 126,000 of the model's 128,000 output tokens since PR #95; recovering it by narrowing the `claimUse[].summary` allowance is open.
+- **`brand-compliance-critic` is still on `claude-sonnet-4-6`** (`agents/brand-compliance-critic.md`) — Lane S work; routing it, and the two `sdk.ts` fallbacks with it, is open (see the legacy model migration record).
+- **The M1→M2 interval ends `2026-10-22T18:52Z`**; the expiry is a decision point for the owner (see [Status](STATUS.md)).
+- **AgentShield grade B/87** (9 medium oversized-agent, 9 low unspecified-model findings; no critical or high).
+- **Splitting completed phases out of this file** into `docs/COMPLETED_ROADMAP_PHASES.md`, a separate documentation change.
+- **Stage 2's restrictions can misdescribe the evidence** — a follow-up candidate recorded by the PR #99 record (*Documentation reconciliation — PR #98 recorded as merged, the revision pass's two owner-run rounds, and a corrected "critic gap"*, under *Merged repository change awaiting rollout* below); no fix is chosen.
+- **`--resume-from production-direction`** — a follow-up candidate recorded by the contact-in-overlay change at the top of this file: a live run refused at stage 4 cannot be resumed there today, so stages 1–3 are paid again; not built.
+- Carried from the revision-pass record: describing the identity records in `SCRIPT_CLAIMS` and `PLATFORM_CLAIMS` in the critic prompts; tuning `POLICY_EFFORT.critic` and `THINKING_RESERVE_TOKENS` per lens.
+- **`DEFERRED`, as the owner listed them on 2026-09-28** (not previously recorded in this repository; recorded here so they are not lost): Mercedes 223.2 and the round-2 fluids; the DPF/GPF bulk-oil question; the Spanish version.
+- **The merge SHA of the contact-in-overlay change at the top of this file** (mutable-identifier exception) — **blocking**; it is reconciled into that record once merged. *(PR #100's merge-SHA follow-up, formerly here, is discharged: `e6333a8…`.)*
+
+## Merged repository change awaiting rollout
+
+### Documentation reconciliation — PR #99 recorded as merged, the comparison rule's two source comments restated as precautionary, and stale state labels corrected — `MERGED`
+
+**Merge reconciliation (recorded 2026-09-29 by the contact-in-overlay change at the top of this file):** `MERGED` through [PR #100](https://github.com/Caposhi/GCD-Agents/pull/100) at `e6333a8e17064329f26eb2f452d6bb94ea84f1bf` (merged 2026-09-29T12:16:27Z), whose ordered parents are `a26101e466020fba5815b2ad378095dfbc4f866c` (the PR #99 merge) and then reviewed head `20c4ca95509749c33560e9ef83faab0c96babba8`. PR CI [run 36487240746](https://github.com/Caposhi/GCD-Agents/actions/runs/36487240746) (run 231) on head `20c4ca9` passed all five jobs on attempt 1 — *Node 22 offline quality gates*, *PostgreSQL 16 integration*, *PostgreSQL 18 integration*, *AgentShield 1.4.0* and *Workflow and YAML static validation*: quality job **30m11s** of 60 (21:36:38–22:06:49Z), mutation step **28m50s** (21:37:04–22:05:54Z). The `main` push [run 36567028496](https://github.com/Caposhi/GCD-Agents/actions/runs/36567028496) (run 232) on `e6333a8` passed the same five jobs on attempt 1: quality job **28m07s** (12:16:35–12:44:42Z), mutation step **26m44s** (12:17:01–12:43:45Z). The `deploy-production` workflow ([run 65](https://github.com/Caposhi/GCD-Agents/actions/runs/36570177245)) passed its CI-provenance step, refused at its "Refuse while production automation is disabled" step, skipped release selection, and skipped the serialized API, worker, scheduler release job, as on every `main` merge during the interval — no release. The harness's own summary line was not read from either log. Documentation and two source comments only, so there is nothing to deploy or roll out; it is kept in this section for its history. **Not `DEPLOYED`, not `ENABLED`, not `PRODUCTION-VALIDATED`**; all six stages keep `executionEnabled: false`. The blocking merge-SHA follow-up and the PR-CI follow-up below are discharged by this paragraph; where the record says `IMPLEMENTED` or unmerged, or that its CI is recorded only in the PR, this paragraph supersedes it. The rest of this record is preserved as written at implementation.
 
 **State:** `IMPLEMENTED` on branch `claude/adoring-turing-yeu61c`, based directly on `origin/main` at `a26101e466020fba5815b2ad378095dfbc4f866c` (the merge of PR #99). **Documentation and two source comments only:** it changes `*.md` files plus one comment in `src/harness/contentIntelligence.selftest.ts` and one in `scripts/ci/payload-contract-mutation.mjs`. No executable line, check string, check logic, mutation (`name`, `file`, `from`, `to`), mutation count (492) or ordering changed, and no prompt, skill, configuration, migration or workflow. It moves no roadmap scope, enables nothing and authorizes no release. All six stages remain `executionEnabled: false`, and the partial-release interval (bound `2026-10-22T18:52Z`; see [Status](STATUS.md)) is unchanged. The tracked `.DS_Store` is untouched. No model was called.
 
@@ -72,32 +213,15 @@ These are not interchangeable and must not be collapsed into "done". `MERGED` in
 
 **Unresolved follow-ups.**
 
-- **This PR's merge SHA** (mutable-identifier exception) — **blocking**.
-- **This PR's own CI** — whether all five jobs pass on attempt 1 on the final head — recorded in the PR; to be reconciled into this record with the merge SHA.
+- ~~**This PR's merge SHA** (mutable-identifier exception) — **blocking**.~~ **Discharged 2026-09-29:** PR #100, merge `e6333a8e17064329f26eb2f452d6bb94ea84f1bf`.
+- ~~**This PR's own CI** — whether all five jobs pass on attempt 1 on the final head — recorded in the PR; to be reconciled into this record with the merge SHA.~~ **Discharged 2026-09-29:** PR CI run 36487240746 and `main` push run 36567028496 each passed all five jobs on attempt 1 (mutation step 28m50s and 26m44s); see *Merge reconciliation* above.
 - Carried unchanged from PR #99: the stage-2 limitation (a follow-up candidate), and the URLs for sources 2, 3, 4 and 5 of the owner's twelve-source review.
 
 **Documents updated:** this file (this record; PR #99's record moved to *Merged repository change awaiting rollout* with its merge and CI reconciled; dated corrections in the PR #92 and PR #89 records, the Phase 0B.2, 0B.4 and 0B.5 records and both out-of-band tooling entries; the *Next repository change* entry), [Status](STATUS.md), [README](../README.md), [AI handoff](AI_HANDOFF.md), [Testing](TESTING.md), [Architecture](ARCHITECTURE.md), [M1 readiness decision record](M1_READINESS_DECISION_RECORD.md), [Phase 0B.0 rollout runbook](ROLLOUT_PHASE_0B0.md), and the two source comments. Each was reread in full.
 
-## Next repository change — not chosen
-
-**No next phase is selected.** With the revision pass `MERGED`, no owner decision names the next repository change, and this file does not choose one; the owner decides. Nothing here authorizes enabling any stage, any release, or any change to the Phase-A approval gate. Open items carried unchanged, for that decision:
-
-- **The stage 4 contact-in-overlay rule is prompt-only.** Nothing in code detects a phone number or "book online" in overlay text; a deterministic check is a candidate, not built.
-- **`reasoning-standard` output headroom:** 126,000 of the model's 128,000 output tokens since PR #95; recovering it by narrowing the `claimUse[].summary` allowance is open.
-- **`brand-compliance-critic` is still on `claude-sonnet-4-6`** (`agents/brand-compliance-critic.md`) — Lane S work; routing it, and the two `sdk.ts` fallbacks with it, is open (see the legacy model migration record).
-- **The M1→M2 interval ends `2026-10-22T18:52Z`**; the expiry is a decision point for the owner (see [Status](STATUS.md)).
-- **AgentShield grade B/87** (9 medium oversized-agent, 9 low unspecified-model findings; no critical or high).
-- **Splitting completed phases out of this file** into `docs/COMPLETED_ROADMAP_PHASES.md`, a separate documentation change.
-- **Stage 2's restrictions can misdescribe the evidence** — a follow-up candidate recorded by the documentation reconciliation above; no fix is chosen.
-- Carried from the revision-pass record: describing the identity records in `SCRIPT_CLAIMS` and `PLATFORM_CLAIMS` in the critic prompts; tuning `POLICY_EFFORT.critic` and `THINKING_RESERVE_TOKENS` per lens.
-- **`DEFERRED`, as the owner listed them on 2026-09-28** (not previously recorded in this repository; recorded here so they are not lost): Mercedes 223.2 and the round-2 fluids; the DPF/GPF bulk-oil question; the Spanish version.
-- **The merge SHA of the documentation reconciliation at the top of this file** (mutable-identifier exception) — **blocking**; it is reconciled into that record once merged.
-
-## Merged repository change awaiting rollout
-
 ### Documentation reconciliation — PR #98 recorded as merged, the revision pass's two owner-run rounds, and a corrected "critic gap" — `MERGED`
 
-**Merge reconciliation (recorded 2026-09-28 by the documentation reconciliation at the top of this file):** `MERGED` through [PR #99](https://github.com/Caposhi/GCD-Agents/pull/99) at `a26101e466020fba5815b2ad378095dfbc4f866c` (merged 2026-09-28T20:43:36Z), whose ordered parents are `07b6435318011748b876015432f94e3ef73eb853` (the PR #98 merge) and then reviewed head `c2b40a9eea445d48ad3e6805ff9218186ea10aa9`. PR CI [run 36470162601](https://github.com/Caposhi/GCD-Agents/actions/runs/36470162601) (run 229) on head `c2b40a9` passed all five jobs on attempt 1 — *Node 22 offline quality gates*, *PostgreSQL 16 integration*, *PostgreSQL 18 integration*, *AgentShield 1.4.0* and *Workflow and YAML static validation*: quality job **29m46s** of 60 (19:08:39–19:38:25Z), mutation step **28m21s** (19:09:07–19:37:28Z). The `main` push [run 36481230729](https://github.com/Caposhi/GCD-Agents/actions/runs/36481230729) (run 230) on `a26101e` passed the same five jobs on attempt 1: quality job **18m55s** (20:43:42–21:02:37Z), mutation step **17m40s** (20:44:02–21:01:42Z). The harness's own summary line was not read from either log. The `deploy-production` workflow ([run 64](https://github.com/Caposhi/GCD-Agents/actions/runs/36483414743)) passed its CI-provenance step, refused at its "Refuse while production automation is disabled" step, skipped release selection, and skipped the serialized API, worker, scheduler release job, as on every `main` merge during the interval — no release. Documentation only, so there is nothing to deploy or roll out; it is kept in this section for its history. **Not `DEPLOYED`, not `ENABLED`, not `PRODUCTION-VALIDATED`**; all six stages keep `executionEnabled: false`. The blocking merge-SHA follow-up and the PR-CI follow-up below are discharged by this paragraph, and the source-comment follow-up by the change at the top of this file; where the record says unmerged, or that its CI is recorded only in the PR, this paragraph supersedes it. The rest of this record is preserved as written at implementation.
+**Merge reconciliation (recorded 2026-09-28 by the PR #100 documentation reconciliation):** `MERGED` through [PR #99](https://github.com/Caposhi/GCD-Agents/pull/99) at `a26101e466020fba5815b2ad378095dfbc4f866c` (merged 2026-09-28T20:43:36Z), whose ordered parents are `07b6435318011748b876015432f94e3ef73eb853` (the PR #98 merge) and then reviewed head `c2b40a9eea445d48ad3e6805ff9218186ea10aa9`. PR CI [run 36470162601](https://github.com/Caposhi/GCD-Agents/actions/runs/36470162601) (run 229) on head `c2b40a9` passed all five jobs on attempt 1 — *Node 22 offline quality gates*, *PostgreSQL 16 integration*, *PostgreSQL 18 integration*, *AgentShield 1.4.0* and *Workflow and YAML static validation*: quality job **29m46s** of 60 (19:08:39–19:38:25Z), mutation step **28m21s** (19:09:07–19:37:28Z). The `main` push [run 36481230729](https://github.com/Caposhi/GCD-Agents/actions/runs/36481230729) (run 230) on `a26101e` passed the same five jobs on attempt 1: quality job **18m55s** (20:43:42–21:02:37Z), mutation step **17m40s** (20:44:02–21:01:42Z). The harness's own summary line was not read from either log. The `deploy-production` workflow ([run 64](https://github.com/Caposhi/GCD-Agents/actions/runs/36483414743)) passed its CI-provenance step, refused at its "Refuse while production automation is disabled" step, skipped release selection, and skipped the serialized API, worker, scheduler release job, as on every `main` merge during the interval — no release. Documentation only, so there is nothing to deploy or roll out; it is kept in this section for its history. **Not `DEPLOYED`, not `ENABLED`, not `PRODUCTION-VALIDATED`**; all six stages keep `executionEnabled: false`. The blocking merge-SHA follow-up and the PR-CI follow-up below are discharged by this paragraph, and the source-comment follow-up by the PR #100 change; where the record says unmerged, or that its CI is recorded only in the PR, this paragraph supersedes it. The rest of this record is preserved as written at implementation.
 
 **State:** `IMPLEMENTED` on branch `claude/dazzling-meitner-i0w1bq`, based directly on `origin/main` at `07b6435318011748b876015432f94e3ef73eb853` (the merge of PR #98). **Documentation only:** it changes `*.md` files and nothing else — no source, prompt, skill, test, mutation, configuration, migration or workflow — so it moves no roadmap scope, enables nothing and authorizes no release. All six stages remain `executionEnabled: false`, and the partial-release interval (bound `2026-10-22T18:52Z`; see [Status](STATUS.md)) is unchanged. The tracked `.DS_Store` is untouched. No model was called.
 
@@ -136,13 +260,13 @@ These are not interchangeable and must not be collapsed into "done". `MERGED` in
 **Accepted limitations.**
 
 - **The acceptance evidence is operator-local**, as the owner reported it; the run folders exist only on the owner's machine and were not re-examined from this repository.
-- **Two source comments still carry the original, mistaken motivation for the comparison rule**: `CM12`'s comment in `src/harness/contentIntelligence.selftest.ts` ("credited a manufacturer with a comparison its record does not make") and the comment above `COMPARISON_CLAIM_MUTATIONS` in `scripts/ci/payload-contract-mutation.mjs` ("credited a manufacturer with a comparison the shop's own record made, and no lens flagged it"). This change is documentation only and may not edit source, so they are recorded here rather than silently left; see the follow-ups. *(2026-09-28: both reworded by the documentation reconciliation at the top of this file.)*
+- **Two source comments still carry the original, mistaken motivation for the comparison rule**: `CM12`'s comment in `src/harness/contentIntelligence.selftest.ts` ("credited a manufacturer with a comparison its record does not make") and the comment above `COMPARISON_CLAIM_MUTATIONS` in `scripts/ci/payload-contract-mutation.mjs` ("credited a manufacturer with a comparison the shop's own record made, and no lens flagged it"). This change is documentation only and may not edit source, so they are recorded here rather than silently left; see the follow-ups. *(2026-09-28: both reworded by the PR #100 documentation reconciliation.)*
 
 **Unresolved follow-ups.**
 
 - ~~**This PR's merge SHA** (mutable-identifier exception) — **blocking**.~~ **Discharged 2026-09-28:** PR #99, merge `a26101e466020fba5815b2ad378095dfbc4f866c`.
 - ~~**This PR's own CI** — whether all five jobs pass on attempt 1 on the final head — recorded in the PR; to be reconciled into this record with the merge SHA.~~ **Discharged 2026-09-28:** PR CI run 36470162601 and `main` push run 36481230729 each passed all five jobs on attempt 1 (mutation step 28m21s and 17m40s); see *Merge reconciliation* above.
-- ~~**Re-word the two source comments above** so they state the rule's motivation as precautionary. A comment-only source change; it needs its own authorization, and must not change `CM12`'s logic or any mutation.~~ **Done 2026-09-28** by the documentation reconciliation at the top of this file, under its own authorization: both comments now describe the rule as precautionary and point to PR #97's corrected record; no check, mutation or count changed.
+- ~~**Re-word the two source comments above** so they state the rule's motivation as precautionary. A comment-only source change; it needs its own authorization, and must not change `CM12`'s logic or any mutation.~~ **Done 2026-09-28** by the PR #100 documentation reconciliation, under its own authorization: both comments now describe the rule as precautionary and point to PR #97's corrected record; no check, mutation or count changed.
 - **The stage-2 limitation** — a follow-up candidate, not built (see *Next repository change — not chosen*).
 - **The URLs for sources 2, 3, 4 and 5** of the owner's twelve-source review — to be supplied by the owner.
 
@@ -150,7 +274,7 @@ These are not interchangeable and must not be collapsed into "done". `MERGED` in
 
 ### A single opt-in revision pass — `--revise-from <run-dir>` and `--revise-once` in the local CLI, each writing stage's findings cap derived from the contract; stage 4's prompt keeps contact details out of overlays — `MERGED`
 
-**Merge reconciliation (recorded 2026-09-28 by the documentation reconciliation above):** `MERGED` through [PR #98](https://github.com/Caposhi/GCD-Agents/pull/98) at `07b6435318011748b876015432f94e3ef73eb853` (merged 2026-09-28T17:36:30Z), whose ordered parents are `610e230e78209fe1d3ca4d83216ed3ff18deec21` (the PR #97 merge) and then reviewed head `2db65a412888b0dbbafdfc9bba2812ab2272fec6`. PR CI [run 36454119958](https://github.com/Caposhi/GCD-Agents/actions/runs/36454119958) (run 227) on head `2db65a4` passed all five jobs on attempt 1 — *Node 22 offline quality gates*, *PostgreSQL 16 integration*, *PostgreSQL 18 integration*, *AgentShield 1.4.0* and *Workflow and YAML static validation*: quality job **23m09s** of 60 (16:52:14–17:15:23Z), mutation step **21m48s** (16:52:38–17:14:26Z). The `main` push [run 36459335061](https://github.com/Caposhi/GCD-Agents/actions/runs/36459335061) (run 228) on `07b6435` passed the same five jobs on attempt 1: quality job **22m11s** (17:36:36–17:58:47Z), mutation step **20m55s** (17:36:56–17:57:51Z). Each run's harness log ends `ALL PASS — 492 mutations, 4 workers` (21m47s and 20m54s by its own clock). The `deploy-production` workflow ([run 63](https://github.com/Caposhi/GCD-Agents/actions/runs/36461959280)) passed its CI-provenance step, refused at its "Refuse while production automation is disabled" step, skipped release selection, and skipped the serialized API, worker, scheduler release job, as on every `main` merge during the interval — no release. **Not `DEPLOYED`, not `ENABLED`, not `PRODUCTION-VALIDATED`**; all six stages keep `executionEnabled: false`. The blocking merge-SHA follow-up and the PR-CI follow-up below are discharged by this paragraph; where the record says unmerged, that no live revision has run, or that its CI figures are yet to be recorded, this paragraph and the acceptance evidence below supersede it. The rest of this record is preserved as written at implementation.
+**Merge reconciliation (recorded 2026-09-28 by the PR #99 documentation reconciliation above):** `MERGED` through [PR #98](https://github.com/Caposhi/GCD-Agents/pull/98) at `07b6435318011748b876015432f94e3ef73eb853` (merged 2026-09-28T17:36:30Z), whose ordered parents are `610e230e78209fe1d3ca4d83216ed3ff18deec21` (the PR #97 merge) and then reviewed head `2db65a412888b0dbbafdfc9bba2812ab2272fec6`. PR CI [run 36454119958](https://github.com/Caposhi/GCD-Agents/actions/runs/36454119958) (run 227) on head `2db65a4` passed all five jobs on attempt 1 — *Node 22 offline quality gates*, *PostgreSQL 16 integration*, *PostgreSQL 18 integration*, *AgentShield 1.4.0* and *Workflow and YAML static validation*: quality job **23m09s** of 60 (16:52:14–17:15:23Z), mutation step **21m48s** (16:52:38–17:14:26Z). The `main` push [run 36459335061](https://github.com/Caposhi/GCD-Agents/actions/runs/36459335061) (run 228) on `07b6435` passed the same five jobs on attempt 1: quality job **22m11s** (17:36:36–17:58:47Z), mutation step **20m55s** (17:36:56–17:57:51Z). Each run's harness log ends `ALL PASS — 492 mutations, 4 workers` (21m47s and 20m54s by its own clock). The `deploy-production` workflow ([run 63](https://github.com/Caposhi/GCD-Agents/actions/runs/36461959280)) passed its CI-provenance step, refused at its "Refuse while production automation is disabled" step, skipped release selection, and skipped the serialized API, worker, scheduler release job, as on every `main` merge during the interval — no release. **Not `DEPLOYED`, not `ENABLED`, not `PRODUCTION-VALIDATED`**; all six stages keep `executionEnabled: false`. The blocking merge-SHA follow-up and the PR-CI follow-up below are discharged by this paragraph; where the record says unmerged, that no live revision has run, or that its CI figures are yet to be recorded, this paragraph and the acceptance evidence below supersede it. The rest of this record is preserved as written at implementation.
 
 **Acceptance evidence — two owner-run rounds, 2026-09-28 (operator-local).** Figures as the owner reported them; the run folders exist only on the owner's machine, were not re-examined from this repository, and are **not production evidence**.
 
@@ -259,7 +383,7 @@ The two findings still blocking after round 2:
 - ~~**This PR's merge SHA** (mutable-identifier exception) — **blocking**.~~ **Discharged 2026-09-28:** PR #98, merge `07b6435318011748b876015432f94e3ef73eb853`.
 - ~~**This PR's own CI** — whether all five jobs pass on attempt 1 on the final head, with the mutation step's duration — recorded in the PR; to be reconciled into this record with the merge SHA.~~ **Discharged 2026-09-28:** PR CI run 36454119958 and `main` push run 36459335061 each passed all five jobs on attempt 1 (mutation step 21m48s and 20m55s); see *Merge reconciliation* above.
 - ~~**The first live revision** (the owner's `--revise-from` on the resumed run) — acceptance evidence, operator-local.~~ **Done 2026-09-28 (operator-local):** 26 (9 blocking) → 19 (4 blocking) findings at $0.853952, then a deliberate second round, 19 (4 blocking) → 13 (2 blocking) at $0.819536; see *Acceptance evidence* above.
-- **A deterministic check for contact details in overlay text** — a candidate, not built; the rule is prompt-only.
+- **A deterministic check for contact details in overlay text** — a candidate, not built; the rule is prompt-only. *(2026-09-29: built by the contact-in-overlay change at the top of this file — `IMPLEMENTED`, not merged.)*
 - Carried: the critic-prompt change for the identity records; recovering `reasoning-standard` headroom by shrinking the `claimUse[].summary` allowance; `POLICY_EFFORT.critic` and `THINKING_RESERVE_TOKENS` per lens; moving completed history out of this file.
 
 **Documents updated:** this file (this record; the `PLANNED` entry relocated into it; PR #97's record moved to *Merged repository change awaiting rollout* with its merge and CI reconciled), [README](../README.md), [Status](STATUS.md), [Architecture](ARCHITECTURE.md), [Testing](TESTING.md), [AI handoff](AI_HANDOFF.md), [Security and continuity](SECURITY_AND_CONTINUITY.md), the three writing-stage prompts, and the mutation harness's header. Each was reread in full.

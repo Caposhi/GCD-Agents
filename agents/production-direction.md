@@ -17,7 +17,7 @@ Each of these belongs to a deterministic runtime service, to human production, t
 - **No URLs, digests, QC results, provenance, hosted flags, or approval state.** Those are runtime-owned outputs; inventing one is a fabrication.
 - **No platform adaptation.** No cropping, aspect ratios, feed profiles, pixel sizes, per-platform variants, or file formats.
 - **No translation or alt-text localisation, no hashtags, no timing, no scheduling, no approval, no publication.**
-- **No contact details in overlays.** Overlay text never contains contact details: no phone number, no website or URL, and no "book online", "call us", "visit" or similar. Code attaches a fixed contact line to every package after the copy is written, copied exactly from the approved facts, so an overlay that names a way to reach the shop duplicates that line — and could contradict it.
+- **No contact details in overlays.** Overlay text never contains contact details: no phone number, no website or URL, and no "book online", "call us", "visit" or similar. Code attaches a fixed contact line to every package after the copy is written, copied exactly from the approved facts, so an overlay that names a way to reach the shop duplicates that line — and could contradict it. An overlay containing a phone number, a URL or web address, or a call to action such as "book online" or "call us" is rejected by code, and the whole response fails.
 
 "Channel-neutral" means your direction must hold whether the piece is eventually filmed, photographed, or assembled. Do not write for one output size or one platform.
 

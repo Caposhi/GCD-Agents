@@ -231,6 +231,7 @@ import {
   SHOT_PURPOSES,
   executeProductionDirection,
   renderScriptClaims,
+  revalidateProductionDirectionOutput,
   scriptUsedClaimRecords,
   validateProductionDirectionOutput,
   visualClaimRecords,
@@ -317,6 +318,7 @@ import {
   revalidateContactedPackagingOutput,
 } from "./agents/contactLine.js";
 import type { ContactedPackagingOutput } from "./agents/contactLine.js";
+import { CALL_TO_ACTION_PHRASES, URL_TLDS, overlayContactViolations } from "./agents/overlayContact.js";
 import {
   IDENTITY_FACTS,
   IDENTITY_FACT_IDS,
@@ -1191,7 +1193,7 @@ async function run(): Promise<void> {
     check("AF5. exactly six stage executors exist — strategy-concept, automotive-truth, hook-story-script, production-direction, packaging-adaptation, final-critic",
       agentModules.join()
         === "automotiveTruth.ts,contactLine.ts,finalCritic.ts,hookStoryScript.ts,identityFacts.ts,modelPolicy.ts,"
-          + "packagingAdaptation.ts,payloadContract.ts,productionDirection.ts,registry.ts,"
+          + "overlayContact.ts,packagingAdaptation.ts,payloadContract.ts,productionDirection.ts,registry.ts,"
           + "responseFormatKit.ts,revision.ts,revisionInput.ts,stageExecution.ts,strategyConcept.ts");
     // `responseFormatKit.ts` is in that list and is deliberately NOT an
     // executor: it holds the builders each stage uses to construct its own
@@ -1212,6 +1214,15 @@ async function run(): Promise<void> {
       check("AF5d. the revision plan and the revision blocks are code, not a seventh executor: neither "
         + "invokes a stage, holds a runner, or imports the stage-execution boundary",
         code.every((src) => !/invokeStage|StageRunner|runner|stageExecution|execute[A-Z]/.test(src)));
+    }
+    // `overlayContact.ts` is in that list and is NOT an executor: stage 4's
+    // deterministic contact-in-overlay check, a pure function its validator calls.
+    {
+      const overlayCode = (await readFile(resolve(REPO_ROOT, "src/harness/agents/overlayContact.ts"), "utf8"))
+        .replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+      check("AF5e. the overlay contact check is code, not a seventh executor: it invokes no stage, holds no "
+        + "runner, and does not import the stage-execution boundary",
+        !/invokeStage|StageRunner|runner|stageExecution|execute[A-Z]/.test(overlayCode));
     }
     // `contactLine.ts` is also in that list and is also NOT an executor: it is
     // the deterministic step that attaches the fixed contact line after stage 5.
@@ -6983,6 +6994,145 @@ async function run(): Promise<void> {
         cvPrompts[1]!.includes("- **No contact details in overlays.** Overlay text never contains contact details")
           && /no phone number, no website or URL, and no "book online", "call us", "visit" or similar/.test(cvPrompts[1]!)
           && /Code attaches a fixed contact line to every package after the copy is written/.test(cvPrompts[1]!));
+    }
+
+    // ========================================================================
+    // CW. Stage 4's contact-in-overlay rule, enforced in code (the owner's
+    //     decision of 2026-09-29). On 2026-09-26 a stage 4 overlay typed the
+    //     shop's phone number and "Book online", which the prompt forbade and
+    //     the critic did not flag. `validateProductionDirectionOutput` now
+    //     refuses any overlay carrying a phone number, a URL or a listed call
+    //     to action, naming the index and the categories only — and, through
+    //     `revalidateProductionDirectionOutput`, so is a saved stage 4 output.
+    //
+    // Phone numbers and hosts other than the pack's own are synthetic; the
+    // shop's phone number and booking link are read from the pack, never typed.
+    // ========================================================================
+    {
+      // The pack without the phone and booking-link records (and without the
+      // shop-name record): the generic patterns must still apply, and nothing throws.
+      const cwBare = buildEvidencePack({
+        goal: "brake service content", records: [...mixed, packUnpermitted, ...identityFixtureRecords], now: NOW,
+      });
+      const cwEmpty = { allowedFacts: [] } as unknown as EvidencePack;
+      const cwPacks = [packPack, cwBare];
+      const cwIs = (text: string, pack: EvidencePack, expected: string) =>
+        overlayContactViolations(text, pack).join() === expected;
+      const cwEvery = (texts: string[], expected: string, packs: EvidencePack[] = cwPacks) =>
+        texts.every((text) => packs.every((pack) => cwIs(text, pack, expected)));
+      const cwPhone = readContactValue(packPack, "phone").value;
+      const cwPhoneDigits = cwPhone.replace(/\D/g, "");
+      const cwError = (fn: () => unknown): Error | undefined => {
+        try { fn(); } catch (error) { return error as Error; }
+        return undefined;
+      };
+      const cwDirection = (texts: string[], pack: EvidencePack = packPack) => () => validateProductionDirectionOutput({
+        ...packagingDirectionRaw,
+        overlayText: texts.map((text) => ({ text, shotIndex: 1, role: "label" })),
+      }, scriptForPackaging, truthForPackaging, pack);
+      const cwMixedCase = (text: string) => [...text].map((c, i) => (i % 2 ? c.toUpperCase() : c.toLowerCase())).join("");
+
+      check("CW1. every phone shape is rejected as \"phone\" — with the pack's phone record and without it: "
+        + "(954) 921-1515, 954-921-1515, 954.921.1515, 9549211515, +1 954 921 1515, 921-1515, and synthetic "
+        + "numbers with en dashes, no space after the area code and a leading 1",
+        cwEvery(["(954) 921-1515", "954-921-1515", "954.921.1515", "9549211515", "+1 954 921 1515", "921-1515",
+          "Shop line: 305–555–0142", "(305)555-0142", "1-305-555-0142", "Ask for 555.0142"], "phone")
+          && cwIs("(954) 921-1515", cwEmpty, "phone"));
+      check("CW2. every URL shape is rejected as \"url\" — with the booking record and without it: http:// and "
+        + "https://, www., a bare domain on each listed TLD, and an email address",
+        cwEvery(["https://examplegarage.de/visit", "HTTP://10.0.0.1", "WWW.ExampleGarage.de",
+          ...URL_TLDS.map((tld) => `ExampleGarage.${tld.toUpperCase()}`), "Hello@Example.invalid"], "url")
+          && URL_TLDS.join() === "com,net,org,io,app,co,us,biz,info");
+      const cwPhrases = ["book online", "book now", "book today", "book your", "schedule online", "schedule now",
+        "call us", "call now", "call today", "give us a call", "contact us", "visit us", "visit our", "text us",
+        "message us", "dm us", "link in bio"];
+      check("CW3. the call-to-action list is exactly the documented closed list, and every phrase on it is rejected "
+        + "as \"call_to_action\" in mixed case, inside curly quotes, with doubled spaces, with a non-breaking space "
+        + "and in full-width characters — with and without the contact records",
+        CALL_TO_ACTION_PHRASES.join("|") === cwPhrases.join("|")
+          && cwEvery(cwPhrases.flatMap((phrase) => [
+            `Ready? “${cwMixedCase(phrase).replace(/ /g, "  ")}”`,
+            `‘${phrase.toUpperCase().replace(/ /g, " ")}’ before you go`,
+            [...phrase].map((c) => (c === " " ? "　" : String.fromCharCode(c.charCodeAt(0) + 0xFEE0))).join(""),
+          ]), "call_to_action"));
+      check("CW4. ordinary overlay wording is accepted: intervals, counts, model years and year ranges, bare "
+        + "\"visit\" and bare \"call\", and the shop's name — which is branding, not contact",
+        cwEvery(["5,000 miles or 6 months", "Every 6 months", "2019–2024 E-Class", "2019-2024 E-Class",
+          "Model Year 2025", "12,000 miles", "Short trips", "Stop-and-go traffic", "Each shop visit",
+          "The driver's call", "The driver’s call", "German Car Depot", readContactValue(packPack, "shop").value,
+          "C300 2021", "Part 4001234567890"], "", [...cwPacks, cwEmpty])
+          && !(CALL_TO_ACTION_PHRASES as readonly string[]).includes("visit")
+          && !(CALL_TO_ACTION_PHRASES as readonly string[]).includes("call"));
+
+      // The approved values: the pack's phone number in a grouping no generic
+      // pattern reads, and a synthetic booking link on a TLD not on the list.
+      const cwOddPhone = `${cwPhoneDigits.slice(0, 3)} ${cwPhoneDigits.slice(3, 5)} ${cwPhoneDigits.slice(5, 7)} `
+        + cwPhoneDigits.slice(7);
+      const cwSyntheticBooking = {
+        ...wellFormed.verified_business_fact, id: CONTACT_FACTS.bookingUrl.id, attribute: CONTACT_FACTS.bookingUrl.field,
+        claim: "bookingUrl: https://Book.Synthetic-Garage.test/slot?x=1",
+      } as EvidenceRecord;
+      const cwBookingPack = buildEvidencePack({ goal: "brake service content", records: [...mixed, cwSyntheticBooking], now: NOW });
+      check("CW5. the pack's approved phone number is recognized by its digits in any grouping, and the approved "
+        + "booking link by its host — each only when its record is in the pack",
+        cwPhoneDigits.length === 10
+          && cwIs(cwOddPhone, packPack, "phone") && cwIs(cwOddPhone, cwBare, "")
+          && cwIs("book.synthetic-garage.test", cwBookingPack, "url") && cwIs("book.synthetic-garage.test", cwBare, ""));
+
+      // A synthetic reproduction of the 2026-09-26 incident: the phone number
+      // and "Book online" in one overlay.
+      const cwIncident = `Book online or call ${cwPhone}`;
+      const cwIncidentError = cwError(cwDirection(["Brake fluid absorbs moisture", cwIncident]));
+      check("CW6. a synthetic reproduction of the 2026-09-26 incident — one overlay typing the pack's phone number "
+        + "and \"Book online\" — refuses the whole stage 4 response, naming that overlay's index and both categories",
+        cwIncidentError instanceof StageExecutionError
+          && cwIncidentError.message.includes(
+            "\"overlayText[1].text\" contains contact details (phone, call_to_action)")
+          && cwError(cwDirection(["Brake fluid absorbs moisture"])) === undefined);
+
+      const cwUrlOverlay = "Details at examplegarage.com";
+      const cwUrlError = cwError(cwDirection([cwUrlOverlay]));
+      check("CW7. the refusal names the index and the categories and contains neither the overlay text, nor the "
+        + "phone number or its digits, nor the call-to-action wording, nor a URL",
+        !!cwIncidentError && !!cwUrlError
+          && !cwIncidentError.message.includes(cwIncident) && !cwIncidentError.message.includes(cwPhone)
+          && !cwIncidentError.message.replace(/\D/g, "").includes(cwPhoneDigits.slice(-7))
+          && !/book online/i.test(cwIncidentError.message)
+          && cwUrlError.message.includes("\"overlayText[0].text\" contains contact details (url)")
+          && !cwUrlError.message.includes("examplegarage"));
+
+      const cwSaved = JSON.parse(JSON.stringify(directionForPackaging)) as {
+        provisional: { overlayText: { text: string }[] };
+      };
+      const cwCleanReplay = cwError(() => revalidateProductionDirectionOutput(
+        JSON.parse(JSON.stringify(cwSaved)), scriptForPackaging, truthForPackaging, packPack));
+      cwSaved.provisional.overlayText[0]!.text = cwIncident;
+      const cwReplayError = cwError(() => revalidateProductionDirectionOutput(
+        cwSaved, scriptForPackaging, truthForPackaging, packPack));
+      check("CW8. revalidation refuses a saved stage 4 output whose overlay carries contact details, naming the "
+        + "index and categories without the text; the same saved output with a clean overlay still revalidates",
+        cwCleanReplay === undefined
+          && cwReplayError instanceof StageExecutionError
+          && cwReplayError.message.includes("\"directionOutput\" is invalid:")
+          && cwReplayError.message.includes("\"overlayText[0].text\" contains contact details (phone, call_to_action)")
+          && !cwReplayError.message.includes(cwPhone) && !/book online/i.test(cwReplayError.message));
+
+      const cwBareError = cwError(cwDirection(["Call 305-555-0142 or see examplegarage.net"], cwBare));
+      check("CW9. with a pack holding no phone, booking-link or shop record, the validator still refuses a generic "
+        + "phone number and URL, and the check itself never throws — not even on a pack with no records",
+        cwBareError instanceof StageExecutionError
+          && cwBareError.message.includes("\"overlayText[0].text\" contains contact details (phone, url)")
+          && cwError(() => overlayContactViolations("Call 305-555-0142", cwEmpty)) === undefined
+          && cwError(() => overlayContactViolations("Call 305-555-0142", undefined as unknown as EvidencePack))
+            === undefined
+          && cwIs("Call 305-555-0142", undefined as unknown as EvidencePack, "phone"));
+
+      const cwPrompt = await readFile(resolve(REPO_ROOT, "agents/production-direction.md"), "utf8");
+      check("CW10. stage 4's prompt keeps its no-contact-details rule and adds that an overlay containing a phone "
+        + "number, a URL or web address, or a call to action is rejected by code and fails the whole response",
+        cwPrompt.includes("- **No contact details in overlays.** Overlay text never contains contact details")
+          && cwPrompt.includes("An overlay containing a phone number, a URL or web address, or a call to action "
+            + "such as \"book online\" or \"call us\" is rejected by code, and the whole response fails."));
     }
 
     // ========================================================================
