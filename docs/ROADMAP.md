@@ -46,8 +46,22 @@ These are not interchangeable and must not be collapsed into "done". `MERGED` in
    - the decisions the design made itself.
 2. **The amendment pointer.** [PRODUCTION_WIRING_DESIGN.md](PRODUCTION_WIRING_DESIGN.md) §5.2 gains a short note pointing to the Studio design and stating the deliberate deviation from "no new Render service". The accepted design is not otherwise rewritten.
 3. **PR #101 recorded as `MERGED`** at `f111012…`, with its runs. Its record moves to *Merged repository change awaiting rollout* below. Its merge-SHA and PR-CI follow-ups are discharged there and in [Status](STATUS.md), [README](../README.md), [AI handoff](AI_HANDOFF.md), [Architecture](ARCHITECTURE.md), [Testing](TESTING.md) and [Security and continuity](SECURITY_AND_CONTINUITY.md). Each "`IMPLEMENTED`, not merged" label for it gets a dated correction, and its original wording is kept.
-4. **The Studio entry and the cursor.** *Planned — Content Studio* below records the owner's decisions as `PLANNED`. The cursor now names Content Studio PR 1 (S1, library extraction) as the next repository change, pending the owner's approval of the design. Every other open item is carried unchanged, except that PR #101's merge-SHA follow-up becomes this PR's, and the `--resume-from production-direction` bullet now points to PR #101's moved record.
+4. **The Studio entry and the cursor.** *Planned — Content Studio* below records the owner's decisions as `PLANNED`. The cursor now names Content Studio PR 1 (S1, library extraction) as the next repository change, pending the owner's approval of the design. *(Superseded by item 6: approved 2026-09-29.)* Every other open item is carried unchanged, except that PR #101's merge-SHA follow-up becomes this PR's, and the `--resume-from production-direction` bullet now points to PR #101's moved record.
 5. **Planned-architecture notes** in [README](../README.md), [Status](STATUS.md), [AI handoff](AI_HANDOFF.md) and [Architecture](ARCHITECTURE.md). None describes anything as built.
+6. **The owner's approval and answers of 2026-09-29, added to this same PR in new commits.** The owner approved the design with answers to its eleven open questions. They are recorded in design §11.1a and in *Planned — Content Studio* below, and applied wherever they change the design:
+   - **Decision 2 amended:** a separate `render.studio.yaml`, with `render.yaml` never modified by a Studio PR. The original decision 2 is kept.
+   - **The freeze covers new services.**
+   - **Caps:** $50 a day and $200 a month; ceilings 75 and 300; a $300-a-month Anthropic workspace limit; the full-ceiling reservation kept.
+   - **Roles:** the owner is the only `runner`; staff are `viewer`; later runners get a $25 daily cap.
+   - **Time zone** `America/New_York`.
+   - **Retention:** runs until deleted; audit log and ledger two years.
+   - **The worker on `standard`.**
+   - **The P2 conflict** made a binding rule, with a dated pointer at P2 in [PRODUCTION_WIRING_DESIGN.md](PRODUCTION_WIRING_DESIGN.md).
+   - **The separate Anthropic workspace and key required.**
+   - **Fake runs** kept, owner-only.
+   - **An operational note:** the bootstrap owner must be a Workspace user account. No address is recorded.
+
+   The cursor now names S1 with the design approved.
 
 **Migrations / schema impact:** none. The design proposes a separate Studio schema under `studio/migrations/`; none exists.
 
@@ -55,10 +69,10 @@ These are not interchangeable and must not be collapsed into "done". `MERGED` in
 
 - **Deploy control.** Manual exact-commit deploys by the owner, with native auto-deploy off on every Studio service. This keeps the count of unattended deployment authorities at zero, puts no credential in GitHub, and changes no live workflow or controller.
 - **The registry question.** The Studio worker calls the stages exactly as the local CLI does, with `executionEnabled` untouched. **VERIFIED:** outside the preview's summary, no production source reads the flag, and the CLI already runs all six stages with it `false`. What changes is that "no production caller" narrows to "no caller in the live `gcd-social-*` services". The design therefore adds three protections and weakens nothing: a transitive import-graph check from every live entry point, a caller allowlist for the run library, and executed zero-runner tests.
-- **The conflict with P2, recorded rather than resolved.** The production-wiring design's P2, as written, would stop both the Studio worker and today's CLI. P2's design, or the Studio's S3, must therefore name a review-only execution context.
+- **The conflict with P2.** The production-wiring design's P2, as written, would stop both the Studio worker and today's CLI. It was first recorded rather than resolved. *(2026-09-29: the owner made it a binding rule. Whichever comes first, the P2 implementation PR or Studio S3, must define a separately reviewed review-only execution context that can never approve or publish and sits beside the live authority gate.)*
 - **Studio-specific variable names.** No Studio service carries `DATABASE_URL` or any live credential, and `ANTHROPIC_API_KEY` is on the worker only.
 - **Migration separation.** Five independent separations, including a tripwire `_migrations` table, so that neither runner can apply the other's migrations.
-- **The cron.** Built double-gated, and left out of `render.yaml` at launch.
+- **The cron.** Built double-gated, and left out of the Studio's Blueprint at launch. *(Since the owner's amendment of 2026-09-29, that Blueprint is `render.studio.yaml`; `render.yaml` is never modified.)*
 - **Artifacts are authoritative.** The Studio stores the CLI's own files byte for byte; its tables are derived.
 - **Two import tiers:** `verified` and `archived_unverified`.
 - **Caps.** Each paid action reserves its printed ceiling and is reconciled to the measured cost. An overrun stops the run and locks new confirmations.
@@ -101,7 +115,7 @@ The mutation harness was not re-run: it mutates source, prompts, a skill, SQL an
 
 **Accepted limitations.**
 
-- **Every live fact the design relies on is `UNKNOWN / TO VERIFY`.** This includes Render plans, prices and blueprint fields; Google Workspace and OAuth settings; and Anthropic workspace limits. Above all, it includes **whether the live services are Blueprint-managed with auto-sync** (design §3.6), which could make merging S8 alone touch the live services.
+- **Every live fact the design relies on is `UNKNOWN / TO VERIFY`.** This includes Render plans, prices and blueprint fields; Google Workspace and OAuth settings; and Anthropic workspace limits. Above all, it includes **whether the live services are Blueprint-managed with auto-sync** (design §3.6), which could make merging S8 alone touch the live services. *(2026-09-29: the owner's amendment moves the Studio to a separate `render.studio.yaml` and leaves `render.yaml` byte-identical, which removes the edit that would have triggered such a sync. The dated Blueprint check and the stop condition on any `gcd-social-*` resource stay. Whether Render reads a Blueprint at a non-default path is TO VERIFY; if not, the resources are created by hand from that file.)*
 - **The design has had one in-session adversarial review,** whose findings are folded in. They covered:
   - cost accounting for in-flight and unknown-cost requests;
   - serialized cap checks;
@@ -118,23 +132,26 @@ The mutation harness was not re-run: it mutates source, prompts, a skill, SQL an
 
 - **This PR's merge SHA** (mutable-identifier exception) — **blocking**.
 - **This PR's own CI**: whether all five jobs pass on attempt 1 on the final head. It is recorded in the PR, and reconciled into this record with the merge SHA.
-- **Owner approval of the design.** Nothing in the Studio sequence begins without it.
-- **The owner's open questions** (design §11.1) and **owner actions O1–O6**: none performed.
+- ~~**Owner approval of the design.** Nothing in the Studio sequence begins without it.~~ **Given 2026-09-29**, with the answers in design §11.1a. Each S-PR still needs its own authorization.
+- ~~**The owner's open questions** (design §11.1)~~ **answered 2026-09-29.** **Owner actions O1–O6:** none performed.
 
 **Documents updated:**
 
 - the new [`docs/CONTENT_STUDIO_DESIGN.md`](CONTENT_STUDIO_DESIGN.md);
-- [PRODUCTION_WIRING_DESIGN.md](PRODUCTION_WIRING_DESIGN.md) (the §5.2 pointer);
+- [PRODUCTION_WIRING_DESIGN.md](PRODUCTION_WIRING_DESIGN.md) (the §5.2 pointer, and the dated P2 pointer added with the owner's answers);
 - this file: this record; PR #101's record moved, with its merge and CI reconciled; *Planned — Content Studio*; the cursor; a dated correction in the revision-pass record's follow-ups; the PR #100 record's reference to "the contact-in-overlay change at the top of this file";
 - [Status](STATUS.md), [README](../README.md), [AI handoff](AI_HANDOFF.md), [Architecture](ARCHITECTURE.md), [Testing](TESTING.md) and [Security and continuity](SECURITY_AND_CONTINUITY.md).
 
 **Checked and deliberately left unchanged:** [Deployment control](DEPLOYMENT.md), [Environment](ENVIRONMENT.md), [Data model](DATA_MODEL.md), [Operations](OPERATIONS.md) and `.env.example`. Each describes current reality, which this change does not alter. The design's §10 names the Studio PR that must update each one. Each modified document was reread in full.
 
-## Next repository change — Content Studio PR 1 (library extraction), pending the owner's approval of the design
+## Next repository change — Content Studio S1 (library extraction)
 
-**The next repository change is Content Studio PR 1 (S1): extracting the pipeline core of `scripts/local/content-run.mjs` into a library that both the CLI and the future Studio worker call.** See the [Content Studio design](CONTENT_STUDIO_DESIGN.md) §5.1 and §10. **It is pending the owner's approval of that design.** Until the owner approves it, no Studio PR begins, and this file does not authorize one. Nothing here authorizes enabling any stage, creating any Render service, any release, or any change to the Phase-A approval gate.
+**The next repository change is Content Studio S1: extracting the pipeline core of `scripts/local/content-run.mjs` into a library that both the CLI and the future Studio worker call.** See the [Content Studio design](CONTENT_STUDIO_DESIGN.md) §5.1 and §10.
 
-This section was headed *Next repository change — not chosen* until this change, and earlier records refer to it by that name.
+- **The design was approved by the owner on 2026-09-29** (design §11.1a). Approval is not authorization to implement: S1, and every later S-PR, still needs its own explicit authorization, and this file grants none.
+- Nothing here authorizes enabling any stage, creating any Render service, any release, or any change to the Phase-A approval gate.
+
+This section was headed *Next repository change — not chosen*, and then *Next repository change — Content Studio PR 1 (library extraction), pending the owner's approval of the design*. Earlier records refer to it by those names.
 
 Open items, carried unchanged except where the Studio design change at the top of this file says otherwise:
 
@@ -151,7 +168,7 @@ Open items, carried unchanged except where the Studio design change at the top o
 
 ## Planned — Content Studio (owner decisions of 2026-09-29) — `PLANNED`
 
-**State:** `PLANNED`. The design is [`docs/CONTENT_STUDIO_DESIGN.md`](CONTENT_STUDIO_DESIGN.md), added by the documentation change at the top of this file, and **the owner's approval of it is pending**. Nothing is built. No Render service, database, Google OAuth client, secret or Anthropic key exists for it. This entry sits outside the production-wiring sequence: the Studio implements none of P1–P8, performs none of M2–M7, and moves no production-wiring milestone.
+**State:** `PLANNED`. The design is [`docs/CONTENT_STUDIO_DESIGN.md`](CONTENT_STUDIO_DESIGN.md), added by the documentation change at the top of this file. It was first recorded with the owner's approval pending. **The owner approved it on 2026-09-29, with the answers below.** Approval is not implementation, and nothing is built. No Render service, database, Google OAuth client, secret or Anthropic key exists for it. This entry sits outside the production-wiring sequence: the Studio implements none of P1–P8, performs none of M2–M7, and moves no production-wiring milestone.
 
 **Owner decisions (2026-09-29), recorded verbatim:**
 
@@ -160,6 +177,29 @@ Open items, carried unchanged except where the Studio design change at the top o
 3. **Users:** the owner plus a few staff, signing in with Google, restricted to `@germancardepot.com`. The owner decides which users may start paid runs.
 4. **Runs are on demand only at launch.** The cron job is designed but disabled until the owner decides otherwise.
 5. **The manufacturer facts file** (`config/automotive-facts.local.json`, today only on the owner's Mac) may be uploaded to the Studio and stored in its private database. It is never committed to GitHub.
+
+**Amendment to decision 2 (owner, 2026-09-29).** The Studio gets a **separate Blueprint file, `render.studio.yaml`**, not the shared `render.yaml`. Decision 2 is otherwise unchanged. Whether Render supports a Blueprint at a non-default path is TO VERIFY. If it does not, the Studio's resources are created by hand from that checked-in file, which is the specification. **`render.yaml` is not modified at all by any Studio PR.** Decision 2 above is kept as first given.
+
+**The owner's answers of 2026-09-29 to the design's §11.1** (recorded in full in design §11.1a):
+
+1. **The design is approved** as amended. It stays `PLANNED`, and each S-PR and owner action still needs its own authorization.
+2. **Decision 2 is amended** as above.
+3. **The freeze covers new services; the default is kept.** No Studio service is created (O3) until the M1→M2 interval (bound `2026-10-22T18:52Z`) is closed, or under whatever terms are then in force.
+4. **Caps:**
+   - owner caps $50 a day and $200 a month;
+   - deployment ceilings `STUDIO_MAX_DAILY_USD` = 75 and `STUDIO_MAX_MONTHLY_USD` = 300;
+   - an Anthropic workspace spend limit of $300 a month for the Studio key.
+
+   The reservation stays at the full printed ceiling. Tightening the estimate is a separate, reviewed future change.
+5. **Only the owner is a `runner` at launch;** staff are `viewer`. Runners added later get a $25 per-user daily cap.
+6. **Time zone:** `America/New_York`.
+7. **Retention:** runs are kept until the owner deletes them. The audit log and spend ledger are kept for 2 years.
+8. **The worker starts on `standard`,** is measured, and may move down to `starter`. Plan prices are TO VERIFY.
+9. **The P2 conflict is a binding rule.** Whichever comes first, production-wiring P2 or Studio S3, must define an explicit, separately reviewed review-only execution context, so that the local CLI and the Studio keep working. It can never approve or publish, and it sits beside the live authority gate, never replacing it. A dated pointer at P2 in [PRODUCTION_WIRING_DESIGN.md](PRODUCTION_WIRING_DESIGN.md) records it.
+10. **A separate Anthropic workspace and key for the Studio is required.** O2 must happen before the first live run.
+11. **Fake runs stay in the Studio, owner-only,** labelled on every screen.
+
+**Operational note (owner, 2026-09-29).** `STUDIO_BOOTSTRAP_OWNER_EMAIL` must name a real Google Workspace **user** account, not a shared mailbox, an alias or a group, because the `hd` and `email_verified` checks only work for Workspace user accounts. The owner enters the value in Render; it is never committed.
 
 **Sequence (design §10), serial, each separately authorized:**
 
@@ -170,26 +210,27 @@ Open items, carried unchanged except where the Studio design change at the top o
 - **S5** read-only screens;
 - **S6** run and revise actions with caps;
 - **S7** fact upload and legacy import;
-- **S8** the `render.yaml` additions;
+- **S8** a new `render.studio.yaml`, with `render.yaml` byte-identical;
 - **S9** the cron, built disabled.
 
 **Owner actions, named separately:**
 
 - **O1** create the Google OAuth client;
 - **O2** create the Studio's Anthropic key;
-- **O3** apply the blueprint;
+- **O3** create the Studio resources from `render.studio.yaml`;
 - **O4** set the secrets;
 - **O5** the first deploy and setup;
 - **O6** the first live run.
 
-**Gates recorded, not resolved:**
+**Gates:**
 
-- **Owner approval of the design.**
-- **The release-freeze gate.** The M1→M2 interval is bound at `2026-10-22T18:52Z`, and its prohibition covers "any service". The default is to create the Studio services (O3) only once the interval is closed, or under the terms then in force, unless the owner decides the freeze does not cover new services. Merging S1–S9 is not a release.
-- **The Blueprint check before S8 merges.** Is this repository linked to a Render Blueprint with auto-sync? If so, merging `render.yaml` could itself touch the live services (design §3.6).
-- **The P2 conflict** (design §5.4). The production-wiring design's P2, as written, would stop the Studio worker and today's CLI.
+- ~~**Owner approval of the design.**~~ **Given 2026-09-29.**
+- **The release-freeze gate — confirmed by the owner.** The M1→M2 interval is bound at `2026-10-22T18:52Z`, and its prohibition covers "any service". No Studio service is created (O3) until the interval is closed, or under the terms then in force. Merging S1–S9 is not a release, while `deploy-production` keeps refusing at its disabled gate and native auto-deploy stays off on the live services (design §10).
+- **The Blueprint check before S8 merges.** Is this repository linked to a Render Blueprint, which file does it read, and is auto-sync on? S8 adds only `render.studio.yaml` and leaves `render.yaml` byte-identical. Any Blueprint or dashboard action touching a `gcd-social-*` resource is a stop condition (design §3.6).
+- **The P2 rule** (design §5.4): whichever comes first, P2 or S3, defines the review-only execution context.
+- **O2 before O6:** no live Studio run without the separate Anthropic workspace and key.
 
-**Open questions:** the design's §11.1, for the owner.
+**Open questions:** answered by the owner on 2026-09-29 (design §11.1 and §11.1a).
 
 ## Merged repository change awaiting rollout
 

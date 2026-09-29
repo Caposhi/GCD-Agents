@@ -217,7 +217,7 @@ The orchestrator loads each `agents/<name>.md`, strips YAML frontmatter, extract
 
 ## Planned — Content Studio (not built)
 
-**`PLANNED` only; nothing in this section exists.** The owner decided on 2026-09-29 to build a separate, review-only **Content Studio**. It would be a Render web service, a background worker and its own PostgreSQL database, declared in `render.yaml` beside, never inside, the live `gcd-social-*` services. It would let the owner and staff start and view content-pipeline runs in a browser, with Google sign-in restricted to `@germancardepot.com`. The design is [CONTENT_STUDIO_DESIGN.md](CONTENT_STUDIO_DESIGN.md), and the owner's approval of it is pending.
+**`PLANNED` only; nothing in this section exists.** The owner decided on 2026-09-29 to build a separate, review-only **Content Studio**. It would be a Render web service, a background worker and its own PostgreSQL database, declared in a separate `render.studio.yaml`, never inside the live `gcd-social-*` services and never in `render.yaml`. It would let the owner and staff start and view content-pipeline runs in a browser, with Google sign-in restricted to `@germancardepot.com`. The design is [CONTENT_STUDIO_DESIGN.md](CONTENT_STUDIO_DESIGN.md), and it was approved by the owner on 2026-09-29; approval is not implementation.
 
 The proposed data flow is:
 
@@ -235,7 +235,7 @@ The owner then copies captions by hand.
 - It never connects to `gcd-social-db`.
 - It changes nothing in the live runtime described above. The Blueprint-sync gate (design §3.6) and the import-graph check (design §5.4) are what keep that true.
 
-It is a recorded deviation from the production-wiring design's §5.2, and it implements none of P1–P8 and none of M2–M7. A cron job is also designed, but it would not be added to `render.yaml` at launch.
+It is a recorded deviation from the production-wiring design's §5.2, and it implements none of P1–P8 and none of M2–M7. A cron job is also designed, but it would not be added to `render.studio.yaml` at launch.
 
 ## Target Content Intelligence architecture
 

@@ -7,8 +7,10 @@ changes no live service, and does not touch the Phase-A approval gate. Each impl
 each owner action named in [§10](#10-the-pr-sequence-and-the-owner-actions) still needs its own
 review, its own explicit authorization and its own evidence.
 
-**State:** `PLANNED` (see [Roadmap](ROADMAP.md)). Owner approval of this design is pending.
-Written 2026-09-29 against `main` at `f11101265c1ea7aa771d7efd2f5fdd98f96ab702` (the merge of
+**State:** `PLANNED` (see [Roadmap](ROADMAP.md)). **Approved by the owner on 2026-09-29**, with the
+answers recorded in [§11.1a](#111a-owner-decisions-of-2026-09-29--answers-to-111). Approval is not
+implementation: nothing is built, and each Studio PR (S1–S9) and each owner action (O1–O6) still
+needs its own authorization. Written 2026-09-29 against `main` at `f11101265c1ea7aa771d7efd2f5fdd98f96ab702` (the merge of
 PR #101); that SHA is a dated snapshot, not a mutable pointer.
 
 ## Evidence labels
@@ -60,6 +62,19 @@ These are recorded as the owner gave them. They are `PLANNED` in [Roadmap](ROADM
    Mac) may be uploaded to the Studio and stored in its private database. It is never committed to
    GitHub.
 
+> **Amendment to decision 2 (owner, 2026-09-29).** The Studio gets a **separate Blueprint file,
+> `render.studio.yaml`**, not the shared `render.yaml`. Decision 2 is otherwise unchanged: its own
+> web service, background worker, optional cron job and PostgreSQL database, and not built inside
+> the live `gcd-social-*` services.
+>
+> - Whether Render supports a Blueprint at a non-default path is TO VERIFY. If it does not, the
+>   Studio's resources are created by hand from that checked-in file, which is then the
+>   specification.
+> - **`render.yaml` is not modified at all by any Studio PR.**
+>
+> Decision 2 above is kept as the owner first gave it. See [§3.6](#36-applying-the-blueprint--a-gate-not-a-formality)
+> and [§11.1a](#111a-owner-decisions-of-2026-09-29--answers-to-111).
+
 ### 1.2 What the Studio does
 
 **PROPOSED.** The Studio is a browser front end for what `scripts/local/content-run.mjs` does
@@ -99,10 +114,10 @@ stays a manual copy-paste by the owner.
   approved.
 - **No change to the Phase-A gate or to any live service.** No file of `src/api/**`,
   `src/worker/**`, `src/scheduler/**`, `state/migrations/**`, `.github/workflows/deploy-production.yml`
-  or `scripts/render/deployment-controller.mjs` changes for the Studio. The existing
-  `gcd-social-*` entries in `render.yaml` do not change either (see
-  [§3.6](#36-applying-the-blueprint--a-gate-not-a-formality) for the one exposure this cannot rule
-  out by itself).
+  or `scripts/render/deployment-controller.mjs` changes for the Studio. **`render.yaml` is not
+  modified at all**; the Studio is declared only in `render.studio.yaml` (owner decision of
+  2026-09-29). [§3.6](#36-applying-the-blueprint--a-gate-not-a-formality) keeps a stop condition for
+  any Blueprint or dashboard action that would touch a `gcd-social-*` resource.
 - **No video editing.** Humans film; CapCut or another external editor stays the V1 path
   ([Roadmap](ROADMAP.md): browser-based video editing is `DEFERRED`).
 - **No automatic posting,** and no scheduling of posts. The recommended time stays a review note
@@ -163,33 +178,39 @@ two systems this design keeps apart.
 
 ### 2.4 The pointer in the production-wiring design
 
-**PROPOSED, and made in this change.** A short amendment note in §5.2 of
-[PRODUCTION_WIRING_DESIGN.md](PRODUCTION_WIRING_DESIGN.md) points here. The accepted design is not
+**PROPOSED, and made in this change.** Two short, dated notes in
+[PRODUCTION_WIRING_DESIGN.md](PRODUCTION_WIRING_DESIGN.md) point here. The accepted design is not
 rewritten.
+
+- **§5.2:** an amendment pointer.
+- **P2:** a note recording the owner's binding rule of 2026-09-29 on a review-only execution
+  context ([§5.4](#54-executionenabled-and-the-registry--how-the-studio-worker-may-call-stages)).
 
 ---
 
 ## 3. Render topology
 
 **Everything about live Render state in this section is UNKNOWN / TO VERIFY.** No Render inspection
-was performed or authorized. **VERIFIED** facts come from `render.yaml` and from
-[Deployment control](DEPLOYMENT.md).
+was performed or authorized. **VERIFIED** facts come from `render.yaml`, which describes the live
+services and which no Studio PR modifies, and from [Deployment control](DEPLOYMENT.md). The Studio's
+resources are declared only in the proposed `render.studio.yaml`.
 
 ### 3.1 Services
 
 **PROPOSED** names, types and plans. **Plans and prices are TO VERIFY** in the Render dashboard
-before the blueprint change (S8), as `render.yaml`'s own comment already requires.
+before S8 adds `render.studio.yaml`, as `render.yaml`'s own comment already requires for the live
+database.
 
 | Resource | Type | Plan (TO VERIFY) | Role |
 |---|---|---|---|
 | `gcd-studio-web` | web | `starter` | Sign-in, screens, quotes and confirmations, fact upload, legacy import; enqueues jobs. **Never calls a model** |
-| `gcd-studio-worker` | worker | `starter` (TO VERIFY; `standard` if a measured four-lens run needs more than 512 MB) | The single job consumer; runs the pipeline library; the only holder of `ANTHROPIC_API_KEY` |
+| `gcd-studio-worker` | worker | **`standard`** (owner decision of 2026-09-29; price TO VERIFY). Measured once running; it may move down to `starter` later | The single job consumer; runs the pipeline library; the only holder of `ANTHROPIC_API_KEY` |
 | `gcd-studio-cron` | cron | `starter` | **Designed, not created at launch** — see [§3.5](#35-the-cron-job--built-disabled) |
 | `gcd-studio-db` | PostgreSQL | `basic-256mb` (TO VERIFY) | Studio-only durable state; `databaseName: gcd_studio`; no external access |
 
 **VERIFIED (by contrast):** the live resources are `gcd-social-api`, `gcd-social-worker`,
 `gcd-social-scheduler` and `gcd-social-db`. The `gcd-studio-` prefix keeps every Studio resource
-distinct from the live ones by name, in `render.yaml`, in the dashboard and in logs.
+distinct from the live ones by name, across the two Blueprint files, in the dashboard and in logs.
 
 **PROPOSED — code layout.** Studio code lives under `src/studio/**`, compiled by the existing
 `tsc -p tsconfig.json` into `dist/studio/**`. Studio SQL lives under `studio/migrations/`, outside
@@ -203,7 +224,7 @@ defines the reachability check that keeps it that way.
 
 ### 3.2 Environment variables per service
 
-**PROPOSED.** Secrets are `sync: false`, so no value is ever in `render.yaml`. The Studio uses
+**PROPOSED.** Secrets are `sync: false`, so no value is ever in `render.studio.yaml`. The Studio uses
 **Studio-specific names** wherever a live name exists. That way a Studio process can never
 pick up a live value through a shared module, and a live process can never pick up a Studio one.
 
@@ -219,7 +240,7 @@ pick up a live value through a shared module, and a live process can never pick 
 | `STUDIO_GOOGLE_CLIENT_ID` | `sync: false` | **Not** the live `GOOGLE_CLIENT_ID`, which is the GBP OAuth client (**VERIFIED**, `render.yaml`) |
 | `STUDIO_GOOGLE_CLIENT_SECRET` | `sync: false` | the Studio's own OAuth client secret |
 | `STUDIO_BOOTSTRAP_OWNER_EMAIL` | `sync: false` | read only while the users table holds no owner ([§7.2](#72-allowlist-and-roles)) |
-| `STUDIO_MAX_DAILY_USD`, `STUDIO_MAX_MONTHLY_USD` | `sync: false` | deployment-time ceilings over the owner's caps ([§6.2](#62-daily-and-monthly-caps--enforced-before-every-paid-call)) |
+| `STUDIO_MAX_DAILY_USD`, `STUDIO_MAX_MONTHLY_USD` | `sync: false`; the owner sets **75** and **300** (owner decision of 2026-09-29) | deployment-time ceilings over the owner's caps ([§6.2](#62-daily-and-monthly-caps--enforced-before-every-paid-call)) |
 
 `gcd-studio-worker`:
 
@@ -228,8 +249,8 @@ pick up a live value through a shared module, and a live process can never pick 
 | `NODE_ENV` | `production` | |
 | `NODE_OPTIONS` | `--max-old-space-size=400` (TO VERIFY against the plan) | |
 | `STUDIO_DATABASE_URL` | `fromDatabase: gcd-studio-db` / `connectionString` | |
-| `ANTHROPIC_API_KEY` | `sync: false` | **on the worker only.** The web service never calls a model. The name is the one `src/harness/config.ts` reads (**VERIFIED**). The owner is advised to use a separate key with its own spend limit ([§6.5](#65-the-provider-side-backstop)) |
-| `STUDIO_MAX_DAILY_USD`, `STUDIO_MAX_MONTHLY_USD` | `sync: false` | the same ceilings, enforced again at the paid call |
+| `ANTHROPIC_API_KEY` | `sync: false` | **on the worker only.** The web service never calls a model. The name is the one `src/harness/config.ts` reads (**VERIFIED**). **It must be a separate key in a separate Anthropic workspace with a $300 monthly spend limit** (owner decision of 2026-09-29, [§6.5](#65-the-provider-side-backstop)) |
+| `STUDIO_MAX_DAILY_USD`, `STUDIO_MAX_MONTHLY_USD` | `sync: false`; **75** and **300** | the same ceilings, enforced again at the paid call |
 
 `gcd-studio-cron` (not created at launch): `NODE_ENV`, `STUDIO_DATABASE_URL`, and
 `STUDIO_SCHEDULED_RUNS_ENABLED` = `false`.
@@ -241,6 +262,9 @@ value, `GOOGLE_ACCESS_TOKEN`, `GOOGLE_REFRESH_TOKEN`, the live `GOOGLE_CLIENT_ID
 enforced three ways:
 
 - **S8's static check, over values as well as names.** It fails CI in any of these cases:
+  - `render.yaml` differs from its bytes at the Studio's base, or contains any `gcd-studio-*`
+    entry;
+  - `render.studio.yaml` contains any `gcd-social-*` entry;
   - a `gcd-studio-*` block names a forbidden key;
   - any `fromDatabase.name` in a `gcd-studio-*` block is not `gcd-studio-db`;
   - a `gcd-studio-*` block uses `fromGroup` or `fromService` pointing at a live resource;
@@ -282,7 +306,7 @@ neither requires nor flags them. They become checked when the PR that first read
 ### 3.4 How Studio deployments are controlled
 
 **PROPOSED, and chosen: manual, exact-commit deploys by the owner, with native auto-deploy off on
-every Studio service.** Every `gcd-studio-*` block in `render.yaml` sets auto-deploy off. The field
+every Studio service.** Every `gcd-studio-*` block in `render.studio.yaml` sets auto-deploy off. The field
 name and value are TO VERIFY against the current Render blueprint specification:
 `autoDeployTrigger: off`, or the older `autoDeploy: false`. The owner deploys an exact commit from
 the Render dashboard, using the Studio release checklist that S8 adds to [Operations](OPERATIONS.md).
@@ -326,48 +350,51 @@ A scheduled run gets no price confirmation from a person. So it also needs a sta
 pre-authorization row that names the goal template, the platforms, the scope tags and a per-run
 price ceiling. That row counts against the same caps.
 
-**The `gcd-studio-cron` block is not added to `render.yaml` at launch.** A cron resource that exists
+**The `gcd-studio-cron` block is not added to `render.studio.yaml` at launch.** A cron resource that exists
 can be switched on by one variable change, and it bills for its runs. Adding it, and choosing its
 schedule, is the owner's separate decision under owner decision 4. The code for it does not
 depend on that decision.
 
 ### 3.6 Applying the blueprint — a gate, not a formality
 
-**UNKNOWN / TO VERIFY, and the most important external fact in this design.** Owner decision 2 puts
-the Studio in the same `render.yaml`. This repository does not establish two things:
+**Owner decision of 2026-09-29: the Studio is declared in its own Blueprint file,
+`render.studio.yaml`, and `render.yaml` is not modified at all by any Studio PR.** The reasons, from
+the analysis this design first recorded (all **UNKNOWN / TO VERIFY**, because no Render inspection
+was performed):
 
-- whether the live `gcd-social-*` services are linked to a Render **Blueprint** instance;
-- whether that Blueprint auto-syncs from `main`.
+- **The linked case.** If the live `gcd-social-*` services are linked to a Render Blueprint built
+  from `render.yaml`, editing and applying that file is a sync over the live services too. It can
+  reconcile their settings to the file. For example, the live blocks state no auto-deploy setting,
+  so a sync could apply Render's default and switch native auto-deploy back on. If auto-sync is on,
+  merging an edit to `render.yaml` could do this with no deploy step at all.
+- **The unlinked case.** A new Blueprint created from `render.yaml` would also contain the
+  `gcd-social-*` entries, and what Render does with existing services of the same name is unknown.
+- **The existing rule.** [Deployment control](DEPLOYMENT.md) already says: "Do not synchronize the
+  Blueprint or re-enable a native setting as a substitute for the controlled proof."
 
-If they are linked, applying the edited `render.yaml` is a **Blueprint sync over the live services
-too**. It can reconcile their settings to the file: for example an auto-deploy default the file
-does not state, or a plan. [Deployment control](DEPLOYMENT.md) already says: "Do not synchronize
-the Blueprint or re-enable a native setting as a substitute for the controlled proof." If
-auto-sync is on, **merging S8 alone** could create the Studio resources and touch the live ones,
-with no deploy step at all. The live blocks state no auto-deploy setting, so a sync could apply
-Render's default and switch native auto-deploy back on (TO VERIFY).
+A separate file that names no `gcd-social-*` resource removes those paths. Two facts remain
+**TO VERIFY**, each with a fallback:
 
-The unlinked case is not safe either. A new Blueprint created from this `render.yaml` also contains
-the `gcd-social-*` entries, and what Render does with existing services of the same name is
-TO VERIFY. Creating a service may also deploy it at once (TO VERIFY), which would happen before O5's
-exact-commit checklist.
+- **Whether Render supports a Blueprint at a non-default path** such as `render.studio.yaml`. If it
+  does not, the owner creates the Studio's resources **by hand** in the dashboard, following that
+  checked-in file field by field. The file is then the specification, not something Render reads.
+- **Whether creating a service deploys it at once.** If it does, that first deploy happens before
+  O5's exact-commit checklist, so O3 creates the web service before the worker, and its first
+  deploy is checked against the checklist afterwards.
 
-**Recommended default, put to the owner as an amendment to decision 2** (§11, question 2): declare
-the Studio in a **separate Blueprint file**, or create its resources by hand from a checked-in
-specification. Either way, applying it can name no `gcd-social-*` resource. If the owner keeps one
-`render.yaml`, the gate below applies in full.
+**The gate, kept in full whichever way the resources are created (before S8 merges, and again
+before O3):**
 
-**PROPOSED gate, before S8 merges and again before the owner applies anything:**
-
-1. A read-only check in the Render dashboard: is this repository linked to a Blueprint instance,
-   which resources does it manage, and is auto-sync on? Record the answer with its date.
-2. If a Blueprint manages the live services, S8 must not merge while auto-sync is on. The owner
-   either turns auto-sync off, which is a change to a live-service setting and needs its own
-   authorization, or chooses a separate Blueprint file for the Studio
-   ([§11](#11-open-questions-and-accepted-limitations), question 2).
-3. When applying, Render's sync preview (TO VERIFY that one is shown) must list **only**
-   `gcd-studio-*` resources. **Any change listed against a `gcd-social-*` resource is a stop
-   condition.**
+1. **A dated, read-only check in the Render dashboard.** Is this repository linked to any Blueprint
+   instance, which file path does each read, which resources does it manage, and is auto-sync on?
+   S8 adds a new file and leaves `render.yaml` byte-identical, so a Blueprint reading `render.yaml`
+   sees no change. S8 still may not merge until the check has shown that no existing Blueprint
+   would read `render.studio.yaml` into, or alongside, the live services.
+2. **Neither the Studio Blueprint nor any dashboard action taken for the Studio may create,
+   modify, sync, suspend or delete a `gcd-social-*` resource,** or change a setting on one.
+3. **The apply preview, or the owner's own checklist for a hand creation, must list only
+   `gcd-studio-*` resources.** Any line naming a `gcd-social-*` resource is a stop condition. So is
+   a preview that cannot be seen (TO VERIFY that Render shows one).
 
 ### 3.7 Studio migrations — kept strictly separate from the live migrations
 
@@ -495,20 +522,20 @@ deployed commit, recorded by sha256 as the CLI already does.
 |---|---|---|
 | `studio_audit_log` | `id`, `at`, `actor_user_id`, `action`, `target_type`, `target_id`, `detail` (jsonb) | Append-only (a trigger refuses `UPDATE` and `DELETE`). Records sign-in, sign-out, role and status changes, cap changes, fact uploads, imports, quotes, confirmations, cancellations and run state changes. `detail` never holds a goal, model text, fact text, an email body, a token or a secret. The only exception to append-only is the retention purge in [§4.7](#47-retention-and-backup). It is a separately reviewed migration or database function, never an application code path |
 | `studio_quotes` | `id`, `user_id`, `action`, `params_sha256`, `worker_commit`, `approved_facts_sha256`, `fact_version_id`, `price_table_sha256`, `ceiling_usd`, `breakdown` (jsonb: one line per request), `created_at`, `expires_at` (10 min), `consumed_at` | **Written by the worker's free preflight,** never computed by the web. Single use: consumed in the same transaction that creates the job and the reservation. Bound to one user, one exact parameter set, the worker commit that priced it, both fact fingerprints and the price table ([§6.1](#61-a-price-ceiling-confirmation-before-every-paid-action)) |
-| `studio_spend_ledger` | `id`, `entry` (`reserve` \| `release` \| `overrun`), `run_id`, `amount_usd`, `day_local`, `month_local`, `created_at` | Append-only (retention aside). Every entry of a run is booked to the day and month of its `reserve` entry, even when it is written after midnight. Day and month are in `America/New_York` (TO VERIFY that the owner wants shop-local time). **Spend for a day is Σ`reserve` − Σ`release` + Σ`overrun`** over that day's entries. For a finished run this equals its actual cost; for an unfinished one it is its full reservation |
+| `studio_spend_ledger` | `id`, `entry` (`reserve` \| `release` \| `overrun`), `run_id`, `amount_usd`, `day_local`, `month_local`, `created_at` | Append-only (retention aside). Every entry of a run is booked to the day and month of its `reserve` entry, even when it is written after midnight. Day and month are in `America/New_York` (owner decision of 2026-09-29). **Spend for a day is Σ`reserve` − Σ`release` + Σ`overrun`** over that day's entries. For a finished run this equals its actual cost; for an unfinished one it is its full reservation |
 | `studio_jobs` | `id`, `run_id` (unique), `kind` (`preflight` \| `paid` \| `fake`), `state`, `created_at`, `expires_at`, `claimed_at`, `heartbeat_at`, `cancel_requested_at`, `worker_commit` | One job per run. No `attempts` column: a job is never retried ([§5.3](#53-the-job-queue)). A queued job past `expires_at` is never started |
 | `studio_worker_heartbeat` (singleton) | `commit`, `schema_version`, `approved_facts_sha256`, `approved_facts_tag_counts` (jsonb), `price_table_sha256`, `beat_at` | Written only by the worker. The web reads the tag counts and fingerprints from here, so the web never loads the fact files or the pricing code itself |
 
 ### 4.7 Retention and backup
 
-**PROPOSED defaults, each for the owner to confirm ([§11](#11-open-questions-and-accepted-limitations)):**
+**Confirmed by the owner on 2026-09-29** ([§11.1a](#111a-owner-decisions-of-2026-09-29--answers-to-111)) for runs, the audit log and the spend ledger. The session and login-attempt purges are PROPOSED:
 
 | Data | Kept |
 |---|---|
 | Runs, artifacts, requests, findings | Until the owner deletes a run. Deletion is owner-only and audited. It removes the artifacts and findings, keeps a tombstone row, and keeps the run's ledger entries |
 | Fact versions | While any run references them; a retired, unreferenced version may be deleted by the owner |
 | Sessions, login attempts | Purged 30 days after expiry, and 1 day after expiry, respectively |
-| Audit log, spend ledger | Two years (proposed); never edited |
+| Audit log, spend ledger | Two years; never edited, except the purge at the end of that period ([§4.6](#46-audit-log-quotes-and-the-spend-ledger)) |
 
 **Backup is UNKNOWN / TO VERIFY.** Render's backup and point-in-time recovery depend on the
 database plan. S8 records what the chosen plan provides. Before the first live run, the owner
@@ -694,18 +721,23 @@ checks are smoke checks and "are not adequate protection for a design that has o
 3. **Executed tests** that the Studio web's paid-action routes, with no confirmed quote, reach no
    runner (zero runner invocations). This is proven by running the route, not by reading source.
 
-**A future conflict, recorded for the owner to decide, not resolved here.** The production-wiring
+**The P2 conflict — a binding rule since the owner's decision of 2026-09-29.** The production-wiring
 design's **P2** proposes checkpoint **C2**, which makes `invokeStage` refuse unless **both**
 `executionEnabled` is `true` **and** the live runtime authority gate permits. It also proposes
 checkpoint **C3**, which has the `sdk.ts` request boundary re-read that gate immediately before
 each provider request. If P2 merges as written, it would stop the Studio
 worker, **and it would equally stop today's local CLI**, because neither sets `executionEnabled` or
-consults a live authority gate. So whichever comes first, the P2 implementation PR or the Studio's S3, must name
-an explicit, separately reviewed **review-only execution context**. That context would be a
-capability that only the CLI and the Studio worker construct. It could never approve or publish,
-it would satisfy C2 and C3 explicitly, and it would sit beside the live authority gate, not instead
-of it. This design does not change
-P2, and it does not propose widening `executionEnabled`.
+consults a live authority gate. **The owner's rule:** whichever comes first, the production-wiring P2 implementation PR or the
+Studio's S3, **must define an explicit, separately reviewed review-only execution context**, so that
+the local CLI and the Studio keep working. It must meet four conditions:
+
+- it is a capability that only the CLI and the Studio worker construct;
+- it can never approve or publish;
+- it satisfies C2 and C3 explicitly;
+- it sits beside the live authority gate, never replacing it.
+
+A short, dated pointer at P2 in [PRODUCTION_WIRING_DESIGN.md](PRODUCTION_WIRING_DESIGN.md) records
+this. P2 itself is not rewritten, and this design does not propose widening `executionEnabled`.
 
 ---
 
@@ -749,10 +781,12 @@ from the requests it will actually make, as the CLI does today (**VERIFIED**).
 
 **PROPOSED.** Spend is capped at three levels:
 
-- **the owner's caps:** a daily cap, a monthly cap and an optional per-user daily cap, all in
-  `studio_settings` and `studio_users`;
-- **the deployment-time ceilings** `STUDIO_MAX_DAILY_USD` and `STUDIO_MAX_MONTHLY_USD`, set on the
-  web and the worker;
+- **the owner's caps**, in `studio_settings` and `studio_users`. The owner set these on
+  2026-09-29:
+  - **$50 a day and $200 a month;**
+  - **a $25 daily cap for each `runner` added later** (the owner is the only `runner` at launch);
+- **the deployment-time ceilings** `STUDIO_MAX_DAILY_USD` = **75** and `STUDIO_MAX_MONTHLY_USD` =
+  **300**, set on the web and the worker;
 - **the effective cap:** the **lower** of the owner's cap and the deployment ceiling, so a
   compromised owner session cannot raise spend past the deployment ceiling.
 
@@ -786,14 +820,17 @@ Caps are enforced in code at two points:
 **A consequence the owner must know.** **VERIFIED** ([Security and continuity](SECURITY_AND_CONTINUITY.md)):
 a full run's printed ceiling is about **$21.65**. The owner's measured full runs cost about **$1.17**
 ([Status](STATUS.md)). A daily cap below one run's ceiling therefore blocks every full run, even
-though the actual cost would fit. The default caps are an owner decision
-([§11](#11-open-questions-and-accepted-limitations)).
+though the actual cost would fit. With the owner's $50 daily cap, two full runs can hold
+reservations at once, at about $43.30 of the $50 headroom. A third waits until one settles and
+releases its unused reservation. **The reservation stays at the full printed ceiling** (owner
+decision of 2026-09-29). Tightening the estimate is a separate, reviewed future change.
 
 ### 6.3 Who may start a paid run
 
-**PROPOSED.** Only an active `owner` or `runner` can request a quote or confirm one. Fake runs, which
-are wiring tests, are `owner`-only. They make no request and need no quote, and they are labelled
-"FAKE — wiring test" on every screen.
+**Owner decision of 2026-09-29.** Only an active `owner` or `runner` can request a quote or confirm
+one. **At launch the owner is the only `runner`; staff are `viewer`.** A `runner` added later gets
+the $25 per-user daily cap. **Fake runs stay in the Studio, owner-only.** They are wiring tests:
+they make no request, need no quote, and are labelled "FAKE — wiring test" on every screen.
 
 ### 6.4 What was spent, shown plainly
 
@@ -807,10 +844,11 @@ invoice figures. Reconciling against the Anthropic console is TO VERIFY and manu
 
 ### 6.5 The provider-side backstop
 
-**PROPOSED owner action.** Create the Studio's `ANTHROPIC_API_KEY` in a separate Anthropic
-workspace with its own monthly spend limit (TO VERIFY that the owner's Anthropic organization
-offers this). The Studio's caps are then not the only limit, and the live worker's key is never
-shared with the Studio.
+**Required, by owner decision of 2026-09-29 (owner action O2, before the first live run).** The
+Studio's `ANTHROPIC_API_KEY` is a separate key in a **separate Anthropic workspace** with a **$300
+monthly spend limit**. Whether the owner's Anthropic organization offers per-workspace limits is
+TO VERIFY; if it does not, O2 is blocked and so is the first live run. The Studio's caps are then
+not the only limit, and the live worker's key is never shared with the Studio.
 
 ---
 
@@ -853,6 +891,10 @@ shared with the Studio.
 - **Bootstrap.** While no `owner` row exists, a sign-in that passes every other check, and whose
   verified email equals `STUDIO_BOOTSTRAP_OWNER_EMAIL`, creates that user's row as `owner`. The
   variable is ignored once an owner exists.
+- **Operational note (owner, 2026-09-29).** `STUDIO_BOOTSTRAP_OWNER_EMAIL` must name a real Google
+  Workspace **user** account, not a shared mailbox, an alias or a group. The `hd` and
+  `email_verified` checks only work for Workspace user accounts. The owner enters the value in
+  Render; it is never committed, and this design names no address.
 - **Owner lockout.** Suppose the only owner is disabled by accident or loses their account. No
   in-app path recovers from that, by design. Recovery is a database-level act by whoever holds the
   Render account: a single audited statement through Render's database access (TO VERIFY), recorded
@@ -1167,8 +1209,8 @@ The names S1–S9 are new, so they cannot be confused with the production-wiring
 | **S5** | **Read-only screens.** Runs list, run report (Copy buttons, findings grouping, *Needs your decision*, cost), and file downloads | XSS: every model-text field rendered with hostile content stays inert. Role checks on every route. Phone-width layout checked in a headless Chromium at 375 px, with no horizontal scroll | No |
 | **S6** | **Run and revise actions with caps.** New run, revise, critic replay and resume; free preflight, quotes, confirmation, caps, per-user permission, cancellation, and the spend panel | Executed tests: no quote, a wrong user, an expired or reused quote, a changed price, or a cap exceeded, each gives **zero runner calls**. A double confirmation creates one run. Revise-plan display matches `planRevision` | No |
 | **S7** | **Fact upload and legacy import.** Owner-only upload with the existing loader, versions, the active pointer, and the import into `verified` or `archived_unverified` | Loader refusals shown. A pinned version survives replacement. A synthetic legacy folder imports `verified`; one with an older approved-facts hash imports `archived_unverified` and is refused as a paid source | No |
-| **S8** | **`render.yaml` additions** for `gcd-studio-web`, `gcd-studio-worker` and `gcd-studio-db` (not the cron), with auto-deploy off, `sync: false` secrets and `ipAllowList: []`. The static forbidden-variable check. The Studio release checklist in [Operations](OPERATIONS.md). [Status](STATUS.md) and [README](../README.md) sentences that say `render.yaml` is unchanged since artifact `A` get updated | YAML parse and actionlint; the forbidden-variable check; the deployment-controller fixtures unchanged. **Entry gate: the Blueprint check in [§3.6](#36-applying-the-blueprint--a-gate-not-a-formality) is recorded, and the freeze gate below is resolved** | `render.yaml` changes. **The existing `gcd-social-*` blocks do not** |
-| **S9** | **Cron, built disabled.** `src/studio/cron/**`, enqueue-only, with the double gate and the owner pre-authorization row. Not added to `render.yaml` | Refuses with either gate off. An unspent pre-authorization cannot exceed its per-run ceiling or the caps. No runner call from the cron process | No |
+| **S8** | **Adds `render.studio.yaml`**, a new Blueprint file for `gcd-studio-web`, `gcd-studio-worker` and `gcd-studio-db` (not the cron), with auto-deploy off, `sync: false` secrets and `ipAllowList: []`. **`render.yaml` stays byte-identical.** Adds the static check of [§3.2](#32-environment-variables-per-service), which also asserts that `render.yaml` contains no `gcd-studio-*` entry and `render.studio.yaml` no `gcd-social-*` entry. Adds the Studio release checklist, and the by-hand creation steps if Render cannot read a Blueprint at that path, to [Operations](OPERATIONS.md) | YAML parse (the CI YAML step must include the new file) and actionlint; the static check, including a byte comparison of `render.yaml` against the base; the deployment-controller fixtures unchanged. **Entry gate: the Blueprint check in [§3.6](#36-applying-the-blueprint--a-gate-not-a-formality) is recorded, and the freeze gate below still holds for O3** | A new file only. **`render.yaml` and every `gcd-social-*` definition are unchanged.** The [Status](STATUS.md) and [README](../README.md) statements that `render.yaml` is unchanged since artifact `A` stay true |
+| **S9** | **Cron, built disabled.** `src/studio/cron/**`, enqueue-only, with the double gate and the owner pre-authorization row. Not added to `render.studio.yaml`, and never to `render.yaml` | Refuses with either gate off. An unspent pre-authorization cannot exceed its per-run ceiling or the caps. No runner call from the cron process | No |
 
 **Documents each PR must update**, beyond [Roadmap](ROADMAP.md), [Status](STATUS.md) and the root
 [README](../README.md), under [`AGENTS.md`](../AGENTS.md)'s binding rule. This change adds only a labelled planned note to
@@ -1181,7 +1223,7 @@ because they describe current reality:
 | S2 | [Data model](DATA_MODEL.md), [Testing](TESTING.md) |
 | S3, S4 | [Environment](ENVIRONMENT.md), `.env.example`, [Security and continuity](SECURITY_AND_CONTINUITY.md), [Testing](TESTING.md) |
 | S5–S7 | [Testing](TESTING.md), plus [Security and continuity](SECURITY_AND_CONTINUITY.md) for S7's upload and import |
-| S8 | [Deployment control](DEPLOYMENT.md), [Operations](OPERATIONS.md), [Environment](ENVIRONMENT.md), and a dated note in [PRODUCTION_WIRING_DESIGN.md](PRODUCTION_WIRING_DESIGN.md) §4.4 and §5.1, where `gcd-social-api` is named as the only `preDeployCommand` |
+| S8 | [Deployment control](DEPLOYMENT.md), [Operations](OPERATIONS.md), [Environment](ENVIRONMENT.md), and a dated note in [PRODUCTION_WIRING_DESIGN.md](PRODUCTION_WIRING_DESIGN.md) §4.4 and §5.1. Those sections name `gcd-social-api` as `render.yaml`'s only `preDeployCommand`, which stays true, but the Studio web has its own in `render.studio.yaml` |
 | S9 | [Operations](OPERATIONS.md) |
 
 **Owner actions, each named and separately authorized:**
@@ -1189,26 +1231,28 @@ because they describe current reality:
 | # | Action | When |
 |---|---|---|
 | **O1** | **Create the Google OAuth client** ([§7.4](#74-the-google-cloud-oauth-client--a-manual-prerequisite)) | Before the first sign-in; after `STUDIO_PUBLIC_ORIGIN` is known |
-| **O2** | **Create the Studio's Anthropic key**, in a separate workspace with a spend limit ([§6.5](#65-the-provider-side-backstop)) | Before the first live run |
-| **O3** | **Apply the blueprint:** the Blueprint check first, then the sync preview listing only `gcd-studio-*` resources ([§3.6](#36-applying-the-blueprint--a-gate-not-a-formality)) | After S8 merges and after the freeze gate |
-| **O4** | **Set the secrets** in the Render dashboard: `STUDIO_GOOGLE_CLIENT_ID`, `STUDIO_GOOGLE_CLIENT_SECRET`, `STUDIO_BOOTSTRAP_OWNER_EMAIL`, `STUDIO_MAX_DAILY_USD`, `STUDIO_MAX_MONTHLY_USD`, and `ANTHROPIC_API_KEY` on the worker only | With O3 (Render may ask for `sync: false` values at blueprint creation; TO VERIFY) |
-| **O5** | First manual deploy of an exact commit, first sign-in as bootstrap owner, add staff, set caps, upload the facts file, one restore drill | After O3 and O4 |
+| **O2** | **Create the Studio's Anthropic key** in a separate Anthropic workspace with a $300 monthly spend limit. **Required** (owner decision of 2026-09-29, [§6.5](#65-the-provider-side-backstop)) | Before the first live run; O6 may not happen without it |
+| **O3** | **Create the Studio resources from `render.studio.yaml`:** as a Blueprint at that path if Render supports it, otherwise by hand from the file. The Blueprint check comes first, and the preview or checklist must list only `gcd-studio-*` resources ([§3.6](#36-applying-the-blueprint--a-gate-not-a-formality)) | After S8 merges, and only once the freeze gate below allows it |
+| **O4** | **Set the secrets and values** in the Render dashboard: `STUDIO_GOOGLE_CLIENT_ID`, `STUDIO_GOOGLE_CLIENT_SECRET`, `STUDIO_BOOTSTRAP_OWNER_EMAIL` (a Workspace user account, [§7.2](#72-allowlist-and-roles)), `STUDIO_MAX_DAILY_USD` = 75 and `STUDIO_MAX_MONTHLY_USD` = 300, and `ANTHROPIC_API_KEY` (the O2 key) on the worker only | With O3 (Render may ask for `sync: false` values at blueprint creation; TO VERIFY) |
+| **O5** | First manual deploy of an exact commit; first sign-in as bootstrap owner; add staff as `viewer`; set the caps ($50 a day, $200 a month); upload the facts file; one restore drill | After O3 and O4 |
 | **O6** | **The first live run:** one full run, confirmed at its displayed ceiling, its actual cost compared with a local run's | After O5; its own authorization |
 
-**The release-freeze question is a gate.** **VERIFIED:** the M1→M2 partial-release interval is bound
-at `2026-10-22T18:52Z`. Its standing prohibition reads "no unrelated release may occur, of any
-service, for any reason" ([Status](STATUS.md)).
+**The release-freeze gate — owner decision of 2026-09-29: the freeze covers new services.**
+**VERIFIED:** the M1→M2 partial-release interval is bound at `2026-10-22T18:52Z`. Its standing
+prohibition reads "no unrelated release may occur, of any service, for any reason"
+([Status](STATUS.md)).
 
-- **Default:** create the Studio services (O3) only **after the interval is closed**, or under
-  whatever terms the owner's decision at the bound puts in force. The interval may be extended
-  again, so "after the bound" alone is not enough.
+- **The rule:** no Studio service is created (O3) until the M1→M2 interval is **closed**, or under
+  whatever terms are then in force. The interval may be extended again, so "after the bound" alone
+  is not enough.
 - **Merging S1–S9 is not a release, on two conditions.** First, `deploy-production` must keep
   refusing at its disabled gate (**VERIFIED** on every merge so far). Second, Render native
   auto-deploy must stay off on all three live services. That was last verified on 2026-09-18
   ([Status](STATUS.md)), and the daily interval monitor does not cover it. Both are re-verified
   read-only before each Studio merge, and S8 must also pass the Blueprint auto-sync check.
-- **Exception:** earlier only if the owner decides, in writing, that the freeze does not cover new
-  services. That decision is recorded in [Status](STATUS.md) before O3.
+- **No exception is in force.** On 2026-09-29 the owner kept the default: the freeze covers new
+  services. Any later change to that is a new owner decision, recorded in [Status](STATUS.md)
+  before O3.
 
 The interval's expiry is itself a decision point for the owner, and its outcome may change this
 gate.
@@ -1217,30 +1261,89 @@ gate.
 
 ## 11. Open questions and accepted limitations
 
-### 11.1 Open questions for the owner
+### 11.1 Open questions for the owner, with the owner's answers of 2026-09-29
 
 1. **Approve this design?** Studio PR 1 (S1) is the next repository change only after approval.
+   **Answered 2026-09-29: approved** as amended by the answers below. It stays `PLANNED`.
 2. **One `render.yaml` or a separate Blueprint file?** Owner decision 2 says one `render.yaml`. This
    design **recommends amending it**: declare the Studio in a separate Blueprint file, or create it
    by hand from a checked-in specification
    ([§3.6](#36-applying-the-blueprint--a-gate-not-a-formality)). Whether or not the live services
    are Blueprint-managed, applying a file that also contains the `gcd-social-*` entries risks
    touching them. Keep the decision (with the full §3.6 gate), or amend it?
+   **Answered: decision 2 is amended.** The Studio gets a separate `render.studio.yaml`, and
+   `render.yaml` is not modified at all.
 3. **Does the partial-release freeze cover new services?** The default is no Studio services
    until the interval (bound `2026-10-22T18:52Z`) is closed, or under the terms then in force.
+   **Answered: yes, the freeze covers new services; the default is kept.**
 4. **Default caps.** One full run's printed ceiling is about $21.65 against about $1.17 actual. What
    daily and monthly caps, and what deployment ceilings? Should the reservation use the printed
    ceiling (safe, blocks sooner) or a tighter bound (a separate, reviewed change to the estimate)?
+   **Answered:**
+   - owner caps $50 a day and $200 a month;
+   - deployment ceilings 75 and 300;
+   - an Anthropic workspace limit of $300 a month;
+   - the reservation stays at the full printed ceiling.
 5. **Who is a `runner` at launch,** and does each need a per-user daily cap?
-6. **Time zone for "daily" and "monthly"** (`America/New_York` proposed).
+   **Answered:** only the owner, and staff are `viewer`. A runner added later gets a $25 daily cap.
+6. **Time zone for "daily" and "monthly"** (`America/New_York` proposed). **Answered:**
+   `America/New_York`.
 7. **Retention:** keep runs indefinitely, or delete after a period? Audit and ledger for two
-   years?
-8. **Worker plan:** start on `starter` and measure, or start on `standard`?
+   years? **Answered:** runs are kept until the owner deletes them; the audit log and ledger for
+   two years.
+8. **Worker plan:** start on `starter` and measure, or start on `standard`? **Answered:**
+   `standard`, measured, and possibly `starter` later.
 9. **The P2 conflict** ([§5.4](#54-executionenabled-and-the-registry--how-the-studio-worker-may-call-stages)):
    when either is designed first, should P2 define a review-only execution context that keeps the
-   CLI and the Studio working?
-10. **A separate Anthropic workspace and key** for the Studio, yes or no?
+   CLI and the Studio working? **Answered: yes, as a binding rule** for whichever comes first.
+10. **A separate Anthropic workspace and key** for the Studio, yes or no? **Answered: required.**
 11. **Fake runs** in the Studio: keep them (owner-only), or leave fake mode to the CLI?
+    **Answered:** kept, owner-only.
+
+### 11.1a Owner decisions of 2026-09-29 — answers to §11.1
+
+Recorded as the owner's decisions of 2026-09-29.
+
+1. **The design is approved** as amended below. It stays `PLANNED`: approval is not
+   implementation, and each S-PR and owner action still needs its own authorization.
+2. **Decision 2 is amended: the Studio gets a separate Blueprint file, not the shared
+   `render.yaml`.**
+   - The original decision 2 is kept unchanged in [§1.1](#11-owner-decisions-2026-09-29), followed
+     by this dated amendment.
+   - The proposed file is `render.studio.yaml`. Whether Render supports a Blueprint at a
+     non-default path is TO VERIFY. If it does not, the Studio's resources are created by hand from
+     that checked-in file, which is the specification.
+   - `render.yaml` is **not modified at all** by any Studio PR.
+3. **The freeze covers new services: the default is kept.** No Studio service is created (O3) until
+   the M1→M2 interval (bound `2026-10-22T18:52Z`) is closed, or under whatever terms are then in
+   force.
+4. **Caps:**
+   - owner caps: **$50 a day, $200 a month**;
+   - deployment ceilings: **`STUDIO_MAX_DAILY_USD` = 75, `STUDIO_MAX_MONTHLY_USD` = 300**;
+   - Anthropic workspace spend limit for the Studio key: **$300 a month**.
+
+   The reservation stays at the full printed ceiling. Tightening the estimate is a separate,
+   reviewed future change.
+5. **Only the owner is a `runner` at launch;** staff are `viewer`. Runners added later get a **$25
+   per-user daily cap**.
+6. **Time zone: `America/New_York`.**
+7. **Retention:** runs are kept until the owner deletes them. The audit log and spend ledger are
+   kept for 2 years.
+8. **The worker starts on `standard`,** is measured, and may move down to `starter` later. Plan
+   prices are TO VERIFY.
+9. **The P2 conflict becomes a binding rule.** Whichever comes first, production-wiring P2 or Studio
+   S3, must define an explicit, separately reviewed review-only execution context, so that the local
+   CLI and the Studio keep working. It can never approve or publish, and it sits beside the live
+   authority gate, never replacing it. A dated pointer at P2 in
+   [PRODUCTION_WIRING_DESIGN.md](PRODUCTION_WIRING_DESIGN.md) records it; P2 is not rewritten.
+10. **A separate Anthropic workspace and key for the Studio is required,** not just advised. O2 must
+    happen before the first live run.
+11. **Fake runs stay in the Studio, owner-only,** labelled on every screen.
+
+**Operational note (owner, 2026-09-29).** `STUDIO_BOOTSTRAP_OWNER_EMAIL` must name a real Google
+Workspace **user** account, not a shared mailbox, an alias or a group. The `hd` and
+`email_verified` checks only work for Workspace user accounts. The owner enters the value in Render;
+it is never committed.
 
 ### 11.2 Accepted limitations (proposed)
 
@@ -1272,19 +1375,28 @@ gate.
 ## 12. Decisions this design made itself
 
 The owner's five decisions did not settle these points, so the design settled them. Each is recorded
-here so it can be reviewed, and reversed, on its own:
+here so it can be reviewed, and reversed, on its own.
+
+**Owner confirmation, 2026-09-29.** Approving the design confirmed all of these as written, except
+where an answer in [§11.1a](#111a-owner-decisions-of-2026-09-29--answers-to-111) settled more:
+
+- the Blueprint recommendation became decision 2's amendment;
+- the caps now have values;
+- the fake-run rule (11) was answered directly;
+- the P2 conflict under decision 2 became a binding rule.
 
 1. **Deploy control:** manual exact-commit deploys with auto-deploy off; no controller or
    workflow change ([§3.4](#34-how-studio-deployments-are-controlled)).
 2. **The registry question:** call the stages exactly as the CLI does, with `executionEnabled`
    untouched. The protection added is a transitive import-graph check, a caller allowlist and
-   executed zero-runner tests. The future P2 conflict is recorded, not resolved
+   executed zero-runner tests. The P2 conflict is now a binding rule: whichever comes first defines
+   a review-only execution context
    ([§5.4](#54-executionenabled-and-the-registry--how-the-studio-worker-may-call-stages)).
 3. **Studio-specific variable names:** `STUDIO_DATABASE_URL`, `STUDIO_GOOGLE_CLIENT_*` and no
    `DATABASE_URL` on any Studio service ([§3.2](#32-environment-variables-per-service)).
 4. **Five migration separations,** including a tripwire `_migrations` table, so that neither
    runner can apply the other's migrations ([§3.7](#37-studio-migrations--kept-strictly-separate-from-the-live-migrations)).
-5. **The cron is not in `render.yaml` at launch,** and its code is double-gated
+5. **The cron is not in `render.studio.yaml` at launch** (and never in `render.yaml`), and its code is double-gated
    ([§3.5](#35-the-cron-job--built-disabled)).
 6. **Artifacts are the authoritative record:** byte-identical to CLI files; tables are derived
    ([§4.2](#42-runs-outputs-findings-costs-and-reports)).
@@ -1293,7 +1405,8 @@ here so it can be reviewed, and reversed, on its own:
 8. **Caps:** reserve the printed ceiling, reconcile to the charged cost, and stop and lock on
    overrun. An in-flight or unknown-cost request is charged at its full ceiling. Confirmations are
    serialized on the settings row. The effective cap is the lower of the owner's cap and a
-   deployment ceiling ([§6.2](#62-daily-and-monthly-caps--enforced-before-every-paid-call)).
+   deployment ceiling ([§6.2](#62-daily-and-monthly-caps--enforced-before-every-paid-call)). The
+   owner's values are $50 and $200, and the ceilings 75 and 300.
 8a. **Quotes are written by the worker,** bound to its commit, both fact fingerprints and the price
    table. The worker re-checks them, and its own ceilings, before every paid request. The web
    never prices anything ([§6.1](#61-a-price-ceiling-confirmation-before-every-paid-action)).
@@ -1302,4 +1415,5 @@ here so it can be reviewed, and reversed, on its own:
 10. **The upload and import formats:** JSON only, read client-side, each imported file base64-encoded
     with its sha256, and no archive dependency
     ([§8.5](#85-fact-file-upload-owner-only), [§8.6](#86-import-of-existing-local-output-runs)).
-11. **Fake runs are owner-only** and labelled on every screen ([§6.3](#63-who-may-start-a-paid-run)).
+11. **Fake runs are owner-only** and labelled on every screen ([§6.3](#63-who-may-start-a-paid-run)). Confirmed directly by the owner.
+12. **The Studio Blueprint:** a separate `render.studio.yaml` ([§3.6](#36-applying-the-blueprint--a-gate-not-a-formality)). Recommended here, then adopted by the owner as decision 2's amendment.

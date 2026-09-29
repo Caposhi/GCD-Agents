@@ -974,7 +974,8 @@ in this session, and none was authorized.
 | Migration authority | **api** `preDeployCommand` | Already the single migration runner |
 
 > **Amendment pointer (2026-09-29), not a rewrite.** The proposed, owner-requested Content Studio
-> ([CONTENT_STUDIO_DESIGN.md](CONTENT_STUDIO_DESIGN.md), `PLANNED`) deliberately departs from
+> ([CONTENT_STUDIO_DESIGN.md](CONTENT_STUDIO_DESIGN.md), `PLANNED`, approved by the owner on
+> 2026-09-29; declared in its own `render.studio.yaml`, with `render.yaml` unchanged) deliberately departs from
 > "no new Render service". It would be a separate, review-only web service, worker and database;
 > its cron is designed but not created at launch. It cannot publish, and it would hold no credential
 > for, and never connect to, `gcd-social-db`. Its worker would hold its own `ANTHROPIC_API_KEY`, and
@@ -1124,6 +1125,14 @@ before those checks can be written or tested.
 - **Tests:** offline suite plus mutations removing each half, each failing its owning check.
 - **Rollback:** revert.
 - **Prohibited:** adding any caller; changing any `executionEnabled` value; touching `render.yaml`.
+
+> **Pointer (owner decision, 2026-09-29), not a rewrite of P2.** As written, C2 and C3 would also
+> stop today's local CLI (`scripts/local/content-run.mjs`) and the planned Content Studio worker.
+> Neither sets `executionEnabled` or consults the live authority gate. **Binding rule:** whichever
+> comes first, this P2 or Content Studio S3, must define an explicit, separately reviewed
+> **review-only execution context** so that both keep working. The context can never approve or
+> publish, and it sits beside the live authority gate, never replacing it. See
+> [CONTENT_STUDIO_DESIGN.md §5.4](CONTENT_STUDIO_DESIGN.md#54-executionenabled-and-the-registry--how-the-studio-worker-may-call-stages).
 
 #### P3 — Dispatch skeleton and checkpoint C1, inert, with real reachability protection
 
