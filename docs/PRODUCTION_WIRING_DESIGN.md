@@ -973,6 +973,13 @@ in this session, and none was authorized.
 | Publication | **worker** | Already the only publication handoff |
 | Migration authority | **api** `preDeployCommand` | Already the single migration runner |
 
+> **Amendment pointer (2026-09-29), not a rewrite.** The proposed, owner-requested Content Studio
+> ([CONTENT_STUDIO_DESIGN.md](CONTENT_STUDIO_DESIGN.md), `PLANNED`) deliberately departs from
+> "no new Render service". It would be a separate, review-only web service, worker and database
+> that cannot publish and would hold no credential for, and never connect to, `gcd-social-db`. It implements none of P1–P8 and changes
+> none of the services above. The reasoning in this section still governs live wiring. See that
+> design's §2.
+
 ### 5.3 Proposed configuration — described, not created
 
 **PROPOSED, NOT CREATED.** No variable below exists; none was added; `render.yaml` is unmodified.

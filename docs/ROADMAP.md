@@ -23,7 +23,177 @@ These are not interchangeable and must not be collapsed into "done". `MERGED` in
 
 ## Implemented repository change awaiting merge
 
-### Stage 4's contact-in-overlay rule enforced in code — `overlayContact.ts`, called by `validateProductionDirectionOutput` on every overlay — `IMPLEMENTED`
+### The Content Studio design — `docs/CONTENT_STUDIO_DESIGN.md` for the owner's `PLANNED` review-only web interface; PR #101 recorded as merged — `IMPLEMENTED`
+
+**State:** `IMPLEMENTED` on branch `claude/youthful-mayer-vix75s`, based directly on `origin/main` at `f11101265c1ea7aa771d7efd2f5fdd98f96ab702` (the merge of PR #101). **Documentation only:** it changes `*.md` files and nothing else. It builds no part of the Studio, which is `PLANNED` (see *Planned — Content Studio* below). It touches no source, test, mutation, prompt, skill, configuration, `render.yaml`, migration or workflow. All six stages keep `executionEnabled: false`, and the partial-release interval (bound `2026-10-22T18:52Z`; see [Status](STATUS.md)) is unchanged. The tracked `.DS_Store` is untouched. No model was called, and no Render, Google or Anthropic setting was read or changed.
+
+**PR / merge:** opened from `claude/youthful-mayer-vix75s` into `main`; its number and CI run are recorded in the PR. **This PR's merge SHA is the blocking follow-up** permitted by the mutable-identifier rule in [`AGENTS.md`](../AGENTS.md).
+
+**Why.** The owner decided on 2026-09-29 to build a separate, review-only web interface for the content pipeline (the five decisions are recorded verbatim under *Planned — Content Studio* below) and asked for the design first.
+
+**Delivered.**
+
+1. **[`docs/CONTENT_STUDIO_DESIGN.md`](CONTENT_STUDIO_DESIGN.md)**, new. Every item is labelled **VERIFIED** (from source), **PROPOSED** or **UNKNOWN / TO VERIFY**. It covers:
+   - purpose and non-goals;
+   - the relation to the production-wiring design;
+   - the Render topology, including deploy control, health checks and migration separation;
+   - the data model, retention and backup;
+   - run execution, including the library extraction, the job queue, the fail-closed checks and the registry question;
+   - cost controls and authentication;
+   - the screens, and security and privacy;
+   - the PR sequence S1–S9 and owner actions O1–O6, with the release-freeze gate;
+   - open questions and accepted limitations;
+   - the decisions the design made itself.
+2. **The amendment pointer.** [PRODUCTION_WIRING_DESIGN.md](PRODUCTION_WIRING_DESIGN.md) §5.2 gains a short note pointing to the Studio design and stating the deliberate deviation from "no new Render service". The accepted design is not otherwise rewritten.
+3. **PR #101 recorded as `MERGED`** at `f111012…`, with its runs. Its record moves to *Merged repository change awaiting rollout* below. Its merge-SHA and PR-CI follow-ups are discharged there and in [Status](STATUS.md), [README](../README.md), [AI handoff](AI_HANDOFF.md), [Architecture](ARCHITECTURE.md), [Testing](TESTING.md) and [Security and continuity](SECURITY_AND_CONTINUITY.md). Each "`IMPLEMENTED`, not merged" label for it gets a dated correction, and its original wording is kept.
+4. **The Studio entry and the cursor.** *Planned — Content Studio* below records the owner's decisions as `PLANNED`. The cursor now names Content Studio PR 1 (S1, library extraction) as the next repository change, pending the owner's approval of the design. Every other open item is carried unchanged, except that PR #101's merge-SHA follow-up becomes this PR's, and the `--resume-from production-direction` bullet now points to PR #101's moved record.
+5. **Planned-architecture notes** in [README](../README.md), [Status](STATUS.md), [AI handoff](AI_HANDOFF.md) and [Architecture](ARCHITECTURE.md). None describes anything as built.
+
+**Migrations / schema impact:** none. The design proposes a separate Studio schema under `studio/migrations/`; none exists.
+
+**Material design decisions** (each is argued in the design's §12):
+
+- **Deploy control.** Manual exact-commit deploys by the owner, with native auto-deploy off on every Studio service. This keeps the count of unattended deployment authorities at zero, puts no credential in GitHub, and changes no live workflow or controller.
+- **The registry question.** The Studio worker calls the stages exactly as the local CLI does, with `executionEnabled` untouched. **VERIFIED:** outside the preview's summary, no production source reads the flag, and the CLI already runs all six stages with it `false`. What changes is that "no production caller" narrows to "no caller in the live `gcd-social-*` services". The design therefore adds three protections and weakens nothing: a transitive import-graph check from every live entry point, a caller allowlist for the run library, and executed zero-runner tests.
+- **The conflict with P2, recorded rather than resolved.** The production-wiring design's P2, as written, would stop both the Studio worker and today's CLI. P2's design, or the Studio's S3, must therefore name a review-only execution context.
+- **Studio-specific variable names.** No Studio service carries `DATABASE_URL` or any live credential, and `ANTHROPIC_API_KEY` is on the worker only.
+- **Migration separation.** Five independent separations, including a tripwire `_migrations` table, so that neither runner can apply the other's migrations.
+- **The cron.** Built double-gated, and left out of `render.yaml` at launch.
+- **Artifacts are authoritative.** The Studio stores the CLI's own files byte for byte; its tables are derived.
+- **Two import tiers:** `verified` and `archived_unverified`.
+- **Caps.** Each paid action reserves its printed ceiling and is reconciled to the measured cost. An overrun stops the run and locks new confirmations.
+- **Authentication.** Google OIDC with `hd` and `email_verified` checked server-side, plus an owner-managed allowlist.
+
+**Material rejected alternatives.**
+
+- **Building the Studio inside the live services.** Rejected by owner decision 2. It would also sit one import away from publishing, and share the database that stores the plaintext Instagram token.
+- **Native auto-deploy, extending the live controller, or a separate Studio GitHub workflow.** Rejected; see the design's §3.4. The only Render key available is account-wide, so a workflow holding it could deploy the live services.
+- **Flipping `executionEnabled` for the Studio.** Rejected. It would change a guarded invariant and gate nothing, because no execution path reads it.
+- **Reusing the live variable names** (`DATABASE_URL`, `GOOGLE_CLIENT_ID`). Rejected, because a shared module could pick up the other system's value.
+- **A zip upload for legacy import.** Rejected: it would need a new parsing dependency, and a bounded JSON document read client-side does not.
+
+**Automated validation.** Build and typecheck clean. `npm run test:offline` passed all nine suites with counts unchanged from `f111012` before the edit: posting 52, image 18, orchestrator 119, gate 56, API 51, render identity one invariant-suite pass, ownership/recovery 112, content intelligence 1,312, interval monitor 94, for **1,815** checks.
+
+The other checks, all passing:
+
+- the M1 readiness offline suite (461 checks);
+- the simulated dry run and the deployment-controller fixtures;
+- Markdown links (66 files, one more for the new design);
+- environment coverage (35 variables);
+- the sensitive-content scan (189 tracked text files);
+- `npm audit --omit=dev` (zero vulnerabilities);
+- `git diff --check`;
+- a check that every changed path ends `.md`.
+
+AgentShield 1.4.0 exited zero at B/87 with the same 18 findings (9 medium, 9 low). The link checker does not resolve `#anchors`, so the design's 55 internal anchors were checked separately against GitHub heading slugs, and all resolve.
+
+**How the proposed variables are treated:** `scripts/ci/check-environment-coverage.mjs` reads only `process.env` reads in `src/**/*.ts` against `.env.example`. It never reads Markdown or `render.yaml`, so the design's proposed variables are neither required nor flagged until code reads them.
+
+**Sensitive-scan manual triage:** the only URLs added are this repository's pull-request and Actions-run links and Google's public OIDC issuer. No email address, phone number, token, credential, OAuth value, booking link, customer datum or fact-file content is added.
+
+The mutation harness was not re-run: it mutates source, prompts, a skill, SQL and the CLI, none of which changed. Details in [Testing](TESTING.md); CI on the final head is recorded in the PR.
+
+**Production evidence:** none.
+
+**Rollback / recovery:** revert the commit.
+
+**Security and privacy implications.** Documentation only. The only URLs added are this repository's pull-request and Actions-run links, Google's public OIDC issuer (`https://accounts.google.com`) and relative links. The design names environment variables and describes where values would be set, but contains no value. It names no OAuth client id or secret, no API key, no customer datum, no booking-URL token beyond what `config/approved-facts.json` already holds (it is described, never reproduced), no run folder or archive, and nothing from the local facts file.
+
+**Accepted limitations.**
+
+- **Every live fact the design relies on is `UNKNOWN / TO VERIFY`.** This includes Render plans, prices and blueprint fields; Google Workspace and OAuth settings; and Anthropic workspace limits. Above all, it includes **whether the live services are Blueprint-managed with auto-sync** (design §3.6), which could make merging S8 alone touch the live services.
+- **The design has not been independently reviewed.** The production-wiring design took nine review rounds. This one should be reviewed before S1 begins.
+- **PR #101's owner-acceptance follow-up stays open:** the free refusal on the `…19-26-43-383Z` folder.
+
+**Unresolved follow-ups.**
+
+- **This PR's merge SHA** (mutable-identifier exception) — **blocking**.
+- **This PR's own CI**: whether all five jobs pass on attempt 1 on the final head. It is recorded in the PR, and reconciled into this record with the merge SHA.
+- **Owner approval of the design.** Nothing in the Studio sequence begins without it.
+- **The owner's open questions** (design §11.1) and **owner actions O1–O6**: none performed.
+
+**Documents updated:**
+
+- the new [`docs/CONTENT_STUDIO_DESIGN.md`](CONTENT_STUDIO_DESIGN.md);
+- [PRODUCTION_WIRING_DESIGN.md](PRODUCTION_WIRING_DESIGN.md) (the §5.2 pointer);
+- this file: this record; PR #101's record moved, with its merge and CI reconciled; *Planned — Content Studio*; the cursor; a dated correction in the revision-pass record's follow-ups; the PR #100 record's reference to "the contact-in-overlay change at the top of this file";
+- [Status](STATUS.md), [README](../README.md), [AI handoff](AI_HANDOFF.md), [Architecture](ARCHITECTURE.md), [Testing](TESTING.md) and [Security and continuity](SECURITY_AND_CONTINUITY.md).
+
+**Checked and deliberately left unchanged:** [Deployment control](DEPLOYMENT.md), [Environment](ENVIRONMENT.md), [Data model](DATA_MODEL.md), [Operations](OPERATIONS.md) and `.env.example`. Each describes current reality, which this change does not alter. The design's §10 names the Studio PR that must update each one. Each modified document was reread in full.
+
+## Next repository change — Content Studio PR 1 (library extraction), pending the owner's approval of the design
+
+**The next repository change is Content Studio PR 1 (S1): extracting the pipeline core of `scripts/local/content-run.mjs` into a library that both the CLI and the future Studio worker call.** See the [Content Studio design](CONTENT_STUDIO_DESIGN.md) §5.1 and §10. **It is pending the owner's approval of that design.** Until the owner approves it, no Studio PR begins, and this file does not authorize one. Nothing here authorizes enabling any stage, creating any Render service, any release, or any change to the Phase-A approval gate.
+
+This section was headed *Next repository change — not chosen* until this change, and earlier records refer to it by that name.
+
+Open items, carried unchanged except where the Studio design change at the top of this file says otherwise:
+
+- **`reasoning-standard` output headroom:** 126,000 of the model's 128,000 output tokens since PR #95; recovering it by narrowing the `claimUse[].summary` allowance is open.
+- **`brand-compliance-critic` is still on `claude-sonnet-4-6`** (`agents/brand-compliance-critic.md`) — Lane S work; routing it, and the two `sdk.ts` fallbacks with it, is open (see the legacy model migration record).
+- **The M1→M2 interval ends `2026-10-22T18:52Z`**; the expiry is a decision point for the owner (see [Status](STATUS.md)).
+- **AgentShield grade B/87** (9 medium oversized-agent, 9 low unspecified-model findings; no critical or high).
+- **Splitting completed phases out of this file** into `docs/COMPLETED_ROADMAP_PHASES.md`, a separate documentation change.
+- **Stage 2's restrictions can misdescribe the evidence** — a follow-up candidate recorded by the PR #99 record (*Documentation reconciliation — PR #98 recorded as merged, the revision pass's two owner-run rounds, and a corrected "critic gap"*, under *Merged repository change awaiting rollout* below); no fix is chosen.
+- **`--resume-from production-direction`** — a follow-up candidate recorded by the contact-in-overlay change (PR #101, under *Merged repository change awaiting rollout* below): a live run refused at stage 4 cannot be resumed there today, so stages 1–3 are paid again; not built.
+- Carried from the revision-pass record: describing the identity records in `SCRIPT_CLAIMS` and `PLATFORM_CLAIMS` in the critic prompts; tuning `POLICY_EFFORT.critic` and `THINKING_RESERVE_TOKENS` per lens.
+- **`DEFERRED`, as the owner listed them on 2026-09-28** (not previously recorded in this repository; recorded here so they are not lost): Mercedes 223.2 and the round-2 fluids; the DPF/GPF bulk-oil question; the Spanish version.
+- **The merge SHA of the Content Studio design change at the top of this file** (mutable-identifier exception) — **blocking**; it is reconciled into that record once merged. *(PR #101's merge-SHA follow-up, formerly here, is discharged: `f111012…`; PR #100's was discharged by PR #101: `e6333a8…`.)*
+
+## Planned — Content Studio (owner decisions of 2026-09-29) — `PLANNED`
+
+**State:** `PLANNED`. The design is [`docs/CONTENT_STUDIO_DESIGN.md`](CONTENT_STUDIO_DESIGN.md), added by the documentation change at the top of this file, and **the owner's approval of it is pending**. Nothing is built. No Render service, database, Google OAuth client, secret or Anthropic key exists for it. This entry sits outside the production-wiring sequence: the Studio implements none of P1–P8, performs none of M2–M7, and moves no production-wiring milestone.
+
+**Owner decisions (2026-09-29), recorded verbatim:**
+
+1. Build a web interface that removes manual terminal runs of the content pipeline and lets the owner and staff view every run and report in a browser.
+2. **A separate, review-only "Content Studio"** in the same `render.yaml`: its own web service, background worker, optional cron job and its own PostgreSQL database. It is **not** built inside the live `gcd-social-*` services.
+3. **Users:** the owner plus a few staff, signing in with Google, restricted to `@germancardepot.com`. The owner decides which users may start paid runs.
+4. **Runs are on demand only at launch.** The cron job is designed but disabled until the owner decides otherwise.
+5. **The manufacturer facts file** (`config/automotive-facts.local.json`, today only on the owner's Mac) may be uploaded to the Studio and stored in its private database. It is never committed to GitHub.
+
+**Sequence (design §10), serial, each separately authorized:**
+
+- **S1** library extraction;
+- **S2** Studio schema and migrations;
+- **S3** worker and queue;
+- **S4** authentication;
+- **S5** read-only screens;
+- **S6** run and revise actions with caps;
+- **S7** fact upload and legacy import;
+- **S8** the `render.yaml` additions;
+- **S9** the cron, built disabled.
+
+**Owner actions, named separately:**
+
+- **O1** create the Google OAuth client;
+- **O2** create the Studio's Anthropic key;
+- **O3** apply the blueprint;
+- **O4** set the secrets;
+- **O5** the first deploy and setup;
+- **O6** the first live run.
+
+**Gates recorded, not resolved:**
+
+- **Owner approval of the design.**
+- **The release-freeze gate.** The M1→M2 interval is bound at `2026-10-22T18:52Z`, and its prohibition covers "any service". The default is to create the Studio services (O3) only after that bound, unless the owner decides the freeze does not cover new services. Merging S1–S9 is not a release.
+- **The Blueprint check before S8 merges.** Is this repository linked to a Render Blueprint with auto-sync? If so, merging `render.yaml` could itself touch the live services (design §3.6).
+- **The P2 conflict** (design §5.4). The production-wiring design's P2, as written, would stop the Studio worker and today's CLI.
+
+**Open questions:** the design's §11.1, for the owner.
+
+## Merged repository change awaiting rollout
+
+### Stage 4's contact-in-overlay rule enforced in code — `overlayContact.ts`, called by `validateProductionDirectionOutput` on every overlay — `MERGED`
+
+**Merge reconciliation (recorded 2026-09-29 by the Content Studio design change at the top of this file):** `MERGED` through [PR #101](https://github.com/Caposhi/GCD-Agents/pull/101) at `f11101265c1ea7aa771d7efd2f5fdd98f96ab702` (merged 2026-09-29T17:37:31Z), whose ordered parents are `e6333a8e17064329f26eb2f452d6bb94ea84f1bf` (the PR #100 merge) and then reviewed head `fcb901f9e83c0160dff18310c90c2c6df02532aa`.
+
+- **PR CI:** [run 36573197045](https://github.com/Caposhi/GCD-Agents/actions/runs/36573197045) (run 233) on head `fcb901f` passed all five jobs on attempt 1: *Node 22 offline quality gates*, *PostgreSQL 16 integration*, *PostgreSQL 18 integration*, *AgentShield 1.4.0* and *Workflow and YAML static validation*. Quality job **23m32s** of 60 (13:10:35–13:34:07Z); mutation step **22m14s** (13:10:57–13:33:11Z).
+- **`main` push:** [run 36606270013](https://github.com/Caposhi/GCD-Agents/actions/runs/36606270013) (run 234) on `f111012` passed the same five jobs on attempt 1. Quality job **32m06s** (17:37:36–18:09:42Z); mutation step **30m43s** (17:38:03–18:08:46Z).
+- **Deploy:** the `deploy-production` workflow ([run 66](https://github.com/Caposhi/GCD-Agents/actions/runs/36610074585)) passed its CI-provenance step and refused at its "Refuse while production automation is disabled" step. It skipped release selection and the serialized API, worker, scheduler release job, as on every `main` merge during the interval. No release.
+- **Not read:** the harness's own summary line, in either log. The step durations above come from the Actions jobs API.
+
+It is dormant stage code, one prompt sentence and tests. **Not `DEPLOYED`, not `ENABLED`, not `PRODUCTION-VALIDATED`**; all six stages keep `executionEnabled: false`. This paragraph discharges the blocking merge-SHA follow-up and the PR-CI follow-up below. Where the record says `IMPLEMENTED` or unmerged, or that its CI is recorded only in the PR, this paragraph supersedes it. The owner-acceptance follow-up stays open: the free refusal on the `…19-26-43-383Z` folder. The rest of this record is preserved as written at implementation.
 
 **State:** `IMPLEMENTED` on branch `claude/jolly-edison-9d4rjc`, based directly on `origin/main` at `e6333a8e17064329f26eb2f452d6bb94ea84f1bf` (the merge of PR #100). Dormant stage code, one sentence in one stage prompt, tests, mutations and documentation. **Not `MERGED`, not `DEPLOYED`, not `ENABLED`, not `PRODUCTION-VALIDATED`.** All six stages keep `executionEnabled: false`; no production path reaches stage 4, and the partial-release interval (bound `2026-10-22T18:52Z`; see [Status](STATUS.md)) is unchanged, so no release is possible. Nothing else moved: shot fields, stages 3 and 5, the contact-line attachment, `config/approved-facts.json`, the critic, its aggregation, models, effort, limits, budgets and `executionEnabled` are unchanged. The tracked `.DS_Store` is untouched. No model was called.
 
@@ -131,8 +301,8 @@ These are not interchangeable and must not be collapsed into "done". `MERGED` in
 
 **Unresolved follow-ups.**
 
-- **This PR's merge SHA** (mutable-identifier exception) — **blocking**.
-- **This PR's own CI**: whether all five jobs pass on attempt 1 on the final head. It is recorded in the PR, and reconciled into this record with the merge SHA.
+- ~~**This PR's merge SHA** (mutable-identifier exception) — **blocking**.~~ **Discharged 2026-09-29:** PR #101, merge `f11101265c1ea7aa771d7efd2f5fdd98f96ab702`.
+- ~~**This PR's own CI**: whether all five jobs pass on attempt 1 on the final head. It is recorded in the PR, and reconciled into this record with the merge SHA.~~ **Discharged 2026-09-29:** PR CI run 36573197045 and `main` push run 36606270013 each passed all five jobs on attempt 1 (mutation step 22m14s and 30m43s); see *Merge reconciliation* above.
 - **Owner acceptance after merge:** run the free refusal on the `…19-26-43-383Z` folder (the invocation is in the PR) and record the result.
 - **`--resume-from production-direction`**: a follow-up candidate, not built.
 - Carried unchanged from PR #99 and PR #100: the stage-2 limitation (a follow-up candidate), and the URLs for sources 2, 3, 4 and 5 of the owner's twelve-source review.
@@ -145,26 +315,10 @@ These are not interchangeable and must not be collapsed into "done". `MERGED` in
 
 Each was reread in full.
 
-## Next repository change — not chosen
-
-**No next phase is selected.** With the revision pass `MERGED` and the contact-in-overlay change `IMPLEMENTED` at the top of this file, no owner decision names the next repository change, and this file does not choose one; the owner decides. Nothing here authorizes enabling any stage, any release, or any change to the Phase-A approval gate. Open items, for that decision (carried unchanged except where the contact-in-overlay change at the top of this file says otherwise):
-
-- **`reasoning-standard` output headroom:** 126,000 of the model's 128,000 output tokens since PR #95; recovering it by narrowing the `claimUse[].summary` allowance is open.
-- **`brand-compliance-critic` is still on `claude-sonnet-4-6`** (`agents/brand-compliance-critic.md`) — Lane S work; routing it, and the two `sdk.ts` fallbacks with it, is open (see the legacy model migration record).
-- **The M1→M2 interval ends `2026-10-22T18:52Z`**; the expiry is a decision point for the owner (see [Status](STATUS.md)).
-- **AgentShield grade B/87** (9 medium oversized-agent, 9 low unspecified-model findings; no critical or high).
-- **Splitting completed phases out of this file** into `docs/COMPLETED_ROADMAP_PHASES.md`, a separate documentation change.
-- **Stage 2's restrictions can misdescribe the evidence** — a follow-up candidate recorded by the PR #99 record (*Documentation reconciliation — PR #98 recorded as merged, the revision pass's two owner-run rounds, and a corrected "critic gap"*, under *Merged repository change awaiting rollout* below); no fix is chosen.
-- **`--resume-from production-direction`** — a follow-up candidate recorded by the contact-in-overlay change at the top of this file: a live run refused at stage 4 cannot be resumed there today, so stages 1–3 are paid again; not built.
-- Carried from the revision-pass record: describing the identity records in `SCRIPT_CLAIMS` and `PLATFORM_CLAIMS` in the critic prompts; tuning `POLICY_EFFORT.critic` and `THINKING_RESERVE_TOKENS` per lens.
-- **`DEFERRED`, as the owner listed them on 2026-09-28** (not previously recorded in this repository; recorded here so they are not lost): Mercedes 223.2 and the round-2 fluids; the DPF/GPF bulk-oil question; the Spanish version.
-- **The merge SHA of the contact-in-overlay change at the top of this file** (mutable-identifier exception) — **blocking**; it is reconciled into that record once merged. *(PR #100's merge-SHA follow-up, formerly here, is discharged: `e6333a8…`.)*
-
-## Merged repository change awaiting rollout
 
 ### Documentation reconciliation — PR #99 recorded as merged, the comparison rule's two source comments restated as precautionary, and stale state labels corrected — `MERGED`
 
-**Merge reconciliation (recorded 2026-09-29 by the contact-in-overlay change at the top of this file):** `MERGED` through [PR #100](https://github.com/Caposhi/GCD-Agents/pull/100) at `e6333a8e17064329f26eb2f452d6bb94ea84f1bf` (merged 2026-09-29T12:16:27Z), whose ordered parents are `a26101e466020fba5815b2ad378095dfbc4f866c` (the PR #99 merge) and then reviewed head `20c4ca95509749c33560e9ef83faab0c96babba8`. PR CI [run 36487240746](https://github.com/Caposhi/GCD-Agents/actions/runs/36487240746) (run 231) on head `20c4ca9` passed all five jobs on attempt 1 — *Node 22 offline quality gates*, *PostgreSQL 16 integration*, *PostgreSQL 18 integration*, *AgentShield 1.4.0* and *Workflow and YAML static validation*: quality job **30m11s** of 60 (21:36:38–22:06:49Z), mutation step **28m50s** (21:37:04–22:05:54Z). The `main` push [run 36567028496](https://github.com/Caposhi/GCD-Agents/actions/runs/36567028496) (run 232) on `e6333a8` passed the same five jobs on attempt 1: quality job **28m07s** (12:16:35–12:44:42Z), mutation step **26m44s** (12:17:01–12:43:45Z). The `deploy-production` workflow ([run 65](https://github.com/Caposhi/GCD-Agents/actions/runs/36570177245)) passed its CI-provenance step, refused at its "Refuse while production automation is disabled" step, skipped release selection, and skipped the serialized API, worker, scheduler release job, as on every `main` merge during the interval — no release. The harness's own summary line was not read from either log. Documentation and two source comments only, so there is nothing to deploy or roll out; it is kept in this section for its history. **Not `DEPLOYED`, not `ENABLED`, not `PRODUCTION-VALIDATED`**; all six stages keep `executionEnabled: false`. The blocking merge-SHA follow-up and the PR-CI follow-up below are discharged by this paragraph; where the record says `IMPLEMENTED` or unmerged, or that its CI is recorded only in the PR, this paragraph supersedes it. The rest of this record is preserved as written at implementation.
+**Merge reconciliation (recorded 2026-09-29 by the contact-in-overlay change, PR #101):** `MERGED` through [PR #100](https://github.com/Caposhi/GCD-Agents/pull/100) at `e6333a8e17064329f26eb2f452d6bb94ea84f1bf` (merged 2026-09-29T12:16:27Z), whose ordered parents are `a26101e466020fba5815b2ad378095dfbc4f866c` (the PR #99 merge) and then reviewed head `20c4ca95509749c33560e9ef83faab0c96babba8`. PR CI [run 36487240746](https://github.com/Caposhi/GCD-Agents/actions/runs/36487240746) (run 231) on head `20c4ca9` passed all five jobs on attempt 1 — *Node 22 offline quality gates*, *PostgreSQL 16 integration*, *PostgreSQL 18 integration*, *AgentShield 1.4.0* and *Workflow and YAML static validation*: quality job **30m11s** of 60 (21:36:38–22:06:49Z), mutation step **28m50s** (21:37:04–22:05:54Z). The `main` push [run 36567028496](https://github.com/Caposhi/GCD-Agents/actions/runs/36567028496) (run 232) on `e6333a8` passed the same five jobs on attempt 1: quality job **28m07s** (12:16:35–12:44:42Z), mutation step **26m44s** (12:17:01–12:43:45Z). The `deploy-production` workflow ([run 65](https://github.com/Caposhi/GCD-Agents/actions/runs/36570177245)) passed its CI-provenance step, refused at its "Refuse while production automation is disabled" step, skipped release selection, and skipped the serialized API, worker, scheduler release job, as on every `main` merge during the interval — no release. The harness's own summary line was not read from either log. Documentation and two source comments only, so there is nothing to deploy or roll out; it is kept in this section for its history. **Not `DEPLOYED`, not `ENABLED`, not `PRODUCTION-VALIDATED`**; all six stages keep `executionEnabled: false`. The blocking merge-SHA follow-up and the PR-CI follow-up below are discharged by this paragraph; where the record says `IMPLEMENTED` or unmerged, or that its CI is recorded only in the PR, this paragraph supersedes it. The rest of this record is preserved as written at implementation.
 
 **State:** `IMPLEMENTED` on branch `claude/adoring-turing-yeu61c`, based directly on `origin/main` at `a26101e466020fba5815b2ad378095dfbc4f866c` (the merge of PR #99). **Documentation and two source comments only:** it changes `*.md` files plus one comment in `src/harness/contentIntelligence.selftest.ts` and one in `scripts/ci/payload-contract-mutation.mjs`. No executable line, check string, check logic, mutation (`name`, `file`, `from`, `to`), mutation count (492) or ordering changed, and no prompt, skill, configuration, migration or workflow. It moves no roadmap scope, enables nothing and authorizes no release. All six stages remain `executionEnabled: false`, and the partial-release interval (bound `2026-10-22T18:52Z`; see [Status](STATUS.md)) is unchanged. The tracked `.DS_Store` is untouched. No model was called.
 
@@ -373,7 +527,7 @@ The two findings still blocking after round 2:
 **Accepted limitations.**
 
 - **Revalidating the saved panel output is structural, not provenance.** An edit that keeps every lens consistent — one revisable owner swapped for another, say — is indistinguishable from a real answer and passes, exactly as for every other saved output.
-- **The revision rules and the overlay contact rule are instructions to a model, not deterministic checks.** Nothing in code detects a phone number or "book online" in overlay text, or proves a revised answer fixed a finding; the round-2 critic's verdict is the evidence.
+- **The revision rules and the overlay contact rule are instructions to a model, not deterministic checks.** Nothing in code detects a phone number or "book online" in overlay text, or proves a revised answer fixed a finding; the round-2 critic's verdict is the evidence. *(Corrected 2026-09-29: since PR #101 (`f111012…`, `MERGED`, not deployed), `overlayContact.ts` refuses a phone number, a URL or a listed call to action in stage 4 `overlayText[].text`; the revision rules remain prompt-only.)*
 - **A dropped advisory finding reaches no model** (it is recorded for the person running the pass).
 - **Round 2 may still ask for revision**; a further round is a new, deliberate invocation, never automatic.
 - **`--revise-once` live asks for `LIVE` twice.**
@@ -383,7 +537,7 @@ The two findings still blocking after round 2:
 - ~~**This PR's merge SHA** (mutable-identifier exception) — **blocking**.~~ **Discharged 2026-09-28:** PR #98, merge `07b6435318011748b876015432f94e3ef73eb853`.
 - ~~**This PR's own CI** — whether all five jobs pass on attempt 1 on the final head, with the mutation step's duration — recorded in the PR; to be reconciled into this record with the merge SHA.~~ **Discharged 2026-09-28:** PR CI run 36454119958 and `main` push run 36459335061 each passed all five jobs on attempt 1 (mutation step 21m48s and 20m55s); see *Merge reconciliation* above.
 - ~~**The first live revision** (the owner's `--revise-from` on the resumed run) — acceptance evidence, operator-local.~~ **Done 2026-09-28 (operator-local):** 26 (9 blocking) → 19 (4 blocking) findings at $0.853952, then a deliberate second round, 19 (4 blocking) → 13 (2 blocking) at $0.819536; see *Acceptance evidence* above.
-- **A deterministic check for contact details in overlay text** — a candidate, not built; the rule is prompt-only. *(2026-09-29: built by the contact-in-overlay change at the top of this file — `IMPLEMENTED`, not merged.)*
+- **A deterministic check for contact details in overlay text** — a candidate, not built; the rule is prompt-only. *(2026-09-29: built by the contact-in-overlay change at the top of this file — `IMPLEMENTED`, not merged.)* *(Corrected 2026-09-29: `MERGED` through PR #101 at `f111012…`; not deployed. Its record is now under *Merged repository change awaiting rollout*, no longer at the top of this file.)*
 - Carried: the critic-prompt change for the identity records; recovering `reasoning-standard` headroom by shrinking the `claimUse[].summary` allowance; `POLICY_EFFORT.critic` and `THINKING_RESERVE_TOKENS` per lens; moving completed history out of this file.
 
 **Documents updated:** this file (this record; the `PLANNED` entry relocated into it; PR #97's record moved to *Merged repository change awaiting rollout* with its merge and CI reconciled), [README](../README.md), [Status](STATUS.md), [Architecture](ARCHITECTURE.md), [Testing](TESTING.md), [AI handoff](AI_HANDOFF.md), [Security and continuity](SECURITY_AND_CONTINUITY.md), the three writing-stage prompts, and the mutation harness's header. Each was reread in full.
