@@ -4,7 +4,7 @@
  *
  * A regression that cannot fail is decoration. This script proves each
  * load-bearing derivation in `src/harness/agents/payloadContract.ts` and the
- * related repository-authority controls is actually load-bearing across twenty-eight
+ * related repository-authority controls is actually load-bearing across thirty-nine
  * captured paths: it applies one focused mutation in a disposable no-Git copy,
  * rebuilds there, runs the Content Intelligence offline suite, and
  * requires the NAMED check that owns that derivation to fail. Then it restores
@@ -230,7 +230,7 @@
  * contact-in-overlay rule or letting a finding permit. It adds two captured
  * paths: `revision.ts` and `revisionInput.ts`.
  *
- * The final appended group (M493-M507) covers stage 4's contact-in-overlay
+ * The next appended group (M493-M507) covers stage 4's contact-in-overlay
  * rule enforced in code: the validator no longer calling the check; the North
  * American, 7-digit local and digit-run guards of the phone pattern, the
  * approved phone digits, the bare-domain and email URL patterns and the
@@ -239,6 +239,32 @@
  * case folding dropped; the refusal echoing the overlay text; and the prompt
  * no longer saying code rejects it. It adds one captured path:
  * `overlayContact.ts`.
+ *
+ * Content Studio S1 moved the local CLI's pipeline core into
+ * `src/harness/contentRun/**`. Twenty-six earlier mutations that targeted
+ * `scripts/local/content-run.mjs` now target the library file holding the code
+ * they break, with their ids and expected checks unchanged; six stay on the CLI,
+ * whose argument parsing, `--list-tags` printing and dispatch did not move
+ * (M423, M424, M429-M431, M462). Where the typed library needed it, a `to` text
+ * was adapted to compile the same break: M365, M481 and M486 gained a type
+ * cast, M427 a runtime-false guard, and M482 passes its extra key by spread;
+ * M485 relabels the failure sink as the source directory, since the library
+ * holds no directory of its own; M489 starts its second round from the same
+ * source; and M465 and M487 drop the injected consent call.
+ *
+ * The final appended group (M508-M522) covers S1 itself: the library's
+ * scope-tag normalizer and resume points drifting from the CLI's parse-time
+ * copies; a live full run never asking the injected consent; a replay ignoring
+ * the injected UNPROVEN refusal; a live entry point importing the library, an
+ * intermediary that names no executor but reaches one, or a computed import;
+ * a shared live module lazily importing `revision.js`; the library reaching the
+ * posting tool; the walked entry points dropping one; a script outside the
+ * caller allowlist importing the library, or the allowlist widened to all of
+ * `src/studio`; and undeclared live-path edits — to a shared module, a
+ * comment-only one to an entry point, and the manifest no longer naming a live
+ * module. Its checks are CS1-CS6. It adds eleven captured paths: seven library
+ * files, the scheduler entry point, the tekmetric probe script, the guards
+ * module and the live-path manifest (thirty-nine in all).
  *
  * It is offline and deterministic: no network, no database, no provider, no
  * credential. The mutations run in parallel on up to MAX_WORKERS workers (the
@@ -314,6 +340,23 @@ const REVISION_MODULE = "src/harness/agents/revision.ts";
 const REVISION_INPUT_MODULE = "src/harness/agents/revisionInput.ts";
 // Stage 4's deterministic contact-in-overlay check.
 const OVERLAY_CONTACT_MODULE = "src/harness/agents/overlayContact.ts";
+// Content Studio S1: the CLI's pipeline core moved into the content-run
+// library. Mutations of moved code target the library file that holds it now,
+// with the same expected checks; argument parsing and dispatch stayed in the CLI.
+const CONTENT_RUN_EVIDENCE = "src/harness/contentRun/evidence.ts";
+const CONTENT_RUN_PRICING = "src/harness/contentRun/pricing.ts";
+const CONTENT_RUN_RECORDING = "src/harness/contentRun/recording.ts";
+const CONTENT_RUN_SUMMARY = "src/harness/contentRun/summary.ts";
+const CONTENT_RUN_VERIFY = "src/harness/contentRun/verify.ts";
+const CONTENT_RUN_PIPELINE = "src/harness/contentRun/pipeline.ts";
+const CONTENT_RUN_CONSENT = "src/harness/contentRun/consent.ts";
+// The §5.4 protections: a live entry point, a local script outside the
+// library's allowlist, the guards themselves and the live-path manifest (data,
+// read at runtime, so mutating it needs no rebuild).
+const LIVE_SCHEDULER_ENTRY = "src/scheduler/daily.ts";
+const LOCAL_TEKMETRIC_PROBE = "scripts/local/tekmetric-probe.mjs";
+const LIVE_PATH_GUARDS = "src/harness/livePathGuards.ts";
+const LIVE_PATH_MANIFEST = "scripts/ci/live-path-manifest.json";
 
 /**
  * Each mutation names the derivation it breaks, the single edit that breaks it,
@@ -3350,21 +3393,21 @@ const CONTACT_LINE_MUTATIONS = [
   },
   {
     name: "the summary footer is hardcoded to the fake runner again",
-    file: CONTENT_RUN_CLI,
+    file: CONTENT_RUN_SUMMARY,
     from: '  lines.push("---", summaryFooter(runner));',
     to: '  lines.push("---", "_Fake-runner output. Not reviewed. Not publishable. Authorizes nothing._");',
     expect: ["CE8."],
   },
   {
     name: "the full run hands the critic stage 5's output without its contact lines",
-    file: CONTENT_RUN_CLI,
+    file: CONTENT_RUN_PIPELINE,
     from: "    scriptOutput: script.output, directionOutput: direction.output, packagingOutput: contacted,",
-    to: "    scriptOutput: script.output, directionOutput: direction.output, packagingOutput: packaging.output,",
+    to: "    scriptOutput: script.output, directionOutput: direction.output, packagingOutput: packaging.output as never,",
     expect: ["CG1.", "CE9."],
   },
   {
     name: "the full run no longer checks the contact records before any spend",
-    file: CONTENT_RUN_CLI,
+    file: CONTENT_RUN_PIPELINE,
     from: "  // stages. All three are in the pack already built, so check now, for free.\n"
       + "  rt.contact.assertContactFactsAvailable(pack, platforms);\n",
     to: "",
@@ -3801,21 +3844,21 @@ const IDENTITY_SCOPE_MUTATIONS = [
   },
   {
     name: "a scoped run stops passing the always-included records to the pack builder",
-    file: CONTENT_RUN_CLI,
+    file: CONTENT_RUN_EVIDENCE,
     from: "    ...(scope ? { tags: scope.tags, alwaysIncludeIds: scope.alwaysIncludedIds } : {}),",
     to: "    ...(scope ? { tags: scope.tags } : {}),",
     expect: ["CN4."],
   },
   {
     name: "an unscoped run's run-meta.json gains an evidenceScope key",
-    file: CONTENT_RUN_CLI,
+    file: CONTENT_RUN_PIPELINE,
     from: "    ...(scope ? { evidenceScope: scope } : {}),\n    ...fingerprints,",
     to: "    evidenceScope: scope,\n    ...fingerprints,",
     expect: ["CN3."],
   },
   {
     name: "the pack fingerprint stops including the scope",
-    file: CONTENT_RUN_CLI,
+    file: CONTENT_RUN_EVIDENCE,
     from: "  if (scope) hash.update(`${JSON.stringify(scope)}\\n`, \"utf8\");\n",
     to: "",
     // CN8's refusals still fire: a changed or removed scope changes the pack
@@ -3824,7 +3867,7 @@ const IDENTITY_SCOPE_MUTATIONS = [
   },
   {
     name: "the pack fingerprint hashes a scope even when there is none",
-    file: CONTENT_RUN_CLI,
+    file: CONTENT_RUN_EVIDENCE,
     from: "  if (scope) hash.update(`${JSON.stringify(scope)}\\n`, \"utf8\");\n",
     to: "  hash.update(`${JSON.stringify(scope)}\\n`, \"utf8\");\n",
     expect: ["CN3."],
@@ -3845,28 +3888,28 @@ const IDENTITY_SCOPE_MUTATIONS = [
   },
   {
     name: "a scoped run stops refusing when an always-included record was not loaded",
-    file: CONTENT_RUN_CLI,
+    file: CONTENT_RUN_EVIDENCE,
     from: "    if (missing.length) {\n      throw new EvidenceScopeError(",
     to: "    if (false && missing.length) {\n      throw new EvidenceScopeError(",
     expect: ["CN13."],
   },
   {
     name: "a replay rebuilds with the command line's scope instead of the source run's",
-    file: CONTENT_RUN_CLI,
+    file: CONTENT_RUN_VERIFY,
     from: "    scopeTags: recordedTags ?? undefined,",
     to: "    scopeTags: args.scopeTags,",
     expect: ["CN6."],
   },
   {
     name: "a replay stops refusing a --scope-tags that differs from the recorded scope",
-    file: CONTENT_RUN_CLI,
+    file: CONTENT_RUN_VERIFY,
     from: "  if (args.scopeTags && JSON.stringify(args.scopeTags) !== JSON.stringify(recordedTags)) {",
-    to: "  if (false) {",
+    to: "  if (args.scopeTags && Date.now() < 0) {",
     expect: ["CN7."],
   },
   {
     name: "a replay stops comparing the recorded always-included records with this CLI's",
-    file: CONTENT_RUN_CLI,
+    file: CONTENT_RUN_VERIFY,
     from: "    if (JSON.stringify(recordedScope.alwaysIncludedIds) !== JSON.stringify(currentAlways)) {",
     to: "    if (false) {",
     expect: ["CN8."],
@@ -3895,7 +3938,7 @@ const IDENTITY_SCOPE_MUTATIONS = [
   },
   {
     name: "a full run drops the free identity preflight",
-    file: CONTENT_RUN_CLI,
+    file: CONTENT_RUN_PIPELINE,
     from: "  // the critic would refuse after four paid stages. Check now, for free.\n"
       + "  rt.identity.assertIdentityFactsAvailable(pack);\n",
     to: "  // the critic would refuse after four paid stages. Check now, for free.\n",
@@ -4110,14 +4153,14 @@ const STATED_CAPTION_AND_RESUME_MUTATIONS = [
   },
   {
     name: "the run's caption measurement reports the budget as the stated figure",
-    file: CONTENT_RUN_CLI,
+    file: CONTENT_RUN_RECORDING,
     from: "        caps.caption, caps.captionStated, \"product-bearing\");",
     to: "        caps.caption, caps.caption, \"product-bearing\");",
     expect: ["CQ6."],
   },
   {
     name: "a resume stops requiring a recorded evidence-pack fingerprint",
-    file: CONTENT_RUN_CLI,
+    file: CONTENT_RUN_VERIFY,
     from: "        meta.evidencePackSha256 ? null : \"evidencePackSha256\",\n",
     to: "",
     expect: ["CR4."],
@@ -4131,14 +4174,14 @@ const STATED_CAPTION_AND_RESUME_MUTATIONS = [
   },
   {
     name: "a resume prices a whole run instead of only its own requests",
-    file: CONTENT_RUN_CLI,
+    file: CONTENT_RUN_PIPELINE,
     from: "  const requests = resumePolicies(rt, resumeAt);",
     to: "  const requests = allStagePolicies(rt);",
     expect: ["CR8.", "CR9."],
   },
   {
     name: "a resume or replay stops revalidating the saved stage 4 output",
-    file: CONTENT_RUN_CLI,
+    file: CONTENT_RUN_VERIFY,
     from: "  const directionOutput = rt.direction.revalidateProductionDirectionOutput(\n"
       + "    saved.direction.output, scriptOutput, truthOutput, pack);",
     to: "  const directionOutput = saved.direction.output;",
@@ -4146,9 +4189,9 @@ const STATED_CAPTION_AND_RESUME_MUTATIONS = [
   },
   {
     name: "a live resume drops the typed LIVE guard",
-    file: CONTENT_RUN_CLI,
-    from: "    printCostCeiling(rt, requests, `one run resumed at ${resumeAt}`);\n    await requireLiveConsent(args);\n",
-    to: "    printCostCeiling(rt, requests, `one run resumed at ${resumeAt}`);\n",
+    file: CONTENT_RUN_PIPELINE,
+    from: "    await io.consent({ kind: \"resume\", label: `one run resumed at ${resumeAt}`, ceiling });\n",
+    to: "",
     expect: ["CR8.", "CR9."],
   },
 ];
@@ -4291,22 +4334,22 @@ const REVISION_PASS_MUTATIONS = [
   },
   {
     name: "revision-meta.json no longer records the findings dropped over a cap",
-    file: CONTENT_RUN_CLI,
+    file: CONTENT_RUN_PIPELINE,
     from: "    findingsDropped: plan.stages.flatMap(",
-    to: "    findingsDropped: [].flatMap(",
+    to: "    findingsDropped: ([] as typeof plan.stages).flatMap(",
     expect: ["CV21."],
   },
   {
     name: "round 2's critic panel is handed round 1's findings",
-    file: CONTENT_RUN_CLI,
+    file: CONTENT_RUN_PIPELINE,
     from: "    scriptOutput: script, directionOutput: direction, packagingOutput: contacted,\n",
     to: "    scriptOutput: script, directionOutput: direction, packagingOutput: contacted,\n"
-      + "    roundOneFindings: criticOutput.provisional.findings,\n",
+      + "    ...{ roundOneFindings: criticOutput.provisional.findings },\n",
     expect: ["CV14."],
   },
   {
     name: "a revision reads round 1's findings without revalidating the saved panel output",
-    file: CONTENT_RUN_CLI,
+    file: CONTENT_RUN_VERIFY,
     from: "    criticOutput = rt.critic.revalidateFinalCriticOutput(\n"
       + "      saved.critic.output, platforms, contacted, scriptOutput, truthOutput, pack);",
     to: "    criticOutput = saved.critic.output;",
@@ -4314,44 +4357,48 @@ const REVISION_PASS_MUTATIONS = [
   },
   {
     name: "a revision stops requiring the recorded fingerprints",
-    file: CONTENT_RUN_CLI,
+    file: CONTENT_RUN_VERIFY,
     from: "  if (resumeAt || revise) {",
     to: "  if (resumeAt) {",
     expect: ["CV18."],
   },
   {
     name: "a failed revised stage's paid response is written into round 1's directory",
-    file: CONTENT_RUN_CLI,
-    from: "    runDir: revisionDir, transcript, writeMeasurements,",
-    to: "    runDir: sourceDir, transcript, writeMeasurements,",
+    file: CONTENT_RUN_PIPELINE,
+    from: "    sink, transcript, writeMeasurements,\n    finalize:",
+    to: "    sink: { ...sink, label: source.label }, transcript, writeMeasurements,\n    finalize:",
     expect: ["CV19."],
   },
   {
     name: "a round with no revisable blocking finding still proceeds",
-    file: CONTENT_RUN_CLI,
+    file: CONTENT_RUN_PIPELINE,
     from: "  if (plan.kind === \"no_revision\") {",
-    to: "  if (plan.kind === \"never\") {",
+    to: "  if ((plan.kind as string) === \"never\") {",
     expect: ["CV20."],
   },
   {
     name: "a live revision drops the typed LIVE gate",
-    file: CONTENT_RUN_CLI,
-    from: "    printCostCeiling(rt, requests, `one revision round from ${plan.startStage}`);\n    await requireLiveConsent(args);\n",
-    to: "    printCostCeiling(rt, requests, `one revision round from ${plan.startStage}`);\n",
+    file: CONTENT_RUN_PIPELINE,
+    from: "    await io.consent({ kind: \"revision\", label: `one revision round from ${plan.startStage}`, ceiling });\n",
+    to: "",
     expect: ["CV25."],
   },
   {
     name: "a revision prices a whole run instead of only its own requests",
-    file: CONTENT_RUN_CLI,
+    file: CONTENT_RUN_PIPELINE,
     from: "  const requests = revisionPolicies(rt, plan.startStage);",
     to: "  const requests = allStagePolicies(rt);",
     expect: ["CV25."],
   },
   {
     name: "a revision makes a second round on its own output",
-    file: CONTENT_RUN_CLI,
-    from: "  return { revised: true, dir: revisionDir, plan };",
-    to: "  return origin === \"again\" ? { revised: true, dir: revisionDir, plan } : reviseRun(rt, args, revisionDir, \"again\");",
+    // Re-pointed at the library by S1. The library has no directory to read
+    // back, so the second round starts again from the same source; what CV17
+    // asserts — one plan, one revised directory, each request once — is what
+    // it breaks.
+    file: CONTENT_RUN_PIPELINE,
+    from: "  return { revised: true, dir: sink.label, sink, plan };",
+    to: "  return origin === \"again\" ? { revised: true, dir: sink.label, sink, plan } : reviseRun(rt, args, source, \"again\", io);",
     expect: ["CV17."],
   },
   {
@@ -4495,12 +4542,122 @@ const CONTACT_IN_OVERLAY_MUTATIONS = [
   },
 ];
 
+/**
+ * Content Studio S1 (docs/CONTENT_STUDIO_DESIGN.md §5.4): the library's two
+ * injected gates, the CLI's parse-time copies held equal to the library's, and
+ * the three structural protections around the live services — each proven to
+ * fail BY NAME. The import-graph mutations include an intermediary a fixed-file
+ * check cannot see: the scheduler importing `overlayContact.js`, which names no
+ * executor but reaches `packagingAdaptation.js` through `contactLine.js` (the
+ * AQ18a smoke check, which reads only the scheduler's own text, stays green).
+ */
+const CONTENT_STUDIO_S1_MUTATIONS = [
+  {
+    name: "the library's scope-tag normalizer stops sorting, drifting from the CLI's parse-time copy",
+    file: CONTENT_RUN_EVIDENCE,
+    from: ".map((t) => t.trim()).filter(Boolean))].sort();",
+    to: ".map((t) => t.trim()).filter(Boolean))];",
+    expect: ["CS4."],
+  },
+  {
+    name: "the library accepts a resume point the CLI's parse-time copy refuses",
+    file: CONTENT_RUN_PRICING,
+    from: "export const RESUME_POINTS = [\"packaging-adaptation\"];",
+    to: "export const RESUME_POINTS = [\"packaging-adaptation\", \"production-direction\"];",
+    expect: ["CS4."],
+  },
+  {
+    name: "a live full run never asks the injected paid-action consent",
+    file: CONTENT_RUN_PIPELINE,
+    from: "    await io.consent({\n      kind: \"full-run\",",
+    to: "    void ({\n      kind: \"full-run\",",
+    expect: ["CS6.", "CG10."],
+  },
+  {
+    name: "a replay ignores the injected UNPROVEN confirmation's refusal",
+    file: CONTENT_RUN_VERIFY,
+    from: "    if (!decision.confirmed) {",
+    to: "    if (!decision.confirmed && Date.now() < 0) {",
+    expect: ["CS5."],
+  },
+  {
+    name: "a live entry point imports the content-run library",
+    file: LIVE_SCHEDULER_ENTRY,
+    appendText: "\nimport \"../harness/contentRun/index.js\";\n",
+    expect: ["CS1."],
+  },
+  {
+    name: "a live entry point reaches a stage executor through an intermediary that names none",
+    file: LIVE_SCHEDULER_ENTRY,
+    appendText: "\nimport \"../harness/agents/overlayContact.js\";\n",
+    expect: ["CS1."],
+  },
+  {
+    name: "a live entry point gains a computed import the walk cannot follow",
+    file: LIVE_SCHEDULER_ENTRY,
+    appendText: "\nexport async function s1Probe(target: string): Promise<unknown> { return import(target); }\n",
+    expect: ["CS1."],
+  },
+  {
+    name: "a shared live module lazily imports revision.js",
+    file: SDK,
+    appendText: "\nexport const s1Probe = () => import(\"./agents/revision.js\");\n",
+    expect: ["CS1."],
+  },
+  {
+    name: "the content-run library reaches the posting tool's publishing module",
+    file: CONTENT_RUN_CONSENT,
+    appendText: "\nexport const s1Probe = () => import(\"../../mcp/posting-tool/index.js\");\n",
+    expect: ["CS1c."],
+  },
+  {
+    name: "the walked entry points drop one the configuration names",
+    file: LIVE_PATH_GUARDS,
+    from: "  \"dist/harness/dryrun.cli.js\",\n] as const;",
+    to: "] as const;",
+    expect: ["CS1a."],
+  },
+  {
+    name: "a local script outside the allowlist imports the content-run library",
+    file: LOCAL_TEKMETRIC_PROBE,
+    appendText: "\nexport const s1Probe = () => import(\"../../dist/harness/contentRun/index.js\");\n",
+    expect: ["CS2."],
+  },
+  {
+    name: "the caller allowlist widens from the Studio worker to all of src/studio",
+    file: LIVE_PATH_GUARDS,
+    from: "export const CONTENT_RUN_CALLERS = [\"scripts/local/content-run.mjs\", \"src/studio/worker/\"] as const;",
+    to: "export const CONTENT_RUN_CALLERS = [\"scripts/local/content-run.mjs\", \"src/studio/\"] as const;",
+    expect: ["CS2."],
+  },
+  {
+    name: "a shared live module is edited without a live-path declaration",
+    file: SDK,
+    appendText: "\n// an undeclared live-path edit\n",
+    expect: ["CS3."],
+  },
+  {
+    name: "a comment-only edit to a live entry point goes undeclared",
+    file: LIVE_SCHEDULER_ENTRY,
+    appendText: "\n// comment-only, and still a live-path edit\n",
+    expect: ["CS3."],
+  },
+  {
+    name: "the live-path manifest stops naming a module the live services load",
+    file: LIVE_PATH_MANIFEST,
+    from: "\"path\": \"src/api/approvalReview.ts\",",
+    to: "\"path\": \"src/api/approvalReviewRenamed.ts\",",
+    expect: ["CS3."],
+  },
+];
+
 const MUTATIONS = [
   ...LEGACY_MUTATIONS, ...RAW_IDENTITY_MUTATIONS, ...FIELD_MARGIN_MUTATIONS, ...CRITIC_POLICY_MUTATIONS,
   ...CONTACT_LINE_MUTATIONS, ...CRITIC_PANEL_MUTATIONS, ...CRITIC_PANEL_FOLLOW_UP_MUTATIONS,
   ...WRITER_RESTRICTION_MUTATIONS, ...IDENTITY_SCOPE_MUTATIONS, ...LANE_S_APPROVED_FACTS_MUTATIONS,
   ...PACKAGING_CLAIM_USE_CAP_MUTATIONS, ...STATED_CAPTION_AND_RESUME_MUTATIONS,
   ...COMPARISON_CLAIM_MUTATIONS, ...REVISION_PASS_MUTATIONS, ...CONTACT_IN_OVERLAY_MUTATIONS,
+  ...CONTENT_STUDIO_S1_MUTATIONS,
 ];
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
