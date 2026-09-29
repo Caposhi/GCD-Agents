@@ -131,8 +131,9 @@ among the rejected alternatives.
    Studio service holding a credential for the live one, keeps Studio users, sessions, uploads and run
    history away from that token and from that exposure.
 3. **The live services do not change.** The live path is inside the M1→M2 partial-release interval
-   (bound `2026-10-22T18:52Z`). Its M2–M7 sequence is gated, milestone by milestone, and no
-   unrelated release of the live services may occur. The Studio needs no live release, no live
+   (bound `2026-10-22T18:52Z`). Its M2–M7 sequence is gated, milestone by milestone, and its
+   standing prohibition reads "no unrelated release may occur, of any service, for any reason" (see
+   §10 for the Studio's freeze gate). The Studio needs no live release, no live
    migration (008 or later) and no change to any live control.
 
 §5.2's reasoning, to reuse the worker's ownership, recovery and credentials, still holds for
@@ -147,9 +148,9 @@ particular:
 - It adds no authority control plane, no migration 008, and no C1–C5 checkpoint.
 - It flips no `executionEnabled`. **VERIFIED:** all six stages remain `false`.
 - It dispatches nothing into the live queue.
-- It is not a shadow run. The design's M4.5 shadow run stays the only real-model evidence that
-  counts towards `PRODUCTION-VALIDATED`, as its §7.4 says. Studio runs are operator evidence, like
-  today's local runs.
+- It is not a shadow run. The design's §7.4 says "Only **M4.5** produces real-model evidence", and
+  its §7.6 sets the `PRODUCTION-VALIDATED` criteria; Studio runs count towards neither. They are
+  operator evidence, like today's local runs.
 
 **A "send to approval" handoff** from a Studio report into the live approval path is **out of
 scope**. It would be a separate design needing its own authorization, because it would join the
@@ -597,7 +598,7 @@ What the dormancy regressions protect, and why the Studio leaves each intact (**
 | Protected property | Checks | Studio effect |
 |---|---|---|
 | Every registry entry reports `executionEnabled: false` | `AF4`, `AQ17`/`AQ20` and the per-stage equivalents, `CC25` | None. No entry changes |
-| Fixed live files do not name an executor | the `AQ18a`–`AQ18h` family (scheduler, orchestrator, approval, publication, image/Slack, API/preview, worker, database/evidence-write paths) | None. No listed file changes, and `src/studio/**` is not on those lists |
+| Fixed live files do not name an executor | the `AQ18a`–`AQ18h` family for `automotive-truth` (scheduler, orchestrator, approval, publication, image/Slack, API/preview, worker, database/evidence-write paths), and the per-stage equivalents for the other five executors | None. No listed file changes, and `src/studio/**` is not on those lists |
 | The preview is inert | `assertPreviewIsInert`, the bound HTTP suite | None |
 
 **What does change, stated plainly.** The production-wiring design rests dormancy on two structural
@@ -632,13 +633,16 @@ checks are smoke checks and "are not adequate protection for a design that has o
    runner (zero runner invocations). This is proven by running the route, not by reading source.
 
 **A future conflict, recorded for the owner to decide, not resolved here.** The production-wiring
-design's **P2** proposes that `invokeStage` refuse unless **both** `executionEnabled` is `true`
-**and** the live runtime authority gate permits. If P2 merges as written, it would stop the Studio
+design's **P2** proposes checkpoint **C2**, which makes `invokeStage` refuse unless **both**
+`executionEnabled` is `true` **and** the live runtime authority gate permits. It also proposes
+checkpoint **C3**, which has the `sdk.ts` request boundary re-read that gate immediately before
+each provider request. If P2 merges as written, it would stop the Studio
 worker, **and it would equally stop today's local CLI**, because neither sets `executionEnabled` or
-consults a live authority gate. So whichever comes first, P2's design or the Studio's S3, must name
+consults a live authority gate. So whichever comes first, the P2 implementation PR or the Studio's S3, must name
 an explicit, separately reviewed **review-only execution context**. That context would be a
 capability that only the CLI and the Studio worker construct. It could never approve or publish,
-and it would sit beside the live authority gate, not instead of it. This design does not change
+it would satisfy C2 and C3 explicitly, and it would sit beside the live authority gate, not instead
+of it. This design does not change
 P2, and it does not propose widening `executionEnabled`.
 
 ---
@@ -1060,7 +1064,7 @@ because they describe current reality:
 | S2 | [Data model](DATA_MODEL.md), [Testing](TESTING.md) |
 | S3, S4 | [Environment](ENVIRONMENT.md), `.env.example`, [Security and continuity](SECURITY_AND_CONTINUITY.md), [Testing](TESTING.md) |
 | S5–S7 | [Testing](TESTING.md), plus [Security and continuity](SECURITY_AND_CONTINUITY.md) for S7's upload and import |
-| S8 | [Deployment control](DEPLOYMENT.md), [Operations](OPERATIONS.md), [Environment](ENVIRONMENT.md) |
+| S8 | [Deployment control](DEPLOYMENT.md), [Operations](OPERATIONS.md), [Environment](ENVIRONMENT.md), and a dated note in [PRODUCTION_WIRING_DESIGN.md](PRODUCTION_WIRING_DESIGN.md) §4.4 and §5.1, where `gcd-social-api` is named as the only `preDeployCommand` |
 | S9 | [Operations](OPERATIONS.md) |
 
 **Owner actions, each named and separately authorized:**
