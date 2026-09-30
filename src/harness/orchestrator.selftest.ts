@@ -535,9 +535,11 @@ async function run(): Promise<void> {
     //
     // Extended to every id a Content Intelligence stage policy resolves to —
     // `claude-opus-5-5` for the critic included — and to the local CLI's own
-    // estimate table, which mirrors `PRICE` because `PRICE` is not exported.
+    // estimate table, which mirrors `PRICE` rather than editing sdk.ts (a
+    // module the live services load). Since Content Studio S1 that table lives
+    // in the content-run library the CLI prints it from.
     const stageIds = [...new Set(modelBearingPolicies().map((policy) => resolveModelPolicy(policy).model))];
-    const cliSource = readFileSync(new URL("../../scripts/local/content-run.mjs", import.meta.url), "utf8");
+    const cliSource = readFileSync(new URL("../../src/harness/contentRun/pricing.ts", import.meta.url), "utf8");
     const cliPriceTable = /const PRICE = \{([\s\S]*?)\n\};/.exec(cliSource)?.[1] ?? "";
     check(
       "MR7. every id this module or a stage policy sends is priced, in sdk.ts and in the local "

@@ -1,0 +1,258 @@
+{
+  "schema": "gcd-live-path-manifest/1",
+  "entryPoints": [
+    "dist/api/server.js",
+    "dist/worker/index.js",
+    "dist/scheduler/daily.js",
+    "dist/state/migrate.js",
+    "dist/harness/evidence/syncCli.js",
+    "dist/harness/dryrun.cli.js"
+  ],
+  "modules": [
+    {
+      "path": "src/api/approvalReview.ts",
+      "sha256": "f7a7e94d670a9347ec5138ec3d8b60ab9edb40ad105886a450b24ed5638f5bee",
+      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+    },
+    {
+      "path": "src/api/security.ts",
+      "sha256": "af9fd66096c25c68e63a4f0b938147c88c83cee9d3f25556d33400aba3a83159",
+      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+    },
+    {
+      "path": "src/api/server.ts",
+      "sha256": "bdd2fd93cd2a6a122caa94822eb824af7cddbdc3764994866ec81270d2ab6e25",
+      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+    },
+    {
+      "path": "src/harness/agents/modelPolicy.ts",
+      "sha256": "28e55f3b37ce864ec28442551757a12376a36f6322688fb275315bb8d11c929c",
+      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+    },
+    {
+      "path": "src/harness/agents/payloadContract.ts",
+      "sha256": "8908b0bf4d2081fd65b24fafd8aab7e3cffc1ebd7f6a6d6cde8b3271f63e1ea6",
+      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+    },
+    {
+      "path": "src/harness/agents/registry.ts",
+      "sha256": "ba5a817cedcad55d58b43bf378b90aa558da887035e451657efde452864c8c0c",
+      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+    },
+    {
+      "path": "src/harness/briefLifecycle.ts",
+      "sha256": "4aa37e5cbc2c152cd55b0194e4a9c5a3c27ed215eb36642fa7df9a4d63ac654d",
+      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+    },
+    {
+      "path": "src/harness/briefRecovery.ts",
+      "sha256": "a9a16443972f6071ecec09bf5de64ec374470af59fc3706fec9772da90eb6a75",
+      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+    },
+    {
+      "path": "src/harness/config.ts",
+      "sha256": "df8c7b8a604b0e48370a9f44f611b7038aec1b3643cfc9b6dd775e39c0bae1ec",
+      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+    },
+    {
+      "path": "src/harness/contentCalendar.ts",
+      "sha256": "3c28e0e0b81fb16e11b7796b04e99082c401b85d82221b4796e64eabaec025f4",
+      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+    },
+    {
+      "path": "src/harness/contentIntelligence.ts",
+      "sha256": "6ed68e77b8ea7bd08297cbbd0c233d372c068795b6283e48af6e802313c1d041",
+      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+    },
+    {
+      "path": "src/harness/cost.ts",
+      "sha256": "d8eb88c6b4004040229c875a397d90c8034f6089f86b0aa52efda727cc3b1a1c",
+      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+    },
+    {
+      "path": "src/harness/creds.ts",
+      "sha256": "f602c192c4578600eb6fe3cf64d3799aa7bca817e3e54b670aad74a1ce4409e0",
+      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+    },
+    {
+      "path": "src/harness/dryrun.cli.ts",
+      "sha256": "4da8a912c5384246b08c2d30541465772252ca8c0acdcbb60a9cec051e736332",
+      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+    },
+    {
+      "path": "src/harness/dryrun.ts",
+      "sha256": "737b714e88d927997bbb1f806a42b938d2cd83bca620e12e77bb7a313920cab5",
+      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+    },
+    {
+      "path": "src/harness/dryrunEnv.ts",
+      "sha256": "02ba260b0b82d3668dc534f8cd0441748f41adf3ac2c48da033ac020b6de139f",
+      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+    },
+    {
+      "path": "src/harness/evidence/approvedFacts.ts",
+      "sha256": "e7bdc86f240146e11eb81243b686f1dfb8a55f4221befcb4772a19cd2506265e",
+      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+    },
+    {
+      "path": "src/harness/evidence/contract.ts",
+      "sha256": "7d70da432b08eb58f8a5a422b357a4dc14f65f6895d0bedb7413d7a2b9b7542a",
+      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+    },
+    {
+      "path": "src/harness/evidence/pack.ts",
+      "sha256": "2e0cb8f469a600bf3e959e912c2b2de7efbc1291f82bd201532713b7b1296b71",
+      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+    },
+    {
+      "path": "src/harness/evidence/syncCli.ts",
+      "sha256": "ce1348370a11ce13cf90e60b67a17335c57097502d5c86b52b0bf6df68b1f5f0",
+      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+    },
+    {
+      "path": "src/harness/googleToken.ts",
+      "sha256": "77a028ac0128fa7f6a1012d3a31c62b70c1a764f918e1480fbf6ff01d09013c0",
+      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+    },
+    {
+      "path": "src/harness/hitl.ts",
+      "sha256": "d7c79a439e7720b9e3c7d987c482f97579b802dc4a5fdf1923b873c197addf27",
+      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+    },
+    {
+      "path": "src/harness/igToken.ts",
+      "sha256": "509e38e398646808ec1cebb7f6b30ec43ef8f7fa0b6d6f016edae6306e5d2f32",
+      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+    },
+    {
+      "path": "src/harness/imageQc.ts",
+      "sha256": "530e984e4624e9f73257c474590fc4cd259e5943fd64c051534b68d4f3e04420",
+      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+    },
+    {
+      "path": "src/harness/mediaNormalize.ts",
+      "sha256": "3fcbc99e86f23db79fceea3ebf1ba2236c198bcfe3be7cfd5d4724acbf8334df",
+      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+    },
+    {
+      "path": "src/harness/mediaPolicy.ts",
+      "sha256": "5bc8d6514a2a220e8a274c81a0ce6f174535bedbc62964795a4beee608c07f35",
+      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+    },
+    {
+      "path": "src/harness/orchestrator.ts",
+      "sha256": "83463a13f49e71c61d40a69616a4f96334385c8fb55a64cac103347e016db2ee",
+      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+    },
+    {
+      "path": "src/harness/packageMap.ts",
+      "sha256": "f90122c57ecd04722cd9e43281c31864925228d864afe9a284049b67f734ef9b",
+      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+    },
+    {
+      "path": "src/harness/publicationRunner.ts",
+      "sha256": "a96a0b1ce39e873bb986cc419220d017cd9783c9e1d6cb344bf9f90d9bb2e736",
+      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+    },
+    {
+      "path": "src/harness/renderIdentity.ts",
+      "sha256": "277fff13410fd497bff18c3a300fe6d4f57ed1156ddc774cbf9349e02b62a40f",
+      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+    },
+    {
+      "path": "src/harness/retry.ts",
+      "sha256": "6ff3e3c6c488d27ec62ffd85a2da83aa194f72e5c175d968a8ebc49d85f459aa",
+      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+    },
+    {
+      "path": "src/harness/sdk.ts",
+      "sha256": "5c055ce6d88933b3eb20cab320caed648e6abdfc6c6c6bc68c2fce7d62e7e1fc",
+      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+    },
+    {
+      "path": "src/harness/state.ts",
+      "sha256": "139b30883d942b100d4b8ae20beddaee17a3eda563dd13b866533cf861f7acb0",
+      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+    },
+    {
+      "path": "src/harness/workerExit.ts",
+      "sha256": "54599fc2ad642d051570bbf39edb4431df66d32fecf85b42c3ecefade0b0d685",
+      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+    },
+    {
+      "path": "src/harness/workerOwnership.ts",
+      "sha256": "ec295d237bb47030228cb9800116032ddf0c681b0e593dafb510a63454676112",
+      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+    },
+    {
+      "path": "src/mcp/image-tool/fal/models.ts",
+      "sha256": "d8f65ef80e54f3a4627d6c11fd052489cc19d4d30fea11e4262bd66551529f5e",
+      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+    },
+    {
+      "path": "src/mcp/image-tool/fal/provider.ts",
+      "sha256": "27b41f42d9a1f186233c5b149bb913ee443d43cdf9ff7afdbad2df755777affa",
+      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+    },
+    {
+      "path": "src/mcp/image-tool/index.ts",
+      "sha256": "ab15b85605244ee199c22e1001872e17e2d7e5424889dae1418ffefe58aa9914",
+      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+    },
+    {
+      "path": "src/mcp/image-tool/types.ts",
+      "sha256": "e412ece25f786121f802b9c072ae447b2d01e14594dda3a65bddad6332ab460f",
+      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+    },
+    {
+      "path": "src/mcp/posting-tool/index.ts",
+      "sha256": "2b5f6f216c9e08b3fa7e53809b7304d9eb48f87997d86c622d2dc07385d30675",
+      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+    },
+    {
+      "path": "src/mcp/posting-tool/integrity.ts",
+      "sha256": "3e765b59cd3a905a48f59acce877c5111e2089b3ea65d4c7d239ad3fce1b37fb",
+      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+    },
+    {
+      "path": "src/mcp/posting-tool/native/provider.ts",
+      "sha256": "3cf1d04469d605cc19deb3f9a9d1a56ee34baf4f748d474cf4f32afedd98929f",
+      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+    },
+    {
+      "path": "src/mcp/posting-tool/native/requests.ts",
+      "sha256": "b74d1ef9688e518d6219b871177f680c239db14fc55fa8d103aa142ff14230c2",
+      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+    },
+    {
+      "path": "src/mcp/posting-tool/types.ts",
+      "sha256": "538257107715f0e086e1de91e70635d0b61bd3e77d819d5668b9ec5c4ff89864",
+      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+    },
+    {
+      "path": "src/mcp/posting-tool/validation.ts",
+      "sha256": "d12bad61454dedd8a5b0181ab044aa79e659b3692e13d6aab742dc60387373f8",
+      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+    },
+    {
+      "path": "src/scheduler/daily.ts",
+      "sha256": "d833ac40165680bb918157b01ab8448ce434bccea76f73f7ea90e3de4cb9bea4",
+      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+    },
+    {
+      "path": "src/state/migrate.ts",
+      "sha256": "bc3c3bf575a76902e7de694522c4c409b5b46a51ffceac42f2db043d0bc90b6a",
+      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+    },
+    {
+      "path": "src/worker/index.ts",
+      "sha256": "711d8d828a7225ecc5a80873048c520fa9cb306c1a6e467c771ae267f8724abd",
+      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+    },
+    {
+      "path": "src/worker/startup.ts",
+      "sha256": "ae98c6c47d03e7de5fd3be57d8eb13f20270e264aad764502fec5a3f3ce9f1c8",
+      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+    }
+  ]
+}

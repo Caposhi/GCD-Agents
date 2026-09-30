@@ -180,6 +180,12 @@ import {
 } from "./agents/finalCritic.js";
 import { groupDigits } from "./agents/responseFormatKit.js";
 import {
+  LIVE_ENTRY_POINTS, LIVE_PATH_MANIFEST, STUDIO_ALLOWED_EXCEPTIONS, STUDIO_FORBIDDEN_MODULES, STUDIO_FORBIDDEN_TREES,
+  callerViolations, describeViolation, liveEntryPointsFromConfig, studioSideEntryPoints,
+  livePathManifestViolations, liveSourceDigests, repositoryCodeFiles, walkImportGraph,
+  type LivePathManifest,
+} from "./livePathGuards.js";
+import {
   StageOutputTruncatedError,
   StageRefusalError,
   StageStreamDeadlineError,
@@ -367,6 +373,17 @@ function verifiedAutomotive(overrides: Partial<EvidenceRecord> = {}): EvidenceRe
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, "../..");
+
+/**
+ * One file of the content-run pipeline library. Since Content Studio S1 the
+ * local CLI (`scripts/local/content-run.mjs`) is a thin shell over
+ * `src/harness/contentRun/**`, so a source-reading check that asserted on the
+ * CLI's pipeline code reads the library file that now holds that code. The
+ * suite reads these files as text; it never imports the library directly
+ * (only the CLI and the Studio worker may — see CS2).
+ */
+const contentRunSource = (file: string): string =>
+  readFileSync(resolve(REPO_ROOT, `src/harness/contentRun/${file}.ts`), "utf8");
 
 async function run(): Promise<void> {
   // --- A. every evidence kind validates when correctly formed ---------------
@@ -7357,14 +7374,25 @@ async function run(): Promise<void> {
             allLoaded.every((r) => !out.includes(r.claim) && !out.includes(r.id))
               && !/Estimated ceiling|Type LIVE|Evidence pack built|Running stage/.test(out))
             && !existsSync(listOut));
+        // Since S1 the CLI's `main` dispatches and the library builds: --list-tags
+        // must return before every other dispatch, and neither its printer nor
+        // the library's `countTags` may build a pack, a registry, a runner or a price.
         const cliSource = await cnText("scripts/local/content-run.mjs");
         const mainBody = cliSource.slice(cliSource.indexOf("export async function main("));
         const listAt = mainBody.indexOf("if (args.listTags) return listTags(rt, args);");
+        const listTagsBody = cliSource.slice(cliSource.indexOf("export async function listTags("),
+          cliSource.indexOf("export async function resumeFromPackaging("));
+        const cnEvidence = contentRunSource("evidence");
+        const countTagsBody = cnEvidence.slice(cnEvidence.indexOf("export async function countTags("));
         check("CN11. in source, --list-tags returns before the pack, the registry and any runner are built",
-          listAt > 0 && listAt < mainBody.indexOf("buildRunEvidence(")
-            && listAt < mainBody.indexOf("new AgentRegistry()")
-            && listAt < mainBody.indexOf("createAnthropicStageRunner")
-            && listAt < mainBody.indexOf("replayCritic(rt, args)"));
+          listAt > 0 && listAt < mainBody.indexOf("lib.runFullPipeline(")
+            && listAt < mainBody.indexOf("replayCritic(rt, args)")
+            && listAt < mainBody.indexOf("resumeFromPackaging(rt, args)")
+            && listAt < mainBody.indexOf("reviseRun(rt, args, args.reviseFrom")
+            && listTagsBody.includes("lib.countTags(") && countTagsBody.includes("loadRecords(")
+            && [listTagsBody, countTagsBody].every((body) => body.length > 0
+              && !/buildRunEvidence\(|buildEvidencePack\(|new AgentRegistry\(|createAnthropicStageRunner|computeCostCeiling|runFullPipeline/
+                .test(body)));
         const listWithGoal = await runCn(["--list-tags", "a goal"]);
         const listWithReplay = await runCn(["--list-tags", "--replay-critic", scopedRun]);
         check("CN12. --list-tags refuses a goal or --replay-critic rather than silently running either",
@@ -7393,17 +7421,23 @@ async function run(): Promise<void> {
           !noMakesScoped.ok && /EvidenceScopeError: .*approved-facts:makes/.test(noMakesScoped.error)
             && !noPhoneScoped.ok && /EvidenceScopeError: .*approved-facts:phone/.test(noPhoneScoped.error)
             && !noAreaScoped.ok && /EvidenceScopeError: .*approved-facts:servicearea/.test(noAreaScoped.error));
-        const preflight = cliSource.indexOf("rt.identity.assertIdentityFactsAvailable(pack);");
+        // The pipeline moved into the library (S1): the full run is its first
+        // function, so its preflight is the first one in the file.
+        const cnPipeline = contentRunSource("pipeline");
+        const preflight = cnPipeline.indexOf("rt.identity.assertIdentityFactsAvailable(pack);");
         // The replay's own preflight: the first one after the replay begins
         // (the revision round, later in the file, has its own).
-        const replayPreflight = cliSource.indexOf("rt.identity.assertIdentityFactsAvailable(pack);",
-          cliSource.indexOf("async function replayCritic("));
+        const replayPreflight = cnPipeline.indexOf("rt.identity.assertIdentityFactsAvailable(pack);",
+          cnPipeline.indexOf("export async function replayCritic("));
         check("CN14. the identity preflight runs in a full run before the cost ceiling and the live prompt, and "
           + "in a replay before its spend guard",
-          preflight > 0 && preflight < cliSource.indexOf("printCostCeiling(rt, allStagePolicies(rt)")
+          preflight > cnPipeline.indexOf("export async function runFullPipeline(")
+            && preflight < cnPipeline.indexOf("computeCostCeiling(rt, allStagePolicies(rt))")
+            && preflight < cnPipeline.indexOf('await io.consent({\n      kind: "full-run"')
             && replayPreflight > preflight
-            && replayPreflight < cliSource.indexOf("printCostCeiling(rt, criticLensPolicies(rt)")
-            && cliSource.indexOf("async function replayCritic(") < replayPreflight);
+            && replayPreflight < cnPipeline.indexOf("computeCostCeiling(rt, criticLensPolicies(rt))")
+            && replayPreflight < cnPipeline.indexOf('await io.consent({ kind: "critic-replay"')
+            && cnPipeline.indexOf("export async function replayCritic(") < replayPreflight);
 
         // --- CR. --resume-from packaging-adaptation --------------------------
         // Both of the owner's 2026-09-26 failed runs kept validated stage 1-4
@@ -7787,16 +7821,20 @@ async function run(): Promise<void> {
             && cvBlock(cvScriptPrompt, "PREVIOUS_OUTPUT") === JSON.stringify(crJson(join(cvScript, "03-hook-story-script.json")).output, null, 2)
             && JSON.stringify(crJson(join(cvScriptDir, "revision-meta.json"))?.reusedFiles)
               === JSON.stringify(["run-meta.json", "01-strategy-concept.json", "02-automotive-truth.json"]));
-        const cvCliSource = await readFile(resolve(REPO_ROOT, "scripts/local/content-run.mjs"), "utf8");
-        const cvReviseBody = cvCliSource.slice(cvCliSource.indexOf("export async function reviseRun("),
-          cvCliSource.indexOf("\n/**\n * Run only when executed as a script."));
+        // The revision round moved into the library (S1); it is the last function
+        // in pipeline.ts. `await reviseRun(` is counted across the CLI and the library.
+        const cvCliSource = await readFile(resolve(REPO_ROOT, "scripts/local/content-run.mjs"), "utf8")
+          + contentRunSource("pipeline");
+        const cvPipeline = contentRunSource("pipeline");
+        const cvReviseBody = cvPipeline.indexOf("export async function reviseRun(") >= 0
+          ? cvPipeline.slice(cvPipeline.indexOf("export async function reviseRun(")) : "";
         check("CV17. exactly one round: the plan is made once from round 1's panel, one revised directory is written, "
           + "each request is made once, and nothing plans again from round 2 — though round 2 still asks for revision",
           cvMixedRun.plans.length === 1 && cvScriptRun.plans.length === 1
             && cnDirs(dirname(cvMixed)).filter((n) => n.includes("-revised-")).length === 1
             && new Set(cvRequests(cvMixedRun.calls)).size === cvMixedRun.calls.length
             && crJson(join(cvMixedDir!, "06-final-critic.json"))?.output?.provisional?.verdict === "needs_revision"
-            && (cvReviseBody.match(/planRevision\(/g) ?? []).length === 1
+            && cvReviseBody.length > 0 && (cvReviseBody.match(/planRevision\(/g) ?? []).length === 1
             && !/\bwhile\s*\(|\bfor\s*\(\s*let\b/.test(cvReviseBody)
             && (cvCliSource.match(/await reviseRun\(/g) ?? []).length === 1);
 
@@ -7819,9 +7857,9 @@ async function run(): Promise<void> {
         const cvRefusedCleanly = (dir: string, run: Awaited<ReturnType<typeof cvRevise>>, message: RegExp) =>
           !run.ok && message.test(run.error) && run.calls.length === 0 && run.plans.length === 0
             && cnDirs(dirname(dir)).length === 1;
-        const cvOrder = ["await verifySourceRun(rt, args, sourceDir, null, { revise: true });",
-          "rt.revision.planRevision(criticOutput)", "printCostCeiling(rt, requests,", "await requireLiveConsent(args);",
-          "await mkdir(revisionDir, { recursive: false });", "rt.script.executeHookStoryScript(",
+        const cvOrder = ["await verifySourceRun(rt, args, source, null, io, { revise: true });",
+          "rt.revision.planRevision(criticOutput)", "computeCostCeiling(rt, requests)", 'await io.consent({ kind: "revision"',
+          'await io.outputs.openDerivedRun({ kind: "revision"', "rt.script.executeHookStoryScript(",
           "rt.critic.executeFinalCritic("].map((needle) => cvReviseBody.indexOf(needle));
         check("CV18. the source is verified first: a panel output edited after the run, a run recording no pack "
           + "fingerprint, a missing 06-final-critic.json and an invalid saved stage output are each refused before "
@@ -7973,6 +8011,103 @@ async function run(): Promise<void> {
             && cvOnceLive.status !== 0 && /live run cancelled/.test(cvOnceLive.stderr)
             && cvOnceLive.stdout.includes("--revise-once: the revision round is not included above")
             && cnDirs(cvOnceLiveDir).length === 0);
+
+        // --- CS5-CS6. the library's two injected gates, driven directly -------
+        // Through the CLI module's handle on the library (the suite may not
+        // import the library itself — CS2). Each run gets outputs that record
+        // whether they were ever opened, and a runtime whose live runner
+        // factory throws, so neither a directory nor a request can happen
+        // silently.
+        const csLib = cliModule.contentRunLibrary;
+        const csFacts = (automotivePath: string) => ({
+          approvedFacts: csLib.factFileAt(resolve(REPO_ROOT, "config/approved-facts.json"), "config/approved-facts.json"),
+          automotiveFacts: csLib.factFileAt(automotivePath),
+        });
+        const csSource = (dir: string) => ({
+          label: dir, displayLabel: dir, name: basename(dir), exists: () => existsSync(dir),
+          readArtifact: async (name: string) => (existsSync(join(dir, name)) ? readFileSync(join(dir, name)) : undefined),
+        });
+        const csRun = async (
+          action: (io: Record<string, unknown>, rt: unknown) => Promise<unknown>,
+          consent: (request: Record<string, unknown>) => Promise<void>,
+          confirmUnproven: (notice: unknown) => Promise<unknown> = async () => ({ confirmed: false, reason: "cs" }),
+        ) => {
+          const opened: string[] = [];
+          const runnerFactoryCalls: number[] = [];
+          const rt = { ...cnRt, stageExecution: { ...cnRt.stageExecution,
+            createAnthropicStageRunner: () => { runnerFactoryCalls.push(1); throw new Error("CS: a live runner was built"); } } };
+          const log: string[] = [];
+          const io = {
+            reporter: { log: (m: string) => log.push(m), warn: (m: string) => log.push(m) },
+            consent, confirmUnproven,
+            outputs: {
+              openFullRun: () => { opened.push("full"); throw new Error("CS: an output was opened"); },
+              openDerivedRun: () => { opened.push("derived"); throw new Error("CS: an output was opened"); },
+            },
+          };
+          let error = "";
+          try { await action(io, rt); } catch (e) { error = `${(e as Error)?.name}: ${(e as Error)?.message}`; }
+          return { error, opened, runnerFactoryCalls, log };
+        };
+        const csLegacy = crCopy("cs-legacy", plainRun, (dir) =>
+          crEdit(join(dir, "run-meta.json"), (m) => { delete m.automotiveFacts; }));
+        const csLegacyBefore = crTree(csLegacy);
+        const csUnproven = await csRun(
+          (io, rt) => csLib.replayCritic(rt, { runner: "fake", facts: csFacts(factsPath), reviewedAt: "2026-09-01T00:00:00.000Z",
+            reviewedAtExplicit: false }, csSource(csLegacy), io),
+          async () => { throw new Error("CS: consent was asked"); },
+          csLib.refuseUnprovenAutomotiveFacts,
+        );
+        const csRefusal = await csLib.refuseUnprovenAutomotiveFacts({ automotiveFactsDisplayPath: "x", currentSha256: null });
+        check("CS5. the worker's UNPROVEN confirmation always refuses: a replay of a run that predates the "
+          + "automotive-facts fingerprint is cancelled before any consent, runner or output, and the source is untouched",
+          csRefusal?.confirmed === false && typeof csRefusal?.reason === "string"
+            && /replay cancelled: the automotive facts file's identity cannot be proven and was not confirmed \(a review-only worker never continues/
+              .test(csUnproven.error)
+            && csUnproven.log.some((line) => line.startsWith("WARNING: the source run predates the automotive-facts fingerprint"))
+            && csUnproven.opened.length === 0 && csUnproven.runnerFactoryCalls.length === 0
+            && crTree(csLegacy) === csLegacyBefore && cnDirs(dirname(csLegacy)).length === 1);
+
+        const csRequests: Array<Record<string, unknown>> = [];
+        const csRecordAndRefuse = async (request: Record<string, unknown>) => {
+          csRequests.push(request);
+          throw new Error("CS: consent refused");
+        };
+        const csOptions = (runner: string, automotivePath = factsPath, extra: Record<string, unknown> = {}) => ({
+          runner, facts: csFacts(automotivePath), reviewedAt: "2026-09-01T00:00:00.000Z", reviewedAtExplicit: true, ...extra,
+        });
+        const csLiveFull = await csRun((io, rt) => csLib.runFullPipeline(rt,
+          csOptions("live", factsPath, { reviseOnce: true, goal: "CS synthetic goal" }), io),
+          csRecordAndRefuse);
+        const csFullRequest = csRequests[0] as { kind?: string; label?: string; ceiling?: { lines: unknown[]; totalUsd: number };
+          revisionRoundMaxRequests?: number } | undefined;
+        const csLiveNoFacts = await csRun((io, rt) => csLib.runFullPipeline(rt,
+          csOptions("live", join(cnWork, "absent.json"), { goal: "CS synthetic goal" }), io),
+          csRecordAndRefuse);
+        const csLiveResume = await csRun((io, rt) => csLib.resumeFromPackaging(rt, csOptions("live"), csSource(crCopy("cs-resume", plainRun)),
+          "packaging-adaptation", io), csRecordAndRefuse);
+        const csLiveRevise = await csRun((io, rt) => csLib.reviseRun(rt, csOptions("live"), csSource(crCopy("cs-revise", plainRun)),
+          "revise-from", io), csRecordAndRefuse);
+        const csLiveReplay = await csRun((io, rt) => csLib.replayCritic(rt, csOptions("live"), csSource(crCopy("cs-replay", plainRun)), io),
+          csRecordAndRefuse);
+        const csFakeRequestsBefore = csRequests.length;
+        const csFakeFull = await csRun((io, rt) => csLib.runFullPipeline(rt, csOptions("fake", factsPath, { goal: "CS synthetic goal" }), io), csRecordAndRefuse);
+        check("CS6. the library asks its injected PaidActionConsent once per live paid action — after every free check "
+          + "and after pricing, with the ceiling for exactly its own requests — and builds no runner and opens no output "
+          + "until it allows; a free-check refusal and a fake run never ask",
+          csLiveFull.error === "Error: CS: consent refused" && csFullRequest?.kind === "full-run"
+            && csFullRequest.label === "one full six-stage run" && csFullRequest.ceiling?.lines.length === 9
+            && (csFullRequest.ceiling?.totalUsd ?? 0) > 0 && csFullRequest.revisionRoundMaxRequests === 7
+            && csLiveFull.log.some((line) => line.startsWith("Evidence pack built:"))
+            && /Refusing to start a LIVE run against an incomplete evidence pack/.test(csLiveNoFacts.error)
+            && csRequests.length === 4
+            && csRequests.slice(1).map((r) => `${r.kind}:${(r.ceiling as { lines: unknown[] }).lines.length}`).join()
+              === "resume:5,revision:6,critic-replay:4"
+            && [csLiveFull, csLiveNoFacts, csLiveResume, csLiveRevise, csLiveReplay].every((r) =>
+              r.opened.length === 0 && r.runnerFactoryCalls.length === 0)
+            && [csLiveResume, csLiveRevise, csLiveReplay].every((r) => r.error === "Error: CS: consent refused")
+            && csRequests.length === csFakeRequestsBefore && csFakeFull.opened.join() === "full"
+            && csFakeFull.error === "Error: CS: an output was opened" && csFakeFull.runnerFactoryCalls.length === 0);
       } finally {
         rmSync(cnWork, { recursive: true, force: true });
       }
@@ -11511,17 +11646,16 @@ async function run(): Promise<void> {
             && key.startsWith("final-critic:")
             && !/platform:/.test(OUTPUT_FIELD_BOUNDS[key]!.basis)));
 
-      // The review surface is `markdownSummary` in the local CLI — the only
-      // place this pipeline renders stage output for a person. A plumbing
+      // The review surface is `markdownSummary` — the only place this pipeline
+      // renders stage output for a person; since S1 it lives in the content-run
+      // library's summary.ts, which the local CLI re-exports. A plumbing
       // field that starts appearing there reaches a human reviewer, so it is
       // product-bearing by definition and must be reclassified, not given
       // slack. Plumbing fields are found by their top-level token, which is
       // what the summary would have to name to render one.
-      const runCli = await readFile(resolve(REPO_ROOT, "scripts/local/content-run.mjs"), "utf8");
+      const runCli = contentRunSource("summary");
       const summaryStart = runCli.indexOf("function markdownSummary(");
-      const summaryEnd = runCli.indexOf("\nexport async function main(", summaryStart);
-      const summarySource = summaryStart >= 0 && summaryEnd > summaryStart
-        ? runCli.slice(summaryStart, summaryEnd) : "";
+      const summarySource = summaryStart >= 0 ? runCli.slice(summaryStart) : "";
       const rendered = classified
         .filter(([, b]) => b.class === "internal-plumbing")
         .map(([key]) => key.slice(key.indexOf(".") + 1).split(/[.[]/)[0]!)
@@ -11636,47 +11770,60 @@ async function run(): Promise<void> {
     // so the run was doomed before it started. Every input to both checks is
     // known once the pack is built.
     //
-    // These read the checked-in CLI source. The script is not importable
-    // (it is an executable .mjs that loads from dist/ at runtime), so this
-    // follows the same static-wiring precedent as the worker boundary checks.
+    // These read the checked-in source, following the same static-wiring
+    // precedent as the worker boundary checks. Since Content Studio S1 the
+    // CLI is a thin shell: the pipeline code these assert on lives in the
+    // content-run library (evidence.ts, pipeline.ts, recording.ts), and the
+    // CLI keeps the cost print, the LIVE prompt and the failure records.
 
     const cli = await readFile(resolve(REPO_ROOT, "scripts/local/content-run.mjs"), "utf8");
     const at = (needle: string): number => cli.indexOf(needle);
+    const ceEvidence = contentRunSource("evidence");
+    const cePipeline = contentRunSource("pipeline");
+    const ceRecording = contentRunSource("recording");
 
-    const refusal = at("Refusing to start a LIVE run against an incomplete evidence pack");
+    const refusal = ceEvidence.indexOf("Refusing to start a LIVE run against an incomplete evidence pack");
     check("CE1. a live run refuses an incomplete evidence pack instead of warning past it",
-      refusal > 0 && at('if (args.runner === "live") {\n      throw new Error(') > 0);
+      refusal > 0 && ceEvidence.indexOf('if (args.runner === "live") {\n      throw new Error(') > 0);
 
     // The full run and the critic-only replay share their evidence builder,
     // cost ceiling and live guard, so ordering is asserted on the call sites
     // inside each entry point rather than on where the shared text is written.
-    const bodyOf = (startMarker: string, endMarker: string): string => {
-      const start = cli.indexOf(startMarker);
-      const end = cli.indexOf(endMarker, start + 1);
-      return start >= 0 && end > start ? cli.slice(start, end) : "";
+    const bodyOf = (source: string, startMarker: string, endMarker: string): string => {
+      const start = source.indexOf(startMarker);
+      const end = source.indexOf(endMarker, start + 1);
+      return start >= 0 && end > start ? source.slice(start, end) : "";
     };
-    const mainBody = bodyOf("export async function main(argv = process.argv.slice(2)) {", "\nasync function readSavedStage(");
+    // The full run: the library's `runFullPipeline`, whose paid-action gate is
+    // the injected consent — which in this CLI prints the ceiling and then
+    // requires the cost flag and the typed word LIVE.
+    const mainBody = bodyOf(cePipeline, "export async function runFullPipeline(", "\nasync function writeContactLines(");
     const inMain = (needle: string): number => mainBody.indexOf(needle);
     const preflight = inMain("evidence pack cannot satisfy every stage");
-    const costGate = inMain("printCostCeiling(rt, allStagePolicies(rt)");
-    const liveGuard = inMain("await requireLiveConsent(args);");
+    const costGate = inMain("computeCostCeiling(rt, allStagePolicies(rt))");
+    const liveGuard = inMain("await io.consent({");
     const packBuild = inMain("await buildRunEvidence(rt, {");
+    const cliConsent = bodyOf(cli, "function liveConsent(args) {", "\n/** This CLI's UNPROVEN confirmation");
     check("CE2. every stage's required evidence classes are checked before any spend "
       + "is authorized, not per stage as each one runs",
       preflight > 0 && costGate > 0 && preflight < costGate && costGate < liveGuard
+        && liveGuard < inMain("createAnthropicStageRunner()") && liveGuard < inMain("await io.outputs.openFullRun(")
         && at("Estimated ceiling cost per model request") > 0
-        && at("TARGET_STAGE_IDS") > 0 && at("requiredEvidenceKinds") > 0);
+        && cliConsent.indexOf("printCostCeiling(request.ceiling, request.label);") > 0
+        && cliConsent.indexOf("printCostCeiling(request.ceiling, request.label);")
+          < cliConsent.indexOf("await requireLiveConsent(args);")
+        && cePipeline.indexOf("TARGET_STAGE_IDS") > 0 && cePipeline.indexOf("requiredEvidenceKinds") > 0);
 
     check("CE3. the preflight is driven by the registry's own stage list, so a new "
       + "stage cannot be added without being covered",
-      /for \(const stage of TARGET_STAGE_IDS\)[\s\S]{0,240}requiredEvidenceKinds/.test(cli));
+      /for \(const stage of TARGET_STAGE_IDS\)[\s\S]{0,240}requiredEvidenceKinds/.test(mainBody));
 
     // `indexOf` returns -1 for a marker that is gone, and -1 sorts before
     // every real index — so presence has to be asserted alongside order, or
     // deleting a check would read as "it comes first".
     // The incomplete-pack refusal lives in the shared evidence builder; the
     // full run calls that builder before the cost gate.
-    const builderBody = bodyOf("async function buildRunEvidence(", "\nfunction createRunRecorder(");
+    const builderBody = bodyOf(ceEvidence, "export async function buildRunEvidence(", "\nexport interface TagCounts");
     check("CE4. both free checks are present and run before the cost gate authorizes spend",
       refusal > 0 && preflight > 0 && costGate > 0 && packBuild > 0
         && builderBody.includes("Refusing to start a LIVE run against an incomplete evidence pack")
@@ -11685,7 +11832,8 @@ async function run(): Promise<void> {
     check("CE5. a response the run already paid for is written out, never discarded",
       at("rejected-responses.json") > 0
         && at("failureContext") > 0
-        && /transcript\.push\(\{[\s\S]{0,400}text:/.test(cli));
+        && /onFailureContext: \(context\) => \{\n\s+failureContext = context/.test(cli)
+        && /transcript\.push\(\{[\s\S]{0,400}text:/.test(ceRecording));
 
     // Every run — fake or live, passing or failing — measures each output
     // field against its limit and writes the table beside the run, measured
@@ -11694,10 +11842,10 @@ async function run(): Promise<void> {
     // another paid round trip.
     check("CE6. every run writes per-field measurements, on success and on failure, from the "
       + "raw responses, keyed by the contract's own field bounds",
-      at("field-measurements.md") > 0
-        && at("OUTPUT_FIELD_BOUNDS") > 0
-        && /measureFields\(transcript,/.test(cli)
-        && /const measured = writeMeasurements\(\);/.test(cli)
+      ceRecording.indexOf("field-measurements.md") > 0
+        && ceRecording.indexOf("OUTPUT_FIELD_BOUNDS") > 0
+        && /measureFields\(transcript,/.test(ceRecording)
+        && /const \{ rows: measured, written \} = writeMeasurements\(\);\n\s+await written;/.test(mainBody)
         && /failureContext\.writeMeasurements\(\)/.test(cli)
         && at("failureContext.writeMeasurements()") < at("rejected-responses.json\");"));
 
@@ -11709,15 +11857,16 @@ async function run(): Promise<void> {
     // contact a provider. The automotive facts file is a clearly synthetic
     // fixture written to a temporary directory; nothing is committed.
     {
-      const replayBody = bodyOf("async function replayCritic(", "\nfunction reportFailure(");
+      const replayBody = bodyOf(cePipeline, "export async function replayCritic(", "\n/** Each writing stage's saved file name. */");
       const inReplay = (needle: string): number => replayBody.indexOf(needle);
-      const replayCost = inReplay('printCostCeiling(rt, criticLensPolicies(rt)');
-      const replayGuard = inReplay("await requireLiveConsent(args);");
-      const replayMkdir = inReplay("await mkdir(replayDir");
+      const replayCost = inReplay("computeCostCeiling(rt, criticLensPolicies(rt))");
+      const replayGuard = inReplay('await io.consent({ kind: "critic-replay"');
+      const replayMkdir = inReplay('await io.outputs.openDerivedRun({ kind: "critic-replay"');
       // The free checks live in `verifySourceRun`, shared with --resume-from; the
       // replay calls it before its cost ceiling.
-      const verifyBody = bodyOf("async function verifySourceRun(", "\nexport async function resumeFromPackaging(");
-      const replayVerify = inReplay("await verifySourceRun(rt, args, sourceDir, null);");
+      const ceVerify = contentRunSource("verify");
+      const verifyBody = ceVerify.slice(Math.max(0, ceVerify.indexOf("export async function verifySourceRun(")));
+      const replayVerify = inReplay("await verifySourceRun(rt, args, source, null, io);");
       check("CE7. the replay runs every free check — approved-facts identity, automotive identity, "
         + "pack fingerprint, revalidation of every saved output — before the cost ceiling, the "
         + "live guard, and the output directory",
@@ -11739,16 +11888,16 @@ async function run(): Promise<void> {
       // stage 5 and critic preflights, then the cost ceiling for only its own
       // requests, the live guard and the output directory — and no stage 1-4
       // executor anywhere in its body.
-      const resumeBody = bodyOf("async function resumeFromPackaging(", "\nasync function replayCritic(");
+      const resumeBody = bodyOf(cePipeline, "export async function resumeFromPackaging(", "\n/**\n * Run ONLY final-critic");
       const inResume = (needle: string): number => resumeBody.indexOf(needle);
       const resumeOrder = [
-        "await verifySourceRun(rt, args, sourceDir, resumeAt);",
+        "await verifySourceRun(rt, args, source, resumeAt, io);",
         "rt.contact.assertContactFactsAvailable(pack, platforms);",
         "rt.identity.assertIdentityFactsAvailable(pack);",
         ".requiredEvidenceKinds",
-        "printCostCeiling(rt, requests,",
-        "await requireLiveConsent(args);",
-        "await mkdir(resumeDir, { recursive: false });",
+        "computeCostCeiling(rt, requests)",
+        'await io.consent({ kind: "resume"',
+        'await io.outputs.openDerivedRun({ kind: "resume"',
         "rt.packaging.executePackagingAdaptation(",
         "rt.critic.executeFinalCritic(",
       ].map(inResume);
@@ -12061,13 +12210,14 @@ async function run(): Promise<void> {
           && !liveSummary.includes("Fake-runner")
           && fakeSummary.trimEnd().endsWith("_Fake-runner output. Not reviewed. Not publishable. Authorizes nothing._")
           && !fakeSummary.includes("Live-runner")
-          && !/_Fake-runner output\./.test(bodyOf("export function markdownSummary(", "\nexport async function main(")));
+          && bodyOf(contentRunSource("summary"), "export function markdownSummary(", "\n/** \"3 (1 blocking").length > 0
+          && !/_Fake-runner output\./.test(bodyOf(contentRunSource("summary"), "export function markdownSummary(", "\n/** \"3 (1 blocking")));
 
       const contactPreflight = inMain("rt.contact.assertContactFactsAvailable(pack, platforms);");
-      const replayBodyCE = bodyOf("async function replayCritic(", "\nfunction reportFailure(");
+      const replayBodyCE = bodyOf(cePipeline, "export async function replayCritic(", "\n/** Each writing stage's saved file name. */");
       const replayContactPreflight = replayBodyCE.indexOf("rt.contact.assertContactFactsAvailable(pack, platforms);");
       const replayAttach = replayBodyCE.indexOf("rt.contact.attachContactLines(packagingOutput, pack)");
-      const replayCostCE = replayBodyCE.indexOf('printCostCeiling(rt, criticLensPolicies(rt)');
+      const replayCostCE = replayBodyCE.indexOf("computeCostCeiling(rt, criticLensPolicies(rt))");
       check("CE9. the contact-line records are checked before any spend in a full run and in a "
         + "replay, and both hand the critic the attached packages",
         contactPreflight > 0 && contactPreflight < costGate
@@ -12248,6 +12398,186 @@ async function run(): Promise<void> {
         + "is unchanged",
         legacyRequestSent !== undefined && !("output_config" in legacyRequestSent));
     }
+
+  // ==========================================================================
+  // CS. Content Studio S1 — the live services cannot reach the pipeline.
+  //
+  // docs/CONTENT_STUDIO_DESIGN.md §5.4. The CLI is no longer the only caller
+  // the design must keep dormant: a deployed Studio worker will call the stage
+  // executors through `src/harness/contentRun/**`. So the fixed-file AQ18-style
+  // smoke checks are joined by three executed structural checks — a transitive
+  // import-graph walk from every live entry point (CS1), a caller allowlist for
+  // the library (CS2), and a pinned manifest of every module the live entry
+  // points load (CS3) — each also proven against synthetic violations.
+  // ==========================================================================
+  {
+    const packageJson = JSON.parse(readFileSync(resolve(REPO_ROOT, "package.json"), "utf8")) as {
+      dependencies: Record<string, string>;
+    };
+    const dependencies = Object.keys(packageJson.dependencies);
+    const live = walkImportGraph({ root: REPO_ROOT, entryPoints: LIVE_ENTRY_POINTS, allowedPackages: dependencies });
+    check("CS1. no live entry point reaches a stage executor, stageExecution.js, revision.js, "
+      + "dist/harness/contentRun/** or dist/studio/** — transitively, through any intermediary — and every import "
+      + "on the live graph can be followed"
+      + (live.violations.length ? ` — ${live.violations.map(describeViolation).join("; ")}` : ""),
+      live.violations.length === 0 && LIVE_ENTRY_POINTS.every((entry) => live.reached.includes(entry))
+        && live.reached.length > LIVE_ENTRY_POINTS.length);
+    const configured = liveEntryPointsFromConfig(REPO_ROOT);
+    check("CS1a. the walked entry points are exactly the live ones render.yaml's commands and package.json's "
+      + "start, migrate, dry-run and evidence-sync scripts name"
+      + (configured.unresolved.length ? ` — unresolved: ${configured.unresolved.join("; ")}` : ""),
+      configured.unresolved.length === 0
+        && JSON.stringify(configured.entryPoints) === JSON.stringify([...LIVE_ENTRY_POINTS].sort()));
+
+    // The other direction: what the Studio will run reaches no publishing,
+    // provider, approval, token or live-database module — the pure package
+    // validator, loaded through packageMap.js, is the one named exception.
+    const studioSide = walkImportGraph({
+      root: REPO_ROOT, entryPoints: studioSideEntryPoints(REPO_ROOT), forbiddenModules: STUDIO_FORBIDDEN_MODULES,
+      forbiddenTrees: STUDIO_FORBIDDEN_TREES, allowedModules: STUDIO_ALLOWED_EXCEPTIONS, checkPathLiterals: false,
+      allowedPackages: dependencies,
+    });
+    check("CS1c. the content-run library (and any compiled src/studio/** module) reaches no posting, provider, "
+      + "approval, Instagram-token or live-database module, nor any live service's code; posting-tool/validation.js, "
+      + "through packageMap.js, is the only allowlisted exception"
+      + (studioSide.violations.length ? ` — ${studioSide.violations.map(describeViolation).join("; ")}` : ""),
+      studioSide.violations.length === 0
+        // (assembled: this suite holds computed import() calls, so it may not
+        // carry a compiled library module path as a string — see CS2)
+        && studioSide.reached.includes(["dist/harness", ["content", "Run"].join(""), "pipeline.js"].join("/"))
+        && studioSide.reached.filter((m) => m.startsWith("dist/mcp/")).join() === STUDIO_ALLOWED_EXCEPTIONS.join()
+        && studioSide.reached.includes("dist/harness/packageMap.js"));
+
+    // Synthetic compiled trees: each proves one way a violation could hide.
+    const csTree = (files: Record<string, string>) => {
+      const dir = mkdtempSync(join(tmpdir(), "gcd-cs-graph-"));
+      for (const [name, text] of Object.entries(files)) {
+        mkdirSync(dirname(join(dir, name)), { recursive: true });
+        writeFileSync(join(dir, name), text, "utf8");
+      }
+      try {
+        return walkImportGraph({ root: dir, entryPoints: ["dist/entry.js"], allowedPackages: ["pg"] });
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    };
+    const forbiddenAgent = { "dist/harness/agents/finalCritic.js": "export const x = 1;\n" };
+    const csChained = csTree({
+      "dist/entry.js": 'import "./mid.js";\n',
+      "dist/mid.js": 'export * from "./deep.js";\n',
+      "dist/deep.js": 'export const later = () => import("./harness/agents/finalCritic.js");\n',
+      ...forbiddenAgent,
+    });
+    const onlyKind = (result: ReturnType<typeof csTree>, kind: string) =>
+      result.violations.length > 0 && result.violations.every((v) => v.kind === kind);
+    const csClean = csTree({
+      "dist/entry.js": 'import { readFile } from "node:fs/promises";\nimport pg from "pg";\nimport "./ok.js";\n'
+        + 'export const run = () => import("./ok.js");\n',
+      "dist/ok.js": 'export const ok = "harness/agents/finalCritic";\n',
+    });
+    check("CS1b. the walk cannot be defeated by an intermediary: a forbidden module reached through a plain import, a "
+      + "re-export and a literal dynamic import is reported with the whole chain; a computed import(), a require, an "
+      + "out-of-tree or missing module, an undeclared package and a string naming a forbidden path each fail closed; "
+      + "a clean graph passes",
+      csChained.violations.length === 1 && csChained.violations[0]!.kind === "forbidden"
+        && csChained.violations[0]!.chain.join() === "dist/entry.js,dist/mid.js,dist/deep.js"
+        && onlyKind(csTree({ "dist/entry.js": "const target = process.argv[2];\nawait import(target);\n",
+          ...forbiddenAgent }), "non-literal-dynamic-import")
+        && onlyKind(csTree({ "dist/entry.js": 'import { createRequire } from "node:module";\n'
+          + "const load = createRequire(import.meta.url);\n" }), "require")
+        && onlyKind(csTree({ "dist/entry.js": 'const x = require("./mid.js");\n', "dist/mid.js": "" }), "require")
+        && onlyKind(csTree({ "dist/entry.js": 'import "../outside.js";\n' }), "outside-tree")
+        && onlyKind(csTree({ "dist/entry.js": 'import "file:///etc/x.js";\n' }), "outside-tree")
+        && onlyKind(csTree({ "dist/entry.js": 'import "./gone.js";\n' }), "unresolved")
+        && onlyKind(csTree({ "dist/entry.js": 'import "lodash";\n' }), "undeclared-package")
+        && onlyKind(csTree({ "dist/entry.js": 'export const target = "../studio/worker/run.js";\n' }), "forbidden-path-literal")
+        && csClean.violations.length === 0 && csClean.reached.join() === "dist/entry.js,dist/ok.js");
+
+    // The allowlist over the whole repository, and over synthetic files. A
+    // library module path is assembled rather than written out, so this suite
+    // — which holds computed import() calls of its own — never carries one.
+    const codeFiles = repositoryCodeFiles(REPO_ROOT);
+    const callers = callerViolations(codeFiles);
+    const LIB = ["content", "Run"].join("");
+    const cliText = codeFiles.get("scripts/local/content-run.mjs") ?? "";
+    const refused = (files: Record<string, string>) => callerViolations(new Map(Object.entries(files))).map((v) => v.file);
+    check("CS2. only scripts/local/content-run.mjs and src/studio/worker/** import the content-run library, and nothing "
+      + "under src/studio/web/** imports it, the stage-execution boundary or a stage executor — enforced before "
+      + "src/studio/** exists"
+      + (callers.length ? ` — ${callers.map((v) => `${v.file}: ${v.detail}`).join("; ")}` : ""),
+      callers.length === 0 && codeFiles.size > 100 && cliText.length > 0
+        && [...codeFiles.keys()].every((file) => !file.startsWith("src/studio/"))
+        && refused({ "scripts/local/moved-cli.mjs": cliText }).join() === "scripts/local/moved-cli.mjs"
+        && refused({
+          "src/studio/worker/run.ts": `import { runFullPipeline } from "../../harness/${LIB}/index.js";\n`,
+          "src/studio/worker/deep/job.ts": `export const load = () => import("../../../harness/${LIB}/pipeline.js");\n`,
+          "src/studio/web/ok.ts": 'import { buildEvidencePack } from "../../harness/evidence/pack.js";\n',
+        }).length === 0
+        && refused({
+          "src/studio/web/routes.ts": `import { computeCostCeiling } from "../../harness/${LIB}/index.js";\n`,
+          "src/studio/web/boundary.ts": 'import { invokeStage } from "../../harness/agents/stageExecution.js";\n',
+          "src/studio/web/critic.ts": 'export const c = () => import("../../harness/agents/finalCritic.js");\n',
+          "src/studio/shared/util.ts": `export * from "../../harness/${LIB}/evidence.js";\n`,
+          "src/harness/other.ts": `export const later = () => import("./${LIB}/pipeline.js");\n`,
+          "scripts/other.mjs": `const target = resolve(root, "${LIB}/index.js");\nawait import(target);\n`,
+        }).sort().join() === ["scripts/other.mjs", "src/harness/other.ts", "src/studio/shared/util.ts",
+          "src/studio/web/boundary.ts", "src/studio/web/critic.ts", "src/studio/web/routes.ts"].join());
+
+    // The shared-module diff guard.
+    const manifest = JSON.parse(readFileSync(resolve(REPO_ROOT, LIVE_PATH_MANIFEST), "utf8")) as LivePathManifest;
+    const liveModules = liveSourceDigests(REPO_ROOT, live.reached);
+    const manifestProblems = livePathManifestViolations(manifest, { entryPoints: LIVE_ENTRY_POINTS, modules: liveModules });
+    check(`CS3. every module the live entry points load (${liveModules.size}) is pinned by sha256 in ${LIVE_PATH_MANIFEST}: `
+      + "an edit to one, or a module entering or leaving the live set, fails until the change declares it there"
+      + (manifestProblems.length ? ` — ${manifestProblems.join("; ")}` : ""),
+      manifestProblems.length === 0 && liveModules.size === live.reached.length && liveModules.size > 0
+        && [...liveModules.keys()].every((path) => path.startsWith("src/") && path.endsWith(".ts")));
+    const csLive = { entryPoints: ["dist/e.js"], modules: new Map([["src/a.ts", "1".repeat(64)], ["src/b.ts", "2".repeat(64)]]) };
+    const csManifest = (edit: (m: LivePathManifest) => void = () => {}): LivePathManifest => {
+      const m: LivePathManifest = {
+        schema: "gcd-live-path-manifest/1", entryPoints: ["dist/e.js"],
+        modules: [{ path: "src/a.ts", sha256: "1".repeat(64), declared: "baseline" },
+          { path: "src/b.ts", sha256: "2".repeat(64), declared: "baseline" }],
+      };
+      edit(m);
+      return m;
+    };
+    const csEdited = { ...csLive, modules: new Map([["src/a.ts", "3".repeat(64)], ["src/b.ts", "2".repeat(64)]]) };
+    const csGrown = { ...csLive, modules: new Map([...csLive.modules, ["src/c.ts", "4".repeat(64)]]) };
+    const problemsFor = (m: LivePathManifest, l: typeof csLive) => livePathManifestViolations(m, l);
+    check("CS3a. the diff guard refuses an undeclared edit, a declaration with no reason, a newly live module, a "
+      + "module no longer live, an unsorted or duplicated list and other entry points — and accepts the same edit once "
+      + "its new sha256 is declared with a reason",
+      problemsFor(csManifest(), csLive).length === 0
+        && problemsFor(csManifest(), csEdited).some((p) => p.startsWith("src/a.ts was edited without a declaration"))
+        && problemsFor(csManifest((m) => { m.modules[0] = { path: "src/a.ts", sha256: "3".repeat(64),
+          declared: "S1: exports the price table (live-path edit)" }; }), csEdited).length === 0
+        && problemsFor(csManifest((m) => { m.modules[0] = { path: "src/a.ts", sha256: "3".repeat(64), declared: " " }; }),
+          csEdited).some((p) => p.includes("carries no declaration reason"))
+        && problemsFor(csManifest(), csGrown).some((p) => p.startsWith("src/c.ts is now live-loaded but is not declared"))
+        && problemsFor(csManifest((m) => { m.modules.push({ path: "src/z.ts", sha256: "5".repeat(64), declared: "x" }); }),
+          csLive).some((p) => p.startsWith("src/z.ts is declared but is no longer live-loaded"))
+        && problemsFor(csManifest((m) => { m.modules.reverse(); }), csLive).some((p) => p.includes("not sorted"))
+        && problemsFor(csManifest((m) => { m.modules.push({ ...m.modules[1]! }); }), csLive)
+          .some((p) => p.includes("lists a module twice"))
+        && problemsFor(csManifest((m) => { m.entryPoints = ["dist/other.js"]; }), csLive).some((p) => p.includes("entry points")));
+
+    // The CLI parses --scope-tags and --resume-from before any compiled module
+    // is loaded, so it keeps its own copies of the two definitions the library
+    // also uses; they must not drift.
+    const csCli = await import(pathToFileURL(resolve(REPO_ROOT, "scripts/local/content-run.mjs")).href);
+    const normalizedBoth = (value: unknown) => [csCli.normalizeScopeTags, csCli.contentRunLibrary.normalizeScopeTags]
+      .map((normalize: (v: unknown) => string[]) => {
+        try { return JSON.stringify(normalize(value)); } catch (e) { return `threw ${(e as Error).message}`; }
+      });
+    check("CS4. the CLI's argument-parsing copies of normalizeScopeTags and RESUME_POINTS equal the library's",
+      ["b, a,,a", " x ", "a,b,a", "q", " , ", "", undefined, "a,,b , c"].every((value) => {
+        const [cliResult, libResult] = normalizedBoth(value);
+        return cliResult === libResult;
+      })
+        && normalizedBoth(" , ")[0]!.startsWith("threw --scope-tags needs at least one tag")
+        && JSON.stringify(csCli.RESUME_POINTS) === JSON.stringify(csCli.contentRunLibrary.RESUME_POINTS));
+  }
 
   console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURE(S)`);
   process.exit(failures === 0 ? 0 : 1);
