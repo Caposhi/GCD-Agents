@@ -1,6 +1,6 @@
 # GCD Content Intelligence roadmap
 
-Last reviewed: 2026-09-29.
+Last reviewed: 2026-09-30.
 
 This roadmap is the canonical unfinished-work sequence and the current-phase cursor. It orders work; it does not grant authority to deploy, migrate, call providers, change external configuration, or begin a phase. [Status](STATUS.md) records what is verified true now. Where this file and verified production evidence disagree, resolve the discrepancy rather than following this text. Roadmap continuity is binding — see [`AGENTS.md`](../AGENTS.md).
 
@@ -23,7 +23,240 @@ These are not interchangeable and must not be collapsed into "done". `MERGED` in
 
 ## Implemented repository change awaiting merge
 
-### Content Studio S1 — the pipeline library `src/harness/contentRun/**`, the local CLI a thin shell over it, and the §5.4 protections; PR #102 recorded as merged — `IMPLEMENTED`
+### Mutation-harness speed-up — incremental, verified builds in the payload-contract mutation harness; Content Studio S1 recorded as merged — `IMPLEMENTED`
+
+**State:** `IMPLEMENTED` on branch `claude/mutation-step-perf-dao9sc`, based directly on `origin/main` at `c1c19f4b89bd405b854e44bd0aa863de24f3d483` (the merge of PR #103, Content Studio S1). **Not `MERGED`, not `DEPLOYED`, not `ENABLED`, not `PRODUCTION-VALIDATED`.** The change is CI tooling (`scripts/ci/payload-contract-mutation.mjs`) and documentation. No product source, test, `check(...)` name, prompt, skill, `config/` file, model, limit, migration, `render.yaml`, workflow, `timeout-minutes`, CI job or runner type changed. All six stages keep `executionEnabled: false`. The partial-release interval (bound `2026-10-22T18:52Z`; see [Status](STATUS.md)) is unchanged, so no release is possible. The tracked `.DS_Store` is untouched. No model was called.
+
+**PR / merge:** opened from `claude/mutation-step-perf-dao9sc` into `main`; its number and CI run are recorded in the PR. **This PR's merge SHA is the blocking follow-up** permitted by the mutable-identifier rule in [`AGENTS.md`](../AGENTS.md).
+
+**Why.** On `main` at `c1c19f4` ([run 241](https://github.com/Caposhi/GCD-Agents/actions/runs/36716816644)), the mutation step took **38m47s** of the quality job's **40m12s**, against `timeout-minutes: 60`. Two PRs earlier it took about 23 minutes, and every Studio PR adds mutations. A timeout fails attempt 1 of the quality job, which the M1 readiness gate cannot accept. A sixth job would not help, because the gate counts exactly five. Every mutation of compiled source ran a full, non-incremental `tsc` (about 10 CPU-seconds), and its restore forced a second one.
+
+**Owner decisions (2026-09-30).**
+
+1. The task first set a target of **≤ 20 minutes** for the CI mutation step, and required stopping before pushing if it could not be met. The first full local run after the change took **23m27s**. That projects to about 26½ minutes on CI, so work stopped before pushing and the options were reported.
+2. The owner then revised the target to **≤ 25 minutes**, projected with the local-to-CI ratio of `main` run 241 against the local baseline (38m47s ÷ 34m22s = **1.1285**). The owner also asked for one more injected-fault check: `M-inc-tsc`, below.
+3. Before that run finished, the owner **replaced the projection rule**. Push and open the PR if the full local run on the final code is ALL PASS with every invariant intact (including `M-inc0`, `M-inc-restore`, `M-inc-end`, `M-inc-fault` and `M-inc-tsc`), whatever the projection. **The merge decision is made on the actual CI figure, with a bar of 30 minutes for the mutation step.** The final-code local run took **25m41s**, which projects to about 29 minutes at 1.1285. It passed every invariant, so the PR was opened.
+
+**Measured first — the profile, before and after.** Before: 66 mutations, every eighth id from `M1` to `M521`, so every group is sampled. They ran on unchanged `main` with 4 workers, in a scratch-instrumented copy of the harness. After: the harness's own `--profile` output. Shares are of summed worker time.
+
+| | Build | Restore rebuild | Suite | Other |
+|---|---:|---:|---:|---:|
+| Before, 66-mutation sample | 29% | 7% | 64% | ≈0% |
+| After, the same 66 | 2.5% | 0.7% | 96.8% | ≈0% |
+| After, all 522 | 3.1% | 1.7% | 95.1% | ≈0% |
+
+Per compiled mutation, the build went from **11.7 s to 1.0 s**, and its restore from about 10 s (a full rebuild, often paid by the next mutation) to **0.6 s**. The suite took about 9.7–10.8 s under 4-way load both before and after. One suite run costs about 8.3 CPU-seconds on an idle machine:
+
+- about 3 CPU-s in the 17 CLI child processes its checks spawn, each mostly Node start-up and module loading;
+- about 1.7 CPU-s in the TypeScript parsing of `CS1`/`CS2`'s import-graph and caller checks;
+- about 0.6 CPU-s loading the suite itself;
+- the rest in about 1,300 small checks.
+
+**Delivered.**
+
+1. **Incremental compilation, one long-lived compiler per worker.**
+   - Each worker starts `payload-contract-mutation.mjs --incremental-build-server` in its own copy. It runs the copy's own TypeScript and re-reads `tsconfig.json` for every build.
+   - It keeps the previous builder program in memory: `createEmitAndSemanticDiagnosticsBuilderProgram`, the builder that `tsc --incremental` and `tsc --watch` are built on. It also keeps every unchanged file's syntax tree, handed back only when the file's bytes and parse options match.
+   - A build therefore re-checks and re-emits only the files a change affects. It is still a full type-check of everything affected; nothing is transpiled without checking.
+   - The exit status comes from `tsc`'s own `emitFilesAndReportErrorsAndGetExitStatus`: 0 only with no diagnostic of any kind. A mutation that fails to compile is still not a pass.
+   - Measured on an idle machine:
+     - one-file body change: 0.1–0.2 s;
+     - an exported-signature change that re-checks every dependent: 2.4–2.9 s, about 3 CPU-s (a full `tsc` is about 10);
+     - a type error: refused with `TS2322`.
+2. **No stale `dist/` between mutations.** A compiled mutation's restore is rebuilt immediately, before its worker takes the next mutation. Before, it was rebuilt lazily by the next mutation. The rule is still "rebuild whenever `dist/` could differ from its sources".
+3. **Copies start with no `dist/`.** The authoritative checkout's `dist/` is no longer copied, so each copy's first build writes its `dist/` from nothing.
+4. **The compile cache for the suite.** The suite and its CLI children run with `NODE_COMPILE_CACHE` in the worker's own directory. It holds V8 bytecode for byte-identical module sources only, and saved about 4% of suite CPU.
+5. **Five soundness checks, all passing:**
+   - **`M-inc0`:** every copy's first build is byte-identical to a clean full build (`tsc -p tsconfig.json --incremental false`, into a separate directory) of the same sources (87 files).
+   - **`M-inc-restore`:** after **every** compiled mutation (176 of 176), the rebuild of its restored sources is byte-identical to that clean build. On any difference, the copy's `dist/` is rebuilt from nothing, so no later mutation inherits it.
+   - **`M-inc-end`:** after its last mutation, each worker does a fresh clean full build and requires its incremental `dist/` to match it byte for byte, before the final suite pass (`M-end`).
+   - **`M-inc-tsc`** (the owner's addition): a source state holding an injected type error fails real `tsc` (`--noEmit`, non-zero) **and** the incremental compiler (non-zero status). Once the fault is removed, both return 0.
+   - **`M-inc-fault`:** proves the checks can fail. The compiler refuses an injected type error (`TS2322`). The comparison reports three faults, each a real way an incremental `dist/` can go wrong: an orphaned output left behind when a source is removed, a stale output the incremental compiler does not re-emit, and a missing file. It also reports no difference for identical trees.
+6. **Timing.** The log ends with the wall time spent on each kind of work, summed over the workers. `--profile <file>` writes the per-mutation split.
+
+**Invariants, all kept.**
+
+- Every one of the 522 mutations runs the whole suite and must make every check it names fail by name.
+- In the final-code run, all 1,053 per-mutation result and restore lines are **byte-identical in content and order** to the unchanged-`main` run. The only additions are the five new harness lines (`M-inc0`, `M-inc-restore`, `M-inc-end`, `M-inc-tsc`, `M-inc-fault`), placed so that every existing line keeps its relative order.
+- The byte-for-byte restore and its sha256 verification are unchanged.
+- Copies still carry no Git. `M-isolation`, `M-capture`, `M-kill`, `M0`, `M-order`, `M-end`, `M-copies` and `M-authority` are unchanged.
+- The compilers are process-group leaders like every build and suite, so signals stop them. Each also exits when its input closes, so a killed harness cannot leave one running.
+
+**Figures — harness duration, before and after.**
+
+| Where | Before | After |
+|---|---:|---:|
+| CI mutation step | **38m47s** (`main` run 241); 40m21s (PR #103's run 240) | recorded in this PR's CI run; reconciled here with the merge SHA |
+| CI quality job | **40m12s** of 60 (run 241); 41m46s (run 240) | recorded in this PR's CI run |
+| Local, this container (4 CPUs, Node 22.22.2, 4 workers, 522 mutations) | **34m22s** (unchanged `main`, all pass) | **23m27s** (first full run), **25m41s** (final code, with `M-inc-tsc`) — all pass |
+
+The two after-runs differ mostly in suite time (9.9 s and 10.8 s per suite under load), which is machine variance. Summed worker time for the final run: 530 suites 5,698 s; 176 builds 184 s; 176 restore builds 100 s; 4 first builds 69 s; 5 clean builds 70 s; fault builds 10 s.
+
+**Material design decisions.**
+
+- **A persistent builder program, not `tsc --incremental` per build.** Measured on an idle machine, `tsc --incremental` for a one-file body change still took about 3.2 CPU-s, 1.07 s of it re-parsing and re-binding 404 unchanged files. The persistent builder takes 0.1–0.2 s. Both use the same TypeScript builder, and errors are decided by `tsc`'s own exit-status function.
+- **Prove each restore, not only the end state.** Comparing after every compiled mutation costs one small build and a 2 MB byte comparison each time. It turns "incremental is sound" from an end-of-run spot check into 176 proofs. The end-of-worker clean build and the fault injections are kept as well.
+- **The clean reference is a real `tsc` CLI build** with no incremental state, into its own directory, so it shares nothing with the compiler it checks except TypeScript itself.
+
+**Material rejected alternatives.**
+
+- **Transpile-only builds, running only the named check, skipping checks, or sampling mutations.** Forbidden by the task, and each would weaken what a mutation proves.
+- **V8 thread, GC and tiering flags** (`--max-semi-space-size`, `--single-threaded-gc`, `--single-threaded`, `--max-opt`, `--no-opt`, `--max-lazy`). Measured: none lowered the total CPU of `tsc` or the suite.
+- **A persistent suite process re-running the checks in memory.** Rejected: product modules can keep state across runs, and a run could then read a file a previous mutation changed.
+- **Reordering the queue to cluster compiled mutations.** Unnecessary once restores are immediate and cheap. Output order is fixed by id either way.
+- **Merging or parallelizing the suite's CLI children.** Merging would change what the checks test, and parallelizing buys nothing: the harness is CPU-bound at 4 workers.
+
+**Migrations / schema impact:** none.
+
+**Automated validation.** Build and typecheck clean. `npm run test:offline` passed all nine suites with counts unchanged — posting 52, image 18, orchestrator 119, gate 56, API 51, render identity one invariant-suite pass, ownership/recovery 112, content intelligence 1,322, interval monitor 94 — **1,825** checks.
+
+- **`npm run test:payload-mutation`, twice, locally (4 CPUs, available parallelism 4, 4 workers, 39 captured paths, 522 mutations: 520 prohibited, 2 coordinated-authority):**
+  - on unchanged `main` at `c1c19f4`: **ALL PASS, 34m22s**;
+  - on the final code: **ALL PASS, 25m41s**, with `M-isolation`, `M-capture`, `M-kill`, `M0`, `M-inc0`, `M-order`, `M-inc-restore` (176 of 176), `M-inc-end`, `M-end`, `M-inc-tsc`, `M-inc-fault`, `M-copies` and `M-authority` green;
+  - an earlier full run of the same change without `M-inc-tsc` took **23m27s**, all pass;
+  - all 1,053 per-mutation result and restore lines of the final run are byte-identical, in content and order, to the `main` run's.
+- **The golden test** (`node scripts/local/content-run-golden.mjs --base c1c19f4 --allow-stack-frames`): 240 files and 84 scenarios, **0 differences**, 59 stack-frame-only stderr differences.
+- The M1 readiness offline suite (461 checks), the simulated dry run, and the deployment-controller fixtures.
+- Markdown links (66 files); environment coverage (35 variables); the sensitive scan (203 tracked text files), with manual triage of every added line: no email address, phone number, token, credential, booking link, customer datum or facts-file content.
+- `npm audit --omit=dev` (0 vulnerabilities); `git diff --check` and the whole-tree whitespace check.
+
+AgentShield 1.4.0 exited zero at **B/87** with the same 18 findings (9 medium, 9 low; no critical or high). CI on the final head is recorded in the PR.
+
+**Production evidence:** none, and none is possible. The harness is CI tooling.
+
+**Rollback / recovery:** revert the commit. There is no migration and no durable state. Reverting restores full `tsc` builds and the lazy restore rebuild.
+
+**Security and privacy implications:** none new. The harness stays offline: no network, database, provider or credential. It still never writes the authoritative checkout (`M-authority`, `M-kill`). The compile cache and the build state live in each worker's disposable directory and are removed with it. The workflow, its permissions and its five jobs are unchanged.
+
+**Accepted limitations.**
+
+- **The suite is now about 95% of the harness's time**, and each added mutation adds one full suite run (about 10 s of worker time on 4 workers). The step still grows linearly. The remaining levers are the owner's: a larger CI runner with `MAX_WORKERS` raised, a higher timeout, or restructuring the gate.
+- **The original ≤ 20-minute target was not met.** The CI figure decides the merge against the owner's 30-minute bar.
+- **Each compiler holds its program in memory** (about 450–520 MB per worker in this container, four workers).
+- **A mutated `dist/` is not itself compared with a clean build of the mutated sources**, which would cost the full build this change removes. The builder re-emits every file a change affects, including files whose output depends on another file (verified in a scratch project with const-enum inlining, in both directions). Every restore is compared with the clean build.
+
+**Unresolved follow-ups.**
+
+- **This PR's merge SHA** (mutable-identifier exception) — **blocking**.
+- **This PR's own CI:** the mutation step's and quality job's durations on the final head, against the owner's 30-minute bar. They are recorded in the PR and reconciled into this record with the merge SHA.
+- **The mutation step's growth** (the first accepted limitation); carried in the cursor.
+
+**Documents updated:** this file (this record; S1's record moved to *Merged repository change awaiting rollout* with its merge, CI and the owner's acceptance check reconciled; the cursor; *Planned — Content Studio*; dated notes on the carried speed-up follow-ups), [Testing](TESTING.md), [Status](STATUS.md), [README](../README.md), [AI handoff](AI_HANDOFF.md), [Architecture](ARCHITECTURE.md), [Deployment control](DEPLOYMENT.md) (the dated auto-deploy observation), and the mutation harness's header.
+
+## Next repository change — Content Studio S2 (Studio schema and migrations), pending the mutation-harness speed-up's merge
+
+**The next repository change is Content Studio S2:** `studio/migrations/0001_*.sql` and on, `src/studio/db/migrate.ts`, `npm run studio:migrate`, the database identity checks and the tripwire `_migrations` table, proven on disposable PostgreSQL 16 and 18 with the cross-runner refusals. See the [Content Studio design](CONTENT_STUDIO_DESIGN.md) §3.7, §4 and §10.
+
+- **S1 is `MERGED`** through PR #103 at `c1c19f4…` (its record is now the first under *Merged repository change awaiting rollout* below). **S2 begins only after the mutation-harness speed-up — at the top of this file, `IMPLEMENTED`, not merged — merges,** because S2 must start from a `main` that carries it. The design's PRs are serial: each starts from `main` after the previous one merges.
+- S2 needs its own explicit authorization; the design's approval and S1's authorization grant none, and this file grants none.
+- Nothing here authorizes enabling any stage, creating any Render service or database, any release, or any change to the Phase-A approval gate.
+
+This section was headed *Next repository change — not chosen*, then *Next repository change — Content Studio PR 1 (library extraction), pending the owner's approval of the design*, then *Next repository change — Content Studio S1 (library extraction)*, and then *Next repository change — Content Studio S2 (Studio schema and migrations), pending S1's merge*. Earlier records refer to it by those names.
+
+Open items, carried unchanged except where the mutation-harness speed-up at the top of this file says otherwise:
+
+- **`reasoning-standard` output headroom:** 126,000 of the model's 128,000 output tokens since PR #95; recovering it by narrowing the `claimUse[].summary` allowance is open.
+- **`brand-compliance-critic` is still on `claude-sonnet-4-6`** (`agents/brand-compliance-critic.md`) — Lane S work; routing it, and the two `sdk.ts` fallbacks with it, is open (see the legacy model migration record).
+- **The M1→M2 interval ends `2026-10-22T18:52Z`**; the expiry is a decision point for the owner (see [Status](STATUS.md)).
+- **AgentShield grade B/87** (9 medium oversized-agent, 9 low unspecified-model findings; no critical or high).
+- **Splitting completed phases out of this file** into `docs/COMPLETED_ROADMAP_PHASES.md`, a separate documentation change.
+- **Stage 2's restrictions can misdescribe the evidence** — a follow-up candidate recorded by the PR #99 record (*Documentation reconciliation — PR #98 recorded as merged, the revision pass's two owner-run rounds, and a corrected "critic gap"*, under *Merged repository change awaiting rollout* below); no fix is chosen.
+- **`--resume-from production-direction`** — a follow-up candidate recorded by the contact-in-overlay change (PR #101, under *Merged repository change awaiting rollout* below): a live run refused at stage 4 cannot be resumed there today, so stages 1–3 are paid again; not built.
+- Carried from the revision-pass record: describing the identity records in `SCRIPT_CLAIMS` and `PLATFORM_CLAIMS` in the critic prompts; tuning `POLICY_EFFORT.critic` and `THINKING_RESERVE_TOKENS` per lens.
+- **`DEFERRED`, as the owner listed them on 2026-09-28** (not previously recorded in this repository; recorded here so they are not lost): Mercedes 223.2 and the round-2 fluids; the DPF/GPF bulk-oil question; the Spanish version.
+- ~~**The owner's post-merge fake-runner check of S1** on the real facts file and one real run folder (fake runner only, no cost; the commands are in S1's PR).~~ **Done 2026-09-30** (operator-local; recorded in S1's record below).
+- **The mutation step's growth.** After the speed-up at the top of this file the suite is about 95% of the harness's time and every mutation still runs it whole, so the step still grows with each mutation. The levers left are the owner's: a larger (paid) CI runner with `MAX_WORKERS` raised, a higher `timeout-minutes`, or restructuring the gate. The owner's merge bar for the speed-up is **30 minutes** for the CI mutation step (2026-09-30).
+- **An independent review of the Content Studio design** before later Studio PRs, carried from the design record.
+- **The merge SHA of the mutation-harness speed-up at the top of this file** (mutable-identifier exception) — **blocking**; it is reconciled into that record once merged. *(S1's merge-SHA follow-up, formerly here, is discharged: `c1c19f4…`; PR #102's was discharged by S1: `4664515…`; PR #101's by PR #102: `f111012…`.)*
+
+## Planned — Content Studio (owner decisions of 2026-09-29) — `PLANNED`
+
+**State:** `PLANNED`. The design is [`docs/CONTENT_STUDIO_DESIGN.md`](CONTENT_STUDIO_DESIGN.md), added by the documentation change now recorded under *Merged repository change awaiting rollout* (PR #102). It was first recorded with the owner's approval pending. **The owner approved it on 2026-09-29, with the answers below.** Approval is not implementation. **S1 — the pipeline library and the §5.4 protections — is `IMPLEMENTED`, not merged** (*Content Studio S1*, at the top of this file). *(Corrected 2026-09-30: S1 is `MERGED` through PR #103 at `c1c19f4…`, not deployed or enabled; its record is under *Merged repository change awaiting rollout* below.)* No Studio service exists: no `src/studio/**` code, Studio migration, Render service, database, Google OAuth client, secret or Anthropic key. This entry sits outside the production-wiring sequence: the Studio implements none of P1–P8, performs none of M2–M7, and moves no production-wiring milestone.
+
+**Owner decisions (2026-09-29), recorded verbatim:**
+
+1. Build a web interface that removes manual terminal runs of the content pipeline and lets the owner and staff view every run and report in a browser.
+2. **A separate, review-only "Content Studio"** in the same `render.yaml`: its own web service, background worker, optional cron job and its own PostgreSQL database. It is **not** built inside the live `gcd-social-*` services.
+3. **Users:** the owner plus a few staff, signing in with Google, restricted to `@germancardepot.com`. The owner decides which users may start paid runs.
+4. **Runs are on demand only at launch.** The cron job is designed but disabled until the owner decides otherwise.
+5. **The manufacturer facts file** (`config/automotive-facts.local.json`, today only on the owner's Mac) may be uploaded to the Studio and stored in its private database. It is never committed to GitHub.
+
+**Amendment to decision 2 (owner, 2026-09-29).** The Studio gets a **separate Blueprint file, `render.studio.yaml`**, not the shared `render.yaml`. Decision 2 is otherwise unchanged. Whether Render supports a Blueprint at a non-default path is TO VERIFY. If it does not, the Studio's resources are created by hand from that checked-in file, which is the specification. **`render.yaml` is not modified at all by any Studio PR.** Decision 2 above is kept as first given.
+
+**The owner's answers of 2026-09-29 to the design's §11.1** (recorded in full in design §11.1a):
+
+1. **The design is approved** as amended. It stays `PLANNED`, and each S-PR and owner action still needs its own authorization.
+2. **Decision 2 is amended** as above.
+3. **The freeze covers new services; the default is kept.** No Studio service is created (O3) until the M1→M2 interval (bound `2026-10-22T18:52Z`) is closed, or under whatever terms are then in force.
+4. **Caps:**
+   - owner caps $50 a day and $200 a month;
+   - deployment ceilings `STUDIO_MAX_DAILY_USD` = 75 and `STUDIO_MAX_MONTHLY_USD` = 300;
+   - an Anthropic workspace spend limit of $300 a month for the Studio key.
+
+   The reservation stays at the full printed ceiling. Tightening the estimate is a separate, reviewed future change.
+5. **Only the owner is a `runner` at launch;** staff are `viewer`. Runners added later get a $25 per-user daily cap.
+6. **Time zone:** `America/New_York`.
+7. **Retention:** runs are kept until the owner deletes them. The audit log and spend ledger are kept for 2 years.
+8. **The worker starts on `standard`,** is measured, and may move down to `starter`. Plan prices are TO VERIFY.
+9. **The P2 conflict is a binding rule.** Whichever comes first, production-wiring P2 or Studio S3, must define an explicit, separately reviewed review-only execution context, so that the local CLI and the Studio keep working. It can never approve or publish, and it sits beside the live authority gate, never replacing it. A dated pointer at P2 in [PRODUCTION_WIRING_DESIGN.md](PRODUCTION_WIRING_DESIGN.md) records it.
+10. **A separate Anthropic workspace and key for the Studio is required.** O2 must happen before the first live run.
+11. **Fake runs stay in the Studio, owner-only,** labelled on every screen.
+
+**Operational note (owner, 2026-09-29).** `STUDIO_BOOTSTRAP_OWNER_EMAIL` must name a real Google Workspace **user** account, not a shared mailbox, an alias or a group, because the `hd` and `email_verified` checks only work for Workspace user accounts. The owner enters the value in Render; it is never committed.
+
+**Sequence (design §10), serial, each separately authorized:**
+
+- **S1** library extraction — **`MERGED`** through PR #103 at `c1c19f4…` (2026-09-30), not deployed or enabled;
+- **S2** Studio schema and migrations — the next repository change, pending the mutation-harness speed-up's merge;
+- **S3** worker and queue;
+- **S4** authentication;
+- **S5** read-only screens;
+- **S6** run and revise actions with caps;
+- **S7** fact upload and legacy import;
+- **S8** a new `render.studio.yaml`, with `render.yaml` byte-identical;
+- **S9** the cron, built disabled.
+
+**Owner actions, named separately:**
+
+- **O1** create the Google OAuth client;
+- **O2** create the Studio's Anthropic key;
+- **O3** create the Studio resources from `render.studio.yaml`;
+- **O4** set the secrets;
+- **O5** the first deploy and setup;
+- **O6** the first live run.
+
+**Gates:**
+
+- ~~**Owner approval of the design.**~~ **Given 2026-09-29.**
+- **The release-freeze gate — confirmed by the owner.** The M1→M2 interval is bound at `2026-10-22T18:52Z`, and its prohibition covers "any service". No Studio service is created (O3) until the interval is closed, or under the terms then in force. Merging S1–S9 is not a release, while `deploy-production` keeps refusing at its disabled gate and native auto-deploy stays off on the live services (design §10).
+- **The Blueprint check before S8 merges.** Is this repository linked to a Render Blueprint, which file does it read, and is auto-sync on? S8 adds only `render.studio.yaml` and leaves `render.yaml` byte-identical. Any Blueprint or dashboard action touching a `gcd-social-*` resource is a stop condition (design §3.6).
+- **The P2 rule** (design §5.4): whichever comes first, P2 or S3, defines the review-only execution context.
+- **O2 before O6:** no live Studio run without the separate Anthropic workspace and key.
+
+**Open questions:** answered by the owner on 2026-09-29 (design §11.1 and §11.1a).
+
+## Merged repository change awaiting rollout
+
+### Content Studio S1 — the pipeline library `src/harness/contentRun/**`, the local CLI a thin shell over it, and the §5.4 protections; PR #102 recorded as merged — `MERGED`
+
+**Merge reconciliation (recorded 2026-09-30 by the mutation-harness speed-up at the top of this file):** `MERGED` through [PR #103](https://github.com/Caposhi/GCD-Agents/pull/103) at `c1c19f4b89bd405b854e44bd0aa863de24f3d483`, whose ordered parents are `46645153f7d9b11668dbaa81522a6bb80e2f5af8` (the PR #102 merge) and then reviewed head `e96c3fe02565c57c96ca810856757ef12ec812cf`.
+
+- **PR CI:** [run 36641936404](https://github.com/Caposhi/GCD-Agents/actions/runs/36641936404) (run 240) on head `e96c3fe` passed all five jobs on attempt 1: *Node 22 offline quality gates*, *PostgreSQL 16 integration*, *PostgreSQL 18 integration*, *AgentShield 1.4.0* and *Workflow and YAML static validation*. Quality job **41m46s** of 60 (22:50:48–23:32:34Z, 2026-09-29); mutation step **40m21s** (22:51:17–23:31:38Z).
+- **`main` push:** [run 36716816644](https://github.com/Caposhi/GCD-Agents/actions/runs/36716816644) (run 241) on `c1c19f4` passed the same five jobs on attempt 1. Quality job **40m12s** (12:45:16–13:25:28Z, 2026-09-30); mutation step **38m47s** (12:45:44–13:24:31Z).
+- **Deploy:** the `deploy-production` workflow ([run 68](https://github.com/Caposhi/GCD-Agents/actions/runs/36721531470)) passed its CI-provenance step and refused at its "Refuse while production automation is disabled" step. It skipped release selection and the serialized API, worker, scheduler release job, as on every `main` merge during the interval. No release.
+- **Durations** come from the Actions jobs API, not from the harness's summary line.
+
+**Not `DEPLOYED`, not `ENABLED`, not `PRODUCTION-VALIDATED`.** No release is possible during the interval, and nothing live imports the library (`CS1`). This paragraph discharges the blocking merge-SHA follow-up and the PR-CI follow-up below; where the record says `IMPLEMENTED`, not merged, or that its CI is recorded only in the PR, this paragraph supersedes it.
+
+**The owner's post-merge acceptance check (2026-09-30, operator-local; fake runner, no model call, no cost).** The owner compared the pre-S1 CLI at `4664515` with the post-S1 CLI, on the owner's real facts file and on the run `…-revised-2026-09-28T17-52-05-407Z-revised-2026-09-28T18-26-40-227Z`:
+
+- `--list-tags` printed identical output;
+- `--replay-critic` exited 0 on both;
+- the replay output, normalized for paths, timestamps and stack frames, was the same.
+
+The facts file and the run folder were not examined from this repository, and nothing from either is recorded here. This discharges the follow-up *the owner's post-merge fake-runner check*. **The reviewer independently reproduced the golden comparison**: 240 files and 84 scenarios, 0 differences, 59 stack-frame-only; and proved the comparator catches a one-byte change.
+
+The record was written at the top of this file: where it says *Planned — Content Studio* "below", that entry is now above it, and "the cursor" is now *Next repository change — Content Studio S2 (Studio schema and migrations), pending the mutation-harness speed-up's merge*. The rest of this record is preserved as written at implementation.
 
 **State:** `IMPLEMENTED` on branch `claude/great-hawking-t5zr25`, based directly on `origin/main` at `46645153f7d9b11668dbaa81522a6bb80e2f5af8` (the merge of PR #102). **Not `MERGED`, not `DEPLOYED`, not `ENABLED`, not `PRODUCTION-VALIDATED`.** It is the first of the nine Studio PRs in the approved [Content Studio design](CONTENT_STUDIO_DESIGN.md) (§5.1, §5.2, §5.4 and §10's S1 row), and it builds no Studio service: no `src/studio/**` code, no migration, no Render resource and no `render.studio.yaml`. All six stages keep `executionEnabled: false`; the registry and the `AQ18`-family dormancy checks are unchanged and still pass. **No live-service file changed:** nothing under `src/api/**`, `src/worker/**`, `src/scheduler/**` or `state/migrations/**`, and not `render.yaml`, `config/`, the deploy workflow or the deployment controller. Models, effort, prompts, skills and limits are unchanged, and no npm dependency was added. The partial-release interval (bound `2026-10-22T18:52Z`; see [Status](STATUS.md)) is unchanged, so no release is possible. The tracked `.DS_Store` is untouched. No model was called.
 
@@ -116,109 +349,16 @@ AgentShield 1.4.0 exited zero at B/87 with the same 18 findings (9 medium, 9 low
 
 **Unresolved follow-ups.**
 
-- **This PR's merge SHA** (mutable-identifier exception) — **blocking**.
-- **This PR's own CI**: whether all five jobs pass on attempt 1 on the final head. It is recorded in the PR, and reconciled into this record with the merge SHA.
-- **The owner's post-merge fake-runner check** on the real facts file and one real run folder (the commands are in the PR). Fake runner only; no cost.
+- ~~**This PR's merge SHA** (mutable-identifier exception) — **blocking**.~~ **Discharged 2026-09-30:** merge `c1c19f4…`; see *Merge reconciliation* above.
+- ~~**This PR's own CI**: whether all five jobs pass on attempt 1 on the final head. It is recorded in the PR, and reconciled into this record with the merge SHA.~~ **Discharged 2026-09-30:** PR CI run 36641936404 and `main` push run 36716816644 each passed all five jobs on attempt 1 (mutation step 40m21s and 38m47s); see *Merge reconciliation* above.
+- ~~**The owner's post-merge fake-runner check** on the real facts file and one real run folder (the commands are in the PR). Fake runner only; no cost.~~ **Done 2026-09-30 (operator-local):** identical `--list-tags`, `--replay-critic` exit 0 on both CLIs, and the same normalized replay output; see *Merge reconciliation* above.
 - **An independent review of the design** before later Studio PRs, carried from the design record.
 
 **Documents updated:** this file (this record; PR #102's record moved and reconciled; the cursor; *Planned — Content Studio*); [Architecture](ARCHITECTURE.md); [Testing](TESTING.md); [Status](STATUS.md); [README](../README.md); [AI handoff](AI_HANDOFF.md). **Checked and deliberately left unchanged:** [Content Studio design](CONTENT_STUDIO_DESIGN.md) (a dated design; its §5.1 and §5.4 describe what S1 now implements, and it is not a status document), [Security and continuity](SECURITY_AND_CONTINUITY.md), [Deployment control](DEPLOYMENT.md), [Environment](ENVIRONMENT.md), [Data model](DATA_MODEL.md), [Operations](OPERATIONS.md) and `.env.example`: no variable, deployment, schema or operation changed. Each modified document was reread in full.
 
-## Next repository change — Content Studio S2 (Studio schema and migrations), pending S1's merge
-
-**The next repository change is Content Studio S2:** `studio/migrations/0001_*.sql` and on, `src/studio/db/migrate.ts`, `npm run studio:migrate`, the database identity checks and the tripwire `_migrations` table, proven on disposable PostgreSQL 16 and 18 with the cross-runner refusals. See the [Content Studio design](CONTENT_STUDIO_DESIGN.md) §3.7, §4 and §10.
-
-- **It begins only after S1 — *Content Studio S1* at the top of this file, `IMPLEMENTED`, not merged — merges.** The design's PRs are serial: each starts from `main` after the previous one merges.
-- S2 needs its own explicit authorization; the design's approval and S1's authorization grant none, and this file grants none.
-- Nothing here authorizes enabling any stage, creating any Render service or database, any release, or any change to the Phase-A approval gate.
-
-This section was headed *Next repository change — not chosen*, then *Next repository change — Content Studio PR 1 (library extraction), pending the owner's approval of the design*, and then *Next repository change — Content Studio S1 (library extraction)*. Earlier records refer to it by those names.
-
-Open items, carried unchanged except where S1 at the top of this file says otherwise:
-
-- **`reasoning-standard` output headroom:** 126,000 of the model's 128,000 output tokens since PR #95; recovering it by narrowing the `claimUse[].summary` allowance is open.
-- **`brand-compliance-critic` is still on `claude-sonnet-4-6`** (`agents/brand-compliance-critic.md`) — Lane S work; routing it, and the two `sdk.ts` fallbacks with it, is open (see the legacy model migration record).
-- **The M1→M2 interval ends `2026-10-22T18:52Z`**; the expiry is a decision point for the owner (see [Status](STATUS.md)).
-- **AgentShield grade B/87** (9 medium oversized-agent, 9 low unspecified-model findings; no critical or high).
-- **Splitting completed phases out of this file** into `docs/COMPLETED_ROADMAP_PHASES.md`, a separate documentation change.
-- **Stage 2's restrictions can misdescribe the evidence** — a follow-up candidate recorded by the PR #99 record (*Documentation reconciliation — PR #98 recorded as merged, the revision pass's two owner-run rounds, and a corrected "critic gap"*, under *Merged repository change awaiting rollout* below); no fix is chosen.
-- **`--resume-from production-direction`** — a follow-up candidate recorded by the contact-in-overlay change (PR #101, under *Merged repository change awaiting rollout* below): a live run refused at stage 4 cannot be resumed there today, so stages 1–3 are paid again; not built.
-- Carried from the revision-pass record: describing the identity records in `SCRIPT_CLAIMS` and `PLATFORM_CLAIMS` in the critic prompts; tuning `POLICY_EFFORT.critic` and `THINKING_RESERVE_TOKENS` per lens.
-- **`DEFERRED`, as the owner listed them on 2026-09-28** (not previously recorded in this repository; recorded here so they are not lost): Mercedes 223.2 and the round-2 fluids; the DPF/GPF bulk-oil question; the Spanish version.
-- **The owner's post-merge fake-runner check of S1** on the real facts file and one real run folder (fake runner only, no cost; the commands are in S1's PR).
-- **An independent review of the Content Studio design** before later Studio PRs, carried from the design record.
-- **The merge SHA of Content Studio S1 at the top of this file** (mutable-identifier exception) — **blocking**; it is reconciled into that record once merged. *(PR #102's merge-SHA follow-up, formerly here, is discharged: `4664515…`; PR #101's was discharged by PR #102: `f111012…`.)*
-
-## Planned — Content Studio (owner decisions of 2026-09-29) — `PLANNED`
-
-**State:** `PLANNED`. The design is [`docs/CONTENT_STUDIO_DESIGN.md`](CONTENT_STUDIO_DESIGN.md), added by the documentation change now recorded under *Merged repository change awaiting rollout* (PR #102). It was first recorded with the owner's approval pending. **The owner approved it on 2026-09-29, with the answers below.** Approval is not implementation. **S1 — the pipeline library and the §5.4 protections — is `IMPLEMENTED`, not merged** (*Content Studio S1*, at the top of this file). No Studio service exists: no `src/studio/**` code, Studio migration, Render service, database, Google OAuth client, secret or Anthropic key. This entry sits outside the production-wiring sequence: the Studio implements none of P1–P8, performs none of M2–M7, and moves no production-wiring milestone.
-
-**Owner decisions (2026-09-29), recorded verbatim:**
-
-1. Build a web interface that removes manual terminal runs of the content pipeline and lets the owner and staff view every run and report in a browser.
-2. **A separate, review-only "Content Studio"** in the same `render.yaml`: its own web service, background worker, optional cron job and its own PostgreSQL database. It is **not** built inside the live `gcd-social-*` services.
-3. **Users:** the owner plus a few staff, signing in with Google, restricted to `@germancardepot.com`. The owner decides which users may start paid runs.
-4. **Runs are on demand only at launch.** The cron job is designed but disabled until the owner decides otherwise.
-5. **The manufacturer facts file** (`config/automotive-facts.local.json`, today only on the owner's Mac) may be uploaded to the Studio and stored in its private database. It is never committed to GitHub.
-
-**Amendment to decision 2 (owner, 2026-09-29).** The Studio gets a **separate Blueprint file, `render.studio.yaml`**, not the shared `render.yaml`. Decision 2 is otherwise unchanged. Whether Render supports a Blueprint at a non-default path is TO VERIFY. If it does not, the Studio's resources are created by hand from that checked-in file, which is the specification. **`render.yaml` is not modified at all by any Studio PR.** Decision 2 above is kept as first given.
-
-**The owner's answers of 2026-09-29 to the design's §11.1** (recorded in full in design §11.1a):
-
-1. **The design is approved** as amended. It stays `PLANNED`, and each S-PR and owner action still needs its own authorization.
-2. **Decision 2 is amended** as above.
-3. **The freeze covers new services; the default is kept.** No Studio service is created (O3) until the M1→M2 interval (bound `2026-10-22T18:52Z`) is closed, or under whatever terms are then in force.
-4. **Caps:**
-   - owner caps $50 a day and $200 a month;
-   - deployment ceilings `STUDIO_MAX_DAILY_USD` = 75 and `STUDIO_MAX_MONTHLY_USD` = 300;
-   - an Anthropic workspace spend limit of $300 a month for the Studio key.
-
-   The reservation stays at the full printed ceiling. Tightening the estimate is a separate, reviewed future change.
-5. **Only the owner is a `runner` at launch;** staff are `viewer`. Runners added later get a $25 per-user daily cap.
-6. **Time zone:** `America/New_York`.
-7. **Retention:** runs are kept until the owner deletes them. The audit log and spend ledger are kept for 2 years.
-8. **The worker starts on `standard`,** is measured, and may move down to `starter`. Plan prices are TO VERIFY.
-9. **The P2 conflict is a binding rule.** Whichever comes first, production-wiring P2 or Studio S3, must define an explicit, separately reviewed review-only execution context, so that the local CLI and the Studio keep working. It can never approve or publish, and it sits beside the live authority gate, never replacing it. A dated pointer at P2 in [PRODUCTION_WIRING_DESIGN.md](PRODUCTION_WIRING_DESIGN.md) records it.
-10. **A separate Anthropic workspace and key for the Studio is required.** O2 must happen before the first live run.
-11. **Fake runs stay in the Studio, owner-only,** labelled on every screen.
-
-**Operational note (owner, 2026-09-29).** `STUDIO_BOOTSTRAP_OWNER_EMAIL` must name a real Google Workspace **user** account, not a shared mailbox, an alias or a group, because the `hd` and `email_verified` checks only work for Workspace user accounts. The owner enters the value in Render; it is never committed.
-
-**Sequence (design §10), serial, each separately authorized:**
-
-- **S1** library extraction — **`IMPLEMENTED`, not merged** (the change at the top of this file);
-- **S2** Studio schema and migrations — the next repository change, pending S1's merge;
-- **S3** worker and queue;
-- **S4** authentication;
-- **S5** read-only screens;
-- **S6** run and revise actions with caps;
-- **S7** fact upload and legacy import;
-- **S8** a new `render.studio.yaml`, with `render.yaml` byte-identical;
-- **S9** the cron, built disabled.
-
-**Owner actions, named separately:**
-
-- **O1** create the Google OAuth client;
-- **O2** create the Studio's Anthropic key;
-- **O3** create the Studio resources from `render.studio.yaml`;
-- **O4** set the secrets;
-- **O5** the first deploy and setup;
-- **O6** the first live run.
-
-**Gates:**
-
-- ~~**Owner approval of the design.**~~ **Given 2026-09-29.**
-- **The release-freeze gate — confirmed by the owner.** The M1→M2 interval is bound at `2026-10-22T18:52Z`, and its prohibition covers "any service". No Studio service is created (O3) until the interval is closed, or under the terms then in force. Merging S1–S9 is not a release, while `deploy-production` keeps refusing at its disabled gate and native auto-deploy stays off on the live services (design §10).
-- **The Blueprint check before S8 merges.** Is this repository linked to a Render Blueprint, which file does it read, and is auto-sync on? S8 adds only `render.studio.yaml` and leaves `render.yaml` byte-identical. Any Blueprint or dashboard action touching a `gcd-social-*` resource is a stop condition (design §3.6).
-- **The P2 rule** (design §5.4): whichever comes first, P2 or S3, defines the review-only execution context.
-- **O2 before O6:** no live Studio run without the separate Anthropic workspace and key.
-
-**Open questions:** answered by the owner on 2026-09-29 (design §11.1 and §11.1a).
-
-## Merged repository change awaiting rollout
-
 ### The Content Studio design — `docs/CONTENT_STUDIO_DESIGN.md` for the owner's `PLANNED` review-only web interface; PR #101 recorded as merged — `MERGED`
 
-**Merge reconciliation (recorded 2026-09-29 by Content Studio S1 at the top of this file):** `MERGED` through [PR #102](https://github.com/Caposhi/GCD-Agents/pull/102) at `46645153f7d9b11668dbaa81522a6bb80e2f5af8` (merged 2026-09-29T21:15:37Z), whose ordered parents are `f11101265c1ea7aa771d7efd2f5fdd98f96ab702` (the PR #101 merge) and then reviewed head `971d35183b61c548392f8697fda653355bae5de2`.
+**Merge reconciliation (recorded 2026-09-29 by Content Studio S1, then at the top of this file; *corrected 2026-09-30: S1's record is now the one above this*):** `MERGED` through [PR #102](https://github.com/Caposhi/GCD-Agents/pull/102) at `46645153f7d9b11668dbaa81522a6bb80e2f5af8` (merged 2026-09-29T21:15:37Z), whose ordered parents are `f11101265c1ea7aa771d7efd2f5fdd98f96ab702` (the PR #101 merge) and then reviewed head `971d35183b61c548392f8697fda653355bae5de2`.
 
 - **PR CI:** [run 36628172047](https://github.com/Caposhi/GCD-Agents/actions/runs/36628172047) (run 237) on head `971d351` passed all five jobs on attempt 1: *Node 22 offline quality gates*, *PostgreSQL 16 integration*, *PostgreSQL 18 integration*, *AgentShield 1.4.0* and *Workflow and YAML static validation*. Quality job **31m50s** of 60 (20:41:54–21:13:44Z); mutation step **30m24s** (20:42:23–21:12:47Z).
 - **`main` push:** [run 36632070685](https://github.com/Caposhi/GCD-Agents/actions/runs/36632070685) (run 238) on `4664515` passed the same five jobs on attempt 1. Quality job **24m05s** (21:15:43–21:39:48Z); mutation step **22m40s** (21:16:11–21:38:51Z).
@@ -870,7 +1010,7 @@ The two local runs were compared line by line: every `M1`–`M465` result and re
 - **This PR's merge SHA** (mutable-identifier exception) — **blocking**.
 - **Recover `reasoning-standard` headroom by shrinking the `claimUse[].summary` allowance.** Stage 5 sets the `reasoning-standard` budget at **126,000 of the model's 128,000** output tokens since PR #95; its plumbing `claimUse[].summary` (stated 400, enforced 800) across 36 entries is the largest contributor that is not product. A narrower enforced allowance (still at least `CEILING_SLACK_MULTIPLIER` × its stated figure) or a lower stated figure would recover headroom; it moves an enforced limit, so it was out of scope here.
 - An owner-run live `--resume-from packaging-adaptation` on `2026-09-26T17-04-00-636Z` after merge, to see stage 5 validate against the new target and the critic run. Not an acceptance gate for this change.
-- Carried: the critic-prompt change for the identity records ~~and the unflagged BMW highway attribution~~ *(withdrawn 2026-09-28: not an error — BMW's own record makes the comparison; see the correction in PR #97's record)*; speeding up the mutation harness (now 465); `POLICY_EFFORT.critic` and `THINKING_RESERVE_TOKENS` per lens; moving completed history out of this file.
+- Carried: the critic-prompt change for the identity records ~~and the unflagged BMW highway attribution~~ *(withdrawn 2026-09-28: not an error — BMW's own record makes the comparison; see the correction in PR #97's record)*; speeding up the mutation harness (now 465) *(2026-09-30: made parallel by PR #97; its builds made incremental and verified by the mutation-harness speed-up at the top of this file, `IMPLEMENTED`. Not discharged: the original 20-minute target was not met and the suite now dominates — see* The mutation step's growth *in the cursor.)*; `POLICY_EFFORT.critic` and `THINKING_RESERVE_TOKENS` per lens; moving completed history out of this file.
 
 **Documents updated:** this file (this record; PR #95's record moved to *Merged repository change awaiting rollout* with its merge and CI reconciled; dated additions to *Output-field classification* and the local-CLI entry), [README](../README.md), [Status](STATUS.md), [Architecture](ARCHITECTURE.md), [Testing](TESTING.md), [AI handoff](AI_HANDOFF.md), [Security and continuity](SECURITY_AND_CONTINUITY.md), `agents/packaging-adaptation.md`, and the mutation harness's header. Each was reread in full.
 
@@ -951,7 +1091,7 @@ The two local runs were compared line by line: every `M1`–`M465` result and re
 
 - **This PR's merge SHA** (mutable-identifier exception) — blocking.
 - An owner-run live full run after merge, to confirm stage 5 now validates; not an acceptance gate for this change.
-- Carried: the critic-prompt change for the identity records ~~and the unflagged BMW highway attribution~~ *(withdrawn 2026-09-28: not an error — BMW's own record makes the comparison; see the correction in PR #97's record)*; speeding up the mutation harness (now 453); `POLICY_EFFORT.critic` and `THINKING_RESERVE_TOKENS` per lens; moving completed history out of this file.
+- Carried: the critic-prompt change for the identity records ~~and the unflagged BMW highway attribution~~ *(withdrawn 2026-09-28: not an error — BMW's own record makes the comparison; see the correction in PR #97's record)*; speeding up the mutation harness (now 453) *(2026-09-30: made parallel by PR #97; its builds made incremental and verified by the mutation-harness speed-up at the top of this file, `IMPLEMENTED`. Not discharged: the original 20-minute target was not met and the suite now dominates — see* The mutation step's growth *in the cursor.)*; `POLICY_EFFORT.critic` and `THINKING_RESERVE_TOKENS` per lens; moving completed history out of this file.
 
 **Documents updated:** this file (this record; Lane S and PR #93 moved to *Merged repository change awaiting rollout* with their merge and CI reconciled; a dated addition to the 64-record-cap item), [README](../README.md), [Status](STATUS.md), [Architecture](ARCHITECTURE.md), [Testing](TESTING.md), [AI handoff](AI_HANDOFF.md), [Security and continuity](SECURITY_AND_CONTINUITY.md), `agents/packaging-adaptation.md`, and the mutation harness's header. Stale "`IMPLEMENTED`, not merged" markers for PR #88, #89, #92 and #93 work in the README, Architecture, AI handoff and Security and continuity were reconciled to `MERGED` where this change touched those passages; the README's guard and assembled-ceiling figures, which predated PR #92 and PR #93, were refreshed. Each was reread in full.
 
@@ -1112,7 +1252,7 @@ This is **operator-local evidence, not production evidence**: no stage is enable
 - ~~Lane S's own merge SHA (mutable-identifier exception)~~ — `6f35079` (PR #94).
 - An owner-run live full run after merge, choosing a scope from `--list-tags`, to see whether the unbound-fact findings fall. Not an acceptance gate for this change.
 - A critic-prompt change: describe the identity records in `SCRIPT_CLAIMS` and `PLATFORM_CLAIMS`~~, and address the unflagged BMW highway attribution~~. *(The BMW half is withdrawn 2026-09-28: not an error — BMW's own record makes the comparison; see the correction in PR #97's record above. The identity-records half stays open.)*
-- **Speed up the mutation harness**, carried from PR #92's record, now at 445 mutations.
+- **Speed up the mutation harness**, carried from PR #92's record, now at 445 mutations. *(2026-09-30: made parallel by PR #97; its builds made incremental and verified by the mutation-harness speed-up at the top of this file, `IMPLEMENTED`. Not discharged: the original 20-minute target was not met and the suite now dominates — see* The mutation step's growth *in the cursor.)*
 - Carried, out of scope here: `POLICY_EFFORT.critic` and `THINKING_RESERVE_TOKENS` per lens, and moving completed history out of this file.
 
 **Documents updated with implementation:** this file (this record; PR #92's record moved to *Merged repository change awaiting rollout* with its merge, CI and follow-ups reconciled; dated additions to the `maxIds` decision, the 64-record-cap item and the local-CLI entry), [README](../README.md), [Status](STATUS.md), [Architecture](ARCHITECTURE.md), [Testing](TESTING.md), [AI handoff](AI_HANDOFF.md), [Security and continuity](SECURITY_AND_CONTINUITY.md), `agents/automotive-truth.md`, `agents/packaging-adaptation.md`, and the mutation harness's header. Each was reread in full.
@@ -1206,7 +1346,7 @@ The owner's brief calls these "the four patterns"; they are recorded here as giv
 - ~~**Blocking:** this change's merge SHA (mutable-identifier exception).~~ **Discharged 2026-09-25:** merge `f2a58785c8a9aa2605dda3c7f7daf34ffdf16007`.
 - ~~An owner decision on the evidence-lens prompt sentence and the stage 2 prompt's "advisory" wording.~~ **Fixed in this change** by the owner-directed addendum (Delivered, item 6; `CM11`).
 - ~~An owner-run live full run after merge, to see whether (A)–(C) and the caveat findings fall. Not an acceptance gate for this change.~~ **Done 2026-09-25 (operator-local evidence):** run `2026-09-25T16-21-51-293Z`, $1.172956, 31 findings (17 blocking), against run `2026-09-24T18-01-36-439Z`'s $1.161138 and 28 findings (14 blocking). As the owner reported it, (A), (B) and (C) were gone from the copy; the remaining blocking findings were 8 about facts not bound and 9 writing errors. The follow-up change is *Evidence-pack scoping in the local CLI …* at the top of this file.
-- **Speed up the mutation harness** before it approaches about 650 mutations. Its runtime grows about 3.5 s per mutation, so at that size it would near the new 45-minute limit. *Dated addition, 2026-09-25:* run 213 took 33m59s for 417 mutations — about 4.9 s each, against about 3.4 s on run 210 — so on a slow runner the limit is nearer than 650. The scoping and identity-facts change brings the count to 445 and keeps the suite's own time almost flat to stay inside it. One option is to run mutations in parallel inside the same job; the five-job CI shape the M1 readiness gate requires must not change. *Dated addition, 2026-09-26:* PR #96's run took 42m36s in its mutation step for 465 mutations, inside a 43m59s job; the CI-headroom change at the top of this file (`IMPLEMENTED`) runs the mutations in parallel inside the same job and raises the job's limit to 60 minutes, with the five jobs unchanged. *(Corrected 2026-09-28: that change is `MERGED` through PR #97 at `610e230e78209fe1d3ca4d83216ed3ff18deec21`, and its record is no longer at the top of this file.)*
+- **Speed up the mutation harness** before it approaches about 650 mutations. Its runtime grows about 3.5 s per mutation, so at that size it would near the new 45-minute limit. *Dated addition, 2026-09-25:* run 213 took 33m59s for 417 mutations — about 4.9 s each, against about 3.4 s on run 210 — so on a slow runner the limit is nearer than 650. The scoping and identity-facts change brings the count to 445 and keeps the suite's own time almost flat to stay inside it. One option is to run mutations in parallel inside the same job; the five-job CI shape the M1 readiness gate requires must not change. *Dated addition, 2026-09-26:* PR #96's run took 42m36s in its mutation step for 465 mutations, inside a 43m59s job; the CI-headroom change at the top of this file (`IMPLEMENTED`) runs the mutations in parallel inside the same job and raises the job's limit to 60 minutes, with the five jobs unchanged. *(Corrected 2026-09-28: that change is `MERGED` through PR #97 at `610e230e78209fe1d3ca4d83216ed3ff18deec21`, and its record is no longer at the top of this file.)* *(2026-09-30: made parallel by PR #97; its builds made incremental and verified by the mutation-harness speed-up at the top of this file, `IMPLEMENTED`. Not discharged: the original 20-minute target was not met and the suite now dominates — see* The mutation step's growth *in the cursor.)*
 - Carried, out of scope here: tune `POLICY_EFFORT.critic` and `THINKING_RESERVE_TOKENS` per lens (two per-lens output samples now exist; see PR #90's record), the evidence pack's 64-record cap, and moving completed history out of this file.
 
 **Documents updated with implementation:** this file (this record; PR #91's record moved to *Merged repository change awaiting rollout* and its merge SHA recorded; PR #90's second replay's per-lens output tokens and base commit; the stale "at the top of this file" pointers in the PR #87, `maxIds`, PR #89 and PR #90 records), [README](../README.md), [Status](STATUS.md), [Architecture](ARCHITECTURE.md), [Testing](TESTING.md), [AI handoff](AI_HANDOFF.md), [Security and continuity](SECURITY_AND_CONTINUITY.md), `agents/hook-story-script.md`, `agents/production-direction.md`, `agents/packaging-adaptation.md`, `agents/final-critic-evidence.md` (one sentence), `agents/automotive-truth.md` (two sentences), `.github/workflows/ci.yml` (one timeout), `skills/claim-boundaries/SKILL.md`, and the mutation harness's header. Each was reread in full.

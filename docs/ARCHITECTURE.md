@@ -105,7 +105,7 @@ returns and one rejection ends the run, so any precondition knowable beforehand 
 beforehand or it is paid for. The operator-local evaluation CLI, `scripts/local/content-run.mjs`
 — the only path that executes these otherwise dormant stages, invoked by hand and never by a
 service — enforces three such preconditions ahead of its cost gate *(since Content Studio S1,
-`IMPLEMENTED`, not merged: in the pipeline library `src/harness/contentRun/**` that the CLI drives —
+`MERGED` through PR #103 at `c1c19f4…`, not deployed: in the pipeline library `src/harness/contentRun/**` that the CLI drives —
 see *The content-run library* below; everything this section describes is unchanged in behaviour)*: a `--runner live` run refuses
 an absent automotive-facts file rather than warning past it; every stage's `requiredEvidenceKinds`
 is checked against the built pack across all of `TARGET_STAGE_IDS`, because `stageExecution.ts`
@@ -217,7 +217,9 @@ The orchestrator loads each `agents/<name>.md`, strips YAML frontmatter, extract
 
 `prompts/MASTER_PROMPT.md` is loaded only by `runManagerTurn` in `agentLoop.ts`, which has no package script or worker caller. The production worker does not invoke an Opus manager agent. Autonomy phases B/C and self-improvement are therefore partial scaffolding rather than complete runtime features.
 
-## The content-run library (Content Studio S1) — `IMPLEMENTED`, not merged
+## The content-run library (Content Studio S1) — `MERGED`, not deployed
+
+*(Headed `IMPLEMENTED`, not merged, until 2026-09-30: `MERGED` through [PR #103](https://github.com/Caposhi/GCD-Agents/pull/103) at `c1c19f4…`; nothing live imports it (`CS1`), so merging it deployed nothing.)*
 
 **The pipeline core the CLI held now lives in `src/harness/contentRun/**`,** compiled into `dist/harness/contentRun/`. The CLI keeps argument parsing, the typed `LIVE` and `UNPROVEN` prompts, the printed cost ceiling, console output and file writing; the library does the rest — the facts loaders (`parseAutomotiveFacts` over bytes, with a path wrapper), `buildRunEvidence`, `runFullPipeline`, `verifySourceRun`, `resumeFromPackaging`, `replayCritic`, `reviseRun`, the fake runner, the field measurements and `computeCostCeiling`, which returns the ceiling as data. Every pipeline function takes the bundle of compiled modules as its first argument (`loadRuntime()`), so a test can hand it a runtime whose executors throw. The caller supplies everything that touches the outside world:
 
@@ -235,13 +237,13 @@ The orchestrator loads each `agents/<name>.md`, strips YAML frontmatter, extract
 
 ## Planned — Content Studio (not built)
 
-**`PLANNED`; no Studio service in this section exists.** *(2026-09-29: its first PR, S1 — the content-run library above — is `IMPLEMENTED`, not merged.)* The owner decided on 2026-09-29 to build a separate, review-only **Content Studio**. It would be a Render web service, a background worker and its own PostgreSQL database, declared in a separate `render.studio.yaml`, never inside the live `gcd-social-*` services and never in `render.yaml`. It would let the owner and staff start and view content-pipeline runs in a browser, with Google sign-in restricted to `@germancardepot.com`. The design is [CONTENT_STUDIO_DESIGN.md](CONTENT_STUDIO_DESIGN.md), and it was approved by the owner on 2026-09-29; approval is not implementation.
+**`PLANNED`; no Studio service in this section exists.** *(2026-09-29: its first PR, S1 — the content-run library above — is `IMPLEMENTED`, not merged.)* *(2026-09-30: S1 is `MERGED` through PR #103; no Studio service exists.)* The owner decided on 2026-09-29 to build a separate, review-only **Content Studio**. It would be a Render web service, a background worker and its own PostgreSQL database, declared in a separate `render.studio.yaml`, never inside the live `gcd-social-*` services and never in `render.yaml`. It would let the owner and staff start and view content-pipeline runs in a browser, with Google sign-in restricted to `@germancardepot.com`. The design is [CONTENT_STUDIO_DESIGN.md](CONTENT_STUDIO_DESIGN.md), and it was approved by the owner on 2026-09-29; approval is not implementation.
 
 The proposed data flow is:
 
 1. The browser sends a request to the Studio web service.
 2. The web service enqueues a job in the Studio database.
-3. The Studio worker runs the pipeline library that Studio PR 1 (S1) extracts from `scripts/local/content-run.mjs` (*`IMPLEMENTED`, not merged: `src/harness/contentRun/**`, above*), which the CLI also uses, calling the six dormant executors directly as `scripts/local/content-run.mjs` does, with `executionEnabled` untouched.
+3. The Studio worker runs the pipeline library that Studio PR 1 (S1) extracts from `scripts/local/content-run.mjs` (*`MERGED` through PR #103, not deployed: `src/harness/contentRun/**`, above*), which the CLI also uses, calling the six dormant executors directly as `scripts/local/content-run.mjs` does, with `executionEnabled` untouched.
 4. The run's files are stored back in the Studio database.
 
 The owner then copies captions by hand.
