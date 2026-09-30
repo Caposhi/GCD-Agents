@@ -13,11 +13,38 @@
  *
  * The rebuild is skipped only where it cannot matter: `dist/` is compiled from
  * `src/` alone, and the suite reads `state/**` at RUNTIME, so a mutation to a
- * SQL file needs no compile. It still rebuilds when the PREVIOUS mutation in
- * the same worker's copy touched `src/`, because that mutation's restore left
- * that copy's `dist/` compiled from mutated sources. Nothing else changes:
- * every mutation still runs the whole suite, and a `src/` mutation that fails
- * to compile is still not a pass.
+ * SQL file needs no compile. A `src/` mutation's restore is rebuilt AT ONCE,
+ * before its worker takes the next mutation, so no copy's `dist/` is ever left
+ * compiled from mutated sources: the rule is still "rebuild whenever `dist/`
+ * could differ from its sources". Nothing else changes: every mutation still
+ * runs the whole suite, and a `src/` mutation that fails to compile is still
+ * not a pass.
+ *
+ * The builds are INCREMENTAL. Each worker keeps one long-lived compiler for its
+ * own copy (`--incremental-build-server` below): TypeScript's own builder
+ * program, which `tsc --incremental` is built on, holding the previous program
+ * in memory, so an unchanged file is neither re-parsed nor re-checked, and a
+ * one-file mutation re-checks and re-emits only what it affects. Errors are
+ * decided by `tsc`'s own `emitFilesAndReportErrorsAndGetExitStatus`. It is still
+ * a full type-check of everything affected: nothing is transpiled without
+ * checking. It is proven, not trusted:
+ *   - `M-inc0`: every copy's first build is byte-identical to a clean full build
+ *     (`tsc -p tsconfig.json`, no incremental state) of the same sources;
+ *   - `M-inc-restore`: after EVERY compiled mutation, the rebuild of the restored
+ *     sources is byte-identical to that clean build;
+ *   - `M-inc-end`: after its last mutation, each worker does a fresh clean full
+ *     build and requires its incremental `dist/` to be byte-identical to it,
+ *     before the final suite pass (`M-end`);
+ *   - `M-inc-tsc`: a source state holding an injected type error fails real `tsc`
+ *     AND the incremental compiler (non-zero status), and both return 0 once it
+ *     is removed — the two agree on the case that decides "did not compile";
+ *   - `M-inc-fault`: the comparison and the compiler's error verdict are shown
+ *     to FAIL on injected faults — a type error is refused, and an orphaned
+ *     output, a stale output that the incremental compiler does not re-emit, and
+ *     a missing file are each reported as a difference from the clean build.
+ * The suite runs with Node's compile cache in the worker's own directory, which
+ * caches V8 bytecode for byte-identical module sources only; it changes no
+ * result.
  *
  * The final group is not a derivation but an epistemic invariant: migration
  * 007's live application state is UNKNOWN in either direction, and neither the
@@ -286,14 +313,18 @@ import {
   cpSync,
   existsSync,
   lstatSync,
+  mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { createRequire } from "node:module";
 import { availableParallelism, tmpdir } from "node:os";
+import { createInterface } from "node:readline";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -4687,12 +4718,17 @@ const authoritativeSnapshotMatches = (snapshot) => {
   });
 };
 
+// The authoritative checkout's own `dist/` is not copied: every copy's first
+// build writes its `dist/` from nothing, so nothing a copy's suite loads, and
+// nothing the clean-build comparisons see, is left over from an older build.
+const AUTHORITATIVE_DIST = resolve(AUTHORITATIVE_REPO_ROOT, "dist");
+
 const prepareDisposableWorkspace = () => {
   const tempRoot = mkdtempSync(join(tmpdir(), "gcd-payload-mutation-"));
   const workspace = join(tempRoot, basename(AUTHORITATIVE_REPO_ROOT));
   cpSync(AUTHORITATIVE_REPO_ROOT, workspace, {
     recursive: true,
-    filter: (source) => ![".git", "node_modules"].includes(basename(source)),
+    filter: (source) => ![".git", "node_modules"].includes(basename(source)) && source !== AUTHORITATIVE_DIST,
   });
   const dependencies = resolve(AUTHORITATIVE_REPO_ROOT, "node_modules");
   if (existsSync(dependencies)) {
@@ -4718,39 +4754,115 @@ const restoreRaw = (path, original) => {
  * The mutations run in parallel, on WORKER_COUNT workers. Each worker owns one
  * disposable no-Git copy and runs its mutations there one at a time, exactly as
  * a single sequential run would: mutate, rebuild when needed, run the suite,
- * restore byte-for-byte and verify the restoration. No two workers share a
- * copy, a `dist/`, a mutated file or a child process. Workers take the next
+ * restore byte-for-byte, verify the restoration, and rebuild the restored
+ * sources when the mutation was compiled. No two workers share a copy, a
+ * `dist/`, a compiler, a mutated file or a child process. Workers take the next
  * mutation id from one shared queue, so which worker runs which mutation varies
  * with timing, but no result depends on it: every copy starts from the same
- * bytes, every mutation is restored before its worker takes the next one, and
- * each worker tracks its own stale `dist/`. Mutation ids are fixed by position
- * in MUTATIONS, and results are printed strictly in id order.
+ * bytes, and every mutation is restored — sources and `dist/` — before its
+ * worker takes the next one. Mutation ids are fixed by position in MUTATIONS,
+ * and results are printed strictly in id order.
  *
  * The worker count is the runner's available parallelism, capped at
- * MAX_WORKERS (each worker runs a full `tsc` and suite, so memory, not only CPU,
+ * MAX_WORKERS (each worker runs a compiler and a suite, so memory, not only CPU,
  * bounds it), and never more than the number of mutations.
  */
 const MAX_WORKERS = 4;
 const WORKER_COUNT = Math.max(1, Math.min(MAX_WORKERS, availableParallelism(), MUTATIONS.length));
 
 // Each build and suite runs as the leader of its own process group, so a
-// signal can stop it together with everything it started (`npx` runs `tsc`
-// through a shell; the suite spawns the local CLI).
+// signal can stop it together with everything it started (the suite spawns the
+// local CLI). The workers' long-lived compilers are process-group leaders too.
 const activeChildren = new Set();
-const runChild = (command, args, cwd) => new Promise((resolveRun) => {
+const runChild = (command, args, cwd, env = process.env) => new Promise((resolveRun) => {
   const child = execFile(command, args, {
-    cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, detached: true,
+    cwd, env, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, detached: true,
   }, (error, stdout) => {
     activeChildren.delete(child);
-    resolveRun({ ok: error === null, stdout: `${stdout ?? ""}` });
+    resolveRun({ ok: error === null, status: error === null ? 0 : error.code, stdout: `${stdout ?? ""}` });
   });
   activeChildren.add(child);
 });
 
-const build = async (root) => (await runChild("npx", ["tsc", "-p", "tsconfig.json"], root)).ok;
+// Wall time spent in each kind of work, summed over the workers; printed at the
+// end, and per mutation with `--profile <file>`.
+const timing = new Map();
+const timed = async (kind, work) => {
+  const started = performance.now();
+  try {
+    return await work();
+  } finally {
+    const entry = timing.get(kind) ?? { count: 0, ms: 0 };
+    entry.count += 1;
+    entry.ms += performance.now() - started;
+    timing.set(kind, entry);
+  }
+};
 
-const runSuite = async (root) => {
-  const { ok, stdout } = await runChild("node", ["dist/harness/contentIntelligence.selftest.js"], root);
+/**
+ * The worker's long-lived incremental compiler, started once per copy. One
+ * `build` line in, one JSON line out: `tsc`'s own exit status for the build.
+ * If it dies, every later build of that copy fails, so no mutation can pass on
+ * a `dist/` nobody built.
+ */
+const startCompiler = (worker) => {
+  const child = spawn(process.execPath, [SCRIPT_PATH, "--incremental-build-server"], {
+    cwd: worker.workspace, stdio: ["pipe", "pipe", "inherit"], detached: true,
+  });
+  activeChildren.add(child);
+  const waiting = [];
+  let alive = true;
+  createInterface({ input: child.stdout }).on("line", (line) => {
+    let reply;
+    try {
+      reply = JSON.parse(line);
+    } catch {
+      reply = { status: -1, diagnostics: [`unreadable compiler reply: ${line.slice(0, 200)}`] };
+    }
+    waiting.shift()?.(reply);
+  });
+  child.on("exit", () => {
+    alive = false;
+    activeChildren.delete(child);
+    for (const settle of waiting.splice(0)) settle({ status: -1, diagnostics: ["the compiler exited"] });
+  });
+  child.stdin.on("error", () => {});
+  worker.compile = () => new Promise((settle) => {
+    if (!alive) {
+      settle({ status: -1, diagnostics: ["the compiler is not running"] });
+      return;
+    }
+    waiting.push(settle);
+    child.stdin.write("build\n");
+  });
+  worker.stopCompiler = () => {
+    if (alive) child.stdin.end();
+  };
+};
+
+/** An incremental build of the worker's copy into its `dist/`. True only for exit status 0. */
+const build = async (worker, kind) => {
+  const reply = await timed(kind, () => worker.compile());
+  worker.lastStatus = reply.status;
+  worker.lastDiagnostics = reply.diagnostics ?? [];
+  return reply.status === 0;
+};
+
+/**
+ * A clean full build: `tsc -p tsconfig.json` with no incremental state at all,
+ * into the worker's `clean-dist/`, which is emptied first. It is the reference
+ * every incremental `dist/` is compared with.
+ */
+const cleanBuild = async (worker) => {
+  rmSync(worker.cleanDist, { recursive: true, force: true });
+  const tsc = resolve(worker.workspace, "node_modules/typescript/bin/tsc");
+  return (await timed("clean build", () => runChild(process.execPath,
+    [tsc, "-p", "tsconfig.json", "--incremental", "false", "--outDir", worker.cleanDist], worker.workspace))).ok;
+};
+
+const runSuite = async (worker) => {
+  const { ok, stdout } = await timed("suite", () => runChild(process.execPath,
+    ["dist/harness/contentIntelligence.selftest.js"], worker.workspace, worker.suiteEnv));
   if (ok) return { failed: [], crashed: false };
   const failed = stdout.split("\n")
     .filter((line) => line.startsWith("FAIL  "))
@@ -4758,9 +4870,43 @@ const runSuite = async (root) => {
   return { failed, crashed: failed.length === 0 };
 };
 
-const buildAndRunSuite = async (root) => ((await build(root))
-  ? runSuite(root)
-  : { failed: [], crashed: true, buildFailed: true });
+/** Every file under `dir`, by relative path, with its bytes (null for anything not a regular file). */
+const treeSnapshot = (dir) => {
+  const files = new Map();
+  const walk = (at, prefix) => {
+    for (const name of readdirSync(at).sort()) {
+      const path = join(at, name);
+      const key = prefix ? `${prefix}/${name}` : name;
+      const stat = lstatSync(path);
+      if (stat.isDirectory()) walk(path, key);
+      else files.set(key, stat.isFile() ? readFileSync(path) : null);
+    }
+  };
+  if (existsSync(dir)) walk(dir, "");
+  return files;
+};
+
+/** Every way `actual` differs from `expected`: a file missing, unexpected, or with other bytes. */
+const treeDifferences = (actual, expected) => {
+  const differences = [];
+  for (const [file, bytes] of expected) {
+    if (!actual.has(file)) {
+      differences.push(`${file} missing`);
+      continue;
+    }
+    const other = actual.get(file);
+    if (bytes === null || other === null || !other.equals(bytes) || sha256(other) !== sha256(bytes)) {
+      differences.push(`${file} differs`);
+    }
+  }
+  for (const file of actual.keys()) if (!expected.has(file)) differences.push(`${file} unexpected`);
+  return differences;
+};
+
+const distOf = (worker) => resolve(worker.workspace, "dist");
+const summarize = (differences) => (differences.length > 5
+  ? `${differences.slice(0, 5).join("; ")}; and ${differences.length - 5} more`
+  : differences.join("; "));
 
 const inFlight = new Map();
 const disposableTempRoots = new Set();
@@ -4822,6 +4968,73 @@ const interruptionProbeChild = () => {
     originalDigest: sha256(original),
   })}\n`);
   setInterval(() => {}, 60_000);
+};
+
+/**
+ * The long-lived compiler one worker's copy builds with (its cwd is the copy).
+ * It uses the copy's own TypeScript, re-reads `tsconfig.json` for every build,
+ * and keeps the previous builder program, and every unchanged source file's
+ * syntax tree, in memory — exactly what `tsc --watch` keeps — so each build
+ * re-checks and re-emits only the files a change affects. The exit status is
+ * computed by `tsc`'s own `emitFilesAndReportErrorsAndGetExitStatus`: 0 only
+ * when there is no diagnostic of any kind, and outputs are written even on error,
+ * as `tsc` writes them. It exits when its input closes, so a killed harness
+ * cannot leave it running.
+ */
+const incrementalBuildServer = () => {
+  const root = process.cwd();
+  const ts = createRequire(resolve(root, "package.json"))("typescript");
+  const configPath = resolve(root, "tsconfig.json");
+  const sourceFiles = new Map();
+  let previous;
+  const formatHost = {
+    getCanonicalFileName: (fileName) => fileName,
+    getCurrentDirectory: () => root,
+    getNewLine: () => "\n",
+  };
+  const buildOnce = () => {
+    const diagnostics = [];
+    const parsed = ts.getParsedCommandLineOfConfigFile(configPath, undefined, {
+      ...ts.sys,
+      onUnRecoverableConfigFileDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+    });
+    if (!parsed) return { status: 1, diagnostics };
+    const host = ts.createIncrementalCompilerHost(parsed.options, ts.sys);
+    const createSourceFile = host.getSourceFile;
+    // An unchanged file keeps its syntax tree: the same object is handed back
+    // only when its bytes and parse options are the same as last time.
+    host.getSourceFile = (fileName, languageVersionOrOptions, onError, shouldCreateNewSourceFile) => {
+      const text = ts.sys.readFile(fileName);
+      const options = typeof languageVersionOrOptions === "object"
+        ? languageVersionOrOptions : { languageVersion: languageVersionOrOptions };
+      const key = text === undefined ? undefined : [options.languageVersion, options.impliedNodeFormat,
+        options.jsDocParsingMode, sha256(Buffer.from(text, "utf8"))].join("\0");
+      const cached = sourceFiles.get(fileName);
+      if (key !== undefined && cached?.key === key && !shouldCreateNewSourceFile) return cached.sourceFile;
+      const sourceFile = createSourceFile(fileName, languageVersionOrOptions, onError, shouldCreateNewSourceFile);
+      if (sourceFile && key !== undefined && sourceFile.text === text) sourceFiles.set(fileName, { key, sourceFile });
+      else sourceFiles.delete(fileName);
+      return sourceFile;
+    };
+    previous = ts.createEmitAndSemanticDiagnosticsBuilderProgram(parsed.fileNames, parsed.options, host, previous,
+      ts.getConfigFileParsingDiagnostics(parsed), parsed.projectReferences);
+    const status = ts.emitFilesAndReportErrorsAndGetExitStatus(previous, (diagnostic) => diagnostics.push(diagnostic));
+    return { status, diagnostics };
+  };
+  createInterface({ input: process.stdin }).on("line", (line) => {
+    if (line !== "build") return;
+    let reply;
+    try {
+      const { status, diagnostics } = buildOnce();
+      reply = {
+        status,
+        diagnostics: diagnostics.slice(0, 20).map((diagnostic) => ts.formatDiagnostic(diagnostic, formatHost).trim()),
+      };
+    } catch (error) {
+      reply = { status: -1, diagnostics: [`the compiler threw: ${error instanceof Error ? error.message : String(error)}`] };
+    }
+    process.stdout.write(`${JSON.stringify(reply)}\n`);
+  });
 };
 
 const runAbruptInterruptionProof = async (authoritativeBefore) => {
@@ -4903,6 +5116,13 @@ const check = (name, ok, detail = "") => {
   if (!ok) failures += 1;
 };
 
+// The clean full build of the unmutated sources, captured once before any
+// mutation: every restored copy's `dist/` must equal it byte for byte.
+let cleanBaseline;
+const restoreProblems = [];
+let restoreRebuilds = 0;
+const profile = [];
+
 /**
  * One mutation, in one worker's copy. It returns its check results rather than
  * printing them, so they can be printed in id order whichever worker ran it.
@@ -4915,6 +5135,8 @@ const runMutation = async (worker, mutation, index) => {
   const path = resolve(root, mutation.file);
   const original = readFileSync(path);
   const touched = [];
+  const started = performance.now();
+  const spent = { build: 0, suite: 0, restore: 0 };
   let mutated;
   try {
     mutated = mutationBytes(mutation, original, root);
@@ -4930,6 +5152,9 @@ const runMutation = async (worker, mutation, index) => {
     }
   };
 
+  const compiled = (mutation.file.startsWith("src/") && !mutation.file.endsWith(".json"))
+    || mutation.coordinatedAuthority;
+  let built = false;
   try {
     touch(path, original);
     if (mutation.symlinkTo !== undefined) {
@@ -4968,14 +5193,16 @@ const runMutation = async (worker, mutation, index) => {
       ));
     }
 
-    const compiled = (mutation.file.startsWith("src/") && !mutation.file.endsWith(".json"))
-      || mutation.coordinatedAuthority;
     let buildFailed = false;
-    if (compiled || worker.distStale) {
-      buildFailed = !(await build(root));
+    if (compiled) {
+      built = true;
+      const buildStarted = performance.now();
+      buildFailed = !(await build(worker, "build"));
+      spent.build = performance.now() - buildStarted;
     }
-    worker.distStale = compiled;
-    const result = buildFailed ? { failed: [], crashed: true } : await runSuite(root);
+    const suiteStarted = performance.now();
+    const result = buildFailed ? { failed: [], crashed: true } : await runSuite(worker);
+    spent.suite = performance.now() - suiteStarted;
 
     if (mutation.mustPass) {
       record(`${id}. ${mutation.name} — the suite stays green with coordinated authority`,
@@ -5003,11 +5230,33 @@ const runMutation = async (worker, mutation, index) => {
         `sha256 before=${sha256(restoreBytes)} after=${sha256(restored)}`);
     }
   }
+
+  // The restored sources are rebuilt now, before this worker takes another
+  // mutation, and the result must be the clean build exactly. On any difference
+  // the copy's `dist/` is rebuilt from nothing, so no later mutation inherits it.
+  if (built) {
+    const restoreStarted = performance.now();
+    restoreRebuilds += 1;
+    const ok = await build(worker, "restore build");
+    const differences = ok ? treeDifferences(treeSnapshot(distOf(worker)), cleanBaseline)
+      : [`the restored sources did not compile: ${worker.lastDiagnostics.join(" | ")}`];
+    if (differences.length) {
+      restoreProblems.push(`${id}: ${summarize(differences)}`);
+      worker.stopCompiler();
+      rmSync(distOf(worker), { recursive: true, force: true });
+      startCompiler(worker);
+      await build(worker, "recovery build");
+    }
+    spent.restore = performance.now() - restoreStarted;
+  }
+  profile.push({ id: index + 1, file: mutation.file, compiled, ...spent, total: performance.now() - started });
   return results;
 };
 
 async function main() {
   const startedAt = Date.now();
+  const profileAt = process.argv.indexOf("--profile");
+  const profilePath = profileAt >= 0 ? process.argv[profileAt + 1] : undefined;
   console.log("Payload-contract mutation tests\n");
   const coordinatedCount = MUTATIONS.filter((mutation) => mutation.mustPass).length;
   const prohibitedCount = MUTATIONS.length - coordinatedCount;
@@ -5021,7 +5270,13 @@ async function main() {
   for (let slot = 0; slot < WORKER_COUNT; slot += 1) {
     const prepared = prepareDisposableWorkspace();
     disposableTempRoots.add(prepared.tempRoot);
-    workers.push({ ...prepared, distStale: false });
+    const compileCache = join(prepared.tempRoot, "compile-cache");
+    mkdirSync(compileCache);
+    workers.push({
+      ...prepared,
+      cleanDist: join(prepared.tempRoot, "clean-dist"),
+      suiteEnv: { ...process.env, NODE_COMPILE_CACHE: compileCache },
+    });
   }
   const workspaces = workers.map((worker) => worker.workspace);
   check("M-isolation. every mutation, build, suite, and restoration targets a disposable no-Git copy, "
@@ -5041,12 +5296,25 @@ async function main() {
     && interruption.unchangedDuring
     && interruption.unchangedAfter);
 
-  const baselines = await Promise.all(workspaces.map(buildAndRunSuite));
+  for (const worker of workers) startCompiler(worker);
+  const [baselines, cleanOk] = await Promise.all([
+    Promise.all(workers.map(async (worker) => ((await build(worker, "first build"))
+      ? runSuite(worker)
+      : { failed: [], crashed: true, buildFailed: true }))),
+    cleanBuild(workers[0]),
+  ]);
   check(`M0. every unmutated disposable copy (${WORKER_COUNT}) builds and the whole suite passes`,
     baselines.every((baseline) => !baseline.crashed && baseline.failed.length === 0),
     baselines.map((baseline, slot) => `copy ${slot + 1}: `
       + (baseline.buildFailed ? "did not compile"
         : baseline.crashed ? "crashed" : baseline.failed.join(" | ") || "green")).join("; "));
+  cleanBaseline = treeSnapshot(workers[0].cleanDist);
+  const firstDifferences = workers.map((worker) => treeDifferences(treeSnapshot(distOf(worker)), cleanBaseline));
+  check(`M-inc0. every copy's first incremental dist/ is byte-identical to a clean full build of the same `
+    + `sources (${cleanBaseline.size} files)`,
+  cleanOk && cleanBaseline.size > 0 && firstDifferences.every((differences) => differences.length === 0),
+  cleanOk ? firstDifferences.map((differences, slot) => `copy ${slot + 1}: ${summarize(differences) || "identical"}`)
+    .join("; ") : "the clean build did not compile");
   if (failures) {
     console.log("\nBaseline or isolation proof is not green; mutation results would be meaningless.");
     process.exit(1);
@@ -5073,13 +5341,75 @@ async function main() {
   printInOrder();
   check("M-order. every mutation ran exactly once and its results were printed in id order",
     nextToPrint === MUTATIONS.length && outcomes.every((outcome) => Array.isArray(outcome)));
+  const compiledCount = MUTATIONS.filter((mutation) => (mutation.file.startsWith("src/")
+    && !mutation.file.endsWith(".json")) || mutation.coordinatedAuthority).length;
+  check(`M-inc-restore. after every compiled mutation (${restoreRebuilds} of ${compiledCount}), the incremental `
+    + "rebuild of its restored sources is byte-identical to the clean full build",
+  restoreRebuilds === compiledCount && restoreProblems.length === 0, summarize(restoreProblems));
 
-  const restoredRuns = await Promise.all(workspaces.map(buildAndRunSuite));
+  const finals = await Promise.all(workers.map(async (worker) => {
+    const incremental = await build(worker, "final build");
+    const clean = await cleanBuild(worker);
+    const differences = !incremental ? [`the restored copy did not compile: ${worker.lastDiagnostics.join(" | ")}`]
+      : !clean ? ["the clean full build did not compile"]
+      : treeDifferences(treeSnapshot(distOf(worker)), treeSnapshot(worker.cleanDist));
+    const run = incremental ? await runSuite(worker) : { failed: [], crashed: true, buildFailed: true };
+    return { differences, run };
+  }));
+  check("M-inc-end. after its last mutation, every copy's incremental dist/ is byte-identical to a fresh clean "
+    + "full build of its restored sources, before the final suite pass",
+  finals.every(({ differences }) => differences.length === 0),
+  finals.map(({ differences }, slot) => `copy ${slot + 1}: ${summarize(differences) || "identical"}`).join("; "));
   check("M-end. after every raw mutation is reverted every disposable copy's suite passes again",
-    restoredRuns.every((run) => !run.crashed && run.failed.length === 0),
-    restoredRuns.map((run, slot) => `copy ${slot + 1}: `
+    finals.every(({ run }) => !run.crashed && run.failed.length === 0),
+    finals.map(({ run }, slot) => `copy ${slot + 1}: `
       + (run.buildFailed ? "did not compile"
         : run.crashed ? "crashed" : run.failed.join(" | ") || "green")).join("; "));
+
+  // Injected faults, in the first copy, after its final suite pass: each must
+  // make the incremental build or its comparison with the clean build fail.
+  const faulted = workers[0];
+  const clean = treeSnapshot(faulted.cleanDist);
+  const faultSource = resolve(faulted.workspace, "src/harness/mutationHarnessInjectedFault.ts");
+  // Real `tsc` checks the same source state (`--noEmit`, so it writes nothing).
+  const realTsc = async () => (await timed("fault build", () => runChild(process.execPath,
+    [resolve(faulted.workspace, "node_modules/typescript/bin/tsc"), "-p", "tsconfig.json", "--noEmit"],
+    faulted.workspace))).status;
+  writeFileSync(faultSource, "export const injectedFault: number = \"not a number\";\n");
+  const tscWithFault = await realTsc();
+  const typeErrorRefused = !(await build(faulted, "fault build"))
+    && faulted.lastDiagnostics.some((line) => line.includes("TS2322"));
+  const compilerWithFault = faulted.lastStatus;
+  rmSync(faultSource);
+  const tscWithoutFault = await realTsc();
+  const orphanBuilt = await build(faulted, "fault build");
+  const compilerWithoutFault = faulted.lastStatus;
+  check("M-inc-tsc. a source state with an injected type error fails real tsc and fails the incremental compiler "
+    + "with a non-zero status; with the fault removed, both return 0",
+  tscWithFault !== 0 && compilerWithFault !== 0 && tscWithoutFault === 0 && compilerWithoutFault === 0,
+  `real tsc: ${tscWithFault} with the fault, ${tscWithoutFault} without; `
+    + `incremental compiler: ${compilerWithFault} with the fault, ${compilerWithoutFault} without`);
+  const orphan = treeDifferences(treeSnapshot(distOf(faulted)), clean);
+  rmSync(resolve(distOf(faulted), "harness/mutationHarnessInjectedFault.js"), { force: true });
+  const staleTarget = "harness/agents/payloadContract.js";
+  const staleBytes = Buffer.from(readFileSync(resolve(distOf(faulted), staleTarget)));
+  staleBytes[staleBytes.length - 1] ^= 0x01;
+  writeFileSync(resolve(distOf(faulted), staleTarget), staleBytes);
+  const staleBuilt = await build(faulted, "fault build");
+  const stale = treeDifferences(treeSnapshot(distOf(faulted)), clean);
+  const withoutOne = new Map(clean);
+  withoutOne.delete(staleTarget);
+  const missing = treeDifferences(withoutOne, clean);
+  check("M-inc-fault. the incremental compiler refuses an injected type error, and the comparison with the clean "
+    + "build reports an orphaned output, a stale output the incremental compiler does not re-emit, and a missing file",
+  typeErrorRefused
+    && orphanBuilt && orphan.length === 1 && orphan[0] === "harness/mutationHarnessInjectedFault.js unexpected"
+    && staleBuilt && stale.length === 1 && stale[0] === `${staleTarget} differs`
+    && missing.length === 1 && missing[0] === `${staleTarget} missing`
+    && treeDifferences(clean, clean).length === 0,
+  `type error refused: ${typeErrorRefused}; orphan: ${orphan.join(", ") || "none"}; `
+    + `stale: ${stale.join(", ") || "none"}; missing: ${missing.join(", ") || "none"}`);
+
   check("M-copies. every worker's copy of every target is byte-identical to the authoritative bytes "
     + "captured before the run",
   workspaces.every((workspace) => [...authoritativeBefore.files].every(([file, before]) => {
@@ -5091,8 +5421,12 @@ async function main() {
   check("M-authority. authoritative target bytes and Git status stayed unchanged",
     authoritativeSnapshotMatches(authoritativeBefore));
 
+  for (const worker of workers) worker.stopCompiler();
+  if (profilePath) writeFileSync(profilePath, `${JSON.stringify(profile.sort((a, b) => a.id - b.id), null, 1)}\n`);
   const seconds = Math.round((Date.now() - startedAt) / 1000);
   const duration = `${Math.floor(seconds / 60)}m${String(seconds % 60).padStart(2, "0")}s`;
+  console.log(`\nTime, summed over workers: ${[...timing].map(([kind, { count, ms }]) =>
+    `${count} ${kind}${count === 1 ? "" : "s"} ${Math.round(ms / 1000)}s`).join(", ")}`);
   console.log(failures === 0
     ? `\nALL PASS — ${MUTATIONS.length} mutations, ${WORKER_COUNT} workers, ${duration}`
     : `\n${failures} FAILURE(S) — ${MUTATIONS.length} mutations, ${WORKER_COUNT} workers, ${duration}`);
@@ -5101,6 +5435,8 @@ async function main() {
 
 if (process.argv[2] === "--interrupt-probe-child") {
   interruptionProbeChild();
+} else if (process.argv[2] === "--incremental-build-server") {
+  incrementalBuildServer();
 } else {
   main().catch((error) => {
     console.error(error);
