@@ -1,6 +1,8 @@
 # Data model
 
-SQL files under `state/migrations/` are authoritative. `_migrations` records applied filenames. PostgreSQL is required for runtime durability; API, worker, and scheduler request durable state and probe connectivity, migration-005 approval/media columns, both approval integrity constraints, and all four integrity triggers before starting. In-memory maps remain available only when an offline harness/self-test explicitly initializes without that requirement and cannot authorize publication.
+This document describes two separate databases. **Everything above [Content Studio schema](#content-studio-schema--the-separate-gcd_studio-database) is the live `gcd-social-db`**, migrated by `src/state/migrate.ts` from `state/migrations/`. The Content Studio's own database, `gcd_studio`, has a different runner, ledger, connection variable and directory, and shares nothing with it; it is described only in that last section.
+
+SQL files under `state/migrations/` are authoritative for the live database. `_migrations` records applied filenames. PostgreSQL is required for runtime durability; API, worker, and scheduler request durable state and probe connectivity, migration-005 approval/media columns, both approval integrity constraints, and all four integrity triggers before starting. In-memory maps remain available only when an offline harness/self-test explicitly initializes without that requirement and cannot authorize publication.
 
 | Table | Purpose | Sensitivity / lifecycle |
 |---|---|---|
@@ -79,3 +81,119 @@ Because the Phase-0A startup probe is existence-scoped — it counts triggers re
 `attribute` is what makes conflict detection meaningful: two claims about the shop's warranty disagree, while its warranty and its phone number do not.
 
 Writes come only from the explicit operator command `npm run evidence:sync`, which is idempotent — a second run reports zero changes. Nothing writes evidence during application startup, so a deploy can never silently rewrite what the system believes.
+
+---
+
+# Content Studio schema — the separate `gcd_studio` database
+
+**`IMPLEMENTED` by Content Studio S2, not merged, not deployed; no Studio database exists.** Nothing in this section describes the live `gcd-social-db` above, and nothing above applies here. The design is [Content Studio design](CONTENT_STUDIO_DESIGN.md) §3.7 and §4; the owner's defaults are §11.1a. Proven on disposable PostgreSQL 16 and 18 by `npm run test:studio-postgres` (`src/studio/db/migrate.postgres.selftest.ts`, checks `SP*`), and offline by `npm run test:studio-db` (`src/studio/db/migrate.offline.selftest.ts`, checks `SM*`); see [Testing](TESTING.md).
+
+## How it is migrated — five separations from the live runner
+
+| | Live database | Studio database |
+|---|---|---|
+| SQL | `state/migrations/NNN_*.sql` | `studio/migrations/NNNN_*.sql` (`0001_studio_identity_and_tripwire.sql`, `0002_studio_schema.sql`) |
+| Runner | `src/state/migrate.ts` (`npm run migrate`), unchanged | `src/studio/db/migrate.ts` → `runner.ts` (`npm run studio:migrate`) |
+| Ledger | `_migrations` (names only) | `studio_schema_migrations`: name **and sha256 of the file's exact bytes**; rows immutable |
+| Connection | `DATABASE_URL` | `STUDIO_DATABASE_URL` only; **refused while `DATABASE_URL` is present at all**, before connecting (`SM1`, `SM1a`, `SM2`–`SM2b`) |
+| Identity | — | read-only probes before any other statement: `current_database()` is `gcd_studio`; no live-schema table exists in any schema (`LIVE_SCHEMA_TABLES`, checked against the live SQL by `SM6`); a `_migrations` table must carry the tripwire; once the ledger exists, exactly one matching `studio_database_identity` row (`SM4`–`SM4d`, `SM5`, `SP1`, `SP4`–`SP6`) |
+
+- **The tripwire.** Migration 0001 creates a table named `_migrations`, with the live ledger's `name` column carrying `CONSTRAINT studio_tripwire_refuses_live_runner CHECK (false)`. Nothing writes it. **Verified by execution, not assumed** (`SP13`, `SP14`, PostgreSQL 16 and 18): the unchanged live runner against a Studio-migrated database finds `_migrations`, applies `001_init.sql` inside its transaction, fails on its first `INSERT INTO _migrations`, rolls back and exits 1; the catalog, both ledgers and the identity row are byte-for-byte unchanged and no live table exists.
+- **The other direction** (`SP4`, `SP5`): the Studio runner against a live-migrated `gcd_studio` is refused (`live-schema`) having sent only read-only `SELECT` probes — no `BEGIN`, lock, DDL or write — and the database is unchanged. A live-migrated database under any other name is refused as `wrong-database` (`SP2`).
+- **Each runner on its own database applies and is idempotent** (`SP3` live; `SP8`–`SP10`, `SP15` Studio). A recorded file whose bytes changed (`SP11`, `SM3`) or that is missing (`SP12`) is refused before any statement. Each file runs in its own transaction under a Studio-only advisory lock (namespace `gcd-studio:migration-runner:v1`); a runner that loses a race refuses (`concurrent-runner`) rather than apply twice (`SP7`).
+- **Each Studio file also refuses by itself** to run outside `gcd_studio` (a `DO` block), whoever runs it.
+- `gen_random_uuid()` and `sha256(bytea)` are built into PostgreSQL 13+ and 11+; the Studio schema needs no extension.
+
+## Tables
+
+Money is `numeric(12,6)` USD, times `timestamptz`, ids UUIDs. Singletons have a `singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton)`.
+
+| Table | Holds | Sensitivity |
+|---|---|---|
+| `_migrations` | **Nothing — the tripwire** (above) | None |
+| `studio_schema_migrations` | Applied Studio files with their sha256 | Schema metadata |
+| `studio_database_identity` (singleton) | `gcd_studio` and the marker `gcd-studio:database-identity:v1` | None |
+| `studio_users` | Allowlisted Workspace users, role (`owner`/`runner`/`viewer`), status, per-user daily cap | Staff emails and Google subjects |
+| `studio_login_attempts` | OIDC `state`/`nonce` sha256 hashes and the PKCE verifier, 10 minutes | Short-lived authentication material |
+| `studio_sessions` | Session cookie sha256, CSRF token sha256, lifetimes, revocation | Hashes only; never a cookie value |
+| `studio_fact_uploads` (singleton) | §8.5's staging row: an owner's upload before the worker validates it | The manufacturer facts file (owner-only) |
+| `studio_fact_versions` | Validated fact files, exact bytes, sha256, counts, status | The manufacturer facts file (owner-only bytes) |
+| `studio_settings` (singleton) | Active fact version, daily and monthly caps, `scheduled_runs_enabled` | Configuration |
+| `studio_quotes` | The worker's price ceilings, bound to user, action, parameters, commit, fingerprints, price table; single use | Cost metadata |
+| `studio_runs` | Every run and import: kind, lineage, state, fingerprints, quote, reservation, verdict, counts, failure, tombstone | Goals and failure messages |
+| `studio_run_artifacts` | Each run's CLI files, byte for byte, with sha256 and length | Model output and cited claims, including the approved booking link inside contact lines |
+| `studio_run_requests` | One row per provider request, its ceiling, tokens, cost and the generated `charged_usd` | Cost metadata |
+| `studio_findings` | Findings derived from `06-final-critic.json` | Model prose |
+| `studio_audit_log` | Append-only audit rows (`detail` a bounded JSON object) | Actor ids and action metadata; never content (application-side) |
+| `studio_spend_ledger` | `reserve` / `release` / `overrun` entries booked to an `America/New_York` day and month | Cost metadata |
+| `studio_jobs` | One job per run (and free preflight jobs, which have none) | None |
+| `studio_worker_heartbeat` (singleton) | Worker commit, schema version, approved-facts sha256 and tag counts, price-table sha256 | None |
+
+**Seeded values are owner-editable defaults**, not constraints: `studio_settings` starts at **$50 a day, $200 a month** (owner decision of 2026-09-29, design §11.1a) and `scheduled_runs_enabled = false` (owner decision 4), with no actor (`SP156`). Only an active owner changes them afterwards, and the deployment ceilings (`STUDIO_MAX_DAILY_USD`, `STUDIO_MAX_MONTHLY_USD`) bound them at run time in S3/S6; the schema does not hold those ceilings. The $25 per-runner daily cap is entered by the owner when a runner is added.
+
+**Helper functions:** `studio_consume_login_attempt(state_hash)`, `studio_spend_for_day(date)`, `studio_spend_for_month(date)`, `studio_local_day(timestamptz)` (America/New_York), `studio_month_of(date)`, `studio_is_active_user_in_role(uuid, text[])`, `studio_is_terminal_run_state(text)`, and the trigger functions.
+
+## Every §4 invariant the database enforces, and the check that proves it
+
+Each is proven by attempting the forbidden write and requiring its refusal, beside the permitted write succeeding. `SP` ids are `npm run test:studio-postgres`'s; each passes on PostgreSQL 16 and 18.
+
+| Table | Invariant (design §4, §4.7, §6.1, §6.3, §8.5) | Enforced by | Proven by |
+|---|---|---|---|
+| `studio_users` | Email lower-cased and exactly `…@germancardepot.com` (no subdomain, look-alike or second `@`) | `CHECK`s | `SP103`–`SP107` |
+| | Unique email and Google subject | `UNIQUE` | `SP112`, `SP113` |
+| | Before any owner exists, only the §7.2 bootstrap owner can be created: an active owner, created by nobody, carrying its verified Google subject; afterwards every user is created by an active owner | `BEFORE INSERT` trigger, serialized by an advisory lock | `SP101`, `SP102`, `SP108`–`SP111` |
+| | A `google_sub` never changes once set | `BEFORE UPDATE` trigger | `SP114`–`SP116` |
+| | Once an owner exists, at least one active owner always exists — by demotion, disabling, deletion, one statement or two concurrent transactions | `AFTER UPDATE OR DELETE` trigger that locks the remaining owners before counting | `SP117`–`SP121`, `SP123`; truncation `SP122` |
+| `studio_login_attempts` | `state` and `nonce` stored as sha256 hashes; PKCE verifier shaped as RFC 7636; exactly 10 minutes; not created in the future | `CHECK`s, `BEFORE INSERT` trigger | `SP124`–`SP128` |
+| | Single use: consumed by delete; a second consumption returns nothing; an expired attempt is refused and purged; never modified | `studio_consume_login_attempt`, `UPDATE` refused | `SP129`–`SP131` |
+| `studio_sessions` | Only a sha256 of the cookie is stored; 7 days absolute, 12 hours idle | `CHECK`s | `SP132`–`SP134` |
+| | A disabled user's sessions are revoked in the transaction that disables them; no session for a disabled user; a revoked session never reopens; identity fields never change | `AFTER UPDATE OF status` on users; `BEFORE` trigger | `SP135`–`SP139` |
+| `studio_fact_uploads` | §8.5: one owner-only staging row, bytes matching their sha256 and length, at most 1 MiB, never modified | `PRIMARY KEY` singleton, `CHECK`s, triggers | `SP140`–`SP142`, `SP144`–`SP146` |
+| `studio_fact_versions` | Owner-only insert, **only from the staged upload's exact bytes** (never before validation) | triggers | `SP143`, `SP147`, `SP148` |
+| | `content`, `sha256` and the counts immutable; only `status` may change; sha256 is of the exact bytes | trigger, `CHECK`s | `SP149`–`SP154` |
+| | Never deleted while a run, quote or the settings reference it (restrictive foreign keys); an unreferenced version only once retired, and the deletion is audited | `ON DELETE RESTRICT`, trigger | `SP155`, `SP165`, `SP284`–`SP286` |
+| `studio_settings` | Singleton; never deleted or truncated | `PRIMARY KEY`, triggers | `SP157`–`SP160` |
+| | Changed only by an active owner, and every change writes its audit row in the same transaction | `BEFORE`/`AFTER UPDATE` triggers | `SP161`–`SP164` |
+| `studio_quotes` | Requested only for an active owner or runner (§6.3); created unconsumed, 10 minutes, not in the future | trigger, `CHECK`s | `SP166`, `SP167`, `SP177` |
+| | Single use: consumed once, before expiry, only by the transaction that creates its run, reserve entry and paid job; bindings immutable; a consumed quote never deleted | triggers, a deferred constraint trigger, `UNIQUE (studio_runs.quote_id)` | `SP176`, `SP179`–`SP185` |
+| `studio_runs` | A live run always has its quote and reservation; its run, consumed quote, reserve entry and paid job are created in one transaction (checked at commit); it matches its quote's user, action, fact version and ceiling | `CHECK`s, trigger, deferred constraint trigger | `SP168`–`SP175`, `SP179` |
+| | Paid runs by an active owner or runner; fake runs and imports owner-only and free | trigger, `CHECK`s | `SP178`, `SP186`–`SP188`, `SP190` |
+| | Created queued; never returns to queued; **a terminal state never changes**, nor any other column of a finished run | triggers | `SP189`, `SP204`, `SP206`–`SP211` |
+| | `source_run_id` names a run that already exists; a run cannot be its own ancestor (itself, a cycle within one statement, or by re-pointing later); the lineage shape (revise/replay/resume have a source, full runs and imports none) | trigger, `CHECK`s, source immutable | `SP191`–`SP197`, `SP200` |
+| | A revise, replay or resume pins its source's fact version; the recorded automotive-facts sha256 is the pinned version's | trigger, composite foreign key | `SP174`, `SP198` |
+| | An import that did not revalidate (`archived_unverified`) is never the source of a paid action; the tier is for imports only and never changes | trigger, `CHECK` | `SP199`, `SP201`–`SP203`, `SP211` |
+| | Never deleted: the owner's deletion of a finished run keeps a tombstone (owner-only, audited, immutable) and keeps its ledger entries | triggers | `SP205`, `SP274`–`SP279`, `SP282`, `SP283` |
+| `studio_run_artifacts` | Immutable once written; sha256 and length are of the stored bytes; plain file names; no new artifact once the run is finished or deleted; removed only by the owner's deletion of the run | `CHECK`s, trigger | `SP212`–`SP219`, `SP277`, `SP280` |
+| `studio_run_requests` | A `started` row with its own ceiling is written before the request, only for a running run; completed once; identity columns never change; never deleted; frozen once the run finishes | trigger, `CHECK`s | `SP220`–`SP224`, `SP227`, `SP228`, `SP230`, `SP272`, `SP273` |
+| | A request with no completed row, or no known cost, is charged its full ceiling | the generated column `charged_usd` | `SP225`, `SP226`, `SP229` |
+| `studio_findings` | `owner_item` is true exactly for a `human_review` owner or a `human_decision` category; the pipeline's closed sets and each lens's categories (`SM6b` checks them against `finalCritic.ts`); rebuilt, never updated; none on a deleted run | `CHECK`s, trigger | `SP231`–`SP237`, `SP281` |
+| `studio_audit_log` | Append-only (no update, delete or truncate); `detail` a JSON object of at most 4 KiB | triggers, `CHECK`s | `SP287`–`SP291` |
+| `studio_spend_ledger` | Append-only; entries only for live Studio runs; one reserve per run equal to its reservation; at most one settlement; a release never exceeds the reservation; nothing before the reserve | triggers, partial unique indexes | `SP240`–`SP244`, `SP248`, `SP254`–`SP256` |
+| | Every entry is booked to its reserve's `America/New_York` day and month, even after midnight; the database sets `created_at`, so a reservation cannot be back-dated | trigger, `CHECK (month_local = studio_month_of(day_local))` | `SP238`, `SP239`, `SP243`, `SP245`, `SP246`, `SP252`, `SP253` |
+| | Spend = Σreserve − Σrelease + Σoverrun | `studio_spend_for_day`, `studio_spend_for_month` | `SP247`, `SP249`–`SP251` |
+| `studio_jobs` | One job per run; a paid job runs a live run and a fake job a fake run; only a free preflight job has no run; created queued and unclaimed, expiring within an hour | `UNIQUE`, trigger, `CHECK`s | `SP257`–`SP262` |
+| | Never retried (never back to queued; finished, cancelled and expired jobs frozen; claim set once, only by starting); a queued job past its expiry is never started | trigger | `SP263`–`SP271` |
+| `studio_worker_heartbeat`, `studio_database_identity`, `studio_schema_migrations` | Singletons; the identity and the ledger immutable | `PRIMARY KEY`, triggers | `SP292`–`SP301` |
+| `_migrations` (tripwire) | Refuses every row | `CHECK (false)` | `SP302`, `SP13` |
+
+## §4 rules that are not the database's to enforce, and who owns each
+
+None of these was moved out of the database silently: each is application-side by its nature, or needs a capability S2 cannot verify, and each is recorded with the PR that owns it.
+
+| Rule | Why not in the database | Owner |
+|---|---|---|
+| The stored `state`/`nonce`/cookie/CSRF hashes are hashes **of the real values**; login-attempt creation is rate-limited per client address | The database sees only the hash, which it shape-checks (`SP124`, `SP132`); rate limits are in-process (§7.3) | S4 |
+| The bootstrap owner's email equals `STUDIO_BOOTSTRAP_OWNER_EMAIL` | An environment value the database never sees; the database enforces the bootstrap's shape (`SP101`, `SP102`, `SP108`) | S4 |
+| Periodic purges: login attempts 1 day after expiry, sessions 30 days after expiry (§4.7) | A scheduled operation, not a constraint; consumption already purges an expired attempt (`SP131`) | S4 |
+| The two-year retention purge of the audit log and the ledger (§4.7) | **Deliberately not built.** Both tables refuse every `DELETE` and `TRUNCATE` today; the purge must be a separately reviewed migration or database function (§4.6), never an application path | a future reviewed migration |
+| Quotes are written only by the worker's preflight; the heartbeat only by the worker; the web cannot write the ledger outside the confirmation | With one database role the database cannot tell the web from the worker. §9.1 proposes a least-privilege role for the web, but whether Render's plan allows a second role is **TO VERIFY**, so S2 does not add one; until then the web holds the owner credential (design §11.2, an accepted limitation) and the worker re-checks every binding (§6.2) | S3 (the re-checks), S8 (the role, once the plan is known) |
+| A quote's worker commit, approved-facts sha256 and price table equal the worker's current heartbeat | A comparison with live worker state at claim time; the database makes the bindings immutable (`SP182`) | S3 |
+| The fingerprints are computed the same way as the CLI's; artifacts are exactly the files the CLI writes; findings come from the library's accessors | The database checks each artifact's sha256 and length against its stored bytes (`SP212`, `SP213`) and the findings' closed sets; what the bytes are is the library's (S1) | S3, S5 |
+| `detail` in the audit log never holds a goal, model text, fact text, an email body, a token or a secret | Content, not shape; the database bounds it to a small JSON object (`SP290`, `SP291`) | S3–S7 |
+| Only the owner downloads a fact version's bytes (§8.5); who deleted a retired fact version | Read access is an application route; the deletion trigger audits the version's sha256 and size but has no actor column | S7 (records its own owner audit row) |
+| Queue order (preflight before paid), one job at a time, worker ownership | Runtime behaviour of the single consumer (§5.3) | S3 |
+| The daily, monthly and per-user caps, the effective cap (the lower of the owner's cap and the deployment ceiling), the serialization of confirmations on the settings row, and the overrun lock-out until the owner acknowledges | Design §6.2 places the cap checks in code, at confirmation and before every paid request; the deployment ceilings are environment values the database never sees. The database holds the owner's caps and the reservation rules the checks rely on (one reserve equal to the ceiling, bounded releases, the spend formula, booking to the reserve's day) | S6 (confirmation), S3 (before each paid request) |
+
+## Recovery
+
+There is no Studio database yet, so nothing to back up or restore; design §4.7's restore drill belongs to O5. There is no down migration: a reversal would be a documented SQL file outside `studio/migrations/`, applied by hand under its own authorization, exactly as the live rule above requires.

@@ -15,6 +15,7 @@
     "start:worker": "node dist/worker/index.js",
     "start:scheduler": "node dist/scheduler/daily.js",
     "migrate": "node dist/state/migrate.js",
+    "studio:migrate": "node dist/studio/db/migrate.js",
     "test:posting": "node dist/mcp/posting-tool/selftest.js",
     "test:image": "node dist/mcp/image-tool/selftest.js",
     "test:orchestrator": "node dist/harness/orchestrator.selftest.js",
@@ -24,7 +25,7 @@
     "test:ownership": "node dist/harness/ownershipRecovery.selftest.js",
     "test:postgres": "node dist/harness/postgres.integration.selftest.js",
     "test:http-e2e": "node dist/api/http.e2e.selftest.js",
-    "test:offline": "npm run test:posting && npm run test:image && npm run test:orchestrator && npm run test:gate && npm run test:api && npm run test:render-identity && npm run test:ownership && npm run test:content-intelligence && npm run test:interval-monitor",
+    "test:offline": "npm run test:posting && npm run test:image && npm run test:orchestrator && npm run test:gate && npm run test:api && npm run test:render-identity && npm run test:ownership && npm run test:content-intelligence && npm run test:interval-monitor && npm run test:studio-db",
     "test:payload-mutation": "node scripts/ci/payload-contract-mutation.mjs",
     "test:interval-monitor": "node scripts/ops/interval-monitor/offline.selftest.mjs",
     "test:m1-readiness": "node scripts/ops/m1-readiness/offline.selftest.mjs",
@@ -37,6 +38,8 @@
     "dryrun": "node dist/harness/dryrun.cli.js",
     "dryrun:live": "node dist/harness/dryrun.cli.js --live",
     "test:content-intelligence": "node dist/harness/contentIntelligence.selftest.js",
+    "test:studio-db": "node dist/studio/db/migrate.offline.selftest.js",
+    "test:studio-postgres": "node dist/studio/db/migrate.postgres.selftest.js",
     "evidence:sync": "node dist/harness/evidence/syncCli.js"
   },
   "dependencies": {

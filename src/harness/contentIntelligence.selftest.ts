@@ -12501,12 +12501,16 @@ async function run(): Promise<void> {
     const LIB = ["content", "Run"].join("");
     const cliText = codeFiles.get("scripts/local/content-run.mjs") ?? "";
     const refused = (files: Record<string, string>) => callerViolations(new Map(Object.entries(files))).map((v) => v.file);
+    // Since S2, src/studio/** holds the database tree (src/studio/db/**) and
+    // nothing else; it is neither the worker nor the web tree, so no file in
+    // it may import the library either. S3 adds src/studio/worker/**.
     check("CS2. only scripts/local/content-run.mjs and src/studio/worker/** import the content-run library, and nothing "
       + "under src/studio/web/** imports it, the stage-execution boundary or a stage executor — enforced before "
-      + "src/studio/** exists"
+      + "src/studio/worker/** and src/studio/web/** exist, over src/studio/db/** (S2), the only Studio tree so far"
       + (callers.length ? ` — ${callers.map((v) => `${v.file}: ${v.detail}`).join("; ")}` : ""),
       callers.length === 0 && codeFiles.size > 100 && cliText.length > 0
-        && [...codeFiles.keys()].every((file) => !file.startsWith("src/studio/"))
+        && [...codeFiles.keys()].every((file) => !file.startsWith("src/studio/") || file.startsWith("src/studio/db/"))
+        && [...codeFiles.keys()].some((file) => file.startsWith("src/studio/db/"))
         && refused({ "scripts/local/moved-cli.mjs": cliText }).join() === "scripts/local/moved-cli.mjs"
         && refused({
           "src/studio/worker/run.ts": `import { runFullPipeline } from "../../harness/${LIB}/index.js";\n`,

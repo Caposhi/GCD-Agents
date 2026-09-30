@@ -16,6 +16,16 @@
 | `RENDER_GIT_COMMIT` | Render-injected full commit identity for production API health and worker readiness | Required and validated in production; do not set it manually in `.env.example` or `render.yaml` |
 | `RENDER_INSTANCE_ID` | Optional Render-injected API/worker runtime correlation identity; exposed only in the worker readiness marker | Non-secret and format-validated by both processes when present; do not set it manually in `.env.example` or `render.yaml` |
 
+## Content Studio (separate from every variable above)
+
+**Content Studio S2, `IMPLEMENTED`, not merged; no Studio service or database exists.** The Studio uses Studio-specific names wherever a live name exists ([Content Studio design](CONTENT_STUDIO_DESIGN.md) §3.2), so no Studio process can pick up a live value and no live process a Studio one.
+
+| Variable | Behavior | Safety |
+|---|---|---|
+| `STUDIO_DATABASE_URL` | The Studio's own PostgreSQL database, which must be named `gcd_studio`. Read only by `npm run studio:migrate` (`src/studio/db/migrate.ts`) today; later by the Studio web and worker. In production it would come from `gcd-studio-db` via `render.studio.yaml` (S8), on Studio services only | **Never set it on a live service, and never set `DATABASE_URL` on a Studio process.** The Studio runner refuses to run while `DATABASE_URL` is present at all, whatever its value, before connecting; it then applies nothing unless the database is `gcd_studio`, holds no live-schema table and carries the Studio identity row and tripwire ([Data model](DATA_MODEL.md#content-studio-schema--the-separate-gcd_studio-database)). `.env.example` holds a local placeholder only, so a shell that sources it whole will be refused: unset `DATABASE_URL` for Studio commands |
+
+The Studio's other variables (`STUDIO_PUBLIC_ORIGIN`, `STUDIO_ALLOWED_HD`, `STUDIO_GOOGLE_CLIENT_ID`/`_SECRET`, `STUDIO_BOOTSTRAP_OWNER_EMAIL`, `STUDIO_MAX_DAILY_USD`, `STUDIO_MAX_MONTHLY_USD`, `STUDIO_SCHEDULED_RUNS_ENABLED`) are `PLANNED` in design §3.2; none is read by any code yet, so none is in `.env.example`. The disposable-test inputs `STUDIO_DISPOSABLE_POSTGRES` and `STUDIO_POSTGRES_ADMIN_URL` are read only by `npm run test:studio-postgres` and are classified as test-only by the coverage check ([Testing](TESTING.md)).
+
 ## Model, image, and harness
 
 | Variable | Behavior | Safety |
