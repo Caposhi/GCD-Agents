@@ -338,9 +338,11 @@ with injected-fault proofs (`M-inc-tsc`, `M-inc-fault`). Locally the harness wen
 25m41s; on `main` at `c1c19f4` the CI mutation step took 38m47s. The suite is now about 95% of
 the step, so it still grows with each mutation; see [Testing](docs/TESTING.md). PR #104's CI mutation step
 took 26m59s, and 26m34s on `main`. *(Content Studio S2, `IMPLEMENTED`:)* `M-inc-sample` also builds
-the **mutated** sources of a deterministic sample of compiled mutations (every group's first and
-every eighth after it) with a clean `tsc` and requires that `dist/` to be byte-identical to the
-incremental one, with an injected-fault proof (`M-inc-sample-fault`).
+the **mutated** sources of four compiled mutations per run, each from a different group and
+chosen from a seed (`GITHUB_SHA`, or a fixed constant locally) so successive commits rotate, with
+a clean `tsc`, and requires that `dist/` to be byte-identical to the incremental one, with an
+injected-fault proof (`M-inc-sample-fault`). *(Its first sample of 31 took the CI mutation step to
+32m15s, over the 30-minute bar; owner decision of 2026-10-01.)*
 
 This is repository-content authority only. It cannot prevent a reviewer-approved coordinated
 malicious change, prove deployment, or establish production database state. Neither SQL artifact

@@ -77,7 +77,7 @@ See [Roadmap](ROADMAP.md).
 - **Every database-side invariant in design §4 is enforced by constraints and triggers**, each proven by attempting the forbidden write: 217 checks on each of PostgreSQL 16 and 18 (`npm run test:studio-postgres`), plus an offline suite of 18 (`npm run test:studio-db`, the tenth `test:offline` suite).
 - **Both runners were run cross-wise, per §3.7.** The Studio runner against a live-migrated database is refused after read-only probes alone; **the unchanged live runner against a Studio-migrated database fails on the tripwire with nothing committed** — verified by execution, as the design required.
 - `studio_settings` is seeded with the owner's editable defaults: $50 a day, $200 a month, scheduled runs off.
-- CI runs the Studio suite as a new step of the existing `postgres-integration` job; the five job names, `timeout-minutes` and runners are unchanged. The mutation harness gains 11 Studio mutations (533 in all) and `M-inc-sample`.
+- CI runs the Studio suite as a new step of the existing `postgres-integration` job; the five job names, `timeout-minutes` and runners are unchanged. The mutation harness gains 11 Studio mutations (533 in all) and `M-inc-sample`, which now checks four rotating compiled mutations per run (owner decision of 2026-10-01: the first sample of 31 took the CI mutation step to 32m15s, over the 30-minute bar, in run 36780160805).
 - No live migration, live runner, `render.yaml`, live-service file, `config/`, prompt, skill, model, `executionEnabled` value or dependency changed. **This change's merge SHA is a blocking follow-up.** See [Roadmap](ROADMAP.md).
 
 ### Mutation-harness speed-up — repository only

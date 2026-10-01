@@ -42,13 +42,14 @@
  *     to FAIL on injected faults — a type error is refused, and an orphaned
  *     output, a stale output that the incremental compiler does not re-emit, and
  *     a missing file are each reported as a difference from the clean build.
- *   - `M-inc-sample` (Content Studio S2): for a deterministic sample of compiled
- *     mutations — in each group, its first compiled mutation and every eighth
- *     after it, so at least one in eight overall and every group that compiles —
- *     the MUTATED sources also get a clean `tsc` build (into the worker's own
- *     `sample-dist/`), which must be byte-identical to the incremental `dist/`
- *     the suite ran against; `M-inc-sample-fault` shows that comparison failing
- *     on a source edited and not rebuilt.
+ *   - `M-inc-sample` (Content Studio S2): for exactly four compiled mutations,
+ *     each from a different group, chosen deterministically from a seed
+ *     (`GITHUB_SHA` when set, else INC_SAMPLE_DEFAULT_SEED) so successive
+ *     commits sample different mutations, the MUTATED sources also get a clean
+ *     `tsc` build (into the worker's own `sample-dist/`), which must be
+ *     byte-identical to the incremental `dist/` the suite ran against; the seed
+ *     and the sampled ids are printed. `M-inc-sample-fault` shows that
+ *     comparison failing on a source edited and not rebuilt.
  * The suite runs with Node's compile cache in the worker's own directory, which
  * caches V8 bytecode for byte-identical module sources only; it changes no
  * result. A mutation may name the suite it runs (`suite`; the Content
@@ -4827,26 +4828,38 @@ const SUITES = [...new Set([CONTENT_INTELLIGENCE_SUITE, ...MUTATIONS.map((mutati
 /**
  * `M-inc-sample`: the compiled mutations whose MUTATED sources also get a clean
  * `tsc` build, compared byte for byte with the incremental `dist/` the suite ran
- * against. Deterministic, by position: in each group, the group's first compiled
- * mutation and every eighth after it, so every group that compiles anything is
- * sampled and the sample is at least one in eight overall.
+ * against. Exactly INC_SAMPLE_SIZE of them, each from a different group, chosen
+ * deterministically from a seed: `GITHUB_SHA` when it is set (in CI, the commit
+ * the run tests, so successive commits sample different mutations), otherwise
+ * INC_SAMPLE_DEFAULT_SEED. The groups that compile are ordered by
+ * sha256(seed, group name) and the first INC_SAMPLE_SIZE taken; within each, the
+ * compiled mutation at sha256(seed, group name, "mutation") modulo its compiled
+ * count. A clean build costs about 10 CPU-seconds, and every restore is already
+ * compared byte for byte (`M-inc-restore`), so a small rotating sample suffices.
  */
 const isCompiledMutation = (mutation) => (mutation.file.startsWith("src/") && !mutation.file.endsWith(".json"))
   || Boolean(mutation.coordinatedAuthority);
-const INC_SAMPLE_STRIDE = 8;
-const INC_SAMPLE = new Set();
+const INC_SAMPLE_SIZE = 4;
+const INC_SAMPLE_DEFAULT_SEED = "gcd-payload-mutation:inc-sample:v1";
+const INC_SAMPLE_SEED_SOURCE = process.env.GITHUB_SHA ? "GITHUB_SHA" : "default";
+const INC_SAMPLE_SEED = process.env.GITHUB_SHA || INC_SAMPLE_DEFAULT_SEED;
+/** Sampled mutation index -> the name of its group. */
+const INC_SAMPLE = new Map();
 {
+  const draw = (...parts) => createHash("sha256").update(parts.join("\0")).digest();
+  const compiledGroups = [];
   let offset = 0;
-  for (const [, group] of MUTATION_GROUPS) {
-    let compiledInGroup = 0;
-    group.forEach((mutation, position) => {
-      if (!isCompiledMutation(mutation)) return;
-      if (compiledInGroup % INC_SAMPLE_STRIDE === 0) INC_SAMPLE.add(offset + position);
-      compiledInGroup += 1;
-    });
+  for (const [name, group] of MUTATION_GROUPS) {
+    const compiled = group.flatMap((mutation, position) => (isCompiledMutation(mutation) ? [offset + position] : []));
+    if (compiled.length) compiledGroups.push({ name, compiled, rank: draw(INC_SAMPLE_SEED, name).toString("hex") });
     offset += group.length;
   }
+  compiledGroups.sort((a, b) => (a.rank < b.rank ? -1 : a.rank > b.rank ? 1 : 0));
+  for (const { name, compiled } of compiledGroups.slice(0, INC_SAMPLE_SIZE)) {
+    INC_SAMPLE.set(compiled[draw(INC_SAMPLE_SEED, name, "mutation").readUInt32BE(0) % compiled.length], name);
+  }
 }
+const INC_SAMPLE_IDS = [...INC_SAMPLE.keys()].sort((a, b) => a - b).map((index) => `M${index + 1}`);
 
 const gitStatus = () => execFileSync("git", ["status", "--porcelain=v1", "--untracked-files=all"], {
   cwd: AUTHORITATIVE_REPO_ROOT,
@@ -5443,7 +5456,9 @@ async function main() {
   console.log(`Source inventory: ${MUTATIONS.length} mutations (${prohibitedCount} prohibited, `
     + `${coordinatedCount} coordinated-authority-update)`);
   console.log(`Workers: ${WORKER_COUNT} (available parallelism ${availableParallelism()}, `
-    + `maximum ${MAX_WORKERS}), each in its own disposable no-Git copy\n`);
+    + `maximum ${MAX_WORKERS}), each in its own disposable no-Git copy`);
+  console.log(`M-inc-sample seed: ${INC_SAMPLE_SEED} (${INC_SAMPLE_SEED_SOURCE}); sampled: ${INC_SAMPLE_IDS.join(", ")} `
+    + `(${[...INC_SAMPLE].sort(([a], [b]) => a - b).map(([, group]) => group).join(", ")})\n`);
 
   const authoritativeBefore = snapshotAuthoritative();
   const workers = [];
@@ -5528,22 +5543,14 @@ async function main() {
   check(`M-inc-restore. after every compiled mutation (${restoreRebuilds} of ${compiledCount}), the incremental `
     + "rebuild of its restored sources is byte-identical to the clean full build",
   restoreRebuilds === compiledCount && restoreProblems.length === 0, summarize(restoreProblems));
-  const sampledGroups = MUTATION_GROUPS.filter(([, group]) => group.some(isCompiledMutation));
-  let sampleOffset = 0;
-  const unsampledGroups = [];
-  for (const [name, group] of MUTATION_GROUPS) {
-    if (group.some(isCompiledMutation) && !group.some((_, position) => INC_SAMPLE.has(sampleOffset + position))) {
-      unsampledGroups.push(name);
-    }
-    sampleOffset += group.length;
-  }
-  check(`M-inc-sample. for ${sampleComparisons} of ${compiledCount} compiled mutations (every eighth compiled mutation `
-    + `in each of the ${sampledGroups.length} groups that compile, starting with each group's first), a clean tsc `
+  check(`M-inc-sample. for ${sampleComparisons} of ${compiledCount} compiled mutations (${INC_SAMPLE_IDS.join(", ")}, `
+    + `one from each of ${new Set(INC_SAMPLE.values()).size} groups, seed ${INC_SAMPLE_SEED_SOURCE}), a clean tsc `
     + "build of the MUTATED sources is byte-identical to the incremental dist/ the suite ran against",
-  sampleComparisons === INC_SAMPLE.size && sampleComparisons * INC_SAMPLE_STRIDE >= compiledCount
-    && unsampledGroups.length === 0 && sampleProblems.length === 0,
-  [summarize(sampleProblems), unsampledGroups.length ? `unsampled groups: ${unsampledGroups.join(", ")}` : ""]
-    .filter(Boolean).join("; "));
+  sampleComparisons === INC_SAMPLE_SIZE && INC_SAMPLE.size === INC_SAMPLE_SIZE
+    && new Set(INC_SAMPLE.values()).size === INC_SAMPLE_SIZE
+    && [...INC_SAMPLE.keys()].every((index) => isCompiledMutation(MUTATIONS[index]))
+    && sampleProblems.length === 0,
+  summarize(sampleProblems));
 
   const finals = await Promise.all(workers.map(async (worker) => {
     const incremental = await build(worker, "final build");
