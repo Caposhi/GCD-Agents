@@ -23,18 +23,19 @@ These are not interchangeable and must not be collapsed into "done". `MERGED` in
 
 ## Implemented repository change awaiting merge
 
-### Mutation-harness shards — `--shard k/n` in the payload-contract mutation harness, three shards inside the three existing Node and PostgreSQL CI jobs, and a static guard; Content Studio S2 recorded as merged — `IMPLEMENTED`
+### Mutation-harness shards — `--shard k/n` in the payload-contract mutation harness, three shards inside the three existing Node and PostgreSQL CI jobs, and a static guard; the Studio PostgreSQL suite's teardown race fixed; Content Studio S2 recorded as merged — `IMPLEMENTED`
 
 **State:** `IMPLEMENTED` on branch `claude/vibrant-thompson-dhl0a5`, based directly on `origin/main` at `fd88a2cb4d5079a7df321d3416f87bdd208a5974` (the merge of PR #105, Content Studio S2). **Not `MERGED`, not `DEPLOYED`, not `ENABLED`, not `PRODUCTION-VALIDATED`.** CI tooling and documentation only:
 
 - `scripts/ci/payload-contract-mutation.mjs` (the `--shard` option and `M-shard`);
 - `.github/workflows/ci.yml` (three shard steps and the guard);
 - the new `scripts/ci/check-mutation-shards.rb`;
-- one `package.json` script, `check:mutation-shards`.
+- one `package.json` script, `check:mutation-shards`;
+- *(second commit, owner decision of 2026-10-01)* `src/studio/db/migrate.postgres.selftest.ts`: its pool teardown and error policy only (item 8 below).
 
-No mutation, expected check, product source, test, `check(...)` name, prompt, skill, `config/` file, model, limit, migration, `render.yaml` or live-service file changed. **No CI job was added, removed or renamed.** The five job names, every `timeout-minutes` and every runner type are unchanged; only steps changed. No dependency was added. All six stages keep `executionEnabled: false`. The partial-release interval (bound `2026-10-22T18:52Z`; see [Status](STATUS.md)) is unchanged, so no release is possible. The tracked `.DS_Store` is untouched. No model was called.
+No mutation, expected check, product source, `check(...)` name, check assertion, `SP` id, Studio migration, the Studio runner, prompt, skill, `config/` file, model, limit, migration, `render.yaml` or live-service file changed. **No CI job was added, removed or renamed.** The five job names, every `timeout-minutes` and every runner type are unchanged; only steps changed. No dependency was added. All six stages keep `executionEnabled: false`. The partial-release interval (bound `2026-10-22T18:52Z`; see [Status](STATUS.md)) is unchanged, so no release is possible. The tracked `.DS_Store` is untouched. No model was called.
 
-**PR / merge:** opened from `claude/vibrant-thompson-dhl0a5` into `main`. Its number and CI run are recorded in the PR. **This PR's merge SHA is the blocking follow-up** permitted by the mutable-identifier rule in [`AGENTS.md`](../AGENTS.md).
+**PR / merge:** [PR #106](https://github.com/Caposhi/GCD-Agents/pull/106), from `claude/vibrant-thompson-dhl0a5` into `main`. CI is recorded in the PR. **This PR's merge SHA is the blocking follow-up** permitted by the mutable-identifier rule in [`AGENTS.md`](../AGENTS.md).
 
 **Preflight (2026-10-01), all passed before any edit:**
 
@@ -79,6 +80,20 @@ No mutation, expected check, product source, test, `check(...)` name, prompt, sk
 7. **Housekeeping.**
    - Content Studio S2 recorded as `MERGED` through PR #105 at `fd88a2c…`, with its runs. Its merge-SHA follow-up is discharged in its record below, in the cursor, and in [Status](STATUS.md), [Testing](TESTING.md), [README](../README.md), [AI handoff](AI_HANDOFF.md), [Security and continuity](SECURITY_AND_CONTINUITY.md), [Architecture](ARCHITECTURE.md), [Data model](DATA_MODEL.md) and [Environment](ENVIRONMENT.md).
    - The owner's Render check of 2026-10-01 is recorded in [Status](STATUS.md).
+8. **The Studio PostgreSQL suite's teardown race, fixed in this PR** (owner decision of 2026-10-01, a second commit on the same branch).
+   - **Cause:**
+     - In `pg-pool` 3.14.0, `pool.end()` resolves as soon as the pool's client list is empty. That happens synchronously in `_remove()`, before each `client.end()` has closed its socket.
+     - The suite then called `Databases.drop()`, whose `pg_terminate_backend` could reach a backend that was still closing.
+     - The server's `57P01` ("terminating connection due to administrator command") then arrived at a client that still carried the pool's idle listener. With no `'error'` listener on the pool, Node aborted with `Unhandled 'error' event`.
+     - It crashed PR CI run 36889093883 (*PostgreSQL 16 integration*, after `SP6`), so the shard 1/3 step was skipped.
+   - **Fix, in `src/studio/db/migrate.postgres.selftest.ts` only:**
+     - Every pool now comes from `openPool`, and `closePool` ends it.
+     - `closePool` marks the pool as closing, awaits `pool.end()`, and then awaits every connection the pool opened until its socket has closed (each client's `'end'`, recorded on the pool's `'connect'`). Only then is the database dropped.
+     - Every pool has an `'error'` listener. It ignores only `57P01` arriving after that pool's teardown began, and records anything else: any other error, or `57P01` during the test body.
+     - A recorded error fails the suite by name (`FAIL  pool errors — …`) and exits 1. A clean run prints `pool errors: none unexpected (N connection termination(s) ignored after teardown began)`.
+     - No check's assertion, no `SP` id, no Studio migration and not the runner changed. A passing run still reports **217 checks**.
+   - **The listener cannot hide a real failure.** `--inject-pool-termination` (a command-line flag, not an environment variable) terminates the wrong-name database pool's idle connection right after `SP1`, during the test body. On PostgreSQL 16 and 18 the suite then exited 1 with `FAIL  pool errors — 1 unexpected: wrong-name database: 57P01 terminating connection due to administrator command (during the test body)`, while all 217 checks passed.
+   - **The stress result** is under *Automated validation*.
 
 **Migrations / schema impact:** none.
 
@@ -92,8 +107,15 @@ No mutation, expected check, product source, test, `check(...)` name, prompt, sk
 - **No `--shard` means shard `0/1`,** so `M-shard` runs in a local full run too. Its count then equals the whole inventory.
 - **The M1 readiness runner is unaffected.** `scripts/ops/m1-readiness/github.mjs` fixes `EXPECTED_JOB_NAMES` to the five job names. It checks only each job's `name`, `status`, `conclusion` and `run_attempt` (and `run_id`). Its job schema discards every other field, steps included (`{ unknown: "discard" }`). Nothing here changes a job name or a job count.
 
+- **The Studio suite's pool policy (item 8) fails by name without changing the check count.** The failure is a named `FAIL  pool errors` line that adds to the failure count, so a passing run still reports exactly 217 checks, the owner's acceptance figure. `--inject-pool-termination` proves it can fire. It is a command-line flag rather than an environment variable, so the environment-coverage check and `.env.example` are unchanged.
+
 **Material rejected alternatives.**
 
+- **For the Studio suite's race:**
+  - **A pool `'error'` listener that ignores everything.** Rejected: it would hide a real failure, such as a backend killed during the test body.
+  - **Only waiting for the sockets, or only adding a listener.** Rejected: either alone leaves the other gap. The owner's decision required both.
+  - **`DROP DATABASE … WITH (FORCE)`.** Rejected: it still terminates backends, so it is the same race.
+  - **A new counted check for the policy.** Rejected: it would change the 217-check figure. The named failure line and the injected fault prove the same thing.
 - **A new job per shard.** Rejected: the M1 readiness gate requires exactly five jobs, and the task forbade it.
 - **A larger, paid runner, or a higher `timeout-minutes`.** Both are the owner's levers. Neither removes the variance or the growth.
 - **Contiguous index ranges, or one shard per group.** Rejected as above: unbalanced, and unstable as mutations are appended. The legacy group alone holds more than half the inventory.
@@ -116,11 +138,29 @@ No mutation, expected check, product source, test, `check(...)` name, prompt, sk
 - **The harness's refusals:** `--shard` with no value, `3/3`, `01/3`, `--shard=1/3`, two `--shard`s, `0/534`, `a/b`, `-1/3` and `--shards 0/3` each exited 2 before any work.
 - **`npm run check:mutation-shards`** (Ruby 3.3.6) passed on the final `ci.yml`, covering shards 0, 1 and 2 of 3 exactly once, and refused all eleven injected faults for their expected reasons. `scripts/ci/check-yaml.rb` parsed `render.yaml` and every workflow. Pinned actionlint 1.7.12, with its checksum verified, exited 0.
 - **`npm run test:postgres`** passed 208 checks on PostgreSQL 16.15 and 18.6 (the official `postgres:16` and `postgres:18` images, as CI uses): fresh 59, upgrade 80, durable 69.
-- **`npm run test:studio-postgres`** passed 217 checks on both servers, but not on every run. **Four of fourteen runs aborted before finishing** with an unhandled pool `'error'`: two of seven on each server. The captured crash points were after `SP2` and after `SP5`. All four ran while the harness loaded every CPU. The cause is a race in the unchanged S2 suite, recorded under *Unresolved follow-ups*. The other ten runs (five on each server) passed 217 checks each.
+- **`npm run test:studio-postgres`**, first commit (the unchanged S2 suite): 217 checks on both servers when it finished, but **4 of 14 runs aborted** with an unhandled pool `'error'` under CPU load (two of seven on each server), after `SP2` and after `SP5`. The same crash failed PR CI run 36889093883.
+- **The race, fixed (item 8): a stress comparison under load.** **Required: 30 runs on each server with 0 crashes and 217 checks each, under load. Met.** Two rounds, each run with a payload-contract mutation shard alongside. Every iteration ran the old suite (from `7bf3f0b`, built in a scratch copy) and the fixed suite, interleaved.
+  - **Isolated round** (the old suite on its own two servers, cleaned after each crash; the fixed suite on two servers never cleaned between runs). Load came from shard 1/3 plus a looping shard 0/3, a 1-minute load average of 11.4–17.8 on 4 CPUs.
+    - **Fixed suite: PostgreSQL 16, 30 of 30 runs passed 217 checks, 0 crashes; PostgreSQL 18, 30 of 30 passed 217, 0 crashes.** Every run printed `pool errors: none unexpected (0 connection termination(s) ignored after teardown began)`. With the sockets awaited, no teardown-time `57P01` reached a pool at all.
+    - **Old suite: PostgreSQL 16, 11 of 30 crashed; PostgreSQL 18, 10 of 30 crashed.** All crashed with `Unhandled 'error' event`.
+  - **First round** (all four on two shared servers; shard 1/3 then 2/3 as load, load average 4.1–9.1):
+    - The fixed suite passed **30 of 30 on PostgreSQL 16**, and **16 of 16 valid runs on PostgreSQL 18**.
+    - The old suite crashed 2 of 30 times on each server.
+    - Its PostgreSQL 18 crash in run 17 left a `gcd_studio` database behind. The suite's own safety check then refused every later PostgreSQL 18 run, old or fixed ("a database named gcd_studio already exists"). Those 14 fixed-suite runs were invalid, not failures, which is why the isolated round was run.
+  - **Before and after, in all:**
+    - **Before:** 4 of 14 early runs, 4 of 47 valid first-round runs and 21 of 60 isolated runs crashed, plus PR CI run 36889093883.
+    - **After:** 0 crashes in 106 valid runs, every one at 217 checks.
 - **The golden test** (`node scripts/local/content-run-golden.mjs --base fd88a2c --allow-stack-frames`): 240 files and 84 scenarios, **0 differences**, 59 stack-frame-only stderr differences.
 - The M1 readiness offline suite (461 checks), the simulated dry run, the deployment-controller fixtures, Markdown links (66 files), environment coverage (38 variables), `npm audit --omit=dev` (0 vulnerabilities), `git diff --check` and the whole-tree whitespace check all passed.
 - **The sensitive scan** passed. Every added line was triaged by hand: no email address, phone number, token, credential, URL with a secret, customer datum or facts-file content. The only URLs added are public GitHub Actions run and PR links.
 - AgentShield 1.4.0 exited zero at **B/87** with the same 18 findings (9 medium, 9 low; no critical or high). None names a changed file.
+- **The second commit (the race fix), validated 2026-10-01:**
+  - build and typecheck clean;
+  - `npm run test:offline`, ten suites with the same counts (1,843 checks);
+  - the stress comparison above, and `--inject-pool-termination` failing by name on both servers;
+  - `npm run test:postgres`, 208 checks on PostgreSQL 16.15 and 18.6;
+  - **shard 1/3 run once on the final code: ALL PASS — 178 of 533 mutations, 12m40s**, under the stress load;
+  - Markdown links, environment coverage (38 variables, unchanged: the injection is a command-line flag), the sensitive scan, and `git diff --check`.
 - **CI on the final head** is recorded in the PR.
 
 **Production evidence:** none, and none is possible. This is CI tooling.
@@ -145,14 +185,10 @@ No mutation, expected check, product source, test, `check(...)` name, prompt, sk
 **Unresolved follow-ups.**
 
 - **This PR's merge SHA** (mutable-identifier exception) — **blocking**.
-- **This PR's own CI.** Each shard's step and each job's duration on the final head, recorded in the PR and reconciled here with the merge SHA. *The mutation step's growth* (the cursor) is discharged only if each shard's measured CI step is comfortably under 30 minutes.
+- **This PR's own CI.** Each shard's step and each job's duration on the final head, recorded in the PR and reconciled here with the merge SHA. *The mutation step's growth* (the cursor) stays open until **all three shards have a CI figure from this PR**, and is discharged only if each is comfortably under 30 minutes.
+  - *First head `7bf3f0b`, [run 36889093883](https://github.com/Caposhi/GCD-Agents/actions/runs/36889093883) (run 247):* shard 0/3 took **11m19s** (quality job 12m45s) and shard 2/3 **10m35s** (PostgreSQL 18 job 11m58s). *PostgreSQL 16 integration* failed in the Studio suite (the race, item 8), so shard 1/3 has no CI figure yet. AgentShield took 26s and workflow validation 9s.
 - **The mutation step's growth**, carried in the cursor until then.
-- **A race in S2's disposable-PostgreSQL suite, found during this change's validation and not fixed here.** It is pre-existing; neither the suite nor anything it runs is changed by this PR.
-  - In `src/studio/db/migrate.postgres.selftest.ts`, a block ends with `await pool.end()` and then `Databases.drop()`, whose `pg_terminate_backend` can reach a pooled client that is still closing.
-  - The suite's per-database pools register no `'error'` listener, so Node aborts with `Unhandled 'error' event … terminating connection due to administrator command`.
-  - Locally it aborted in **4 of 14 runs** (2 of 7 on each server), all while the mutation harness loaded every CPU. The two crash points captured were after `SP2` and after `SP5`. The other 10 runs passed 217 checks.
-  - S2's two CI runs passed it. In CI it runs before the shard step, as before.
-  - The fix (an `'error'` listener on each pool, no assertion weakened) is a separate change.
+- ~~**A race in S2's disposable-PostgreSQL suite, found during this change's validation and not fixed here.**~~ **Fixed in this PR** (item 8; owner decision of 2026-10-01). *Cause:* `pool.end()` resolves before the pool's sockets close, so `Databases.drop()`'s `pg_terminate_backend` could reach a closing connection, and no pool had an `'error'` listener. It crashed 4 of 14 local runs under load and PR CI run 36889093883. *Stress result:* 30 of 30 runs on each of PostgreSQL 16 and 18 passed 217 checks with 0 crashes, under a load average of 11–18, against 21 crashes in 60 runs of the old suite on the same load (see *Automated validation*).
 
 **Documents updated:**
 
@@ -191,10 +227,10 @@ Open items, carried unchanged except where the shards change at the top of this 
 - Carried from the revision-pass record: describing the identity records in `SCRIPT_CLAIMS` and `PLATFORM_CLAIMS` in the critic prompts; tuning `POLICY_EFFORT.critic` and `THINKING_RESERVE_TOKENS` per lens.
 - **`DEFERRED`, as the owner listed them on 2026-09-28** (not previously recorded in this repository; recorded here so they are not lost): Mercedes 223.2 and the round-2 fluids; the DPF/GPF bulk-oil question; the Spanish version.
 - ~~**The owner's post-merge fake-runner check of S1** on the real facts file and one real run folder (fake runner only, no cost; the commands are in S1's PR).~~ **Done 2026-09-30** (operator-local; recorded in S1's record below).
-- **The mutation step's growth.** After the speed-up (PR #104, now under *Merged repository change awaiting rollout*) the suite is about 95% of the harness's time and every mutation still runs it whole, so the step still grows with each mutation. The levers left are the owner's: a larger (paid) CI runner with `MAX_WORKERS` raised, a higher `timeout-minutes`, or restructuring the gate. The owner's merge bar for the speed-up is **30 minutes** for the CI mutation step (2026-09-30). *(2026-09-30: the speed-up merged through PR #104 with a CI mutation step of 26m59s on the PR and 26m34s on `main`. S2's first head, adding 11 mutations and 31 sampled clean builds, took 32m15s, over the bar; S2 now samples four per run (2026-10-01), and its revised CI figure is in PR #105. Still open.)* *(2026-10-01: S2 merged through PR #105. Its CI mutation step took **18m09s** on the PR and **30m13s** on `main`, for the same code: runner variance of more than ten minutes, and 13 seconds over the bar on `main`. **The mutation-harness shards change at the top of this file** (`IMPLEMENTED`, not merged) splits the harness into three shards, one in each of the three existing Node and PostgreSQL jobs, with no new job, paid runner or gate change; its local figures are in its record. This item is discharged only if each shard's measured CI step on that change's final head is comfortably under 30 minutes. Those figures are recorded in its PR and reconciled with its merge SHA. Still open until then.)*
+- **The mutation step's growth.** After the speed-up (PR #104, now under *Merged repository change awaiting rollout*) the suite is about 95% of the harness's time and every mutation still runs it whole, so the step still grows with each mutation. The levers left are the owner's: a larger (paid) CI runner with `MAX_WORKERS` raised, a higher `timeout-minutes`, or restructuring the gate. The owner's merge bar for the speed-up is **30 minutes** for the CI mutation step (2026-09-30). *(2026-09-30: the speed-up merged through PR #104 with a CI mutation step of 26m59s on the PR and 26m34s on `main`. S2's first head, adding 11 mutations and 31 sampled clean builds, took 32m15s, over the bar; S2 now samples four per run (2026-10-01), and its revised CI figure is in PR #105. Still open.)* *(2026-10-01: S2 merged through PR #105. Its CI mutation step took **18m09s** on the PR and **30m13s** on `main`, for the same code: runner variance of more than ten minutes, and 13 seconds over the bar on `main`. **The mutation-harness shards change at the top of this file** (`IMPLEMENTED`, not merged) splits the harness into three shards, one in each of the three existing Node and PostgreSQL jobs, with no new job, paid runner or gate change; its local figures are in its record. This item stays open until all three shards have a CI figure from that change's PR, and is discharged only if each is comfortably under 30 minutes. *(PR #106's first run measured shard 0 at 11m19s and shard 2 at 10m35s; shard 1 did not run, because the Studio suite's race failed its job first.)* Those figures are recorded in its PR and reconciled with its merge SHA. Still open until then.)*
 - **An independent review of the Content Studio design** before later Studio PRs, carried from the design record.
 - **The merge SHA of the mutation-harness shards change at the top of this file** (mutable-identifier exception) — **blocking**; it is reconciled into that record once merged. *(Content Studio S2's merge-SHA follow-up, formerly here, is discharged by the shards change: `fd88a2c…`; the mutation-harness speed-up's by S2: `0bb3f0b…`; S1's by the speed-up: `c1c19f4…`; PR #102's by S1: `4664515…`; PR #101's by PR #102: `f111012…`.)*
-- **From the shards change's validation:** the race in S2's disposable-PostgreSQL suite (an unhandled pool `'error'` when a test database is dropped while a pooled client is still closing; 4 of 14 local runs under load) — a separate fix; see that record's follow-ups.
+- ~~**From the shards change's validation:** the race in S2's disposable-PostgreSQL suite (an unhandled pool `'error'` when a test database is dropped while a pooled client is still closing; 4 of 14 local runs under load) — a separate fix; see that record's follow-ups.~~ **Fixed in the shards change itself** (owner decision of 2026-10-01; item 8 of its record).
 - **From S2:** the least-privilege database role for the Studio web (design §9.1; S8, once Render's plan is known), the login-attempt and session purges (S4), and the audit-log and ledger two-year purge (a future reviewed migration).
 
 ## Planned — Content Studio (owner decisions of 2026-09-29) — `PLANNED`

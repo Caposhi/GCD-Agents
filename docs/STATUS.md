@@ -80,7 +80,8 @@ See [Roadmap](ROADMAP.md).
 - **`scripts/ci/check-mutation-shards.rb`** runs in the existing workflow-validation step. It refuses a `ci.yml` that does not run each shard exactly once with one `n`, or that runs the harness without `--shard`, and proves that with eleven injected faults.
 - **Why:** S2's mutation step took 18m09s on its PR and 30m13s on `main` for the same code.
 - **The M1 readiness runner is unaffected:** it checks only the five job names, their status, conclusion and attempt.
-- No product source, test, prompt, skill, `config/`, model, migration, `render.yaml` or live-service file changed. **This change's merge SHA is a blocking follow-up**, and so are its CI figures for each shard's step. See [Roadmap](ROADMAP.md).
+- **The Studio PostgreSQL suite's teardown race is fixed here too** (owner decision of 2026-10-01). `pool.end()` resolved before the pool's sockets closed, so dropping a test database could reach a closing connection, and no pool had an `'error'` listener. It crashed PR #106's first CI run (*PostgreSQL 16 integration*) and 4 of 14 local runs under load. Every pool is now fully closed before its database is dropped. Its listener ignores only a `57P01` termination after teardown began; anything else fails the suite by name, which `--inject-pool-termination` proves. Still 217 checks; no assertion, `SP` id, migration or runner changed. Stress under load: the fixed suite passed 30 of 30 runs on each of PostgreSQL 16 and 18 (217 checks, 0 crashes); the old suite crashed 21 times in 60 runs on the same load.
+- No product source, prompt, skill, `config/`, model, migration, `render.yaml` or live-service file changed; the only test file changed is `src/studio/db/migrate.postgres.selftest.ts`, its pool handling alone. **This change's merge SHA is a blocking follow-up**, and so are its CI figures for each shard's step. See [Roadmap](ROADMAP.md).
 
 ### Content Studio S2 — the Studio schema and migrations — repository only
 
