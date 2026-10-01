@@ -23,6 +23,11 @@
  *    one from the live set, fails until the manifest is updated in the same
  *    change — which is the declaration: the manifest's diff names every
  *    live-path edit and carries a reason for each (docs/TESTING.md).
+ * 2b. `contextConstructionViolations` and `reviewOnlyMentions` (Content Studio
+ *    S3) — the review-only execution context's construction allowlist, which
+ *    extends 2: only `scripts/local/content-run.mjs` and `src/studio/worker/**`
+ *    may name its constructor, the library never calls it, and no module the
+ *    live entry points load may name the context, its constructor or its module.
  *
  * This module is a checker. Nothing live imports it, and it imports nothing
  * from the pipeline.
@@ -267,7 +272,10 @@ export function describeViolation(violation: GraphViolation): string {
  * `render.yaml`'s start and pre-deploy commands, resolved through
  * `package.json`, plus `package.json`'s other operator commands that run a
  * compiled module against a live environment (`dryrun`, `dryrun:live`,
- * `evidence:sync`). Self-tests are not entry points.
+ * `evidence:sync`). Self-tests are not entry points, and neither are the
+ * Content Studio's own commands (`start:studio-*`, `studio:migrate`): they
+ * run only on Studio services, and their graph is checked the other way
+ * round (`STUDIO_FORBIDDEN_TREES`).
  */
 export function liveEntryPointsFromConfig(root: string): { entryPoints: string[]; unresolved: string[] } {
   const scripts = (JSON.parse(readFileSync(resolve(root, "package.json"), "utf8")) as { scripts: Record<string, string> })
@@ -287,7 +295,7 @@ export function liveEntryPointsFromConfig(root: string): { entryPoints: string[]
     else unresolved.push(`render.yaml command not of the form "npm run <script>": ${match[1]}`);
   }
   for (const name of Object.keys(scripts)) {
-    if (/^start:|^migrate$|^dryrun(:live)?$|^evidence:sync$/.test(name)) fromScript(name);
+    if (/^start:(?!studio-)|^migrate$|^dryrun(:live)?$|^evidence:sync$/.test(name)) fromScript(name);
   }
   return { entryPoints: [...found].sort(), unresolved };
 }
@@ -353,6 +361,67 @@ export function callerViolations(files: ReadonlyMap<string, string>): Array<{ fi
         && executorSources.some((m) => target === m || target === m.replace(/\.ts$/, ".js"))) {
         violations.push({ file, detail: `${describe}: the Studio web service may not reach a stage executor or the stage-execution boundary` });
       }
+    }
+  }
+  return violations;
+}
+
+/** The review-only execution context's module, its constructor, and the names that hold or check one. */
+export const REVIEW_ONLY_CONTEXT_MODULE = "src/harness/contentRun/executionContext.ts";
+export const REVIEW_ONLY_CONTEXT_INDEX = "src/harness/contentRun/index.ts";
+export const REVIEW_ONLY_CONSTRUCTOR = "createReviewOnlyExecutionContext";
+export const REVIEW_ONLY_CONTEXT_NAMES = [
+  REVIEW_ONLY_CONSTRUCTOR, "ReviewOnlyExecutionContext", "isReviewOnlyExecutionContext",
+  "requireReviewOnlyExecutionContext", "gateRequestUnits",
+] as const;
+const CONSTRUCTOR_ONLY = [REVIEW_ONLY_CONSTRUCTOR] as const;
+/** The only callers that may construct a context: the CLI and the Studio worker — the library's own callers. */
+export const REVIEW_ONLY_CONSTRUCTORS = CONTENT_RUN_CALLERS;
+
+/**
+ * Every identifier, and every element-access key, in one file that is one of
+ * `names`, and — unless only the constructor is asked about (`CONSTRUCTOR_ONLY`,
+ * by identity) — every module specifier naming the context's module. A computed
+ * key assembled at run time cannot be seen statically; CS2 still bounds who
+ * can import the library that holds the constructor at all.
+ */
+export function reviewOnlyMentions(
+  sourceText: string, fileName: string, names: readonly string[] = REVIEW_ONLY_CONTEXT_NAMES,
+): string[] {
+  const kind = /\.[cm]?tsx?$/.test(fileName) ? ts.ScriptKind.TS : ts.ScriptKind.JS;
+  const source = ts.createSourceFile(fileName, sourceText, ts.ScriptTarget.Latest, true, kind);
+  const found = new Set<string>();
+  const visit = (node: ts.Node): void => {
+    if (ts.isIdentifier(node) && names.includes(node.text)) found.add(node.text);
+    if (ts.isElementAccessExpression(node) && ts.isStringLiteralLike(node.argumentExpression)
+      && names.includes(node.argumentExpression.text)) found.add(node.argumentExpression.text);
+    if (names !== CONSTRUCTOR_ONLY && (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier
+      && ts.isStringLiteral(node.moduleSpecifier) && /(?:^|\/)executionContext(?:\.[cm]?[jt]s)?$/.test(node.moduleSpecifier.text)) {
+      found.add(`module ${node.moduleSpecifier.text}`);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return [...found].sort();
+}
+
+/** Whether a file names the context's constructor (by identifier, property or string key). */
+export const namesContextConstructor = (sourceText: string, fileName: string): boolean =>
+  reviewOnlyMentions(sourceText, fileName, CONSTRUCTOR_ONLY).length > 0;
+
+/**
+ * The construction allowlist, over a set of files: a file outside the two
+ * allowed callers that names the constructor is a violation, and so is any
+ * library file but the context's own module and the index that re-exports it.
+ */
+export function contextConstructionViolations(files: ReadonlyMap<string, string>): Array<{ file: string; detail: string }> {
+  const violations: Array<{ file: string; detail: string }> = [];
+  for (const [file, text] of files) {
+    if (file === REVIEW_ONLY_CONTEXT_MODULE || file === REVIEW_ONLY_CONTEXT_INDEX) continue;
+    if (!namesContextConstructor(text, file)) continue;
+    if (file.startsWith(STUDIO_WEB_TREE) || underAny(file, CONTENT_RUN_TREES) || !underAny(file, REVIEW_ONLY_CONSTRUCTORS)) {
+      violations.push({ file, detail: `names ${REVIEW_ONLY_CONSTRUCTOR}; only ${REVIEW_ONLY_CONSTRUCTORS.join(" and ")} `
+        + "may construct a review-only execution context" });
     }
   }
   return violations;

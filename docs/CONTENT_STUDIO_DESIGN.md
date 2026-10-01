@@ -741,6 +741,50 @@ This design adds two further conditions (PROPOSED):
 A short, dated pointer at P2 in [PRODUCTION_WIRING_DESIGN.md](PRODUCTION_WIRING_DESIGN.md) records
 this. P2 itself is not rewritten, and this design does not propose widening `executionEnabled`.
 
+#### How P2's C2 and C3 accept the context (written by S3, 2026-10-01; not built)
+
+**VERIFIED (S3, `IMPLEMENTED`; see [Roadmap](ROADMAP.md)):** S3 came before P2, so it defines the
+context: `ReviewOnlyExecutionContext` in `src/harness/contentRun/executionContext.ts`. It is a
+frozen object holding exactly `kind: "review-only"`, `caller` (`local-cli` or `studio-worker`) and
+one per-request check, `checkRequests(unit)`, with a module-private type brand. Only
+`createReviewOnlyExecutionContext` makes one, and `isReviewOnlyExecutionContext` accepts only a
+context that module issued, unaltered. Only `scripts/local/content-run.mjs` and
+`src/studio/worker/**` construct one (offline check CS8). Every paid path of the library requires one
+next to its `PaidActionConsent` (CS7a), and the library calls `checkRequests` immediately before every
+request unit: each stage request, and the critic panel's four lenses as one unit (SW7).
+
+**PROPOSED for P2 — exactly how C2 and C3 accept it, so that the CLI and the Studio keep working.
+Nothing below is built; P2 needs its own authorization.**
+
+- **C2 (`invokeStage`, before every stage).** `StageInvocation` gains one optional field,
+  `executionContext`. `invokeStage` then decides in exactly one of two ways, never both:
+  1. **No context (live):** as P2 is written. `executionEnabled` must be `true` **and** the live
+     authority gate must permit; otherwise it refuses with zero runner calls.
+  2. **A context:** `isReviewOnlyExecutionContext` must accept it. A look-alike, a copy or a spread
+     is refused with zero runner calls, and is never treated as the live case. For an accepted
+     context, neither `executionEnabled` nor the live gate is read for that invocation. The context
+     does not satisfy them, and nothing records that it did. The stage runs as the CLI runs it today.
+- **C3 (the stage request boundary, immediately before each provider request).** For an invocation
+  carrying a context, the boundary awaits `context.checkRequests(unit)` immediately before the
+  request; a rejection means no request. The critic panel's four lens requests share one unit. With
+  no context, the boundary re-reads the live gate, as P2 says. S3 makes this call in the library's
+  runner wrapper (`gateRequestUnits`). When P2 moves it to the boundary, the same change removes the
+  library's call, so each unit is checked exactly once. SW7's executed count of one check per unit is
+  the regression.
+- **C1, C4 and C5 accept no context.** Run acceptance on the live path, approval transitions and
+  publication read the live gate directly. A context cannot reach those paths: no live-loaded module
+  may name it (CS9). Nothing the review-only path produces is an approval or a publication.
+- **Where the verifier lives once P3/P4 make `stageExecution.js` live-reachable.** The context's
+  module imports nothing at run time (CS9), so `stageExecution.ts` may import
+  `isReviewOnlyExecutionContext` from it without reaching anything else. P3/P4 must then exempt
+  exactly that one module from `FORBIDDEN_LIVE_TREES`, by name, and keep CS8: no live module may name
+  the constructor. In a live process the context's registry is empty, because the only modules
+  allowed to construct one (the CLI and `src/studio/worker/**`) are unreachable from every live
+  entry point. So no value verifies there.
+- **P2's regressions, extended.** A review-only invocation runs with `executionEnabled: false` and
+  the gate `OFF`. A look-alike is refused with zero runner calls. A context's refusal at C3 sends
+  nothing. A live invocation with no context is still refused when either half withholds permission.
+
 ---
 
 ## 6. Cost controls

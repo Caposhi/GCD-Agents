@@ -10,16 +10,35 @@
  * and after pricing, before any runner exists and before any output is
  * created, exactly where the CLI's `requireLiveConsent` stood. A fake run
  * makes no request and asks no consent.
+ *
+ * Every paid path also requires the review-only execution context
+ * (`io.execution`, Content Studio S3), checked next to the consent and before
+ * it. When a context is supplied, its per-request check runs immediately
+ * before every request unit, fake or live (`executionContext.ts`).
  */
 
 import { buildRunEvidence } from "./evidence.js";
+import { gateRequestUnits, requireReviewOnlyExecutionContext } from "./executionContext.js";
 import { buildFakeStageResponses, fakeStageRunner } from "./fakes.js";
 import { allStagePolicies, computeCostCeiling, criticLensPolicies, resumePolicies, revisionPolicies } from "./pricing.js";
 import { createRunRecorder, recordingRunner } from "./recording.js";
 import type { ContentRunRuntime } from "./runtime.js";
 import { markdownSummary } from "./summary.js";
-import type { RunIo, RunOptions, RunSink, RunSource } from "./types.js";
+import type { CostCeiling, PaidActionKind, RunIo, RunnerKind, RunOptions, RunSink, RunSource } from "./types.js";
 import { REUSED_STAGE_FILES, verifySourceRun } from "./verify.js";
+
+type Runner = (...callArgs: any[]) => Promise<any>;
+
+/**
+ * Each stage runner behind the review-only context's per-unit check, when a
+ * context is supplied, and unchanged when none is (only a fake run may have
+ * none). Built after consent and before any output exists, so a supplied
+ * object that is not a context refuses before anything is written.
+ */
+function unitGate(io: RunIo, action: PaidActionKind, runner: RunnerKind, price: () => CostCeiling) {
+  if (io.execution === undefined) return (_stage: string, inner: Runner): Runner => inner;
+  return gateRequestUnits(requireReviewOnlyExecutionContext(io.execution, action), { action, runner, ceiling: price() });
+}
 
 /** Copy one saved artifact byte for byte from a source run into a new one. */
 async function copyArtifact(source: RunSource, sink: RunSink, name: string, as: string = name): Promise<void> {
@@ -86,6 +105,7 @@ export async function runFullPipeline(rt: ContentRunRuntime, args: RunOptions, i
 
   // --- the paid-action gate: after every free check, and after pricing -------
   if (args.runner === "live") {
+    requireReviewOnlyExecutionContext(io.execution, "full-run");
     const ceiling = computeCostCeiling(rt, allStagePolicies(rt));
     await io.consent({
       kind: "full-run", label: "one full six-stage run", ceiling,
@@ -97,6 +117,7 @@ export async function runFullPipeline(rt: ContentRunRuntime, args: RunOptions, i
   const runner = args.runner === "live"
     ? createAnthropicStageRunner()
     : undefined; // per-stage fake runners are built below, once real ids are known
+  const gated = unitGate(io, "full-run", args.runner, () => computeCostCeiling(rt, allStagePolicies(rt)));
 
   const sink = await io.outputs.openFullRun({ now });
   const writeStage = (name: string, payload: unknown) => sink.writeArtifact(`${name}.json`, JSON.stringify(payload, null, 2));
@@ -123,7 +144,7 @@ export async function runFullPipeline(rt: ContentRunRuntime, args: RunOptions, i
 
   const fake = buildFakeStageResponses(goal, pack);
   const runnerFor = (stage: string, buildResponse: (request: any) => unknown) => recordingRunner(transcript, stage,
-    args.runner === "live" ? runner! : fakeStageRunner(buildResponse), sink);
+    gated(stage, args.runner === "live" ? runner! : fakeStageRunner(buildResponse)), sink);
 
   io.reporter.log("Running stage 1/6: strategy-concept");
   const strategy = await rt.strategy.executeStrategyConcept({
@@ -262,9 +283,11 @@ export async function resumeFromPackaging(
 
   // --- the spend guard --------------------------------------------------------
   if (args.runner === "live") {
+    requireReviewOnlyExecutionContext(io.execution, "resume");
     const ceiling = computeCostCeiling(rt, requests);
     await io.consent({ kind: "resume", label: `one run resumed at ${resumeAt}`, ceiling });
   }
+  const gated = unitGate(io, "resume", args.runner, () => computeCostCeiling(rt, requests));
 
   const resumedAt = new Date();
   const sink = await io.outputs.openDerivedRun({ kind: "resume", source, at: resumedAt, resumeAt });
@@ -298,7 +321,7 @@ export async function resumeFromPackaging(
   const fake = buildFakeStageResponses(goal, pack);
   const liveRunner = args.runner === "live" ? createAnthropicStageRunner() : undefined;
   const runnerFor = (stage: string, buildResponse: (request: any) => unknown) => recordingRunner(transcript, stage,
-    liveRunner ?? fakeStageRunner(buildResponse), sink);
+    gated(stage, liveRunner ?? fakeStageRunner(buildResponse)), sink);
 
   io.reporter.log(`Resuming at ${resumeAt}: stages 1-4 reused from ${source.label}, revalidated, not re-requested`);
   io.reporter.log("Running stage 5/6: packaging-adaptation");
@@ -370,9 +393,11 @@ export async function replayCritic(rt: ContentRunRuntime, args: RunOptions, sour
 
   // --- 6. the spend guard --------------------------------------------------
   if (args.runner === "live") {
+    requireReviewOnlyExecutionContext(io.execution, "critic-replay");
     const ceiling = computeCostCeiling(rt, criticLensPolicies(rt));
     await io.consent({ kind: "critic-replay", label: "one critic-only replay", ceiling });
   }
+  const gated = unitGate(io, "critic-replay", args.runner, () => computeCostCeiling(rt, criticLensPolicies(rt)));
 
   const replayedAt = new Date();
   const sink = await io.outputs.openDerivedRun({ kind: "critic-replay", source, at: replayedAt });
@@ -397,9 +422,9 @@ export async function replayCritic(rt: ContentRunRuntime, args: RunOptions, sour
   const { transcript, writeMeasurements } = createRunRecorder(rt, sink);
   io.onFailureContext?.({ sink, transcript, writeMeasurements });
   const fake = buildFakeStageResponses(goal, pack);
-  const runner = recordingRunner(transcript, "final-critic", args.runner === "live"
+  const runner = recordingRunner(transcript, "final-critic", gated("final-critic", args.runner === "live"
     ? createAnthropicStageRunner()
-    : fakeStageRunner((request) => fake.finalCritic(contacted, platforms, request?.lens)), sink);
+    : fakeStageRunner((request) => fake.finalCritic(contacted, platforms, request?.lens))), sink);
 
   io.reporter.log(`Running final-critic only — ${rt.payloadContract.CRITIC_LENSES.length} lens requests, concurrently — `
     + "against the saved stage 2-5 outputs and fresh contact lines");
@@ -499,9 +524,11 @@ export async function reviseRun(
 
   // --- 4. the spend guard -----------------------------------------------------
   if (args.runner === "live") {
+    requireReviewOnlyExecutionContext(io.execution, "revision");
     const ceiling = computeCostCeiling(rt, requests);
     await io.consent({ kind: "revision", label: `one revision round from ${plan.startStage}`, ceiling });
   }
+  const gated = unitGate(io, "revision", args.runner, () => computeCostCeiling(rt, requests));
 
   // --- 5. the new directory ---------------------------------------------------
   const revisedAt = new Date();
@@ -563,7 +590,7 @@ export async function reviseRun(
   const fake = buildFakeStageResponses(goal, pack);
   const liveRunner = args.runner === "live" ? createAnthropicStageRunner() : undefined;
   const runnerFor = (stage: string, buildResponse: (request: any) => unknown) => recordingRunner(transcript, stage,
-    liveRunner ?? fakeStageRunner(buildResponse), sink);
+    gated(stage, liveRunner ?? fakeStageRunner(buildResponse)), sink);
   const sentFor = (stage: string): any => plan.stages.find((s) => s.stage === stage)!.sent;
 
   // --- 6. the re-run writing stages, in order --------------------------------

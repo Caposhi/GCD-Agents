@@ -11,8 +11,8 @@ import type { UnprovenFactsConfirmation } from "./types.js";
  * prove it is using the facts file the run used. The CLI lets its operator
  * type UNPROVEN to continue anyway; a review-only worker has no operator at
  * the terminal, so it never continues on an unproven facts file. That is a
- * narrowing, not a relaxation (docs/CONTENT_STUDIO_DESIGN.md §5.2). Nothing
- * uses it until the worker exists (S3).
+ * narrowing, not a relaxation (docs/CONTENT_STUDIO_DESIGN.md §5.2). The
+ * Studio worker (`src/studio/worker/**`, S3) passes it on every job.
  */
 export const refuseUnprovenAutomotiveFacts: UnprovenFactsConfirmation = async () => ({
   confirmed: false,

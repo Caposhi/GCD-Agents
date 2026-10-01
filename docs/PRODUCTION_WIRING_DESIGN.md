@@ -1133,6 +1133,13 @@ before those checks can be written or tested.
 > **review-only execution context** so that both keep working. The context can never approve or
 > publish, and it sits beside the live authority gate, never replacing it. See
 > [CONTENT_STUDIO_DESIGN.md §5.4](CONTENT_STUDIO_DESIGN.md#54-executionenabled-and-the-registry--how-the-studio-worker-may-call-stages).
+>
+> **Pointer (Content Studio S3, 2026-10-01), not a rewrite of P2.** S3 came first, so it defines the
+> context: `ReviewOnlyExecutionContext` in `src/harness/contentRun/executionContext.ts` (S3 is
+> `IMPLEMENTED`; see [Roadmap](ROADMAP.md)). How C2 and C3 would accept it — a second, review-only
+> branch of C2 that never reads or satisfies `executionEnabled` or the gate, and the context's own
+> per-request check at C3 — is written down, not built, in
+> [CONTENT_STUDIO_DESIGN.md §5.4](CONTENT_STUDIO_DESIGN.md#how-p2s-c2-and-c3-accept-the-context-written-by-s3-2026-10-01-not-built).
 
 #### P3 — Dispatch skeleton and checkpoint C1, inert, with real reachability protection
 

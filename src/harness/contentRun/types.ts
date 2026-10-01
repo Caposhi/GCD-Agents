@@ -3,10 +3,12 @@
  *
  * The library never touches a terminal, never decides where a run is stored,
  * and never decides on its own that money may be spent. Its caller supplies
- * each of those through the interfaces below. Today the only caller is
- * `scripts/local/content-run.mjs`; the Content Studio worker (S3) is the
- * second (docs/CONTENT_STUDIO_DESIGN.md §5.1).
+ * each of those through the interfaces below. Its two callers are
+ * `scripts/local/content-run.mjs` and, since S3, the Content Studio worker
+ * (`src/studio/worker/**`; docs/CONTENT_STUDIO_DESIGN.md §5.1).
  */
+
+import type { ReviewOnlyExecutionContext } from "./executionContext.js";
 
 /** Progress and warning lines. The CLI prints them to the console. */
 export interface RunReporter {
@@ -28,7 +30,7 @@ export type RecordedRequest = Record<string, unknown> & { stage: string; lens?: 
  * library never writes anything else. `recordRequest` is told about every
  * provider response as it arrives, before anything validates it. A synchronous
  * sink (the CLI's) returns nothing and keeps the failure path synchronous; an
- * asynchronous one (the Studio worker's, later) returns a promise, which the
+ * asynchronous one (the Studio worker's) returns a promise, which the
  * library awaits on every success path.
  */
 export interface RunSink {
@@ -107,8 +109,9 @@ export interface PaidActionRequest {
  * and after pricing, and before the first request exists. It resolves to allow
  * the requests and throws to refuse them; the library builds no runner and
  * creates no output until it resolves. The CLI's gate is the cost flag and the
- * typed word LIVE; the Studio worker's will be a consumed quote with a live
- * reservation.
+ * typed word LIVE; the Studio worker's re-checks a consumed quote's live
+ * reservation (design §6.2). Every paid path also requires the review-only
+ * execution context (`RunIo.execution`), checked just before this is called.
  */
 export type PaidActionConsent = (request: PaidActionRequest) => Promise<void>;
 
@@ -183,6 +186,12 @@ export interface RunIo {
   consent: PaidActionConsent;
   confirmUnproven: UnprovenFactsConfirmation;
   outputs: RunOutputs;
+  /**
+   * The review-only execution context (Content Studio S3, design §5.4).
+   * Required by every paid path, next to `consent`; when present, its
+   * per-request check runs before every request unit, fake or live.
+   */
+  execution?: ReviewOnlyExecutionContext;
   onFailureContext?(context: RunFailureContext | null): void;
 }
 

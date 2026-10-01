@@ -75,10 +75,11 @@
  * the evidence pack, every free check, the six stages, the saved-run paths,
  * the fake runner, the field measurements and the cost-ceiling computation —
  * lives in `src/harness/contentRun/**`, compiled to `dist/harness/contentRun/`,
- * so the future Content Studio worker runs the same code
+ * so the Content Studio worker (`src/studio/worker/**`, S3) runs the same code
  * (docs/CONTENT_STUDIO_DESIGN.md §5.1). This file keeps argument parsing, the
  * typed LIVE and UNPROVEN prompts, console output and file writing, and hands
- * the library its paid-action consent, its UNPROVEN confirmation and a
+ * the library its paid-action consent, its UNPROVEN confirmation, its
+ * review-only execution context (§5.4; every paid path requires one) and a
  * run-directory sink. Behaviour, flags, file names and bytes are unchanged
  * (`scripts/local/content-run-golden.mjs` proves it against a base revision).
  *
@@ -428,6 +429,20 @@ function cliFacts(args) {
 
 const cliReporter = { log: (message) => console.log(message), warn: (message) => console.warn(message) };
 
+/**
+ * The review-only execution context this CLI hands every run (Content Studio
+ * S3; docs/CONTENT_STUDIO_DESIGN.md §5.4). The library refuses every paid path
+ * without one. Its per-request check allows every request unit, because this
+ * CLI's consent for the whole priced action — the cost flag and the typed
+ * LIVE — is given before the first request; so nothing this CLI does changes.
+ * Made once, and only after the compiled library is known to exist.
+ */
+let cliContext;
+export function cliExecutionContext() {
+  cliContext ??= lib.createReviewOnlyExecutionContext({ caller: "local-cli", checkRequests: async () => {} });
+  return cliContext;
+}
+
 /** The collaborators this CLI hands the library for one run. */
 function cliIo(args) {
   return {
@@ -435,6 +450,7 @@ function cliIo(args) {
     consent: liveConsent(args),
     confirmUnproven: confirmUnprovenAtPrompt,
     outputs: directoryOutputs(args),
+    execution: cliExecutionContext(),
     onFailureContext: (context) => {
       failureContext = context && { ...context, runDir: context.sink.label };
     },
