@@ -123,6 +123,12 @@ jobs:
           M1_READINESS_POSTGRES_ADMIN_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
         run: npm run test:m1-readiness-postgres
 
+      - name: Content Studio schema disposable PostgreSQL suite
+        env:
+          STUDIO_DISPOSABLE_POSTGRES: "1"
+          STUDIO_POSTGRES_ADMIN_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
+        run: npm run test:studio-postgres
+
   agentshield:
     name: AgentShield 1.4.0
     runs-on: ubuntu-latest

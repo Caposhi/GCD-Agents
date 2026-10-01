@@ -42,9 +42,19 @@
  *     to FAIL on injected faults — a type error is refused, and an orphaned
  *     output, a stale output that the incremental compiler does not re-emit, and
  *     a missing file are each reported as a difference from the clean build.
+ *   - `M-inc-sample` (Content Studio S2): for exactly four compiled mutations,
+ *     each from a different group, chosen deterministically from a seed
+ *     (`GITHUB_SHA` when set, else INC_SAMPLE_DEFAULT_SEED) so successive
+ *     commits sample different mutations, the MUTATED sources also get a clean
+ *     `tsc` build (into the worker's own `sample-dist/`), which must be
+ *     byte-identical to the incremental `dist/` the suite ran against; the seed
+ *     and the sampled ids are printed. `M-inc-sample-fault` shows that
+ *     comparison failing on a source edited and not rebuilt.
  * The suite runs with Node's compile cache in the worker's own directory, which
  * caches V8 bytecode for byte-identical module sources only; it changes no
- * result.
+ * result. A mutation may name the suite it runs (`suite`; the Content
+ * Intelligence suite by default); `M0` and `M-end` require every such suite to
+ * pass in every copy.
  *
  * The final group is not a derivation but an epistemic invariant: migration
  * 007's live application state is UNKNOWN in either direction, and neither the
@@ -293,6 +303,17 @@
  * files, the scheduler entry point, the tekmetric probe script, the guards
  * module and the live-path manifest (thirty-nine in all).
  *
+ * The Content Studio S2 group (M523-M533) covers the Studio migration runner's
+ * offline-testable refusals and runs the Studio offline suite
+ * (`dist/studio/db/migrate.offline.selftest.js`): the DATABASE_URL refusal, the
+ * STUDIO_DATABASE_URL-only read (a fallback to DATABASE_URL's value, a
+ * look-alike variable read first, the presence no longer reported), the
+ * migration-sha256 refusal, and the identity decision (another database name,
+ * live-schema tables, a live ledger, a missing identity row, any _migrations
+ * read as the tripwire, and identity decided only after statements have run).
+ * Its checks are SM1-SM5. It adds two captured paths, the runner and its entry
+ * point (forty-one in all).
+ *
  * It is offline and deterministic: no network, no database, no provider, no
  * credential. The mutations run in parallel on up to MAX_WORKERS workers (the
  * runner's available parallelism, capped), each worker in its OWN disposable
@@ -388,6 +409,12 @@ const LIVE_SCHEDULER_ENTRY = "src/scheduler/daily.ts";
 const LOCAL_TEKMETRIC_PROBE = "scripts/local/tekmetric-probe.mjs";
 const LIVE_PATH_GUARDS = "src/harness/livePathGuards.ts";
 const LIVE_PATH_MANIFEST = "scripts/ci/live-path-manifest.json";
+// Content Studio S2: the Studio migration runner and its entry point, proven by
+// the Studio offline suite rather than the Content Intelligence one.
+const STUDIO_DB_RUNNER = "src/studio/db/runner.ts";
+const STUDIO_DB_ENTRY = "src/studio/db/migrate.ts";
+const CONTENT_INTELLIGENCE_SUITE = "dist/harness/contentIntelligence.selftest.js";
+const STUDIO_DB_SUITE = "dist/studio/db/migrate.offline.selftest.js";
 
 /**
  * Each mutation names the derivation it breaks, the single edit that breaks it,
@@ -4682,20 +4709,157 @@ const CONTENT_STUDIO_S1_MUTATIONS = [
   },
 ];
 
-const MUTATIONS = [
-  ...LEGACY_MUTATIONS, ...RAW_IDENTITY_MUTATIONS, ...FIELD_MARGIN_MUTATIONS, ...CRITIC_POLICY_MUTATIONS,
-  ...CONTACT_LINE_MUTATIONS, ...CRITIC_PANEL_MUTATIONS, ...CRITIC_PANEL_FOLLOW_UP_MUTATIONS,
-  ...WRITER_RESTRICTION_MUTATIONS, ...IDENTITY_SCOPE_MUTATIONS, ...LANE_S_APPROVED_FACTS_MUTATIONS,
-  ...PACKAGING_CLAIM_USE_CAP_MUTATIONS, ...STATED_CAPTION_AND_RESUME_MUTATIONS,
-  ...COMPARISON_CLAIM_MUTATIONS, ...REVISION_PASS_MUTATIONS, ...CONTACT_IN_OVERLAY_MUTATIONS,
-  ...CONTENT_STUDIO_S1_MUTATIONS,
+// Content Studio S2's offline-testable safety refusals (docs/CONTENT_STUDIO_DESIGN.md
+// §3.7). Each runs the Studio offline suite (`suite`), whose SM checks must name it.
+const CONTENT_STUDIO_S2_MUTATIONS = [
+  {
+    name: "the Studio runner no longer refuses when DATABASE_URL is present",
+    file: STUDIO_DB_RUNNER,
+    from: "  if (env.databaseUrlPresent) {",
+    to: "  if (env.databaseUrlPresent && Date.now() < 0) {",
+    expect: ["SM1.", "SM1a."],
+    suite: STUDIO_DB_SUITE,
+  },
+  {
+    name: "the Studio entry point stops reporting DATABASE_URL's presence",
+    file: STUDIO_DB_ENTRY,
+    from: "    databaseUrlPresent: process.env.DATABASE_URL !== undefined,",
+    to: "    databaseUrlPresent: false,",
+    expect: ["SM1a.", "SM2b."],
+    suite: STUDIO_DB_SUITE,
+  },
+  {
+    name: "the Studio entry point falls back to DATABASE_URL's value",
+    file: STUDIO_DB_ENTRY,
+    from: "    studioDatabaseUrl: process.env.STUDIO_DATABASE_URL,",
+    to: "    studioDatabaseUrl: process.env.STUDIO_DATABASE_URL ?? process.env.DATABASE_URL,",
+    expect: ["SM2b."],
+    suite: STUDIO_DB_SUITE,
+  },
+  {
+    name: "the Studio entry point reads a look-alike variable before STUDIO_DATABASE_URL",
+    file: STUDIO_DB_ENTRY,
+    from: "    studioDatabaseUrl: process.env.STUDIO_DATABASE_URL,",
+    to: "    studioDatabaseUrl: process.env.STUDIO_DB_URL ?? process.env.STUDIO_DATABASE_URL,",
+    expect: ["SM2a.", "SM2b."],
+    suite: STUDIO_DB_SUITE,
+  },
+  {
+    name: "the Studio ledger no longer refuses a recorded migration whose sha256 changed",
+    file: STUDIO_DB_RUNNER,
+    from: "    } else if (file.sha256 !== row.sha256) {",
+    to: "    } else if (file.sha256 !== row.sha256 && Date.now() < 0) {",
+    expect: ["SM3."],
+    suite: STUDIO_DB_SUITE,
+  },
+  {
+    name: "the Studio identity decision accepts a database not named gcd_studio",
+    file: STUDIO_DB_RUNNER,
+    from: "  if (probe.currentDatabase !== STUDIO_DATABASE_NAME) {",
+    to: "  if (probe.currentDatabase !== STUDIO_DATABASE_NAME && Date.now() < 0) {",
+    expect: ["SM4."],
+    suite: STUDIO_DB_SUITE,
+  },
+  {
+    name: "the Studio identity decision ignores live-schema tables",
+    file: STUDIO_DB_RUNNER,
+    from: "  if (probe.liveTables.length > 0) {",
+    to: "  if (probe.liveTables.length > 0 && Date.now() < 0) {",
+    expect: ["SM4a.", "SM5."],
+    suite: STUDIO_DB_SUITE,
+  },
+  {
+    name: "the Studio identity decision accepts a live _migrations ledger",
+    file: STUDIO_DB_RUNNER,
+    from: "  if (probe.migrationsTable === \"live\") {",
+    to: "  if (probe.migrationsTable === \"live\" && Date.now() < 0) {",
+    expect: ["SM4b."],
+    suite: STUDIO_DB_SUITE,
+  },
+  {
+    name: "the Studio identity decision accepts a missing or mismatched identity row",
+    file: STUDIO_DB_RUNNER,
+    from: "  if (rows.length !== 1 || rows[0]!.database_name !== STUDIO_DATABASE_NAME || rows[0]!.marker !== STUDIO_IDENTITY_MARKER) {",
+    to: "  if ((rows.length !== 1 || rows[0]!.database_name !== STUDIO_DATABASE_NAME || rows[0]!.marker !== STUDIO_IDENTITY_MARKER) && Date.now() < 0) {",
+    expect: ["SM4c."],
+    suite: STUDIO_DB_SUITE,
+  },
+  {
+    name: "the Studio probe reads any _migrations table as the tripwire",
+    file: STUDIO_DB_RUNNER,
+    from: "      if (tripwire.rows.length === 1 && tripwire.rows[0]!.definition === \"CHECK (false)\") migrationsTable = \"tripwire\";",
+    to: "      migrationsTable = \"tripwire\";",
+    expect: ["SM5."],
+    suite: STUDIO_DB_SUITE,
+  },
+  {
+    name: "the Studio runner decides identity only inside its first transaction, after statements have run",
+    file: STUDIO_DB_RUNNER,
+    from: "  const probe = await probeStudioIdentity(client);\n  decideStudioIdentity(probe);\n",
+    to: "  const probe = await probeStudioIdentity(client);\n",
+    expect: ["SM5."],
+    suite: STUDIO_DB_SUITE,
+  },
 ];
+
+// Every group, in order. MUTATIONS is their concatenation; the groups exist
+// only so `M-inc-sample` can spread its sample across them.
+const MUTATION_GROUPS = [
+  ["legacy", LEGACY_MUTATIONS], ["raw identity", RAW_IDENTITY_MUTATIONS], ["field margin", FIELD_MARGIN_MUTATIONS],
+  ["critic policy", CRITIC_POLICY_MUTATIONS], ["contact line", CONTACT_LINE_MUTATIONS],
+  ["critic panel", CRITIC_PANEL_MUTATIONS], ["critic panel follow-up", CRITIC_PANEL_FOLLOW_UP_MUTATIONS],
+  ["writer restriction", WRITER_RESTRICTION_MUTATIONS], ["identity scope", IDENTITY_SCOPE_MUTATIONS],
+  ["Lane S approved facts", LANE_S_APPROVED_FACTS_MUTATIONS], ["packaging claimUse cap", PACKAGING_CLAIM_USE_CAP_MUTATIONS],
+  ["stated caption and resume", STATED_CAPTION_AND_RESUME_MUTATIONS], ["comparison claim", COMPARISON_CLAIM_MUTATIONS],
+  ["revision pass", REVISION_PASS_MUTATIONS], ["contact in overlay", CONTACT_IN_OVERLAY_MUTATIONS],
+  ["Content Studio S1", CONTENT_STUDIO_S1_MUTATIONS], ["Content Studio S2", CONTENT_STUDIO_S2_MUTATIONS],
+];
+const MUTATIONS = MUTATION_GROUPS.flatMap(([, group]) => group);
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const decodeUtf8Strict = (bytes) => new TextDecoder("utf-8", { fatal: true }).decode(bytes);
 const MUTATION_TARGETS = [
   ...new Set([...MUTATIONS.map((mutation) => mutation.file), SQL_AUTHORITY_SOURCE]),
 ].sort();
+
+// Every suite a mutation runs. M0 and M-end prove each green on every copy.
+const SUITES = [...new Set([CONTENT_INTELLIGENCE_SUITE, ...MUTATIONS.map((mutation) => mutation.suite ?? CONTENT_INTELLIGENCE_SUITE)])];
+
+/**
+ * `M-inc-sample`: the compiled mutations whose MUTATED sources also get a clean
+ * `tsc` build, compared byte for byte with the incremental `dist/` the suite ran
+ * against. Exactly INC_SAMPLE_SIZE of them, each from a different group, chosen
+ * deterministically from a seed: `GITHUB_SHA` when it is set (in CI, the commit
+ * the run tests, so successive commits sample different mutations), otherwise
+ * INC_SAMPLE_DEFAULT_SEED. The groups that compile are ordered by
+ * sha256(seed, group name) and the first INC_SAMPLE_SIZE taken; within each, the
+ * compiled mutation at sha256(seed, group name, "mutation") modulo its compiled
+ * count. A clean build costs about 10 CPU-seconds, and every restore is already
+ * compared byte for byte (`M-inc-restore`), so a small rotating sample suffices.
+ */
+const isCompiledMutation = (mutation) => (mutation.file.startsWith("src/") && !mutation.file.endsWith(".json"))
+  || Boolean(mutation.coordinatedAuthority);
+const INC_SAMPLE_SIZE = 4;
+const INC_SAMPLE_DEFAULT_SEED = "gcd-payload-mutation:inc-sample:v1";
+const INC_SAMPLE_SEED_SOURCE = process.env.GITHUB_SHA ? "GITHUB_SHA" : "default";
+const INC_SAMPLE_SEED = process.env.GITHUB_SHA || INC_SAMPLE_DEFAULT_SEED;
+/** Sampled mutation index -> the name of its group. */
+const INC_SAMPLE = new Map();
+{
+  const draw = (...parts) => createHash("sha256").update(parts.join("\0")).digest();
+  const compiledGroups = [];
+  let offset = 0;
+  for (const [name, group] of MUTATION_GROUPS) {
+    const compiled = group.flatMap((mutation, position) => (isCompiledMutation(mutation) ? [offset + position] : []));
+    if (compiled.length) compiledGroups.push({ name, compiled, rank: draw(INC_SAMPLE_SEED, name).toString("hex") });
+    offset += group.length;
+  }
+  compiledGroups.sort((a, b) => (a.rank < b.rank ? -1 : a.rank > b.rank ? 1 : 0));
+  for (const { name, compiled } of compiledGroups.slice(0, INC_SAMPLE_SIZE)) {
+    INC_SAMPLE.set(compiled[draw(INC_SAMPLE_SEED, name, "mutation").readUInt32BE(0) % compiled.length], name);
+  }
+}
+const INC_SAMPLE_IDS = [...INC_SAMPLE.keys()].sort((a, b) => a - b).map((index) => `M${index + 1}`);
 
 const gitStatus = () => execFileSync("git", ["status", "--porcelain=v1", "--untracked-files=all"], {
   cwd: AUTHORITATIVE_REPO_ROOT,
@@ -4853,21 +5017,38 @@ const build = async (worker, kind) => {
  * into the worker's `clean-dist/`, which is emptied first. It is the reference
  * every incremental `dist/` is compared with.
  */
-const cleanBuild = async (worker) => {
-  rmSync(worker.cleanDist, { recursive: true, force: true });
+const cleanBuild = async (worker, outDir = worker.cleanDist, kind = "clean build") => {
+  rmSync(outDir, { recursive: true, force: true });
   const tsc = resolve(worker.workspace, "node_modules/typescript/bin/tsc");
-  return (await timed("clean build", () => runChild(process.execPath,
-    [tsc, "-p", "tsconfig.json", "--incremental", "false", "--outDir", worker.cleanDist], worker.workspace))).ok;
+  return (await timed(kind, () => runChild(process.execPath,
+    [tsc, "-p", "tsconfig.json", "--incremental", "false", "--outDir", outDir], worker.workspace))).ok;
 };
 
-const runSuite = async (worker) => {
+/**
+ * `M-inc-sample`'s comparison: a clean full build of the copy's CURRENT sources
+ * (for a sampled mutation, the mutated ones) into the worker's own `sample-dist/`,
+ * compared with the incremental `dist/`. Every difference, or a clean build that
+ * does not compile.
+ */
+const sampleComparison = async (worker) => ((await cleanBuild(worker, worker.sampleDist, "sample clean build"))
+  ? treeDifferences(treeSnapshot(distOf(worker)), treeSnapshot(worker.sampleDist))
+  : ["the clean build of the mutated sources did not compile"]);
+
+const runSuite = async (worker, suite = CONTENT_INTELLIGENCE_SUITE) => {
   const { ok, stdout } = await timed("suite", () => runChild(process.execPath,
-    ["dist/harness/contentIntelligence.selftest.js"], worker.workspace, worker.suiteEnv));
+    [suite], worker.workspace, worker.suiteEnv));
   if (ok) return { failed: [], crashed: false };
   const failed = stdout.split("\n")
     .filter((line) => line.startsWith("FAIL  "))
     .map((line) => line.slice("FAIL  ".length));
   return { failed, crashed: failed.length === 0 };
+};
+
+/** Every suite in SUITES, one after another; failed lines are joined and any crash is a crash. */
+const runEverySuite = async (worker) => {
+  const runs = [];
+  for (const suite of SUITES) runs.push(await runSuite(worker, suite));
+  return { failed: runs.flatMap((run) => run.failed), crashed: runs.some((run) => run.crashed) };
 };
 
 /** Every file under `dir`, by relative path, with its bytes (null for anything not a regular file). */
@@ -5121,6 +5302,8 @@ const check = (name, ok, detail = "") => {
 let cleanBaseline;
 const restoreProblems = [];
 let restoreRebuilds = 0;
+const sampleProblems = [];
+let sampleComparisons = 0;
 const profile = [];
 
 /**
@@ -5136,7 +5319,7 @@ const runMutation = async (worker, mutation, index) => {
   const original = readFileSync(path);
   const touched = [];
   const started = performance.now();
-  const spent = { build: 0, suite: 0, restore: 0 };
+  const spent = { build: 0, suite: 0, restore: 0, sample: 0 };
   let mutated;
   try {
     mutated = mutationBytes(mutation, original, root);
@@ -5201,8 +5384,18 @@ const runMutation = async (worker, mutation, index) => {
       spent.build = performance.now() - buildStarted;
     }
     const suiteStarted = performance.now();
-    const result = buildFailed ? { failed: [], crashed: true } : await runSuite(worker);
+    const result = buildFailed ? { failed: [], crashed: true } : await runSuite(worker, mutation.suite);
     spent.suite = performance.now() - suiteStarted;
+
+    // M-inc-sample: for a sampled compiled mutation, the incremental dist/ the
+    // suite just ran is compared with a clean build of the same MUTATED sources.
+    if (compiled && INC_SAMPLE.has(index)) {
+      const sampleStarted = performance.now();
+      sampleComparisons += 1;
+      const differences = buildFailed ? ["the mutated copy did not compile incrementally"] : await sampleComparison(worker);
+      if (differences.length) sampleProblems.push(`${id}: ${summarize(differences)}`);
+      spent.sample = performance.now() - sampleStarted;
+    }
 
     if (mutation.mustPass) {
       record(`${id}. ${mutation.name} — the suite stays green with coordinated authority`,
@@ -5263,7 +5456,9 @@ async function main() {
   console.log(`Source inventory: ${MUTATIONS.length} mutations (${prohibitedCount} prohibited, `
     + `${coordinatedCount} coordinated-authority-update)`);
   console.log(`Workers: ${WORKER_COUNT} (available parallelism ${availableParallelism()}, `
-    + `maximum ${MAX_WORKERS}), each in its own disposable no-Git copy\n`);
+    + `maximum ${MAX_WORKERS}), each in its own disposable no-Git copy`);
+  console.log(`M-inc-sample seed: ${INC_SAMPLE_SEED} (${INC_SAMPLE_SEED_SOURCE}); sampled: ${INC_SAMPLE_IDS.join(", ")} `
+    + `(${[...INC_SAMPLE].sort(([a], [b]) => a - b).map(([, group]) => group).join(", ")})\n`);
 
   const authoritativeBefore = snapshotAuthoritative();
   const workers = [];
@@ -5275,6 +5470,7 @@ async function main() {
     workers.push({
       ...prepared,
       cleanDist: join(prepared.tempRoot, "clean-dist"),
+      sampleDist: join(prepared.tempRoot, "sample-dist"),
       suiteEnv: { ...process.env, NODE_COMPILE_CACHE: compileCache },
     });
   }
@@ -5299,11 +5495,12 @@ async function main() {
   for (const worker of workers) startCompiler(worker);
   const [baselines, cleanOk] = await Promise.all([
     Promise.all(workers.map(async (worker) => ((await build(worker, "first build"))
-      ? runSuite(worker)
+      ? runEverySuite(worker)
       : { failed: [], crashed: true, buildFailed: true }))),
     cleanBuild(workers[0]),
   ]);
-  check(`M0. every unmutated disposable copy (${WORKER_COUNT}) builds and the whole suite passes`,
+  check(`M0. every unmutated disposable copy (${WORKER_COUNT}) builds and every suite a mutation runs passes `
+    + `(${SUITES.length}: ${SUITES.map((suite) => basename(suite)).join(", ")})`,
     baselines.every((baseline) => !baseline.crashed && baseline.failed.length === 0),
     baselines.map((baseline, slot) => `copy ${slot + 1}: `
       + (baseline.buildFailed ? "did not compile"
@@ -5346,6 +5543,14 @@ async function main() {
   check(`M-inc-restore. after every compiled mutation (${restoreRebuilds} of ${compiledCount}), the incremental `
     + "rebuild of its restored sources is byte-identical to the clean full build",
   restoreRebuilds === compiledCount && restoreProblems.length === 0, summarize(restoreProblems));
+  check(`M-inc-sample. for ${sampleComparisons} of ${compiledCount} compiled mutations (${INC_SAMPLE_IDS.join(", ")}, `
+    + `one from each of ${new Set(INC_SAMPLE.values()).size} groups, seed ${INC_SAMPLE_SEED_SOURCE}), a clean tsc `
+    + "build of the MUTATED sources is byte-identical to the incremental dist/ the suite ran against",
+  sampleComparisons === INC_SAMPLE_SIZE && INC_SAMPLE.size === INC_SAMPLE_SIZE
+    && new Set(INC_SAMPLE.values()).size === INC_SAMPLE_SIZE
+    && [...INC_SAMPLE.keys()].every((index) => isCompiledMutation(MUTATIONS[index]))
+    && sampleProblems.length === 0,
+  summarize(sampleProblems));
 
   const finals = await Promise.all(workers.map(async (worker) => {
     const incremental = await build(worker, "final build");
@@ -5353,14 +5558,14 @@ async function main() {
     const differences = !incremental ? [`the restored copy did not compile: ${worker.lastDiagnostics.join(" | ")}`]
       : !clean ? ["the clean full build did not compile"]
       : treeDifferences(treeSnapshot(distOf(worker)), treeSnapshot(worker.cleanDist));
-    const run = incremental ? await runSuite(worker) : { failed: [], crashed: true, buildFailed: true };
+    const run = incremental ? await runEverySuite(worker) : { failed: [], crashed: true, buildFailed: true };
     return { differences, run };
   }));
   check("M-inc-end. after its last mutation, every copy's incremental dist/ is byte-identical to a fresh clean "
     + "full build of its restored sources, before the final suite pass",
   finals.every(({ differences }) => differences.length === 0),
   finals.map(({ differences }, slot) => `copy ${slot + 1}: ${summarize(differences) || "identical"}`).join("; "));
-  check("M-end. after every raw mutation is reverted every disposable copy's suite passes again",
+  check("M-end. after every raw mutation is reverted every disposable copy's suites all pass again",
     finals.every(({ run }) => !run.crashed && run.failed.length === 0),
     finals.map(({ run }, slot) => `copy ${slot + 1}: `
       + (run.buildFailed ? "did not compile"
@@ -5369,6 +5574,32 @@ async function main() {
   // Injected faults, in the first copy, after its final suite pass: each must
   // make the incremental build or its comparison with the clean build fail.
   const faulted = workers[0];
+
+  // M-inc-sample-fault: the sample comparison FAILS when the incremental dist/
+  // does not reflect the mutated sources (a stale build of a real source edit),
+  // passes once the incremental compiler has built them, and the copy is then
+  // restored byte for byte and rebuilt to the clean build exactly.
+  const sampleFaultTarget = resolve(faulted.workspace, PAYLOAD);
+  const sampleFaultOriginal = readFileSync(sampleFaultTarget);
+  inFlight.set(sampleFaultTarget, sampleFaultOriginal);
+  writeFileSync(sampleFaultTarget, Buffer.concat([sampleFaultOriginal,
+    Buffer.from("\nexport const mutationHarnessSampleFault = 1;\n", "utf8")]));
+  const staleSample = await sampleComparison(faulted);
+  const sampleRebuilt = await build(faulted, "fault build");
+  const freshSample = await sampleComparison(faulted);
+  restoreRaw(sampleFaultTarget, sampleFaultOriginal);
+  inFlight.delete(sampleFaultTarget);
+  const sampleRestored = await build(faulted, "fault build")
+    && readFileSync(sampleFaultTarget).equals(sampleFaultOriginal)
+    && treeDifferences(treeSnapshot(distOf(faulted)), treeSnapshot(faulted.cleanDist)).length === 0;
+  check("M-inc-sample-fault. the sample comparison reports a stale incremental dist/ (a source edited and not "
+    + "rebuilt) as a difference from the clean build of the edited sources, reports none once the incremental "
+    + "compiler has built them, and the copy is restored and rebuilt to the clean build exactly",
+  staleSample.length === 1 && staleSample[0] === "harness/agents/payloadContract.js differs"
+    && sampleRebuilt && freshSample.length === 0 && sampleRestored,
+  `stale: ${staleSample.join(", ") || "none"}; rebuilt: ${sampleRebuilt}; after the build: `
+    + `${freshSample.join(", ") || "none"}; restored: ${sampleRestored}`);
+
   const clean = treeSnapshot(faulted.cleanDist);
   const faultSource = resolve(faulted.workspace, "src/harness/mutationHarnessInjectedFault.ts");
   // Real `tsc` checks the same source state (`--noEmit`, so it writes nothing).
