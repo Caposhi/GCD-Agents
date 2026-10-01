@@ -37,8 +37,11 @@ jobs:
       - name: Offline self-tests
         run: npm run test:offline
 
-      - name: Payload-contract mutation tests
-        run: npm run test:payload-mutation
+      # The mutation harness runs as three shards, one in this job and one in
+      # each PostgreSQL job; scripts/ci/check-mutation-shards.rb (workflow
+      # validation job) requires shards 0..n-1 exactly once with one n.
+      - name: Payload-contract mutation tests, shard 0/3
+        run: npm run test:payload-mutation -- --shard 0/3
 
       - name: M1 readiness runner offline tests
         run: npm run test:m1-readiness
@@ -72,6 +75,12 @@ jobs:
       fail-fast: false
       matrix:
         postgres-version: ["16", "18"]
+        # Each PostgreSQL job also runs one payload-contract mutation shard.
+        include:
+          - postgres-version: "16"
+            mutation-shard: "1"
+          - postgres-version: "18"
+            mutation-shard: "2"
     services:
       postgres:
         image: postgres:${{ matrix.postgres-version }}
@@ -129,6 +138,9 @@ jobs:
           STUDIO_POSTGRES_ADMIN_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
         run: npm run test:studio-postgres
 
+      - name: Payload-contract mutation tests, shard ${{ matrix.mutation-shard }}/3
+        run: npm run test:payload-mutation -- --shard ${{ matrix.mutation-shard }}/3
+
   agentshield:
     name: AgentShield 1.4.0
     runs-on: ubuntu-latest
@@ -175,5 +187,7 @@ jobs:
       - name: Validate GitHub Actions workflows
         run: actionlint -color
 
-      - name: Parse checked-in YAML
-        run: ruby scripts/ci/check-yaml.rb render.yaml .github/workflows/*.yml
+      - name: Parse checked-in YAML and check the mutation shards
+        run: |
+          ruby scripts/ci/check-yaml.rb render.yaml .github/workflows/*.yml
+          ruby scripts/ci/check-mutation-shards.rb .github/workflows/ci.yml

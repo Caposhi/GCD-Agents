@@ -27,6 +27,16 @@
  * - `schema`: every §4 invariant, by attempting the forbidden write and
  *   requiring its refusal (and, beside it, the permitted write succeeding).
  *
+ * Pools: every pool comes from `openPool` and is closed by `closePool`, which
+ * waits until each of its connections has actually closed (pg-pool's `end()`
+ * resolves before its clients' sockets do) before any database is dropped.
+ * Each pool has an `'error'` listener that ignores only a connection
+ * termination (SQLSTATE 57P01) arriving after that pool's teardown began;
+ * any other pool error, or a 57P01 during the test body, fails the suite by
+ * name (`pool errors`). `--inject-pool-termination` proves that: it
+ * terminates one pool's idle connection during the test body, and the suite
+ * must then fail.
+ *
  * Fixtures are synthetic: `.test`-free placeholder hashes, generated ids and
  * fixture addresses assembled at run time. No customer data, facts-file
  * content or booking link.
@@ -99,6 +109,86 @@ const databaseUrl = (admin: string, name: string) => {
   parsed.pathname = `/${name}`;
   return parsed.toString();
 };
+
+// ---------------------------------------------------------------------------
+// Pools: full teardown before a drop, and an error policy that hides nothing
+// ---------------------------------------------------------------------------
+
+/** SQLSTATE admin_shutdown: the server terminated the connection (pg_terminate_backend). */
+const CONNECTION_TERMINATED = "57P01";
+
+interface PoolState {
+  readonly label: string;
+  closing: boolean;
+  /** One per connection the pool opened, settled when that connection's socket has closed. */
+  readonly closed: Promise<void>[];
+}
+
+const poolStates = new Map<pg.Pool, PoolState>();
+/** Every pool error the policy does not allow; the suite fails by name if any is recorded. */
+const unexpectedPoolErrors: string[] = [];
+let ignoredTerminations = 0;
+
+function openPool(label: string, config: pg.PoolConfig): pg.Pool {
+  const pool = new pg.Pool(config);
+  const state: PoolState = { label, closing: false, closed: [] };
+  pool.on("connect", (client) => {
+    state.closed.push(new Promise<void>((settle) => client.once("end", () => settle())));
+  });
+  pool.on("error", (error: Error) => {
+    const code = (error as { code?: unknown }).code;
+    if (state.closing && code === CONNECTION_TERMINATED) {
+      ignoredTerminations += 1;
+      return;
+    }
+    unexpectedPoolErrors.push(`${label}: ${typeof code === "string" ? code : "no SQLSTATE"} `
+      + `${error.message} (${state.closing ? "during teardown" : "during the test body"})`);
+  });
+  poolStates.set(pool, state);
+  return pool;
+}
+
+/**
+ * Ends the pool and waits until every connection it opened has closed, so no
+ * backend of it is left for a later `pg_terminate_backend` to reach.
+ */
+async function closePool(pool: pg.Pool): Promise<void> {
+  const state = poolStates.get(pool);
+  if (!state) throw new Error("closePool: not a pool from openPool");
+  state.closing = true;
+  await pool.end();
+  await Promise.all(state.closed);
+}
+
+/** Fails the suite by name if any pool reported an error the policy does not allow. */
+function reportPoolErrors(): void {
+  if (unexpectedPoolErrors.length === 0) {
+    console.log(`[studio-postgres] pool errors: none unexpected (${ignoredTerminations} connection termination(s) `
+      + "ignored after teardown began)");
+    return;
+  }
+  console.log(`FAIL  pool errors — ${unexpectedPoolErrors.length} unexpected: ${unexpectedPoolErrors.join(" | ")}`);
+  failures += 1;
+}
+
+/**
+ * `--inject-pool-termination`: terminates the pool's idle connection to `name`
+ * during the test body. The pool must report it, and `reportPoolErrors` must
+ * then fail the suite.
+ */
+async function injectPoolTermination(dbs: Databases, pool: pg.Pool, name: string): Promise<void> {
+  const reported = new Promise<boolean>((settle) => {
+    const timer = setTimeout(() => settle(false), 10_000);
+    pool.once("error", () => {
+      clearTimeout(timer);
+      settle(true);
+    });
+  });
+  const terminated = await dbs.admin.query(
+    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()", [name]);
+  console.log(`[studio-postgres] injected fault: terminated ${terminated.rows.length} idle connection(s) to ${name} `
+    + `during the test body; the pool ${await reported ? "reported" : "did NOT report"} it`);
+}
 
 class Databases {
   readonly created = new Set<string>();
@@ -217,13 +307,14 @@ async function runnerAndCross(dbs: Databases): Promise<void> {
   // A database named otherwise is refused, and nothing is created in it.
   const otherName = `gcd_studio_disposable_${randomBytes(4).toString("hex")}`;
   const otherUrl = await dbs.create(otherName);
-  const otherPool = new pg.Pool({ connectionString: otherUrl, max: 2 });
+  const otherPool = openPool("wrong-name database", { connectionString: otherUrl, max: 2 });
   try {
     const before = await snapshot(otherPool);
     const run = await studioRunner(otherUrl);
     check("runner", "SP1. the Studio runner refuses a database not named gcd_studio (exit 1, wrong-database) and "
       + "creates nothing in it", run.code === 1 && run.stderr.includes("refused (wrong-database)")
       && before === await snapshot(otherPool), run.stderr);
+    if (process.argv.includes("--inject-pool-termination")) await injectPoolTermination(dbs, otherPool, otherName);
 
     // The same live-migrated database under another name is refused as well.
     const live = await liveRunner(otherUrl);
@@ -233,13 +324,13 @@ async function runnerAndCross(dbs: Databases): Promise<void> {
       + "changes nothing", live.code === 0 && refusedLive.code === 1 && liveBefore === await snapshot(otherPool),
     refusedLive.stderr);
   } finally {
-    await otherPool.end();
+    await closePool(otherPool);
     await dbs.drop(otherName);
   }
 
   // Cross-runner 1: the Studio runner against a live-migrated gcd_studio.
   let url = await dbs.create(STUDIO_DATABASE_NAME);
-  let pool = new pg.Pool({ connectionString: url, max: 4 });
+  let pool = openPool("live-migrated gcd_studio", { connectionString: url, max: 4 });
   try {
     const first = await liveRunner(url);
     const second = await liveRunner(url);
@@ -276,13 +367,13 @@ async function runnerAndCross(dbs: Databases): Promise<void> {
       && statements.every((statement) => /^SELECT\b/.test(statement) && !statement.includes("pg_advisory"))
       && before === await snapshot(pool), `${reason}: ${statements.length} statements`);
   } finally {
-    await pool.end();
+    await closePool(pool);
     await dbs.drop(STUDIO_DATABASE_NAME);
   }
 
   // A gcd_studio holding only a live-style ledger (no tripwire) is refused.
   url = await dbs.create(STUDIO_DATABASE_NAME);
-  pool = new pg.Pool({ connectionString: url, max: 4 });
+  pool = openPool("live-ledger gcd_studio", { connectionString: url, max: 4 });
   try {
     await pool.query("CREATE TABLE _migrations (name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())");
     const before = await snapshot(pool);
@@ -291,13 +382,13 @@ async function runnerAndCross(dbs: Databases): Promise<void> {
       + "changing nothing", refused.code === 1 && refused.stderr.includes("refused (live-ledger)")
       && before === await snapshot(pool), refused.stderr);
   } finally {
-    await pool.end();
+    await closePool(pool);
     await dbs.drop(STUDIO_DATABASE_NAME);
   }
 
   // Two runners at once on a fresh gcd_studio: the result is one complete schema.
   url = await dbs.create(STUDIO_DATABASE_NAME);
-  pool = new pg.Pool({ connectionString: url, max: 4 });
+  pool = openPool("concurrent-runner gcd_studio", { connectionString: url, max: 4 });
   try {
     const both = await Promise.all([studioRunner(url), studioRunner(url)]);
     const ledger = (await pool.query("SELECT name FROM studio_schema_migrations ORDER BY name")).rows.map((row) => row.name);
@@ -307,7 +398,7 @@ async function runnerAndCross(dbs: Databases): Promise<void> {
       && both.every((run) => run.code === 0 || run.stderr.includes("refused (concurrent-runner)")),
     both.map((run) => run.stderr).join(" | "));
   } finally {
-    await pool.end();
+    await closePool(pool);
     await dbs.drop(STUDIO_DATABASE_NAME);
   }
 }
@@ -319,7 +410,7 @@ async function runnerAndCross(dbs: Databases): Promise<void> {
 
 async function studioDatabase(dbs: Databases): Promise<void> {
   const url = await dbs.create(STUDIO_DATABASE_NAME);
-  const pool = new pg.Pool({ connectionString: url, max: 6 });
+  const pool = openPool("Studio gcd_studio", { connectionString: url, max: 6 });
   const scratch: string[] = [];
   try {
     const applied = await studioRunner(url);
@@ -396,7 +487,7 @@ async function studioDatabase(dbs: Databases): Promise<void> {
       return last.code === 0 && !last.stdout.includes("[studio-migrate] applied") && beforeLast === catalog(await snapshot(pool));
     })());
   } finally {
-    await pool.end();
+    await closePool(pool);
     for (const dir of scratch) await rm(dir, { recursive: true, force: true });
     await dbs.drop(STUDIO_DATABASE_NAME);
   }
@@ -1096,7 +1187,7 @@ async function invariants(pool: pg.Pool): Promise<void> {
 
 async function main(): Promise<void> {
   const admin = adminUrl();
-  const adminPool = new pg.Pool({ connectionString: admin, max: 2, connectionTimeoutMillis: 10_000 });
+  const adminPool = openPool("admin", { connectionString: admin, max: 2, connectionTimeoutMillis: 10_000 });
   const dbs = new Databases(adminPool, admin);
   const started = performance.now();
   try {
@@ -1111,8 +1202,9 @@ async function main(): Promise<void> {
   } finally {
     const leftovers = [...dbs.created];
     for (const name of leftovers) await dbs.drop(name).catch((error) => console.error(`[studio-postgres] drop ${name}: ${(error as Error).message}`));
-    await adminPool.end();
+    await closePool(adminPool);
   }
+  reportPoolErrors();
   const total = GROUPS.reduce((sum, group) => sum + counts[group], 0);
   const seconds = ((performance.now() - started) / 1000).toFixed(1);
   console.log(failures === 0
@@ -1123,5 +1215,6 @@ async function main(): Promise<void> {
 
 main().catch((error) => {
   console.error(`[studio-postgres] FAIL: ${(error as Error).stack ?? String(error)}`);
+  if (unexpectedPoolErrors.length > 0) console.error(`[studio-postgres] pool errors: ${unexpectedPoolErrors.join(" | ")}`);
   process.exitCode = 1;
 });

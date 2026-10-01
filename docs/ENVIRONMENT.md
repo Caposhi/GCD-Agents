@@ -18,7 +18,7 @@
 
 ## Content Studio (separate from every variable above)
 
-**Content Studio S2, `IMPLEMENTED`, not merged; no Studio service or database exists.** The Studio uses Studio-specific names wherever a live name exists ([Content Studio design](CONTENT_STUDIO_DESIGN.md) §3.2), so no Studio process can pick up a live value and no live process a Studio one.
+**Content Studio S2, `IMPLEMENTED`, not merged; no Studio service or database exists.** *(2026-10-01: `MERGED` through PR #105 at `fd88a2c…`; still no Studio service or database exists.)* The Studio uses Studio-specific names wherever a live name exists ([Content Studio design](CONTENT_STUDIO_DESIGN.md) §3.2), so no Studio process can pick up a live value and no live process a Studio one.
 
 | Variable | Behavior | Safety |
 |---|---|---|

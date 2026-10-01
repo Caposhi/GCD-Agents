@@ -86,7 +86,7 @@ Writes come only from the explicit operator command `npm run evidence:sync`, whi
 
 # Content Studio schema — the separate `gcd_studio` database
 
-**`IMPLEMENTED` by Content Studio S2, not merged, not deployed; no Studio database exists.** Nothing in this section describes the live `gcd-social-db` above, and nothing above applies here. The design is [Content Studio design](CONTENT_STUDIO_DESIGN.md) §3.7 and §4; the owner's defaults are §11.1a. Proven on disposable PostgreSQL 16 and 18 by `npm run test:studio-postgres` (`src/studio/db/migrate.postgres.selftest.ts`, checks `SP*`), and offline by `npm run test:studio-db` (`src/studio/db/migrate.offline.selftest.ts`, checks `SM*`); see [Testing](TESTING.md).
+**`IMPLEMENTED` by Content Studio S2, not merged, not deployed; no Studio database exists.** *(2026-10-01: `MERGED` through PR #105 at `fd88a2c…`; not deployed, and still no Studio database.)* Nothing in this section describes the live `gcd-social-db` above, and nothing above applies here. The design is [Content Studio design](CONTENT_STUDIO_DESIGN.md) §3.7 and §4; the owner's defaults are §11.1a. Proven on disposable PostgreSQL 16 and 18 by `npm run test:studio-postgres` (`src/studio/db/migrate.postgres.selftest.ts`, checks `SP*`), and offline by `npm run test:studio-db` (`src/studio/db/migrate.offline.selftest.ts`, checks `SM*`); see [Testing](TESTING.md).
 
 ## How it is migrated — five separations from the live runner
 
