@@ -27,7 +27,7 @@ New AI agents should read [Start here](docs/START_HERE.md), then the concise [AI
 | [Environment](docs/ENVIRONMENT.md) | Application and GitHub control-plane variable contracts |
 | [Credential setup](docs/credentials-setup.md) | Provider and deployment setup without secret values |
 | [Production-wiring design](docs/PRODUCTION_WIRING_DESIGN.md) | Accepted, `UNIMPLEMENTED` design for wiring the six stages into the live services (P1–P8, M1–M7) |
-| [Content Studio design](docs/CONTENT_STUDIO_DESIGN.md) | `PLANNED`, review-only web interface for running and viewing content-pipeline runs; design `MERGED` (PR #102). Its first PR, S1 (the pipeline library), is `MERGED` through PR #103 (not deployed); S2 (the Studio schema and migration runner) is `IMPLEMENTED`, not merged; no Studio service or database is built |
+| [Content Studio design](docs/CONTENT_STUDIO_DESIGN.md) | `PLANNED`, review-only web interface for running and viewing content-pipeline runs; design `MERGED` (PR #102). Its first PR, S1 (the pipeline library), is `MERGED` through PR #103 (not deployed); S2 (the Studio schema and migration runner) is `MERGED` through PR #105 (not deployed); no Studio service or database is built |
 | [Phase 0B.0 rollout runbook](docs/ROLLOUT_PHASE_0B0.md) | Migration-bearing release of `44d7336…`: preflight, sequence, stop conditions, rollback matrix, and the completed rollout record |
 
 `docs/archive/` is historical only. Current source, this README, and active runbooks take precedence.
@@ -45,12 +45,12 @@ New AI agents should read [Start here](docs/START_HERE.md), then the concise [AI
 - A normal scheduled execution of the **then-current Phase 0D SHA** (`10098de…`) **was** observed on 2026-08-25, closing that observation historically; it does not describe the `44d7336…` release, which deployed on 2026-08-28. Do not trigger production cron for evidence.
 - Production PostgreSQL external access remains `0.0.0.0/0` — **independently reverified 2026-08-28** by a separate final-inspection session. Restriction is a separate, high-priority, separately authorized security change.
 - **Two open tracks, neither blocking the other.** The Phase 0B.0 migration-bearing rollout is complete, so enabling `RENDER_DEPLOY_AUTOMATION_ENABLED` and proving the controller path are now eligible — each under its own authorization and its own immediate re-verification, and the gate remains `false` until then. Separately, Phase 0B continues with the six reasoning stages. [Roadmap](docs/ROADMAP.md) holds the ordered cursor.
-- **Planned, not built: the Content Studio.** On 2026-09-29 the owner decided to build a separate, review-only web interface for the content pipeline. It would have its own Render web service, background worker and PostgreSQL database, declared in a separate `render.studio.yaml`. `render.yaml` would not be modified at all. A cron job is designed but not added at launch, and Google sign-in would be restricted to `@germancardepot.com`. Its design is [CONTENT_STUDIO_DESIGN.md](docs/CONTENT_STUDIO_DESIGN.md), and it was **approved by the owner on 2026-09-29** (design §11.1a) and `MERGED` through PR #102. It is still `PLANNED`. **Its first PR, S1, is `MERGED` through PR #103 at `c1c19f4…` (2026-09-30), not deployed or enabled:** the local CLI's pipeline core moved into the library `src/harness/contentRun/**`, with checks that no live service can reach it. **No Studio service exists:** no `src/studio/**` code, no Render service, no database, no OAuth client, no secret. *(2026-09-30: S2 — the Studio's own schema, `studio/migrations/**`, and its separate runner `src/studio/db/**` (`npm run studio:migrate`, reading only `STUDIO_DATABASE_URL`), with a sha256 ledger, identity checks and a tripwire proven against the unchanged live runner — is `IMPLEMENTED`, not merged; still no Render service, database, OAuth client or secret. See [Data model](docs/DATA_MODEL.md#content-studio-schema--the-separate-gcd_studio-database).)*
+- **Planned, not built: the Content Studio.** On 2026-09-29 the owner decided to build a separate, review-only web interface for the content pipeline. It would have its own Render web service, background worker and PostgreSQL database, declared in a separate `render.studio.yaml`. `render.yaml` would not be modified at all. A cron job is designed but not added at launch, and Google sign-in would be restricted to `@germancardepot.com`. Its design is [CONTENT_STUDIO_DESIGN.md](docs/CONTENT_STUDIO_DESIGN.md), and it was **approved by the owner on 2026-09-29** (design §11.1a) and `MERGED` through PR #102. It is still `PLANNED`. **Its first PR, S1, is `MERGED` through PR #103 at `c1c19f4…` (2026-09-30), not deployed or enabled:** the local CLI's pipeline core moved into the library `src/harness/contentRun/**`, with checks that no live service can reach it. **No Studio service exists:** no `src/studio/**` code, no Render service, no database, no OAuth client, no secret. *(2026-09-30: S2 — the Studio's own schema, `studio/migrations/**`, and its separate runner `src/studio/db/**` (`npm run studio:migrate`, reading only `STUDIO_DATABASE_URL`), with a sha256 ledger, identity checks and a tripwire proven against the unchanged live runner — is `IMPLEMENTED`, not merged; still no Render service, database, OAuth client or secret. See [Data model](docs/DATA_MODEL.md#content-studio-schema--the-separate-gcd_studio-database).)* *(2026-10-01: S2 is `MERGED` through PR #105 at `fd88a2c…`, not deployed or enabled; still no Render service, database, OAuth client or secret.)*
   - It could never publish, and it would hold no credential for, and never connect to, `gcd-social-db`.
   - It implements none of the production-wiring design's P1–P8 and none of M2–M7.
   - It changes neither the live services nor the Phase-A gate. The Blueprint check and the stop condition on any `gcd-social-*` resource stay (design §3.6).
   - Posting stays a manual copy-paste by the owner.
-  - The next repository change is Studio S2 (Studio schema and migrations), once the mutation-harness speed-up (`IMPLEMENTED`, not merged; CI tooling) merges; it still needs its own authorization. See [Roadmap](docs/ROADMAP.md). *(2026-09-30: the speed-up is `MERGED` through PR #104 at `0bb3f0b…`, and S2 is `IMPLEMENTED`; the next is **S3 (worker and queue)**, once S2 merges, under its own authorization.)*
+  - The next repository change is Studio S2 (Studio schema and migrations), once the mutation-harness speed-up (`IMPLEMENTED`, not merged; CI tooling) merges; it still needs its own authorization. See [Roadmap](docs/ROADMAP.md). *(2026-09-30: the speed-up is `MERGED` through PR #104 at `0bb3f0b…`, and S2 is `IMPLEMENTED`; the next is **S3 (worker and queue)**, once S2 merges, under its own authorization.)* *(2026-10-01: S2 is `MERGED`; S3 is next, once the mutation-harness shards change (`IMPLEMENTED`, not merged; CI tooling) merges, under its own authorization.)*
 
 Service IDs and exact control-plane configuration are recorded in [Status](docs/STATUS.md) and [Deployment control](docs/DEPLOYMENT.md). Do not infer mutable production facts from `render.yaml` alone.
 
@@ -342,7 +342,14 @@ the **mutated** sources of four compiled mutations per run, each from a differen
 chosen from a seed (`GITHUB_SHA`, or a fixed constant locally) so successive commits rotate, with
 a clean `tsc`, and requires that `dist/` to be byte-identical to the incremental one, with an
 injected-fault proof (`M-inc-sample-fault`). *(Its first sample of 31 took the CI mutation step to
-32m15s, over the 30-minute bar; owner decision of 2026-10-01.)*
+32m15s, over the 30-minute bar; owner decision of 2026-10-01.)* *(2026-10-01: S2 is `MERGED` through
+PR #105; its CI mutation step took 18m09s on the PR and 30m13s on `main`, for the same code.)*
+*(The mutation-harness shards change, `IMPLEMENTED`, not merged:)* `--shard k/n` runs the mutations
+whose zero-based index modulo `n` is `k`. CI runs three shards inside the existing jobs: shard 0 in
+the quality job, and shards 1 and 2 as the last step of the PostgreSQL 16 and 18 jobs. Every per-run
+proof runs in every shard, `M-shard` checks each shard's ids, and `scripts/ci/check-mutation-shards.rb`
+refuses a `ci.yml` that does not run each shard exactly once. No CI job was added, removed or
+renamed.
 
 This is repository-content authority only. It cannot prevent a reviewer-approved coordinated
 malicious change, prove deployment, or establish production database state. Neither SQL artifact
@@ -376,7 +383,7 @@ npm ci
 npm run typecheck
 npm run build
 npm run test:offline
-npm run test:payload-mutation
+npm run test:payload-mutation   # or one shard: npm run test:payload-mutation -- --shard 1/3
 npm run dryrun
 npm run test:deployment-controller
 npm run check:markdown-links
@@ -384,6 +391,7 @@ npm run check:env-coverage
 npm run scan:sensitive
 npm audit --omit=dev
 git diff --check
+npm run check:mutation-shards   # the CI shard guard; needs Ruby
 ```
 
 PostgreSQL and bound HTTP suites are opt-in and refuse non-loopback/default targets. Use only uniquely disposable local databases as described in [Testing](docs/TESTING.md). Never run `dryrun:live`, diagnostics, migrations, scheduler/worker, approval decisions, model/image calls, or provider publishing against an unidentified environment or without explicit authority.

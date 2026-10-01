@@ -325,7 +325,19 @@
  * strand the disposable directories, but cannot dirty the authoritative
  * checkout.
  *
- * Run: npm run test:payload-mutation
+ * SHARDS. `--shard k/n` runs exactly the mutations whose zero-based index
+ * modulo n is k (see `parseShard`), so shards 0 to n-1 are disjoint and together
+ * run every mutation. CI runs n = 3: shard 0 in the Node 22 quality job, shards 1
+ * and 2 in the PostgreSQL 16 and 18 jobs, and the workflow-validation job's
+ * `scripts/ci/check-mutation-shards.rb` refuses a `ci.yml` that does not run each
+ * shard exactly once with the same n, or that runs the harness without
+ * `--shard`. Every per-run proof runs in every shard. `M-inc-sample` keeps its
+ * global seeded sample and compares only the ids the shard owns. `M-shard`
+ * prints k, n, the mutation count and the ids the shard ran, and checks them
+ * against the closed-form count of indices congruent to k. With no `--shard`
+ * the run is shard 0/1, every mutation.
+ *
+ * Run: npm run test:payload-mutation [-- --shard k/n]
  */
 
 import { createHash } from "node:crypto";
@@ -4861,6 +4873,41 @@ const INC_SAMPLE = new Map();
 }
 const INC_SAMPLE_IDS = [...INC_SAMPLE.keys()].sort((a, b) => a - b).map((index) => `M${index + 1}`);
 
+/**
+ * `--shard k/n`: run exactly the mutations whose zero-based index modulo `n` is
+ * `k`. The selection depends on the index alone, so shards `0` to `n - 1` are
+ * disjoint and together run every mutation; CI runs three, one in each of three
+ * existing jobs, and `scripts/ci/check-mutation-shards.rb` checks that
+ * `.github/workflows/ci.yml` runs each exactly once with the same `n`. Without
+ * `--shard` the run is shard 0/1: every mutation, as before. Every per-run proof
+ * (`M0`, `M-isolation`, `M-kill`, `M-capture`, the `M-inc` checks, `M-end`,
+ * `M-copies`, `M-authority`, `M-order`) runs in every shard; `M-inc-sample` keeps
+ * its global sample and compares the sampled ids this shard owns; `M-shard`
+ * prints and checks the shard's own ids. Anything else spelled `--shard…`, a
+ * second `--shard`, or a malformed or out-of-range value is refused before any
+ * work starts.
+ */
+const parseShard = (args) => {
+  const flags = args.flatMap((arg, at) => (arg.startsWith("--shard") ? [at] : []));
+  if (flags.length === 0) return { k: 0, n: 1, sharded: false };
+  if (flags.length > 1) return { error: "--shard may be given once" };
+  if (args[flags[0]] !== "--shard") return { error: `unknown option ${args[flags[0]]}; use --shard k/n` };
+  const value = args[flags[0] + 1] ?? "";
+  const match = /^(0|[1-9][0-9]*)\/([1-9][0-9]*)$/.exec(value);
+  if (!match) return { error: `--shard needs k/n with whole numbers, got "${value}"` };
+  const k = Number(match[1]);
+  const n = Number(match[2]);
+  if (k >= n) return { error: `--shard ${value}: k must be less than n` };
+  if (n > MUTATIONS.length) return { error: `--shard ${value}: n is more than the ${MUTATIONS.length} mutations` };
+  return { k, n, sharded: true };
+};
+const SHARD = parseShard(process.argv.slice(2));
+/** This run's mutation indices, ascending: every index i with i % n === k. */
+const SHARD_INDICES = SHARD.error ? [] : MUTATIONS.flatMap((_, index) => (index % SHARD.n === SHARD.k ? [index] : []));
+const SHARD_LABEL = SHARD.error ? "" : `${SHARD.k}/${SHARD.n}`;
+/** The sampled mutations this shard owns, ascending. */
+const SHARD_SAMPLE = SHARD_INDICES.filter((index) => INC_SAMPLE.has(index));
+
 const gitStatus = () => execFileSync("git", ["status", "--porcelain=v1", "--untracked-files=all"], {
   cwd: AUTHORITATIVE_REPO_ROOT,
   encoding: "utf8",
@@ -4929,10 +4976,10 @@ const restoreRaw = (path, original) => {
  *
  * The worker count is the runner's available parallelism, capped at
  * MAX_WORKERS (each worker runs a compiler and a suite, so memory, not only CPU,
- * bounds it), and never more than the number of mutations.
+ * bounds it), and never more than the number of mutations this shard runs.
  */
 const MAX_WORKERS = 4;
-const WORKER_COUNT = Math.max(1, Math.min(MAX_WORKERS, availableParallelism(), MUTATIONS.length));
+const WORKER_COUNT = Math.max(1, Math.min(MAX_WORKERS, availableParallelism(), SHARD_INDICES.length));
 
 // Each build and suite runs as the leader of its own process group, so a
 // signal can stop it together with everything it started (the suite spawns the
@@ -5450,15 +5497,24 @@ async function main() {
   const startedAt = Date.now();
   const profileAt = process.argv.indexOf("--profile");
   const profilePath = profileAt >= 0 ? process.argv[profileAt + 1] : undefined;
+  if (SHARD.error) {
+    console.error(`payload-contract-mutation: ${SHARD.error}`);
+    process.exit(2);
+  }
   console.log("Payload-contract mutation tests\n");
   const coordinatedCount = MUTATIONS.filter((mutation) => mutation.mustPass).length;
   const prohibitedCount = MUTATIONS.length - coordinatedCount;
   console.log(`Source inventory: ${MUTATIONS.length} mutations (${prohibitedCount} prohibited, `
     + `${coordinatedCount} coordinated-authority-update)`);
+  if (SHARD.sharded) {
+    console.log(`Shard: ${SHARD_LABEL} — the ${SHARD_INDICES.length} of ${MUTATIONS.length} mutations whose `
+      + `zero-based index modulo ${SHARD.n} is ${SHARD.k}`);
+  }
   console.log(`Workers: ${WORKER_COUNT} (available parallelism ${availableParallelism()}, `
     + `maximum ${MAX_WORKERS}), each in its own disposable no-Git copy`);
   console.log(`M-inc-sample seed: ${INC_SAMPLE_SEED} (${INC_SAMPLE_SEED_SOURCE}); sampled: ${INC_SAMPLE_IDS.join(", ")} `
-    + `(${[...INC_SAMPLE].sort(([a], [b]) => a - b).map(([, group]) => group).join(", ")})\n`);
+    + `(${[...INC_SAMPLE].sort(([a], [b]) => a - b).map(([, group]) => group).join(", ")})`
+    + `${SHARD.sharded ? `; this shard's share: ${SHARD_SAMPLE.map((index) => `M${index + 1}`).join(", ") || "none"}` : ""}\n`);
 
   const authoritativeBefore = snapshotAuthoritative();
   const workers = [];
@@ -5517,38 +5573,68 @@ async function main() {
     process.exit(1);
   }
 
-  const outcomes = new Array(MUTATIONS.length);
-  let nextIndex = 0;
+  // Workers take the shard's mutations in index order from one shared queue;
+  // `outcomes` and `ran` are by position in SHARD_INDICES.
+  const outcomes = new Array(SHARD_INDICES.length);
+  const ran = [];
+  const printed = [];
+  let nextPosition = 0;
   let nextToPrint = 0;
   const printInOrder = () => {
     while (nextToPrint < outcomes.length && outcomes[nextToPrint] !== undefined) {
       for (const { name, ok, detail } of outcomes[nextToPrint]) check(name, ok, detail);
+      printed.push(SHARD_INDICES[nextToPrint]);
       nextToPrint += 1;
     }
   };
   const runWorker = async (worker) => {
-    while (nextIndex < MUTATIONS.length) {
-      const index = nextIndex;
-      nextIndex += 1;
-      outcomes[index] = await runMutation(worker, MUTATIONS[index], index);
+    while (nextPosition < SHARD_INDICES.length) {
+      const position = nextPosition;
+      nextPosition += 1;
+      const index = SHARD_INDICES[position];
+      ran.push(index);
+      outcomes[position] = await runMutation(worker, MUTATIONS[index], index);
       printInOrder();
     }
   };
   await Promise.all(workers.map(runWorker));
   printInOrder();
-  check("M-order. every mutation ran exactly once and its results were printed in id order",
-    nextToPrint === MUTATIONS.length && outcomes.every((outcome) => Array.isArray(outcome)));
-  const compiledCount = MUTATIONS.filter((mutation) => (mutation.file.startsWith("src/")
-    && !mutation.file.endsWith(".json")) || mutation.coordinatedAuthority).length;
+  check(`M-order. every mutation ${SHARD.sharded ? `in shard ${SHARD_LABEL} ` : ""}ran exactly once and its results `
+    + "were printed in id order",
+  nextToPrint === SHARD_INDICES.length && outcomes.every((outcome) => Array.isArray(outcome))
+    && printed.length === SHARD_INDICES.length && printed.every((index, at) => index === SHARD_INDICES[at]
+      && (at === 0 || printed[at - 1] < index)));
+
+  // M-shard: the ids this run actually took from the queue, checked against
+  // the closed-form count of indices congruent to k modulo n, not against the
+  // filter that chose them.
+  const ranSorted = [...ran].sort((a, b) => a - b);
+  const expectedCount = SHARD.k < MUTATIONS.length ? Math.floor((MUTATIONS.length - 1 - SHARD.k) / SHARD.n) + 1 : 0;
+  console.log(`\nM-shard: k=${SHARD.k}, n=${SHARD.n}${SHARD.sharded ? "" : " (no --shard: every mutation)"}; `
+    + `${MUTATIONS.length} mutations in all; this shard ran ${ran.length}: `
+    + `${ranSorted.map((index) => `M${index + 1}`).join(", ")}\n`);
+  check(`M-shard. shard ${SHARD_LABEL} ran exactly the ${expectedCount} of ${MUTATIONS.length} mutations whose `
+    + `zero-based index is ${SHARD.k} modulo ${SHARD.n}, each once, with 0 <= k < n <= ${MUTATIONS.length}`,
+  Number.isInteger(SHARD.k) && Number.isInteger(SHARD.n) && SHARD.k >= 0 && SHARD.k < SHARD.n
+    && SHARD.n <= MUTATIONS.length && expectedCount > 0
+    && ran.length === expectedCount && new Set(ran).size === ran.length
+    && ranSorted.every((index, at) => index === SHARD.k + at * SHARD.n),
+  `ran ${ran.length}, expected ${expectedCount}`);
+
+  const compiledCount = SHARD_INDICES.filter((index) => isCompiledMutation(MUTATIONS[index])).length;
   check(`M-inc-restore. after every compiled mutation (${restoreRebuilds} of ${compiledCount}), the incremental `
     + "rebuild of its restored sources is byte-identical to the clean full build",
   restoreRebuilds === compiledCount && restoreProblems.length === 0, summarize(restoreProblems));
-  check(`M-inc-sample. for ${sampleComparisons} of ${compiledCount} compiled mutations (${INC_SAMPLE_IDS.join(", ")}, `
+  const shardSampleIds = SHARD_SAMPLE.map((index) => `M${index + 1}`);
+  check(`M-inc-sample. for ${sampleComparisons} of ${compiledCount} compiled mutations (`
+    + (SHARD.sharded ? `${shardSampleIds.join(", ") || "none"}: this shard's share of the global sample `
+      + `${INC_SAMPLE_IDS.join(", ")}, ` : `${INC_SAMPLE_IDS.join(", ")}, `)
     + `one from each of ${new Set(INC_SAMPLE.values()).size} groups, seed ${INC_SAMPLE_SEED_SOURCE}), a clean tsc `
     + "build of the MUTATED sources is byte-identical to the incremental dist/ the suite ran against",
-  sampleComparisons === INC_SAMPLE_SIZE && INC_SAMPLE.size === INC_SAMPLE_SIZE
+  sampleComparisons === SHARD_SAMPLE.length && INC_SAMPLE.size === INC_SAMPLE_SIZE
     && new Set(INC_SAMPLE.values()).size === INC_SAMPLE_SIZE
     && [...INC_SAMPLE.keys()].every((index) => isCompiledMutation(MUTATIONS[index]))
+    && SHARD_SAMPLE.every((index) => index % SHARD.n === SHARD.k)
     && sampleProblems.length === 0,
   summarize(sampleProblems));
 
@@ -5658,9 +5744,11 @@ async function main() {
   const duration = `${Math.floor(seconds / 60)}m${String(seconds % 60).padStart(2, "0")}s`;
   console.log(`\nTime, summed over workers: ${[...timing].map(([kind, { count, ms }]) =>
     `${count} ${kind}${count === 1 ? "" : "s"} ${Math.round(ms / 1000)}s`).join(", ")}`);
+  const ranLabel = SHARD.sharded ? `shard ${SHARD_LABEL}: ${SHARD_INDICES.length} of ${MUTATIONS.length} mutations`
+    : `${MUTATIONS.length} mutations`;
   console.log(failures === 0
-    ? `\nALL PASS — ${MUTATIONS.length} mutations, ${WORKER_COUNT} workers, ${duration}`
-    : `\n${failures} FAILURE(S) — ${MUTATIONS.length} mutations, ${WORKER_COUNT} workers, ${duration}`);
+    ? `\nALL PASS — ${ranLabel}, ${WORKER_COUNT} workers, ${duration}`
+    : `\n${failures} FAILURE(S) — ${ranLabel}, ${WORKER_COUNT} workers, ${duration}`);
   process.exit(failures === 0 ? 0 : 1);
 }
 

@@ -34,6 +34,7 @@
     "test:deployment-controller": "node scripts/render/deployment-controller.selftest.mjs",
     "check:markdown-links": "node scripts/ci/check-markdown-links.mjs",
     "check:env-coverage": "node scripts/ci/check-environment-coverage.mjs",
+    "check:mutation-shards": "ruby scripts/ci/check-mutation-shards.rb .github/workflows/ci.yml",
     "scan:sensitive": "node scripts/ci/scan-sensitive-content.mjs",
     "dryrun": "node dist/harness/dryrun.cli.js",
     "dryrun:live": "node dist/harness/dryrun.cli.js --live",
