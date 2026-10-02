@@ -35,7 +35,9 @@
  *    live-database module, or any package but `pg` and `jose`; and the web's test
  *    support is unreachable from its entry point (`STUDIO_WEB_*`). `jose` is
  *    imported only under `src/studio/web/**` (`joseImportViolations`), and no
- *    live entry point reaches it.
+ *    live entry point reaches it. (S5: beyond its own tree and the S2 runner,
+ *    the web reaches exactly one module, the import-free leaf
+ *    `STUDIO_WEB_SHARED_LEAF`.)
  *
  * This module is a checker. Nothing live imports it, and it imports nothing
  * from the pipeline.
@@ -132,6 +134,15 @@ export const STUDIO_WEB_FORBIDDEN_MODULES = [
   ...FORBIDDEN_LIVE_MODULES, "dist/harness/agents/revisionInput.js", "dist/harness/evidence/approvedFacts.js",
   "dist/harness/sdk.js", ...STUDIO_FORBIDDEN_MODULES,
 ] as const;
+/**
+ * Content Studio S5: the one module outside the web tree and the S2 runner that
+ * the web may reach — the leaf that assembles a package's provider-visible text
+ * (`providerTextWithContact`), so the web's Copy text is the pipeline's own,
+ * never a second copy. It must import nothing at run time (CS10a); its source
+ * is `src/harness/agents/providerText.ts`.
+ */
+export const STUDIO_WEB_SHARED_LEAF = "dist/harness/agents/providerText.js";
+
 /** The only packages a web module may import (Node built-ins aside): no provider SDK. */
 export const STUDIO_WEB_PACKAGES = ["pg", "jose"] as const;
 /** The OpenID library: only the web service may import it. */

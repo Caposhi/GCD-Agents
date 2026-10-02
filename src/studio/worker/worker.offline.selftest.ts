@@ -20,7 +20,10 @@ import { fileURLToPath } from "node:url";
 import * as lib from "../../harness/contentRun/index.js";
 import type { CostCeilingLine, ReviewOnlyRequestUnit } from "../../harness/contentRun/index.js";
 import { STUDIO_MIGRATION_LOCK_NAMESPACE } from "../db/runner.js";
-import { decideBeforeWork, failureClassOf, workerRuntime, WorkerStop, type BeforeWork } from "./execute.js";
+import { closeRun, decideBeforeWork, failureClassOf, workerRuntime, WorkerStop, type BeforeWork } from "./execute.js";
+import { CRITIC_ARTIFACT, deriveFindings } from "./findings.js";
+import { providerTextWithContact } from "../../harness/agents/providerText.js";
+import { readCaptions, readScript, readShotList } from "../web/runs.js";
 import { claimNextJob, recoverInterruptedRuns, sweepQueuedJobs, terminalize } from "./jobs.js";
 import { ceilingMicros, measuredMicros, microsToNumeric, numericToMicros, parseCapMicros } from "./money.js";
 import { DbRunSink, REWRITTEN_ARTIFACTS } from "./runSink.js";
@@ -575,6 +578,124 @@ async function queueStatementChecks(): Promise<void> {
     `${lostResult} ${runUpdates(rec)} ${jobUpdates(rec)} ${runUpdates(sweep)} ${jobUpdates(sweep)}`);
 }
 
+
+/** A fake full run's stored files, through the library, as the worker's sink would store them. */
+async function fakeRunFiles(): Promise<Map<string, Buffer>> {
+  const sink = memorySink();
+  await lib.runFullPipeline(lib.loadRuntime(), {
+    runner: "fake", facts: repoFacts(REPO_ROOT), goal: "Synthetic findings goal", reviewedAt: new Date().toISOString(),
+    reviewedAtExplicit: false, platforms: ["instagram", "facebook", "google_business_profile"],
+  }, memoryIo(sink));
+  return sink.files;
+}
+
+async function findingsChecks(): Promise<void> {
+  const rt = lib.loadRuntime();
+  const files = await fakeRunFiles();
+  const critic = files.get(CRITIC_ARTIFACT)!;
+  const source = (bytes: Buffer | undefined) => ({
+    label: "memory", displayLabel: "memory", name: "memory", exists: async () => true,
+    readArtifact: async (name: string) => (name === CRITIC_ARTIFACT && bytes ? new Uint8Array(bytes) : undefined),
+  });
+  const panel = JSON.parse(critic.toString("utf8"));
+  const derived = await deriveFindings(rt, source(critic));
+  const planned = rt.revision.planRevision(panel.output).ownerItems.map((item) => item.id);
+  check("SW16. the findings are derived from a real fake run's stored 06-final-critic.json by the library's own accessors: "
+    + "one row per panel finding in panel order, its lens, severity, category, owner and issue; owner_item exactly where "
+    + "planRevision holds a finding back (a human_review owner or a human_decision category); and the counts are the rows'",
+    derived.ok && derived.findings.length === panel.output.provisional.findings.length && derived.findings.length === 3
+      && derived.findings.every((f, i) => {
+        const raw = panel.output.provisional.findings[i];
+        return f.idx === i && f.lens === raw.lens && f.severity === raw.severity && f.category === raw.category
+          && f.owner === raw.owner && f.issue === raw.issue
+          && f.ownerItem === (raw.owner === "human_review" || raw.category === "human_decision");
+      })
+      && derived.blocking === 1 && derived.advisory === 2 && derived.ownerItems === 1
+      && JSON.stringify(derived.findings.filter((f) => f.ownerItem).map((f) => rt.payloadContract.revisionFindingId(f.idx)))
+        === JSON.stringify(planned),
+    JSON.stringify(derived));
+
+  // closeRun over a scripted client: the statements, in order, inside the one transaction.
+  const runRow = [/SELECT runner, kind, state, reserved_usd/, () => [{ runner: "fake", kind: "full", state: "running", reserved: null }]] as
+    [RegExp, () => Array<Record<string, unknown>>];
+  const charged = [/SUM\(charged_usd\)/, () => [{ charged: "0" }]] as [RegExp, () => Array<Record<string, unknown>>];
+  const close = async (bytes: Buffer | undefined, timedOut = false) => {
+    const x = scripted([[/SELECT content FROM studio_run_artifacts/, () => (bytes ? [{ content: bytes }] : [])], runRow, charged]);
+    const logged: Array<[string, Record<string, unknown>]> = [];
+    const sink = new DbRunSink(x.session, "r1", false);
+    await sink.writeArtifact("field-measurements.json", "{}");
+    const before = x.statements.length;
+    const ended = await closeRun(x.client, {
+      sink, runId: "r1", jobId: "j1", end: { runState: "succeeded", jobState: "finished", verdict: "needs_revision" }, timedOut, rt,
+      log: (event, fields = {}) => { logged.push([event, fields]); },
+    });
+    const statements = x.statements.slice(before);
+    const at = (pattern: RegExp) => statements.findIndex((s) => pattern.test(s.text));
+    return { ended, statements, at, logged, inserts: statements.filter((s) => /INSERT INTO studio_findings/.test(s.text)),
+      counts: statements.find((s) => /SET blocking_findings/.test(s.text))?.values,
+      runState: statements.find((s) => /UPDATE studio_runs SET state/.test(s.text))?.values[1] };
+  };
+  const ok = await close(critic);
+  const order = [/INSERT INTO studio_run_artifacts/, /^SAVEPOINT studio_findings_rebuild/, /SELECT content FROM studio_run_artifacts/,
+    /DELETE FROM studio_findings WHERE run_id/, /INSERT INTO studio_findings/, /SET blocking_findings/, /RELEASE SAVEPOINT/,
+    /SELECT runner, kind, state, reserved_usd/, /UPDATE studio_runs SET state/].map(ok.at);
+  const timed = await close(critic, true);
+  check("SW14. at run end the worker rebuilds the findings in the SAME transaction as the artifact flush and before the "
+    + "run is closed: flush, read the run's own stored critic artifact, delete and insert the rows, write the counts, "
+    + "then terminalize; a timed-out run flushes nothing and derives nothing",
+    order.every((i) => i >= 0) && order.every((i, n) => n === 0 || i > order[n - 1]!)
+      && ok.inserts.length === 3 && JSON.stringify(ok.counts) === JSON.stringify(["r1", 1, 2, 1])
+      && ok.inserts.map((s) => `${s.values[1]}:${s.values[7]}`).join() === "0:false,1:false,2:true"
+      && ok.ended.runState === "succeeded" && ok.runState === "succeeded"
+      && ok.logged.some(([e, f]) => e === "findings.derived" && f.findings === 3)
+      && timed.at(/studio_findings/) === -1 && timed.at(/INSERT INTO studio_run_artifacts/) === -1 && timed.runState === "succeeded",
+    `${order.join()} ${JSON.stringify(ok.counts)}`);
+
+  const edited = (edit: (p: any) => void) => {
+    const copy = JSON.parse(critic.toString("utf8"));
+    edit(copy);
+    return Buffer.from(JSON.stringify(copy));
+  };
+  const malformed: Array<[string, Buffer]> = [
+    ["not JSON", Buffer.from("{\"output\": ")],
+    ["no output", Buffer.from("{\"metadata\":{}}")],
+    ["findings not an array", edited((p) => { p.output.provisional.findings = "none"; })],
+    ["a lens count that does not add up", edited((p) => { p.output.provisional.lenses[0].findingCount = 2; })],
+    ["a category outside its lens", edited((p) => { p.output.provisional.findings[0].category = "timing"; })],
+    ["an unknown owner", edited((p) => { p.output.provisional.findings[0].owner = "the-owner"; })],
+    ["an unknown severity", edited((p) => { p.output.provisional.findings[1].severity = "critical"; })],
+    ["an issue over the bound", edited((p) => { p.output.provisional.findings[0].issue = "x".repeat(601); })],
+    ["a finding filed under another lens", edited((p) => { p.output.provisional.findings[0].lens = "voice-and-craft"; })],
+  ];
+  const results = [];
+  for (const [label, bytes] of malformed) results.push([label, await close(bytes)] as const);
+  const absent = await close(undefined);
+  check("SW15. a malformed critic artifact — not JSON, no output, the wrong types, lens counts that do not add up, a "
+    + "category outside its lens, an unknown owner or severity, an over-long issue — writes NO finding row and no count, "
+    + "never fabricates one, is logged as a failure class only (never the artifact's text), and leaves the run's terminal "
+    + "state exactly as it would have been; an absent artifact is no finding and no log line",
+    results.every(([, r]) => r.inserts.length === 0 && r.counts === undefined && r.at(/DELETE FROM studio_findings/) === -1
+      && r.runState === "succeeded" && r.ended.runState === "succeeded"
+      && r.logged.length === 1 && r.logged[0]![0] === "findings.not_derived"
+      && JSON.stringify(Object.keys(r.logged[0]![1]).sort()) === JSON.stringify(["failure_class", "run"])
+      && r.logged[0]![1].failure_class === "critic_artifact_malformed")
+      && absent.inserts.length === 0 && absent.counts === undefined && absent.logged.length === 0 && absent.runState === "succeeded",
+    results.map(([label, r]) => `${label}:${r.inserts.length}/${r.logged.map(([e, f]) => `${e}:${f.failure_class}`).join()}`).join("; "));
+
+  // The web's readers, on what the pipeline really writes (they live in the web tree, which may not run the library).
+  const captions = readCaptions(files.get("05-packaging-adaptation.json"), files.get("05b-contact-lines.json"));
+  const pkgs = JSON.parse(files.get("05-packaging-adaptation.json")!.toString("utf8")).output.provisional.packages;
+  const contacts = JSON.parse(files.get("05b-contact-lines.json")!.toString("utf8")).packages;
+  check("SW17. the web report's readers display a real fake run's stored artifacts: one caption card per platform, whose "
+    + "Copy text is byte for byte the library's providerTextWithContact (re-exported by contactLine.ts from the leaf "
+    + "module) for Instagram and Facebook and the caption alone for Google Business Profile; and the script and shot list",
+    captions.ok && captions.value.length === 3 && rt.contact.providerTextWithContact === providerTextWithContact
+      && captions.value.every((card, i) => card.copyText === (card.platform === "google_business_profile" ? pkgs[i].caption
+        : rt.contact.providerTextWithContact(pkgs[i].caption, pkgs[i].hashtags, contacts[i].contact)))
+      && captions.value[2]!.cta?.actionType === "BOOK" && captions.value[2]!.contactText === null
+      && readScript(files.get("03-hook-story-script.json")).ok && readShotList(files.get("04-production-direction.json")).ok);
+}
+
 async function main(): Promise<void> {
   await startupChecks();
   beforeWorkChecks();
@@ -582,6 +703,7 @@ async function main(): Promise<void> {
   spendChecks();
   await gateChecks();
   await fakeOnlyChecks();
+  await findingsChecks();
   console.log(failures === 0 ? `\n[studio-worker] ALL PASS (${total} checks)` : `\n[studio-worker] ${failures} FAILURE(S) of ${total}`);
   process.exit(failures === 0 ? 0 : 1);
 }

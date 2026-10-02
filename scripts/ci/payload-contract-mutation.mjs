@@ -355,6 +355,23 @@
  * `CS3`). They add five captured paths, the web's startup, OpenID, session,
  * store and app modules (fifty-six in all).
  *
+ * Content Studio S5's group, `M612`–`M629`, covers the read-only screens and
+ * what they rely on. Fifteen run the Studio web's offline suite: a caption, a
+ * finding's issue and a failure message no longer escaped (`SA92`, `SA94`,
+ * `SA79`); a download without its attachment disposition, its nosniff or its
+ * sandboxing CSP (`SA88`), with an unchecked filename (`SA90`), or served
+ * despite a sha256 mismatch (`SA89`); the report's route made public (`SA67`,
+ * `SA68`); a deleted run shown (`SA71`); Copy enabled on an
+ * `archived_unverified` import (`SA84`); the FAKE badge dropped (`SA74`);
+ * "Needs your decision" filtering on the owner instead of `owner_item`
+ * (`SA86`); a multi-entry `aud` accepted (`SA95`, `SA97`); and an invalid
+ * filter passed to the store (`SA73`). Two run the Studio worker's offline
+ * suite: the run end skipping the findings derivation (`SW14`) and a finding
+ * fabricated for a malformed critic artifact (`SW15`). One runs the Content
+ * Intelligence suite: the provider-text leaf gaining a runtime import (`CS10a`,
+ * `CS10`). They add five captured paths — the web's views, runs and downloads
+ * modules, the worker's findings module and the leaf — sixty-one in all.
+ *
  * It is offline and deterministic: no network, no database, no provider, no
  * credential. The mutations run in parallel on up to MAX_WORKERS workers (the
  * runner's available parallelism, capped), each worker in its OWN disposable
@@ -485,6 +502,12 @@ const STUDIO_WEB_OIDC = "src/studio/web/oidc.ts";
 const STUDIO_WEB_SESSIONS = "src/studio/web/sessions.ts";
 const STUDIO_WEB_STORE = "src/studio/web/store.ts";
 const STUDIO_WEB_APP = "src/studio/web/app.ts";
+// Content Studio S5: the read-only screens, the worker's findings derivation and the provider-text leaf.
+const STUDIO_WEB_VIEWS = "src/studio/web/views.ts";
+const STUDIO_WEB_RUNS = "src/studio/web/runs.ts";
+const STUDIO_WEB_DOWNLOADS = "src/studio/web/downloads.ts";
+const STUDIO_WORKER_FINDINGS = "src/studio/worker/findings.ts";
+const PROVIDER_TEXT_LEAF = "src/harness/agents/providerText.ts";
 const CONTENT_INTELLIGENCE_SUITE = "dist/harness/contentIntelligence.selftest.js";
 const STUDIO_DB_SUITE = "dist/studio/db/migrate.offline.selftest.js";
 const STUDIO_WORKER_SUITE = "dist/studio/worker/worker.offline.selftest.js";
@@ -5507,6 +5530,157 @@ const CONTENT_STUDIO_S4_MUTATIONS = [
   },
 ];
 
+// Content Studio S5: the read-only screens, the worker's findings derivation,
+// the provider-text leaf and the ID token's audience and authorized party.
+// Each runs the suite that owns the behaviour and fails a named check.
+const CONTENT_STUDIO_S5_MUTATIONS = [
+  {
+    name: "the report stops escaping a caption",
+    file: STUDIO_WEB_VIEWS,
+    from: "    + `<p class=\"caption prose\">${escapeHtml(card.caption)}</p>`",
+    to: "    + `<p class=\"caption prose\">${card.caption}</p>`",
+    expect: ["SA92."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "the report stops escaping a finding's issue",
+    file: STUDIO_WEB_VIEWS,
+    from: "    + `<p class=\"prose\">${escapeHtml(f.issue)}</p></li>`;\n}",
+    to: "    + `<p class=\"prose\">${f.issue}</p></li>`;\n}",
+    expect: ["SA94."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "the report stops escaping a failure message",
+    file: STUDIO_WEB_VIEWS,
+    from: "      + `<dt>Message</dt><dd class=\"prose\">${escapeHtml(run.failure_message ?? \"—\")}</dd>`",
+    to: "      + `<dt>Message</dt><dd class=\"prose\">${run.failure_message ?? \"—\"}</dd>`",
+    expect: ["SA79.", "SA94."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "a download drops Content-Disposition: attachment",
+    file: STUDIO_WEB_DOWNLOADS,
+    from: "    \"content-disposition\": attachmentDisposition(name),\n",
+    to: "",
+    expect: ["SA88."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "a download drops nosniff",
+    file: STUDIO_WEB_DOWNLOADS,
+    from: "    \"x-content-type-options\": \"nosniff\",\n",
+    to: "",
+    expect: ["SA88."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "a download drops its sandboxing CSP",
+    file: STUDIO_WEB_DOWNLOADS,
+    from: "    \"content-security-policy\": DOWNLOAD_CSP,\n",
+    to: "",
+    expect: ["SA88."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "a download's filename is not checked against the artifact-name shape",
+    file: STUDIO_WEB_DOWNLOADS,
+    from: "  if (typeof name !== \"string\" || !ARTIFACT_NAME_SHAPE.test(name)) throw new DownloadNameRefusal();",
+    to: "  if (typeof name !== \"string\") throw new DownloadNameRefusal();",
+    expect: ["SA90."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "a download is served although its bytes do not match the stored sha256",
+    file: STUDIO_WEB_DOWNLOADS,
+    from: "  return digest === stored.sha256 && stored.content.length === stored.byte_length ? stored.content : null;",
+    to: "  return (digest === stored.sha256 && stored.content.length === stored.byte_length) || Date.now() > 0 ? stored.content : null;",
+    expect: ["SA89."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "the run report's route is public",
+    file: STUDIO_WEB_APP,
+    from: "  { method: \"GET\", path: \"/runs/:id\", minRole: \"viewer\" },",
+    to: "  { method: \"GET\", path: \"/runs/:id\", minRole: \"public\" },",
+    expect: ["SA67.", "SA68."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "a deleted run is shown",
+    file: STUDIO_WEB_RUNS,
+    from: "export const runVisible = (run: RunRow | null): run is RunRow => run !== null && run.deleted_at === null;",
+    to: "export const runVisible = (run: RunRow | null): run is RunRow => run !== null;",
+    expect: ["SA71."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "Copy stays enabled on an archived_unverified import",
+    file: STUDIO_WEB_VIEWS,
+    from: "  const copyEnabled = run.import_tier !== \"archived_unverified\";",
+    to: "  const copyEnabled = run.import_tier !== \"archived_unverified\" || Date.now() > 0;",
+    expect: ["SA84."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "a fake run loses its FAKE badge",
+    file: STUDIO_WEB_VIEWS,
+    from: "const fakeBadge = (runner: string) => (runner === \"fake\" ? ' <span class=\"badge badge-fake\">FAKE</span>' : \"\");",
+    to: "const fakeBadge = (runner: string) => (runner === \"never\" ? ' <span class=\"badge badge-fake\">FAKE</span>' : \"\");",
+    expect: ["SA74."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "\"Needs your decision\" filters on the owner instead of owner_item",
+    file: STUDIO_WEB_RUNS,
+    from: "  return rows.filter((row) => row.owner_item === true).sort((a, b) => a.idx - b.idx);",
+    to: "  return rows.filter((row) => row.owner === \"human_review\").sort((a, b) => a.idx - b.idx);",
+    expect: ["SA86."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "the worker skips the findings derivation at run end",
+    file: STUDIO_WORKER_EXECUTE,
+    from: "    await rebuildFindings(client, run.rt, run.runId, run.log);\n",
+    to: "",
+    expect: ["SW14."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "the worker fabricates a finding row when the critic artifact cannot be derived",
+    file: STUDIO_WORKER_FINDINGS,
+    from: "    if (derived.failureClass !== \"critic_artifact_absent\") log(\"findings.not_derived\", { run: runId, failure_class: derived.failureClass });\n    return derived;\n  }",
+    to: "    if (derived.failureClass !== \"critic_artifact_absent\") log(\"findings.not_derived\", { run: runId, failure_class: derived.failureClass });\n"
+      + "    derived = { ok: true, blocking: 0, advisory: 1, ownerItems: 1, findings: [{ idx: 0, lens: \"voice-and-craft\", severity: \"advisory\", "
+      + "category: \"human_decision\", owner: \"human_review\", issue: \"the critic artifact could not be read\", ownerItem: true }] };\n  }",
+    expect: ["SW15."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "the provider-text leaf gains a runtime import",
+    file: PROVIDER_TEXT_LEAF,
+    from: "import type { GbpActionType } from \"../../mcp/posting-tool/index.js\";",
+    to: "import type { GbpActionType } from \"../../mcp/posting-tool/index.js\";\nimport \"./payloadContract.js\";",
+    expect: ["CS10a.", "CS10."],
+  },
+  {
+    name: "an ID token whose aud names more than one audience is accepted",
+    file: STUDIO_WEB_OIDC,
+    from: "  if (Array.isArray(payload.aud) && payload.aud.length > 1) refuse(\"audience-multiple\");",
+    to: "  if (Array.isArray(payload.aud) && payload.aud.length > 1 && Date.now() < 0) refuse(\"audience-multiple\");",
+    expect: ["SA95.", "SA97."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "an invalid state filter is passed through to the store",
+    file: STUDIO_WEB_RUNS,
+    from: "  if (state !== null && !(RUN_STATES as readonly string[]).includes(state)) return { ok: false, reason: \"unknown state\" };",
+    to: "  if (Date.now() < 0 && state !== null && !(RUN_STATES as readonly string[]).includes(state)) return { ok: false, reason: \"unknown state\" };",
+    expect: ["SA73."],
+    suite: STUDIO_WEB_SUITE,
+  },
+];
+
 // Every group, in order. MUTATIONS is their concatenation; the groups exist
 // only so `M-inc-sample` can spread its sample across them.
 const MUTATION_GROUPS = [
@@ -5519,7 +5693,7 @@ const MUTATION_GROUPS = [
   ["revision pass", REVISION_PASS_MUTATIONS], ["contact in overlay", CONTACT_IN_OVERLAY_MUTATIONS],
   ["Content Studio S1", CONTENT_STUDIO_S1_MUTATIONS], ["Content Studio S2", CONTENT_STUDIO_S2_MUTATIONS],
   ["Content Studio S3 context", CONTENT_STUDIO_S3_CONTEXT_MUTATIONS], ["Content Studio S3 worker", CONTENT_STUDIO_S3_WORKER_MUTATIONS],
-  ["Content Studio S4", CONTENT_STUDIO_S4_MUTATIONS],
+  ["Content Studio S4", CONTENT_STUDIO_S4_MUTATIONS], ["Content Studio S5", CONTENT_STUDIO_S5_MUTATIONS],
 ];
 const MUTATIONS = MUTATION_GROUPS.flatMap(([, group]) => group);
 

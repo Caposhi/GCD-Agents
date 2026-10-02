@@ -27,7 +27,7 @@ import {
   CONTENT_SECURITY_POLICY, createStudioWebApp, SECURITY_HEADERS, STUDIO_ROUTE_TABLE, type Route, type StudioWebApp, type WebLog,
 } from "./app.js";
 import {
-  CLOCK_SKEW_SECONDS, GOOGLE_OIDC, ID_TOKEN_ALGORITHMS, JWKS_TIMEOUT_MS, OIDC_SCOPE, pkceChallenge, TOKEN_EXCHANGE_TIMEOUT_MS,
+  checkAudienceParty, CLOCK_SKEW_SECONDS, GOOGLE_OIDC, ID_TOKEN_ALGORITHMS, JWKS_TIMEOUT_MS, OIDC_SCOPE, pkceChallenge, TOKEN_EXCHANGE_TIMEOUT_MS,
 } from "./oidc.js";
 import { CALLBACK_LIMIT, FAILED_SIGN_IN_LIMIT, LOGIN_LIMIT, WindowLimiter } from "./rateLimit.js";
 import {
@@ -39,7 +39,21 @@ import {
   webForbiddenVariablesPresent, type WebConfig, type WebEnvironment,
 } from "./startup.js";
 import { PgWebStore } from "./store.js";
-import { FakeIssuer, MemoryWebStore, STUDIO_DOMAIN, syntheticEmail, type TokenPlan } from "./testSupport.js";
+import {
+  FakeIssuer, MemoryWebStore, STUDIO_DOMAIN, SYNTHETIC_BOOKING_URL, SYNTHETIC_PHONE, SYNTHETIC_SHOP, syntheticEmail,
+  syntheticRunArtifacts, type TokenPlan,
+} from "./testSupport.js";
+import { providerTextWithContact, type ContactLine } from "../../harness/agents/providerText.js";
+import { attachmentDisposition, DOWNLOAD_CSP, verifiedBytes } from "./downloads.js";
+import { escapeHtml } from "./html.js";
+import {
+  MAX_DISPLAY_ARTIFACT_BYTES, needsDecision, parseRunFilters, POLL_SECONDS, readCaptions, readScript, readShotList, RUN_KINDS,
+  RUN_STATES, type FindingRow,
+} from "./runs.js";
+import { STATIC_ASSETS } from "./static.js";
+import {
+  CANNOT_DISPLAY, COPY_BANNER, FINGERPRINT_SHORT_CHARS, GOAL_PREVIEW_CHARS, GROUP_ORDERS, REQUIREMENT_UNVERIFIED,
+} from "./views.js";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const ORIGIN = "https://studio.test";
@@ -139,7 +153,10 @@ class Jar {
   }
 }
 
-interface Reply { status: number; headers: Headers; body: string; setCookies: string[]; location: string | null }
+interface Reply { status: number; headers: Headers; body: string; raw: Buffer; setCookies: string[]; location: string | null }
+
+/** Every HTML page any request in this suite received (S5: none may hold an inline script or style). */
+const htmlPages: Array<{ path: string; status: number; body: string }> = [];
 
 async function request(w: World, path: string, init: { method?: string; jar?: Jar; headers?: Record<string, string>; body?: string } = {}): Promise<Reply> {
   const headers: Record<string, string> = { ...(init.headers ?? {}) };
@@ -147,7 +164,10 @@ async function request(w: World, path: string, init: { method?: string; jar?: Ja
   const response = await fetch(`${w.base}${path}`, { method: init.method ?? "GET", headers, body: init.body, redirect: "manual" });
   const setCookies = response.headers.getSetCookie();
   init.jar?.take(setCookies);
-  return { status: response.status, headers: response.headers, body: await response.text(), setCookies, location: response.headers.get("location") };
+  const raw = Buffer.from(await response.arrayBuffer());
+  const body = raw.toString("utf8");
+  if ((response.headers.get("content-type") ?? "").startsWith("text/html")) htmlPages.push({ path, status: response.status, body });
+  return { status: response.status, headers: response.headers, body, raw, setCookies, location: response.headers.get("location") };
 }
 
 /** The browser's round trip: login, the issuer's redirect, then the callback (optionally edited). */
@@ -858,7 +878,10 @@ const undeclaredRole: Route = { method: "GET", path: "/test/undeclared-role", mi
     + "service ships is in the one table with a declared minimum role, and logout needs a session",
     undeclared.every((r) => r.status === 404) && w.store.calls.length === calls
       && STUDIO_ROUTE_TABLE.map((r) => `${r.method} ${r.path} ${r.minRole}`).join() === ["GET / public", "GET /healthz public",
-        "GET /auth/login public", "GET /auth/callback public", "POST /auth/logout viewer"].join()
+        "GET /auth/login public", "GET /auth/callback public", "POST /auth/logout viewer",
+        // Content Studio S5's read-only routes: every one a GET, every one viewer.
+        "GET /runs viewer", "GET /runs/:id viewer", "GET /runs/:id/files/:name viewer", "GET /static/studio.css viewer",
+        "GET /static/studio.js viewer"].join()
       && w.app.routes.length === STUDIO_ROUTE_TABLE.length + 2,
     undeclared.map((r) => r.status).join());
   const viewer = new Jar();
@@ -978,6 +1001,496 @@ const undeclaredRole: Route = { method: "GET", path: "/test/undeclared-role", mi
       && plan({ bootstrapOwnerEmail: "other" }) === "refuse"
       && plan({ user: { id: "1", email: "e", google_sub: null, display_name: null, role: "viewer", status: "active" } }) === "existing"
       && plan({ user: { id: "1", email: "e", google_sub: "x", display_name: null, role: "viewer", status: "active" } }) === "refuse");
+}
+
+// =====================================================================================================
+// S5. The read-only screens (design §8, §8.1, §8.2, §9.1): routes, roles, the list, the report, the Copy
+// text, findings, downloads, static files, hostile content and the phone layout's static half
+// =====================================================================================================
+
+const HOSTILE = "<script>alert(1)</script>\"'><img src=x onerror=alert(2)><a href=\"javascript:alert(3)\">x</a></textarea> &amp;";
+const decodeAttribute = (value: string) =>
+  value.replace(/&(amp|lt|gt|quot|#39|#13);/g, (_m, e: string) => ({ amp: "&", lt: "<", gt: ">", quot: '"', "#39": "'", "#13": "\r" })[e]!);
+/** Every `data-copy` value on a page, decoded as an HTML parser decodes our escapes. */
+const copyValues = (html: string) => [...html.matchAll(/data-copy-kind="(full|caption)" data-copy="([^"]*)"/g)]
+  .map((m) => ({ kind: m[1]!, text: decodeAttribute(m[2]!) }));
+const S5_ROUTES = (runId: string, name: string) =>
+  ["/runs", `/runs/${runId}`, `/runs/${runId}/files/${name}`, STATIC_ASSETS.css.path, STATIC_ASSETS.js.path];
+
+/** A world with a signed-in viewer and one finished fake run holding every displayed artifact. */
+async function s5World(options: { mark?: string; displayName?: string; run?: Parameters<MemoryWebStore["addRun"]>[1] } = {}) {
+  const w = await world();
+  const viewer = listed(w, "viewer", { display_name: options.displayName ?? "Synthetic viewer" });
+  const jar = new Jar();
+  await signIn(w, jar, { identity: identityOf(viewer) });
+  const run = w.store.addRun(w.owner, { goal: `${options.mark ?? ""}[goal]`, platforms: ["instagram", "facebook", "google_business_profile"],
+    ...options.run });
+  const files = syntheticRunArtifacts(options.mark ?? "");
+  for (const [name, text] of Object.entries(files)) w.store.addArtifact(run.id, name, text);
+  return { w, viewer, jar, run, files };
+}
+
+{
+  const { w, jar, run } = await s5World();
+  const name = "summary.md";
+  const callsBefore = w.store.calls.length;
+  const signedOut = await Promise.all(S5_ROUTES(run.id, name).map((path) => request(w, path)));
+  const signedOutCalls = w.store.calls.slice(callsBefore);
+  const asViewer = await Promise.all(S5_ROUTES(run.id, name).map((path) => request(w, path, { jar })));
+  const disabled = listed(w, "viewer");
+  const disabledJar = new Jar();
+  await signIn(w, disabledJar, { identity: identityOf(disabled) });
+  const before = (await request(w, "/runs", { jar: disabledJar })).status;
+  w.store.setStatus(disabled.id, "disabled");
+  const afterDisable = await Promise.all(S5_ROUTES(run.id, name).map((path) => request(w, path, { jar: disabledJar })));
+  check("SA67. every S5 route is a GET declared viewer in the one route table — /runs, /runs/:id, /runs/:id/files/:name, "
+    + "/static/studio.css and /static/studio.js — and none accepts a POST",
+    STUDIO_ROUTE_TABLE.slice(5).map((r) => `${r.method} ${r.path} ${r.minRole}`).join() === ["GET /runs viewer",
+      "GET /runs/:id viewer", "GET /runs/:id/files/:name viewer", "GET /static/studio.css viewer", "GET /static/studio.js viewer"].join()
+      && (await request(w, `/runs/${run.id}`, { method: "POST", jar, headers: { origin: ORIGIN } })).status === 405);
+  check("SA68. signed out, every S5 route is 401, with nothing read from the runs store",
+    signedOut.every((r) => r.status === 401)
+      && !signedOutCalls.some((c) => ["listRuns", "findRun", "readArtifact"].includes(c)),
+    `${signedOut.map((r) => r.status).join()} ${signedOutCalls.join()}`);
+  check("SA69. a signed-in viewer gets 200 on every S5 route",
+    asViewer.every((r) => r.status === 200), asViewer.map((r) => r.status).join());
+  check("SA70. a disabled user is refused on every S5 route (their session is revoked, so 401), though allowed before",
+    before === 200 && afterDisable.every((r) => r.status === 401), `${before} then ${afterDisable.map((r) => r.status).join()}`);
+  await w.close();
+}
+
+{
+  const { w, jar, run } = await s5World();
+  const deleted = w.store.addRun(w.owner, { deleted_at: new Date(w.clock.now) });
+  w.store.addArtifact(deleted.id, "summary.md", "deleted run's summary");
+  const paths = [`/runs/${deleted.id}`, `/runs/${deleted.id}/files/summary.md`, "/runs/not-a-uuid", `/runs/${run.id.toUpperCase()}`,
+    `/runs/${randomUUIDv4()}`, `/runs/${run.id}/files/no-such-file.json`, `/runs/${run.id}/files/..%2Frun-meta.json`,
+    `/runs/${run.id}/files/.hidden`, "/runs/", `/runs/${run.id}/files/`, `/runs/${run.id}/`];
+  const replies = await Promise.all(paths.map((path) => request(w, path, { jar })));
+  const list = await request(w, "/runs", { jar });
+  check("SA71. a deleted run is 404 (its report and its files) and absent from the list; so are a non-UUID id, an "
+    + "upper-case id, an unknown run, an unknown artifact, a name outside the schema's shape and an empty segment",
+    replies.every((r) => r.status === 404) && !list.body.includes(deleted.id) && list.body.includes(run.id),
+    replies.map((r) => r.status).join());
+  await w.close();
+}
+
+function randomUUIDv4(): string {
+  return crypto.randomUUID();
+}
+
+{
+  const w = await world();
+  const viewer = listed(w, "viewer");
+  const jar = new Jar();
+  await signIn(w, jar, { identity: identityOf(viewer) });
+  const ids: string[] = [];
+  for (let i = 0; i < 120; i += 1) {
+    ids.push(w.store.addRun(w.owner, { created_at: new Date(Date.UTC(2026, 8, 1) + i * 60_000), goal: `goal ${String(i).padStart(3, "0")}` }).id);
+  }
+  const pages = [await request(w, "/runs", { jar }), await request(w, "/runs?page=2", { jar }), await request(w, "/runs?page=3", { jar })];
+  const shownIds = (html: string) => [...html.matchAll(/<li class="run"><p class="run-goal"><a href="\/runs\/([0-9a-f-]{36})">/g)].map((m) => m[1]!);
+  const p1 = shownIds(pages[0]!.body);
+  const p2 = shownIds(pages[1]!.body);
+  const p3 = shownIds(pages[2]!.body);
+  const newestFirst = [...ids].reverse();
+  check("SA72. the runs list is newest first in bounded pages of at most 50: 120 runs are 50, 50 and 20, each page asks the "
+    + "store for at most 51 rows, and the pager links an older page only when one exists",
+    p1.length === 50 && p2.length === 50 && p3.length === 20
+      && JSON.stringify([...p1, ...p2, ...p3]) === JSON.stringify(newestFirst)
+      && w.store.runQueries.every((q) => q.limit <= 51) && w.store.runQueries.map((q) => q.offset).join() === "0,50,100"
+      && pages[0]!.body.includes('href="/runs?page=2"') && !pages[2]!.body.includes("page=4") && pages[2]!.body.includes("Newer"),
+    `${p1.length},${p2.length},${p3.length}`);
+  await w.close();
+}
+
+{
+  const { w, jar, viewer } = await s5World();
+  const queriesBefore = w.store.runQueries.length;
+  const bad = ["state=done", "state=queued&state=running", "kind=everything", "kind=FULL", "requester=not-a-uuid",
+    `requester=${viewer.id.toUpperCase()}`, "page=0", "page=-1", "page=1.5", "page=01", "page=99999",
+    "state=queued'%20OR%201%3D1%20--", "kind=full%3B%20DROP%20TABLE%20studio_runs", `requester=${viewer.id}'--`,
+    "state=%00", "page=1e3"];
+  const refused = await Promise.all(bad.map((q) => request(w, `/runs?${q}`, { jar })));
+  const refusedQueries = w.store.runQueries.length - queriesBefore;
+  const good = await request(w, `/runs?state=succeeded&kind=full&requester=${viewer.id}&page=1&utm=ignored`, { jar });
+  const passed = w.store.runQueries.at(-1)!;
+  check("SA73. every list filter is validated before any query: an unknown state or kind, a repeated filter, a requester "
+    + "that is not a UUID, a page that is not 1..10000, and SQL metacharacters are each 400 with no query made; valid "
+    + "filters reach the store exactly as the schema's values",
+    refused.every((r) => r.status === 400) && refusedQueries === 0 && good.status === 200
+      && JSON.stringify(passed.filters) === JSON.stringify({ state: "succeeded", kind: "full", requester: viewer.id })
+      && parseRunFilters(new URLSearchParams("state=")).ok
+      && JSON.stringify(RUN_STATES) === JSON.stringify(["queued", "running", "succeeded", "failed", "refused", "cancelled", "interrupted"])
+      && JSON.stringify(RUN_KINDS) === JSON.stringify(["full", "revise", "replay_critic", "resume_packaging", "imported"]),
+    refused.map((r) => r.status).join());
+  await w.close();
+}
+
+{
+  const { w, jar, run } = await s5World();
+  const live = w.store.addRun(w.owner, { runner: "live", goal: "live goal", reserved_usd: "21.650000", actual_usd: "1.250000" });
+  const imported = w.store.addRun(w.owner, { kind: "imported", runner: "live", import_tier: "archived_unverified", goal: "imported goal" });
+  const verified = w.store.addRun(w.owner, { kind: "imported", runner: "live", import_tier: "verified", goal: "verified import" });
+  const list = await request(w, "/runs", { jar });
+  const row = (id: string) => list.body.slice(list.body.indexOf(`/runs/${id}"`), list.body.indexOf("</li>", list.body.indexOf(`/runs/${id}"`)));
+  const fakeReport = await request(w, `/runs/${run.id}`, { jar });
+  const liveReport = await request(w, `/runs/${live.id}`, { jar });
+  const importReport = await request(w, `/runs/${imported.id}`, { jar });
+  check("SA74. a fake run carries the FAKE badge in the list and on its report; an archived_unverified import carries "
+    + "\"not revalidated\"; a live run and a verified import carry neither",
+    row(run.id).includes('class="badge badge-fake">FAKE<') && fakeReport.body.includes('class="badge badge-fake">FAKE<')
+      && !row(live.id).includes("FAKE") && !liveReport.body.includes("FAKE")
+      && row(imported.id).includes(">not revalidated<") && importReport.body.includes(">not revalidated<")
+      && !row(verified.id).includes("not revalidated") && !row(live.id).includes("not revalidated"));
+  await w.close();
+}
+
+{
+  const { w, jar, run } = await s5World();
+  const settled = await request(w, "/runs", { jar });
+  const settledReport = await request(w, `/runs/${run.id}`, { jar });
+  const queued = w.store.addRun(w.owner, { state: "queued", started_at: null, finished_at: null, verdict: null });
+  const polling = await request(w, "/runs", { jar });
+  const queuedReport = await request(w, `/runs/${queued.id}`, { jar });
+  const running = w.store.addRun(w.owner, { state: "running", finished_at: null, verdict: null });
+  const runningReport = await request(w, `/runs/${running.id}`, { jar });
+  const refresh = `<meta http-equiv="refresh" content="${POLL_SECONDS}">`;
+  check("SA75. polling: a <meta http-equiv=\"refresh\"> appears only while a queued or running run is shown — on the "
+    + "list and on that run's report — and never on a settled list or report",
+    !settled.body.includes("http-equiv") && !settledReport.body.includes("http-equiv") && polling.body.includes(refresh)
+      && queuedReport.body.includes(refresh) && runningReport.body.includes(refresh) && POLL_SECONDS === 15);
+  await w.close();
+}
+
+{
+  const { w, jar, run } = await s5World({ run: { source_run_id: null } });
+  const child = w.store.addRun(w.owner, { kind: "revise", source_run_id: run.id });
+  const tombstoned = w.store.addRun(w.owner, { deleted_at: new Date(w.clock.now) });
+  const orphan = w.store.addRun(w.owner, { kind: "replay_critic", source_run_id: tombstoned.id });
+  run.approved_facts_sha256 = "a".repeat(64);
+  w.store.runs.get(run.id)!.approved_facts_sha256 = "a".repeat(64);
+  w.store.runs.get(run.id)!.code_commit = "c".repeat(40);
+  const report = await request(w, `/runs/${run.id}`, { jar });
+  const childReport = await request(w, `/runs/${child.id}`, { jar });
+  const orphanReport = await request(w, `/runs/${orphan.id}`, { jar });
+  const at = (needle: string) => report.body.indexOf(needle);
+  const order = ['<h1 class="goal', 'class="captions"', 'class="script"', 'class="shots"', 'class="findings"', 'class="decisions',
+    'class="cost"', 'class="files"'].map(at);
+  check("SA76. the report is in the design's order: header, captions, script, shot list, findings, \"Needs your "
+    + "decision\", cost, files",
+    report.status === 200 && order.every((i) => i >= 0) && order.every((i, n) => n === 0 || i > order[n - 1]!), order.join());
+  check("SA77. fingerprints and the commit are shown short (12 characters), with the full value in a <details> to tap open",
+    report.body.includes(`<details class="fp"><summary><code>${"a".repeat(12)}…</code></summary><code class="fp-full">${"a".repeat(64)}</code></details>`)
+      && report.body.includes(`<code>${"c".repeat(12)}…</code>`) && FINGERPRINT_SHORT_CHARS === 12);
+  check("SA78. lineage: a report links the run it read and the runs that read it; a tombstoned source shows as \"a deleted run\", "
+    + "never as a link",
+    report.body.includes(`href="/runs/${child.id}"`) && childReport.body.includes(`href="/runs/${run.id}"`)
+      && orphanReport.body.includes("a deleted run") && !orphanReport.body.includes(`href="/runs/${tombstoned.id}"`),
+    `${report.body.includes(`href="/runs/${child.id}"`)} ${childReport.body.includes(`href="/runs/${run.id}"`)} ${orphanReport.body.includes("a deleted run")} ${!orphanReport.body.includes(`href="/runs/${tombstoned.id}"`)}`);
+  await w.close();
+}
+
+{
+  const { w, jar } = await s5World();
+  const failed = w.store.addRun(w.owner, { state: "failed", verdict: null, failure_class: "stage_execution_error",
+    failure_message: `${HOSTILE}[failure]` });
+  for (const name of ["run-meta.json", "01-strategy-concept.json", "02-automotive-truth.json", "03-hook-story-script.json",
+    "04-production-direction.json"]) w.store.addArtifact(failed.id, name, "{}");
+  const refused = w.store.addRun(w.owner, { state: "refused", verdict: null, failure_class: "live_runs_not_enabled",
+    failure_message: "live runs are not enabled in this worker" });
+  const liveFailed = w.store.addRun(w.owner, { runner: "live", state: "failed", failure_class: "job_timeout", failure_message: "timed out",
+    reserved_usd: "21.650000", actual_usd: "3.000000" });
+  w.store.requests.set(liveFailed.id, [
+    { seq: 1, stage: "strategy-concept", lens: null, model: "model-a", ceiling_usd: "1.000000", input_tokens: 10, output_tokens: 20,
+      cost_usd: "0.010000", charged_usd: "0.010000", outcome: "succeeded" },
+    { seq: 2, stage: "final-critic", lens: "voice-and-craft", model: "model-b", ceiling_usd: "2.000000", input_tokens: null,
+      output_tokens: null, cost_usd: null, charged_usd: "2.000000", outcome: "failed" },
+  ]);
+  const f = await request(w, `/runs/${failed.id}`, { jar });
+  const r = await request(w, `/runs/${refused.id}`, { jar });
+  const l = await request(w, `/runs/${liveFailed.id}`, { jar });
+  const forms = [f, r, l].flatMap((p) => [...p.body.matchAll(/<form\b[^>]*>/g)].map((m) => m[0]));
+  const buttons = [f, r, l].flatMap((p) => [...p.body.matchAll(/<button\b[^>]*>([^<]*)<\/button>/g)].map((m) => m[1]!));
+  check("SA79. a failed or refused run shows its failure class, its message (escaped) and the stage it stopped at — the "
+    + "first stage file it did not save, or its last request that did not succeed — with no Resume button and no form "
+    + "but sign-out",
+    f.body.includes("<code>stage_execution_error</code>") && f.body.includes(escapeHtml(`${HOSTILE}[failure]`))
+      && !f.body.includes(`${HOSTILE}[failure]`) && /Stopped at<\/dt><dd>packaging-adaptation</.test(f.body)
+      && r.body.includes("<code>live_runs_not_enabled</code>") && /Stopped at<\/dt><dd>strategy-concept</.test(r.body)
+      && /Stopped at<\/dt><dd>final-critic \(voice-and-craft\)</.test(l.body)
+      && ![f, r, l].some((p) => /\bResume\b/.test(p.body))
+      && buttons.every((b) => ["Sign out", "Copy", "Copy caption only", "Copy caption"].includes(b))
+      && forms.length === 3 && forms.every((form) => form === '<form method="post" action="/auth/logout">'),
+    buttons.join("|"));
+  check("SA80. cost: the report shows the reserved ceiling, the actual cost and one row per request from "
+    + "studio_run_requests — stage or lens, model, tokens, cost, charge and outcome; a fake run says it made no request",
+    l.body.includes("<dt>Reserved ceiling</dt><dd>$21.650000</dd>") && l.body.includes("<dt>Actual cost</dt><dd>$3.000000</dd>")
+      && l.body.includes("<td>1</td><td>strategy-concept</td><td>model-a</td><td>10</td><td>20</td><td>$0.010000</td><td>$0.010000</td><td>succeeded</td>")
+      && l.body.includes("<td>2</td><td>final-critic: voice-and-craft</td><td>model-b</td><td>—</td><td>—</td><td>—</td><td>$2.000000</td><td>failed</td>")
+      && f.body.includes("A fake run makes no provider request."));
+  await w.close();
+}
+
+{
+  const { w, jar, run, files } = await s5World();
+  const report = await request(w, `/runs/${run.id}`, { jar });
+  const copies = copyValues(report.body);
+  const pkgs = (JSON.parse(files["05-packaging-adaptation.json"]!) as { output: { provisional: { packages: Array<{ platform: string;
+    caption: string; hashtags: string[] }> } } }).output.provisional.packages;
+  const contacts = (JSON.parse(files["05b-contact-lines.json"]!) as { packages: Array<{ contact: ContactLine }> }).packages;
+  const expected = pkgs.map((p, i) => (p.platform === "google_business_profile" ? p.caption : providerTextWithContact(p.caption, p.hashtags, contacts[i]!.contact)));
+  const full = copies.filter((c) => c.kind === "full").map((c) => c.text);
+  const captionOnly = copies.filter((c) => c.kind === "caption").map((c) => c.text);
+  check("SA81. Copy for Instagram and Facebook is byte for byte providerTextWithContact(caption, hashtags, contact) — the "
+    + "leaf module's function — over the stored 05 and 05b files, carriage returns and line breaks included",
+    full.length === 2 && full[0] === expected[0] && full[1] === expected[1] && full.every((t) => t.includes("\r\n"))
+      && full[1]!.endsWith(`Call ${SYNTHETIC_SHOP}: ${SYNTHETIC_PHONE} · Book online: ${SYNTHETIC_BOOKING_URL}`)
+      && report.body.includes("&#13;"),
+    JSON.stringify(full));
+  check("SA82. Google Business Profile copies its caption alone, with its BOOK call to action shown as a separate item; a "
+    + "second button on every other card copies the caption alone",
+    captionOnly.length === 3 && captionOnly[0] === pkgs[0]!.caption && captionOnly[1] === pkgs[1]!.caption
+      && captionOnly[2] === pkgs[2]!.caption && expected[2] === pkgs[2]!.caption
+      && /Call to action: <strong>BOOK<\/strong> → <span class="prose">https:\/\/booking\.invalid\/synthetic\?\[cta\]<\/span>/.test(report.body)
+      && (report.body.match(/data-copy-kind="caption"/g) ?? []).length === 3);
+  check("SA83. the captions carry the banner: the contact line is copied from approved facts, not written by a model, and "
+    + "nothing here is approved or scheduled",
+    report.body.includes(`<p class="banner">${escapeHtml(COPY_BANNER)}</p>`) && /approved facts, not written by a model/.test(COPY_BANNER)
+      && /approved, scheduled/.test(COPY_BANNER));
+  const imported = w.store.addRun(w.owner, { kind: "imported", runner: "live", import_tier: "archived_unverified" });
+  for (const [name, text] of Object.entries(files)) w.store.addArtifact(imported.id, name, text);
+  const archived = await request(w, `/runs/${imported.id}`, { jar });
+  const buttons = [...archived.body.matchAll(/<button type="button" class="copy"[^>]*>/g)].map((m) => m[0]);
+  check("SA84. on an archived_unverified import every Copy button is disabled and carries no text to copy",
+    buttons.length === 5 && buttons.every((b) => b.endsWith(" disabled>") && !b.includes("data-copy="))
+      && copyValues(archived.body).length === 0 && archived.body.includes("Copy is disabled"),
+    buttons.join(" "));
+  await w.close();
+}
+
+{
+  const { w, jar, run } = await s5World();
+  const row = (idx: number, lens: string, severity: string, category: string, owner: string, ownerItem: boolean): FindingRow =>
+    ({ idx, lens, severity, category, owner, issue: `issue-${idx}`, owner_item: ownerItem });
+  w.store.findings.set(run.id, [
+    row(0, "evidence-fidelity", "advisory", "claim_fidelity", "packaging-adaptation", false),
+    row(1, "evidence-fidelity", "blocking", "human_decision", "packaging-adaptation", true),
+    row(2, "platform-and-local", "blocking", "platform_semantics", "hook-story-script", false),
+    row(3, "voice-and-craft", "advisory", "voice_clarity", "human_review", true),
+    row(4, "production-coherence", "blocking", "production_coherence", "production-direction", false),
+    row(5, "voice-and-craft", "blocking", "voice_clarity", "packaging-adaptation", false),
+  ]);
+  w.store.runs.get(run.id)!.blocking_findings = 4;
+  w.store.runs.get(run.id)!.advisory_findings = 2;
+  const byOwner = await request(w, `/runs/${run.id}`, { jar });
+  const byLens = await request(w, `/runs/${run.id}?group=lens`, { jar });
+  const badGroup = await request(w, `/runs/${run.id}?group=severity`, { jar });
+  const issues = (html: string, section: string) => {
+    const start = html.indexOf(`class="${section}`);
+    const body = html.slice(start, html.indexOf("</section>", start));
+    return [...body.matchAll(/issue-(\d)/g)].map((m) => m[1]).join("");
+  };
+  const headings = (html: string) => {
+    const start = html.indexOf('class="findings"');
+    return [...html.slice(start, html.indexOf("</section>", start)).matchAll(/<h3>([^<]*)<\/h3>/g)].map((m) => m[1]).join("|");
+  };
+  check("SA85. findings are grouped by stage owner (stages 3, 4, 5, then a person), blocking first, then advisory; "
+    + "?group=lens groups them by lens in panel order with no script; any other grouping is 400",
+    issues(byOwner.body, "findings") === "241503" && headings(byOwner.body)
+      === "Stage owner: hook-story-script|Stage owner: production-direction|Stage owner: packaging-adaptation|A person (human_review)"
+      && issues(byLens.body, "findings") === "102534" && byLens.body.includes(`href="/runs/${run.id}#findings">Group by stage owner`)
+      && byOwner.body.includes(`href="/runs/${run.id}?group=lens#findings">Group by lens`) && badGroup.status === 400
+      && JSON.stringify(GROUP_ORDERS.lens) === JSON.stringify(["evidence-fidelity", "platform-and-local", "voice-and-craft", "production-coherence"]),
+    `${issues(byOwner.body, "findings")} ${issues(byLens.body, "findings")} ${headings(byOwner.body)}`);
+  const noDecision = w.store.addRun(w.owner, {});
+  w.store.findings.set(noDecision.id, [row(0, "voice-and-craft", "advisory", "voice_clarity", "packaging-adaptation", false)]);
+  const quiet = await request(w, `/runs/${noDecision.id}`, { jar });
+  check("SA86. \"Needs your decision\" lists exactly the rows whose owner_item is true — a human_decision finding owned by "
+    + "a stage as well as a human_review one — and is marked to come first on a phone only when it holds any",
+    issues(byOwner.body, "decisions") === "13" && byOwner.body.includes('class="decisions decisions-open"')
+      && needsDecision([row(0, "x", "blocking", "human_decision", "packaging-adaptation", true),
+        row(1, "x", "blocking", "c", "human_review", false), row(2, "x", "blocking", "c", "s", true)]).map((f) => f.idx).join() === "0,2"
+      && quiet.body.includes('<section class="decisions"><h2>Needs your decision</h2><p>Nothing needs your decision.</p>')
+      && /@media \(max-width:699\.98px\)\{.*\.decisions-open\{order:-1\}\s*\}\s*$/s.test(STATIC_ASSETS.css.body.toString("utf8")),
+    issues(byOwner.body, "decisions"));
+  await w.close();
+}
+
+{
+  const { w, jar, run } = await s5World();
+  const report = await request(w, `/runs/${run.id}`, { jar });
+  const shapes: Array<[string, Buffer | undefined]> = [
+    ["absent", undefined], ["not json", Buffer.from("{not json")], ["null", Buffer.from("null")], ["array", Buffer.from("[1,2]")],
+    ["no output", Buffer.from('{"metadata":{}}')], ["wrong types", Buffer.from('{"output":{"provisional":{"hook":1,"storyBeats":"x","script":[]}}}')],
+    ["too large", Buffer.alloc(MAX_DISPLAY_ARTIFACT_BYTES + 1, 32)], ["deep", Buffer.from(`${"[".repeat(5000)}${"]".repeat(5000)}`)],
+    ["verified requirement", Buffer.from(JSON.stringify({ output: { provisional: { visualApproach: "v", shots: [], overlayText: [],
+      productionRequirements: [{ requirement: "r", category: "c", availabilityVerified: true }] } } }))],
+  ];
+  let threw = false;
+  const results = shapes.map(([label, bytes]) => {
+    try {
+      return [label, readScript(bytes), readShotList(bytes), readCaptions(bytes, bytes)] as const;
+    } catch {
+      threw = true;
+      return [label] as const;
+    }
+  });
+  const broken = w.store.addRun(w.owner, {});
+  w.store.addArtifact(broken.id, "03-hook-story-script.json", '{"output":{"provisional":{"hook":{"html":"<b>"}}}}');
+  w.store.addArtifact(broken.id, "04-production-direction.json", "[]");
+  w.store.addArtifact(broken.id, "05-packaging-adaptation.json", "{");
+  w.store.addArtifact(broken.id, "05b-contact-lines.json", "{}");
+  const brokenReport = await request(w, `/runs/${broken.id}`, { jar });
+  check("SA87. the script and shot list are read from the stored stage JSON as untrusted data: shown in full when well "
+    + "formed — hook, beats, script, shots, overlays, and each requirement \"to be confirmed by a person\" — and, for "
+    + "any unexpected shape (absent, not JSON, null, an array, wrong types, over the size bound, a claimed-verified "
+    + "requirement), \"cannot display; download the file\" or \"did not save\", never an exception",
+    !threw && results.every((r) => r.length === 4 && !r[1].ok && !r[2].ok && !r[3].ok)
+      && results.find((r) => r[0] === "absent")?.[1]?.ok === false
+      && report.body.includes("[hook]") && report.body.includes("[beat-2]") && report.body.includes("[script]")
+      && report.body.includes("[shot-1-action]") && report.body.includes("Overlay (headline): <span class=\"prose\">[overlay]</span>")
+      && report.body.includes(`[requirement]</span> <span class="meta">location — ${REQUIREMENT_UNVERIFIED}</span>`)
+      && REQUIREMENT_UNVERIFIED === "to be confirmed by a person"
+      && brokenReport.status === 200 && (brokenReport.body.match(new RegExp(CANNOT_DISPLAY.replace(/[.;]/g, "\\$&"), "g")) ?? []).length === 3
+      && CANNOT_DISPLAY === "Cannot display; download the file.");
+  await w.close();
+}
+
+{
+  const { w, jar, run, files } = await s5World();
+  const json = await request(w, `/runs/${run.id}/files/05-packaging-adaptation.json`, { jar });
+  const md = await request(w, `/runs/${run.id}/files/summary.md`, { jar });
+  const exact = (r: Reply, name: string, type: string, bytes: Buffer) => r.status === 200
+    && JSON.stringify([...r.headers.keys()].sort()) === JSON.stringify(["cache-control", "connection", "content-disposition",
+      "content-length", "content-security-policy", "content-type", "date", "keep-alive", "referrer-policy",
+      "strict-transport-security", "x-content-type-options"])
+    && r.headers.get("content-type") === type && r.headers.get("content-disposition") === `attachment; filename="${name}"`
+    && r.headers.get("x-content-type-options") === "nosniff" && r.headers.get("content-security-policy") === "default-src 'none'; sandbox"
+    && r.headers.get("cache-control") === "no-store" && r.headers.get("content-length") === String(bytes.length) && r.raw.equals(bytes)
+    && createHash("sha256").update(r.raw).digest("hex") === w.store.artifacts.get(run.id)!.get(name)!.sha256;
+  check("SA88. a download is an attachment with exactly its own headers — Content-Disposition attachment, application/json "
+    + "or text/plain, nosniff, the CSP default-src 'none'; sandbox, no-store — and the bytes exactly as stored, matching "
+    + "the stored sha256",
+    exact(json, "05-packaging-adaptation.json", "application/json", Buffer.from(files["05-packaging-adaptation.json"]!))
+      && exact(md, "summary.md", "text/plain; charset=utf-8", Buffer.from(files["summary.md"]!)) && DOWNLOAD_CSP === "default-src 'none'; sandbox",
+    `${json.status} ${[...json.headers].map(([k, v]) => `${k}=${v}`).join("; ")}`);
+  w.store.addArtifact(run.id, "tampered.json", '{"ok":true}', Buffer.from('{"ok":false}'));
+  w.store.addArtifact(run.id, "03-hook-story-script.json", files["03-hook-story-script.json"]!, Buffer.from(files["03-hook-story-script.json"]!.replace("[hook]", "[HOOK!]")));
+  const tampered = await request(w, `/runs/${run.id}/files/tampered.json`, { jar });
+  const tamperedReport = await request(w, `/runs/${run.id}`, { jar });
+  check("SA89. an artifact whose stored bytes no longer match its sha256 (changed through a test-only path) is refused, "
+    + "never served — and the report shows it as cannot display",
+    tampered.status === 500 && !tampered.body.includes("false") && tampered.headers.get("content-disposition") === null
+      && tampered.headers.get("content-type") === "text/html; charset=utf-8" && !tamperedReport.body.includes("[HOOK!]")
+      && verifiedBytes({ name: "x", content: Buffer.from("a"), sha256: createHash("sha256").update("b").digest("hex"), byte_length: 1 }) === null,
+    `${tampered.status}`);
+  const hostileNames = ["a\r\nset-cookie: x=1", 'a".json', "a;b.json", "a b.json", "a\nb", "../run-meta.json", "", "é.json", `${"a".repeat(129)}`];
+  const refusals = hostileNames.map((name) => refusalOf(() => attachmentDisposition(name)));
+  const injected = await Promise.all(["a%0D%0Aset-cookie:%20x=1", "a%22.json", "a%3Bb.json", "a%20b.json"]
+    .map((name) => request(w, `/runs/${run.id}/files/${name}`, { jar })));
+  check("SA90. no header injection: a filename with CR, LF, a quote, a semicolon, a space, a path, a non-ASCII letter or "
+    + "too many characters is refused before any header is written, and such a name in the URL is a 404",
+    refusals.every((r) => r === "DownloadNameRefusal") && injected.every((r) => r.status === 404 && r.headers.get("set-cookie") === null)
+      && attachmentDisposition("summary.md") === 'attachment; filename="summary.md"',
+    refusals.join());
+  await w.close();
+}
+
+{
+  const { w, jar, run } = await s5World();
+  const css = await request(w, STATIC_ASSETS.css.path, { jar });
+  const js = await request(w, STATIC_ASSETS.js.path, { jar });
+  const report = await request(w, `/runs/${run.id}`, { jar });
+  const fileOk = (r: Reply, asset: (typeof STATIC_ASSETS)["css"], type: string) => r.status === 200 && asset.contentType === type
+    && r.headers.get("content-type") === type && r.headers.get("x-content-type-options") === "nosniff"
+    && r.headers.get("content-security-policy") === CONTENT_SECURITY_POLICY
+    && r.headers.get("cache-control") === "private, max-age=31536000, immutable" && r.raw.equals(asset.body)
+    && asset.href === `${asset.path}?v=${createHash("sha256").update(asset.body).digest("hex").slice(0, 16)}`;
+  check("SA91. the static files are served from code with their own type (text/css, text/javascript), nosniff, S4's CSP "
+    + "unchanged and a year's private cache; every page links them by their sha256, and the script copies only a "
+    + "button's data-copy attribute",
+    fileOk(css, STATIC_ASSETS.css, "text/css; charset=utf-8") && fileOk(js, STATIC_ASSETS.js, "text/javascript; charset=utf-8")
+      && report.body.includes(`<link rel="stylesheet" href="${STATIC_ASSETS.css.href}">`)
+      && report.body.includes(`<script src="${STATIC_ASSETS.js.href}" defer></script>`)
+      && /navigator\.clipboard\.writeText\(text\)/.test(js.body) && /getAttribute\("data-copy"\)/.test(js.body)
+      && !/innerHTML|eval\(|Function\(|fetch\(|XMLHttpRequest|document\.write/.test(js.body)
+      && CONTENT_SECURITY_POLICY === "default-src 'self'; script-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'");
+  await w.close();
+}
+
+{
+  const { w, jar, run, viewer } = await s5World({ mark: HOSTILE, displayName: `${HOSTILE}[display-name]` });
+  w.store.findings.set(run.id, [{ idx: 0, lens: "voice-and-craft", severity: "blocking", category: "human_decision",
+    owner: "human_review", issue: `${HOSTILE}[issue]`, owner_item: true }]);
+  w.store.runs.get(run.id)!.state = "failed";
+  w.store.runs.get(run.id)!.failure_class = "stage_execution_error";
+  w.store.runs.get(run.id)!.failure_message = `${HOSTILE}[failure]`;
+  w.store.runs.get(run.id)!.scope_tags = [`${HOSTILE}[scope]`];
+  w.store.addArtifact(run.id, 'x"onmouseover="alert(4).json', "{}");
+  w.store.addArtifact(run.id, "x<script>.json", "{}");
+  const pages = [await request(w, `/runs/${run.id}`, { jar }), await request(w, "/runs", { jar }),
+    await request(w, `/runs/${run.id}?group=lens`, { jar })];
+  const inert = (html: string) => {
+    const tags = [...html.matchAll(/<[a-zA-Z][^>]*>/g)].map((m) => m[0].replace(/"[^"]*"/g, '""'));
+    return (html.match(/<script\b/g) ?? []).length === 1 && !html.includes("<img") && !html.includes("</textarea>")
+      && !html.includes("<a href=\"javascript") && !/(?:href|src|action)\s*=\s*"\s*javascript:/i.test(html)
+      && tags.every((t) => !/\son[a-z]+\s*=/i.test(t) && !/\sstyle\s*=/i.test(t)) && !html.includes(HOSTILE);
+  };
+  const escaped = (field: string) => pages[0]!.body.includes(`${escapeHtml(HOSTILE)}[${field}]`);
+  check("SA92. hostile captions stay inert: <script>, attribute-breaking quotes, a javascript: URL, </textarea> and "
+    + "U+2028 in the caption, hashtags, local keywords and contact line are escaped text, and the Copy attribute holds "
+    + "them escaped",
+    pages.every((p) => inert(p.body)) && ["caption-instagram", "caption-facebook", "tag-instagram", "keyword-facebook",
+      "contact-instagram", "contact-facebook", "cta"].every(escaped)
+      && copyValues(pages[0]!.body).some((c) => c.text.startsWith(`${HOSTILE}[caption-instagram]`))
+      && pages[0]!.body.includes(" "),
+    pages.map((p) => inert(p.body)).join());
+  check("SA93. hostile stage output stays inert: the hook, beats, script, visual approach, shots, overlays and requirements "
+    + "are escaped text",
+    ["hook", "beat-1", "script", "visual-approach", "shot-0-subject", "shot-1-action", "shot-0-composition", "overlay",
+      "requirement"].every(escaped));
+  check("SA94. hostile run data stays inert: the goal (on the report and the list), a finding's issue (in Findings and Needs "
+    + "your decision), the failure message, a scope tag, the requester's display name and artifact names in links "
+    + "(escaped text, encoded URLs)",
+    ["goal", "issue", "failure", "scope"].every(escaped) && (pages[0]!.body.split(`${escapeHtml(HOSTILE)}[issue]`).length - 1) === 2
+      && pages[1]!.body.includes(escapeHtml(`${HOSTILE}[goal]`).slice(0, GOAL_PREVIEW_CHARS - 10))
+      && pages[0]!.body.includes(`${escapeHtml(HOSTILE)}[display-name]`) && viewer.display_name!.includes(HOSTILE)
+      && pages[0]!.body.includes(`href="/runs/${run.id}/files/${encodeURIComponent('x"onmouseover="alert(4).json')}"`)
+      && pages[0]!.body.includes(`>${escapeHtml('x"onmouseover="alert(4).json')}</a>`)
+      && pages[0]!.body.includes(`>${escapeHtml("x<script>.json")}</a>`));
+  await w.close();
+}
+
+await refusal("SA95. refused: an aud array naming the client id and another audience (OIDC Core §3.1.3.7), which jose "
+  + "alone accepts", "audience-multiple",
+  (w) => ({ identity: user(w), plan: claims((c) => { c.aud = [CLIENT_ID, "another-client.apps.test"]; }) }));
+await refusal("SA96. refused: an azp other than the client id", "authorized-party",
+  (w) => ({ identity: user(w), plan: claims((c) => { c.azp = "another-client.apps.test"; }) }));
+{
+  const w = await world();
+  const ok = await signIn(w, new Jar(), { identity: user(w), plan: claims((c) => { c.aud = [CLIENT_ID]; c.azp = CLIENT_ID; }) });
+  check("SA97. a one-entry aud array naming the client, with azp equal to the client id, is accepted",
+    ok.status === 303 && ok.location === "/" && refusalOf(() => checkAudienceParty({ aud: [CLIENT_ID, "x"] }, CLIENT_ID)) === "audience-multiple"
+      && refusalOf(() => checkAudienceParty({ aud: CLIENT_ID, azp: "y" }, CLIENT_ID)) === "authorized-party"
+      && refusalOf(() => checkAudienceParty({ aud: CLIENT_ID }, CLIENT_ID)) === "accepted", `${ok.status}`);
+  await w.close();
+}
+
+{
+  // Every HTML page this suite received, S4's and S5's: no inline script, no inline style, no event handler.
+  const scripts = htmlPages.flatMap((p) => [...p.body.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/g)]
+    .map((m) => ({ attributes: m[1]!, inner: m[2]! })));
+  const tags = htmlPages.flatMap((p) => [...p.body.matchAll(/<[a-zA-Z][^>]*>/g)].map((m) => m[0].replace(/"[^"]*"/g, '""')));
+  const s5Pages = htmlPages.filter((p) => p.path.startsWith("/runs") && p.status === 200);
+  check("SA98. across every page this suite rendered (S4's and S5's), no script is inline: each <script> is the one "
+    + `static file, with no body, and no tag carries an event handler, a style attribute or a <style> element (${htmlPages.length} pages)`,
+    htmlPages.length > 100 && s5Pages.length > 20
+      && scripts.every((x) => x.inner === "" && x.attributes === ` src="${STATIC_ASSETS.js.href}" defer`)
+      && scripts.length === htmlPages.filter((p) => p.body.includes(STATIC_ASSETS.js.href)).length
+      && tags.every((t) => !/\son[a-z]+\s*=/i.test(t) && !/\sstyle\s*=/i.test(t) && !/^<style\b/i.test(t))
+      && s5Pages.every((p) => p.body.includes(STATIC_ASSETS.js.href) && p.body.includes(STATIC_ASSETS.css.href)),
+    `${htmlPages.length} pages, ${scripts.length} scripts`);
 }
 
 await issuer.stop();
