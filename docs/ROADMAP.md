@@ -27,7 +27,7 @@ These are not interchangeable and must not be collapsed into "done". `MERGED` in
 
 **State:** `IMPLEMENTED` on branch `claude/sharp-gates-4pnvcs`, based directly on `origin/main` at `bec4a41449fac5fd50e631c62b9424924afe260c` (the merge of PR #106). **Not `MERGED`, not `DEPLOYED`, not `ENABLED`, not `PRODUCTION-VALIDATED`.** **Fake runner only.** No Render file names the worker: `render.yaml` is unchanged and `render.studio.yaml` does not exist (S8). No Studio service, database, OAuth client, secret or Anthropic key exists. Nothing ran anywhere but disposable PostgreSQL 16 and 18 servers. All six stages keep `executionEnabled: false`, the registry is unchanged, and no live-loaded module changed (`scripts/ci/live-path-manifest.json` is unchanged and `CS3` passes). No migration, `config/` file, prompt, skill, model, limit or dependency changed. The partial-release interval (bound `2026-10-22T18:52Z`; see [Status](STATUS.md)) is unchanged. The tracked `.DS_Store` is untouched. No model was called.
 
-**PR / merge:** ⟦PR⟧, from `claude/sharp-gates-4pnvcs` into `main`. CI is recorded in the PR. **This PR's merge SHA is the blocking follow-up** permitted by the mutable-identifier rule in [`AGENTS.md`](../AGENTS.md).
+**PR / merge:** [PR #107](https://github.com/Caposhi/GCD-Agents/pull/107), open, not merged, from `claude/sharp-gates-4pnvcs` into `main`. CI is recorded in the PR. **This PR's merge SHA is the blocking follow-up** permitted by the mutable-identifier rule in [`AGENTS.md`](../AGENTS.md).
 
 **Preflight (2026-10-01), all passed before any edit:**
 
