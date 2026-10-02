@@ -10,7 +10,7 @@
  * reaches them (`--list-tags`, a resume's stages 1-4).
  *
  * Importing this module loads every stage executor. It is therefore reachable
- * only from `scripts/local/content-run.mjs` and, later, `src/studio/worker/**`
+ * only from `scripts/local/content-run.mjs` and `src/studio/worker/**`
  * — never from a live `gcd-social-*` entry point. The offline suite's
  * import-graph check and caller allowlist enforce both
  * (docs/CONTENT_STUDIO_DESIGN.md §5.4).

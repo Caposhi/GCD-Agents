@@ -180,10 +180,12 @@ import {
 } from "./agents/finalCritic.js";
 import { groupDigits } from "./agents/responseFormatKit.js";
 import {
-  LIVE_ENTRY_POINTS, LIVE_PATH_MANIFEST, STUDIO_ALLOWED_EXCEPTIONS, STUDIO_FORBIDDEN_MODULES, STUDIO_FORBIDDEN_TREES,
-  callerViolations, describeViolation, liveEntryPointsFromConfig, studioSideEntryPoints,
-  livePathManifestViolations, liveSourceDigests, repositoryCodeFiles, walkImportGraph,
-  type LivePathManifest,
+  LIVE_ENTRY_POINTS, LIVE_PATH_MANIFEST, REVIEW_ONLY_CONSTRUCTOR, REVIEW_ONLY_CONTEXT_MODULE, STUDIO_ALLOWED_EXCEPTIONS,
+  STUDIO_FORBIDDEN_MODULES, STUDIO_FORBIDDEN_TREES,
+  callerViolations, contextConstructionViolations, describeViolation, liveEntryPointsFromConfig, moduleReferences,
+  namesContextConstructor,
+  reviewOnlyMentions, studioSideEntryPoints, livePathManifestViolations, liveSourceDigests, repositoryCodeFiles,
+  walkImportGraph, type LivePathManifest,
 } from "./livePathGuards.js";
 import {
   StageOutputTruncatedError,
@@ -7152,6 +7154,19 @@ async function run(): Promise<void> {
             + "such as \"book online\" or \"call us\" is rejected by code, and the whole response fails."));
     }
 
+    // CS7b. The CLI's own context, checked before every block that runs the
+    // CLI, so a change to the context's shape is reported by name even when
+    // every CLI run fails, or crashes the block, because of it.
+    {
+      const csEarlyCli = await import(pathToFileURL(resolve(REPO_ROOT, "scripts/local/content-run.mjs")).href);
+      const csCliContext = csEarlyCli.cliExecutionContext() as Record<string, unknown>;
+      check("CS7b. the context the CLI hands every run holds exactly kind, caller and checkRequests, frozen, as the "
+        + "\"local-cli\" caller, and the library verifies it",
+        Reflect.ownKeys(csCliContext).join() === "kind,caller,checkRequests" && Object.isFrozen(csCliContext)
+          && csCliContext.kind === "review-only" && csCliContext.caller === "local-cli"
+          && csEarlyCli.contentRunLibrary.isReviewOnlyExecutionContext(csCliContext) === true);
+    }
+
     // ========================================================================
     // CN. Evidence-pack scoping in the local CLI, the shop's identity records
     //     bound on every stage 5 platform by code, and stage 2's whitelist at
@@ -8027,10 +8042,15 @@ async function run(): Promise<void> {
           label: dir, displayLabel: dir, name: basename(dir), exists: () => existsSync(dir),
           readArtifact: async (name: string) => (existsSync(join(dir, name)) ? readFileSync(join(dir, name)) : undefined),
         });
+        // Since S3 every paid path also requires the review-only execution
+        // context; these runs carry the CLI's own (CS7 proves the refusal without one).
+        const csCliContext = cliModule.cliExecutionContext();
         const csRun = async (
           action: (io: Record<string, unknown>, rt: unknown) => Promise<unknown>,
           consent: (request: Record<string, unknown>) => Promise<void>,
           confirmUnproven: (notice: unknown) => Promise<unknown> = async () => ({ confirmed: false, reason: "cs" }),
+          /** The context the run is handed; null hands it none. */
+          execution: unknown = csCliContext,
         ) => {
           const opened: string[] = [];
           const runnerFactoryCalls: number[] = [];
@@ -8039,7 +8059,7 @@ async function run(): Promise<void> {
           const log: string[] = [];
           const io = {
             reporter: { log: (m: string) => log.push(m), warn: (m: string) => log.push(m) },
-            consent, confirmUnproven,
+            consent, confirmUnproven, ...(execution === null ? {} : { execution }),
             outputs: {
               openFullRun: () => { opened.push("full"); throw new Error("CS: an output was opened"); },
               openDerivedRun: () => { opened.push("derived"); throw new Error("CS: an output was opened"); },
@@ -8108,6 +8128,72 @@ async function run(): Promise<void> {
             && [csLiveResume, csLiveRevise, csLiveReplay].every((r) => r.error === "Error: CS: consent refused")
             && csRequests.length === csFakeRequestsBefore && csFakeFull.opened.join() === "full"
             && csFakeFull.error === "Error: CS: an output was opened" && csFakeFull.runnerFactoryCalls.length === 0);
+
+        // --- CS7. the review-only execution context (Content Studio S3, design §5.4) ---------
+        // The suite may not construct one (CS8): it uses the CLI's, and look-alikes.
+        const csCtx = csCliContext as Record<string, unknown>;
+        const csIsContext = csLib.isReviewOnlyExecutionContext as (value: unknown) => boolean;
+        const csLookAlikes: Array<[string, unknown]> = [
+          ["an object literal", { kind: "review-only", caller: "local-cli", checkRequests: async () => {} }],
+          ["a spread copy", { ...csCtx }],
+          ["a frozen copy", Object.freeze({ ...csCtx })],
+          ["a prototype child", Object.freeze(Object.create(csCtx))],
+          ["null", null],
+          ["a string", "review-only"],
+        ];
+        const csConstructRefusals = [
+          { caller: "live-worker", checkRequests: async () => {} }, { caller: "studio-worker" }, { caller: "local-cli", checkRequests: 1 },
+        ].map((options) => {
+          try { csLib[REVIEW_ONLY_CONSTRUCTOR](options); return "made"; } catch (e) { return (e as Error).name; }
+        });
+        check("CS7. the review-only execution context is a frozen capability holding exactly kind, caller and its "
+          + "per-request check — no approval, publication, posting or live-database member — and only a context the "
+          + "library itself issued verifies: an object literal, a spread or frozen copy and a prototype child do not, "
+          + "and the constructor refuses an unknown caller or a missing check",
+          Object.isFrozen(csCtx) && Reflect.ownKeys(csCtx).join() === "kind,caller,checkRequests"
+            && csCtx.kind === "review-only" && csCtx.caller === "local-cli" && typeof csCtx.checkRequests === "function"
+            && JSON.stringify(csLib.REVIEW_ONLY_CONTEXT_KEYS) === JSON.stringify(["kind", "caller", "checkRequests"])
+            && JSON.stringify(csLib.REVIEW_ONLY_CALLERS) === JSON.stringify(["local-cli", "studio-worker"])
+            && csIsContext(csCtx) && cliModule.cliExecutionContext() === csCtx
+            && csLookAlikes.every(([, value]) => !csIsContext(value))
+            && csConstructRefusals.every((name) => name === "ReviewOnlyContextError"));
+
+        const csNoContext = await Promise.all([
+          csRun((io, rt) => csLib.runFullPipeline(rt, csOptions("live", factsPath, { goal: "CS synthetic goal" }), io),
+            csRecordAndRefuse, undefined, null),
+          csRun((io, rt) => csLib.resumeFromPackaging(rt, csOptions("live"), csSource(crCopy("cs-ctx-resume", plainRun)),
+            "packaging-adaptation", io), csRecordAndRefuse, undefined, null),
+          csRun((io, rt) => csLib.reviseRun(rt, csOptions("live"), csSource(crCopy("cs-ctx-revise", plainRun)), "revise-from", io),
+            csRecordAndRefuse, undefined, null),
+          csRun((io, rt) => csLib.replayCritic(rt, csOptions("live"), csSource(crCopy("cs-ctx-replay", plainRun)), io),
+            csRecordAndRefuse, undefined, null),
+          ...csLookAlikes.slice(0, 4).map(([, value]) => csRun((io, rt) => csLib.runFullPipeline(rt,
+            csOptions("live", factsPath, { goal: "CS synthetic goal" }), io), csRecordAndRefuse, undefined, value)),
+        ]);
+        const csRequestsAfter = csRequests.length;
+        const csFakeNoContext = await csRun((io, rt) => csLib.runFullPipeline(rt,
+          csOptions("fake", factsPath, { goal: "CS synthetic goal" }), io), csRecordAndRefuse, undefined, null);
+        const csFakeLookAlike = await csRun((io, rt) => csLib.runFullPipeline(rt,
+          csOptions("fake", factsPath, { goal: "CS synthetic goal" }), io), csRecordAndRefuse, undefined, csLookAlikes[1]![1]);
+        check("CS7a. every paid path — a live full run, resume, revision and critic replay — requires the review-only "
+          + "context next to its consent: with none, or with a look-alike, each refuses before consent, before any runner "
+          + "and before any output; a fake run without one still runs as before, and a fake run handed a look-alike refuses "
+          + "before any output",
+          csNoContext.length === 8 && csNoContext.every((r) => /^ReviewOnlyContextError: a paid (full-run|resume|revision|critic-replay) requires the review-only execution context/.test(r.error)
+            && r.opened.length === 0 && r.runnerFactoryCalls.length === 0)
+            && csNoContext.slice(0, 4).map((r) => r.error.split(" ")[3]).join() === "full-run,resume,revision,critic-replay"
+            && csRequestsAfter === csFakeRequestsBefore
+            && csFakeNoContext.opened.join() === "full" && csFakeNoContext.error === "Error: CS: an output was opened"
+            && csFakeLookAlike.opened.length === 0 && /^ReviewOnlyContextError/.test(csFakeLookAlike.error));
+        const csTypecheck = readFileSync(resolve(REPO_ROOT, "src/studio/worker/executionContext.typecheck.ts"), "utf8");
+        check("CS7c. the type-level check of the context is in place: its keys, literals, read-only members and per-unit "
+          + "gate are asserted, and an object literal, another caller, an approval or publication capability, an approve "
+          + "member and a reassignment are each a compile error (npm run typecheck fails if any compiles)",
+          ["contextKeysAreExactlyThese", "contextHasOneSymbolKey", "contextKindIsReviewOnly", "contextCallersAreTheTwo",
+            "contextCheckIsAPerUnitGate", "contextIsReadOnly", "unitKeysAreExactlyThese"]
+            .every((name) => csTypecheck.includes(`export const ${name} = holds<`))
+            && (csTypecheck.match(/\/\/ @ts-expect-error — /g) ?? []).length === 6
+            && csTypecheck.includes("approve: async () => {}") && csTypecheck.includes("publish: async () => {}"));
       } finally {
         rmSync(cnWork, { recursive: true, force: true });
       }
@@ -12501,16 +12587,19 @@ async function run(): Promise<void> {
     const LIB = ["content", "Run"].join("");
     const cliText = codeFiles.get("scripts/local/content-run.mjs") ?? "";
     const refused = (files: Record<string, string>) => callerViolations(new Map(Object.entries(files))).map((v) => v.file);
-    // Since S2, src/studio/** holds the database tree (src/studio/db/**) and
-    // nothing else; it is neither the worker nor the web tree, so no file in
-    // it may import the library either. S3 adds src/studio/worker/**.
+    // src/studio/** holds the database tree (src/studio/db/**, S2), which may
+    // not import the library, and the worker (src/studio/worker/**, S3), which
+    // may. The web tree (S4) does not exist yet; the rule for it is enforced
+    // over synthetic files below.
     check("CS2. only scripts/local/content-run.mjs and src/studio/worker/** import the content-run library, and nothing "
-      + "under src/studio/web/** imports it, the stage-execution boundary or a stage executor — enforced before "
-      + "src/studio/worker/** and src/studio/web/** exist, over src/studio/db/** (S2), the only Studio tree so far"
+      + "under src/studio/web/** imports it, the stage-execution boundary or a stage executor — over src/studio/db/** "
+      + "(S2) and src/studio/worker/** (S3), the only Studio trees so far"
       + (callers.length ? ` — ${callers.map((v) => `${v.file}: ${v.detail}`).join("; ")}` : ""),
       callers.length === 0 && codeFiles.size > 100 && cliText.length > 0
-        && [...codeFiles.keys()].every((file) => !file.startsWith("src/studio/") || file.startsWith("src/studio/db/"))
+        && [...codeFiles.keys()].every((file) => !file.startsWith("src/studio/") || file.startsWith("src/studio/db/")
+          || file.startsWith("src/studio/worker/"))
         && [...codeFiles.keys()].some((file) => file.startsWith("src/studio/db/"))
+        && [...codeFiles.keys()].some((file) => file.startsWith("src/studio/worker/"))
         && refused({ "scripts/local/moved-cli.mjs": cliText }).join() === "scripts/local/moved-cli.mjs"
         && refused({
           "src/studio/worker/run.ts": `import { runFullPipeline } from "../../harness/${LIB}/index.js";\n`,
@@ -12526,6 +12615,75 @@ async function run(): Promise<void> {
           "scripts/other.mjs": `const target = resolve(root, "${LIB}/index.js");\nawait import(target);\n`,
         }).sort().join() === ["scripts/other.mjs", "src/harness/other.ts", "src/studio/shared/util.ts",
           "src/studio/web/boundary.ts", "src/studio/web/critic.ts", "src/studio/web/routes.ts"].join());
+
+    // CS8. The review-only context's construction allowlist, which extends CS2:
+    // only the CLI and src/studio/worker/** may name its constructor, and the
+    // library itself never calls it. Proven over the repository and over
+    // synthetic files. (The constructor's name is the imported constant, so
+    // this suite never names it itself.)
+    const construction = contextConstructionViolations(codeFiles);
+    const C = REVIEW_ONLY_CONSTRUCTOR;
+    const constructedBy = (files: Record<string, string>) =>
+      contextConstructionViolations(new Map(Object.entries(files))).map((v) => v.file).sort().join();
+    const namingFiles = [...codeFiles].filter(([file, text]) => namesContextConstructor(text, file)).map(([f]) => f).sort();
+    check("CS8. only scripts/local/content-run.mjs and src/studio/worker/** construct the review-only execution context: "
+      + "no other file names its constructor, the library only defines and re-exports it, and the web tree, a live "
+      + "module, another script or another library module naming it — by identifier, property or string key — each fails"
+      + (construction.length ? ` — ${construction.map((v) => `${v.file}: ${v.detail}`).join("; ")}` : ""),
+      construction.length === 0
+        && namingFiles.includes("scripts/local/content-run.mjs")
+        && namingFiles.some((file) => file.startsWith("src/studio/worker/"))
+        && namingFiles.every((file) => file === "scripts/local/content-run.mjs" || file.startsWith("src/studio/worker/")
+          || file === REVIEW_ONLY_CONTEXT_MODULE || file === "src/harness/contentRun/index.ts")
+        && constructedBy({
+          "src/studio/worker/job.ts": `const c = lib.${C}({ caller: "studio-worker", checkRequests });\n`,
+          "scripts/local/content-run.mjs": `cliContext ??= lib.${C}({ caller: "local-cli", checkRequests });\n`,
+          "src/harness/contentRun/index.ts": `export { ${C} } from "./executionContext.js";\n`,
+        }) === ""
+        && constructedBy({
+          "src/studio/web/routes.ts": `const c = lib.${C}({ caller: "studio-worker", checkRequests });\n`,
+          "src/worker/index.ts": `import { ${C} } from "../harness/${LIB}/index.js";\n`,
+          "scripts/other.mjs": `const c = lib["${C}"]({ caller: "local-cli", checkRequests });\n`,
+          "src/harness/contentRun/pipeline.ts": `const own = ${C}({ caller: "studio-worker", checkRequests });\n`,
+          "src/studio/db/x.ts": `export const make = (lib) => lib.${C};\n`,
+        }) === ["scripts/other.mjs", "src/harness/contentRun/pipeline.ts", "src/studio/db/x.ts", "src/studio/web/routes.ts",
+          "src/worker/index.ts"].join());
+
+    // CS9. Beside the live gate, never replacing it: no live entry point can
+    // reach the context's module, and no live-loaded module names the context,
+    // its constructor, its checks or its module — so no live code can construct
+    // or receive one. The module is a leaf (it imports nothing at run time), so
+    // reaching it reaches nothing else, and from it nothing posting, approving
+    // or live-database is reachable. The CLI, the other constructor, imports
+    // only Node built-ins statically. Studio start commands point into dist/studio/.
+    const contextCompiled = ["dist/harness", LIB, "executionContext.js"].join("/");
+    const contextRefs = moduleReferences(readFileSync(resolve(REPO_ROOT, contextCompiled), "utf8"), contextCompiled).references;
+    const fromContext = walkImportGraph({
+      root: REPO_ROOT, entryPoints: [contextCompiled], forbiddenModules: STUDIO_FORBIDDEN_MODULES,
+      forbiddenTrees: STUDIO_FORBIDDEN_TREES, checkPathLiterals: false, allowedPackages: dependencies,
+    });
+    const liveNaming = [...liveSourceDigests(REPO_ROOT, live.reached).keys()].flatMap((source) => {
+      const names = reviewOnlyMentions(readFileSync(resolve(REPO_ROOT, source), "utf8"), source);
+      return names.length ? [`${source}: ${names.join(", ")}`] : [];
+    });
+    const cliStatic = moduleReferences(cliText, "scripts/local/content-run.mjs").references
+      .filter((r) => r.kind === "static");
+    const studioStarts = Object.entries(JSON.parse(readFileSync(resolve(REPO_ROOT, "package.json"), "utf8")).scripts as Record<string, string>)
+      .filter(([name]) => name.startsWith("start:studio-"));
+    check("CS9. the context sits beside the live authority gate: no live entry point reaches its module and no "
+      + "live-loaded module names the context, its constructor or its checks (so none can construct or receive one); "
+      + "its module imports nothing at run time and reaches no posting, approval or live-database module; the CLI "
+      + "imports only Node built-ins statically; and every start:studio-* command runs a dist/studio/ module, so "
+      + "leaving them out of the live entry points hides no live service"
+      + (liveNaming.length ? ` — ${liveNaming.join("; ")}` : ""),
+      !live.reached.includes(contextCompiled) && liveNaming.length === 0 && live.reached.length > 10
+        && contextRefs.length === 0
+        && fromContext.violations.length === 0 && fromContext.reached.join() === contextCompiled
+        && cliStatic.length > 0 && cliStatic.every((r) => "specifier" in r && r.specifier.startsWith("node:"))
+        && studioStarts.length === 1
+        && studioStarts.every(([, command]) => /^node dist\/studio\/[\w/.-]+\.js$/.test(command))
+        && reviewOnlyMentions(`import type { ReviewOnlyExecutionContext } from "../harness/${LIB}/executionContext.js";\n`,
+          "src/worker/x.ts").join() === `ReviewOnlyExecutionContext,module ../harness/${LIB}/executionContext.js`);
 
     // The shared-module diff guard.
     const manifest = JSON.parse(readFileSync(resolve(REPO_ROOT, LIVE_PATH_MANIFEST), "utf8")) as LivePathManifest;

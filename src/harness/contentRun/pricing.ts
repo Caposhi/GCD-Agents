@@ -4,6 +4,8 @@
  * (Content Studio S1); the CLI prints the ceiling exactly as it always did.
  */
 
+import { createHash } from "node:crypto";
+
 import type { ContentRunRuntime } from "./runtime.js";
 import type { CostCeiling } from "./types.js";
 
@@ -22,6 +24,16 @@ const PRICE = {
   "claude-sonnet-5": { in: 2, out: 10 },
   "claude-sonnet-4-6": { in: 3, out: 15 },
 };
+
+/**
+ * sha256 of the estimate's price table, as canonical JSON. The Studio worker
+ * records it in its heartbeat and a quote is bound to it (design §6.1), so a
+ * price change between a quote and its run is refused.
+ */
+export function priceTableSha256(): string {
+  const rows = Object.entries(PRICE).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return createHash("sha256").update(JSON.stringify(rows)).digest("hex");
+}
 
 /**
  * The rough ceiling for the given model requests. Each entry is one request:

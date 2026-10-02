@@ -314,6 +314,28 @@
  * Its checks are SM1-SM5. It adds two captured paths, the runner and its entry
  * point (forty-one in all).
  *
+ * The Content Studio S3 groups follow. `M534`–`M546` cover the review-only
+ * execution context (design §5.4): each paid path of the library no longer
+ * requiring it, the verifier accepting a look-alike, the context gaining an
+ * approval capability, the constructor accepting another caller, the
+ * construction allowlist widened, a live module naming the context, and the
+ * context's module gaining a run-time import (`CS7`–`CS9`, `CS3`); and the
+ * library's per-unit check skipped, checked per lens, or letting an unpriced
+ * request through (`SW7`–`SW7b`, run in the Studio worker's offline suite, the
+ * only tree besides the CLI allowed to construct a context). `M547`–`M589`
+ * cover the worker's safety refusals, each run in the Studio worker's offline
+ * suite (`dist/studio/worker/worker.offline.selftest.js`) and each failing a
+ * named `SW` check: the start-up refusals (a forbidden variable, `ANTHROPIC_API_KEY`
+ * in S3, the `IG_`/`FB_`/`GBP_` prefixes, the commit, the entry point reading
+ * `DATABASE_URL` or loading the worker first, or being given a paid runner);
+ * a missing cap no longer zero, a ceiling rounded down; the identity and
+ * schema-version refusals; the ownership key and the heartbeat interval; every
+ * refusal of the paid-unit decision and the settlement; the provider runner
+ * factory and the refusals before any work; the sink's rewritten files and
+ * immutability; and the claim, the run's end and recovery. They add ten
+ * captured paths: the context's module and nine worker modules (fifty-one in
+ * all).
+ *
  * It is offline and deterministic: no network, no database, no provider, no
  * credential. The mutations run in parallel on up to MAX_WORKERS workers (the
  * runner's available parallelism, capped), each worker in its OWN disposable
@@ -425,8 +447,21 @@ const LIVE_PATH_MANIFEST = "scripts/ci/live-path-manifest.json";
 // the Studio offline suite rather than the Content Intelligence one.
 const STUDIO_DB_RUNNER = "src/studio/db/runner.ts";
 const STUDIO_DB_ENTRY = "src/studio/db/migrate.ts";
+// Content Studio S3: the review-only execution context, and the worker's
+// modules, proven by the Studio worker's offline suite.
+const CONTENT_RUN_CONTEXT = "src/harness/contentRun/executionContext.ts";
+const STUDIO_WORKER_STARTUP = "src/studio/worker/startup.ts";
+const STUDIO_WORKER_MAIN = "src/studio/worker/main.ts";
+const STUDIO_WORKER_MONEY = "src/studio/worker/money.ts";
+const STUDIO_WORKER_SPEND = "src/studio/worker/spend.ts";
+const STUDIO_WORKER_SESSION = "src/studio/worker/session.ts";
+const STUDIO_WORKER_JOBS = "src/studio/worker/jobs.ts";
+const STUDIO_WORKER_SINK = "src/studio/worker/runSink.ts";
+const STUDIO_WORKER_EXECUTE = "src/studio/worker/execute.ts";
+const STUDIO_WORKER_LIFECYCLE = "src/studio/worker/worker.ts";
 const CONTENT_INTELLIGENCE_SUITE = "dist/harness/contentIntelligence.selftest.js";
 const STUDIO_DB_SUITE = "dist/studio/db/migrate.offline.selftest.js";
+const STUDIO_WORKER_SUITE = "dist/studio/worker/worker.offline.selftest.js";
 
 /**
  * Each mutation names the derivation it breaks, the single edit that breaks it,
@@ -4814,6 +4849,454 @@ const CONTENT_STUDIO_S2_MUTATIONS = [
   },
 ];
 
+// Content Studio S3, part 1: the review-only execution context (docs/CONTENT_STUDIO_DESIGN.md §5.4).
+// Its CS checks are in the Content Intelligence suite; the library's per-unit gate is proven by the
+// Studio worker's offline suite (SW7), the only tree besides the CLI allowed to construct a context.
+const CONTENT_STUDIO_S3_CONTEXT_MUTATIONS = [
+  {
+    name: "a live full run no longer requires the review-only execution context",
+    file: CONTENT_RUN_PIPELINE,
+    from: "    requireReviewOnlyExecutionContext(io.execution, \"full-run\");\n",
+    to: "",
+    expect: ["CS7a."],
+  },
+  {
+    name: "a live resume no longer requires the review-only execution context",
+    file: CONTENT_RUN_PIPELINE,
+    from: "    requireReviewOnlyExecutionContext(io.execution, \"resume\");\n",
+    to: "",
+    expect: ["CS7a."],
+  },
+  {
+    name: "a live critic replay no longer requires the review-only execution context",
+    file: CONTENT_RUN_PIPELINE,
+    from: "    requireReviewOnlyExecutionContext(io.execution, \"critic-replay\");\n",
+    to: "",
+    expect: ["CS7a."],
+  },
+  {
+    name: "a live revision no longer requires the review-only execution context",
+    file: CONTENT_RUN_PIPELINE,
+    from: "    requireReviewOnlyExecutionContext(io.execution, \"revision\");\n",
+    to: "",
+    expect: ["CS7a."],
+  },
+  {
+    name: "the context check accepts any frozen look-alike, not only a context the library issued",
+    file: CONTENT_RUN_CONTEXT,
+    from: "  if (typeof value !== \"object\" || value === null || !issued.has(value) || !Object.isFrozen(value)) return false;",
+    to: "  if (typeof value !== \"object\" || value === null || !Object.isFrozen(value)) return false;",
+    expect: ["CS7.", "CS7a."],
+  },
+  {
+    name: "the context gains an approval capability",
+    file: CONTENT_RUN_CONTEXT,
+    from: "  const context = Object.freeze({ kind: \"review-only\" as const, caller, checkRequests });",
+    to: "  const context = Object.freeze({ kind: \"review-only\" as const, caller, checkRequests, approve: async () => {} });",
+    expect: ["CS7b."],
+  },
+  {
+    name: "the context constructor accepts any caller",
+    file: CONTENT_RUN_CONTEXT,
+    from: "  if (!(REVIEW_ONLY_CALLERS as readonly string[]).includes(caller)) {",
+    to: "  if (!(REVIEW_ONLY_CALLERS as readonly string[]).includes(caller) && Date.now() < 0) {",
+    expect: ["CS7."],
+  },
+  {
+    name: "the library stops checking each request unit before it is sent",
+    file: CONTENT_RUN_CONTEXT,
+    from: "      await check(stage, (line) => line.label === stage);\n",
+    to: "",
+    expect: ["SW7.", "SW7a."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "the critic panel's lenses are checked one by one instead of as one unit",
+    file: CONTENT_RUN_CONTEXT,
+    from: "      panel ??= check(stage, (line) => line.label.startsWith(\"final-critic:\"));",
+    to: "      panel = check(stage, (line) => line.label.startsWith(\"final-critic:\"));",
+    expect: ["SW7.", "SW7b."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "the gate sends a request outside the action's priced requests",
+    file: CONTENT_RUN_CONTEXT,
+    from: "    if (requests.length === 0) {",
+    to: "    if (requests.length === 0 && Date.now() < 0) {",
+    expect: ["SW7b."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "the construction allowlist widens to the whole repository",
+    file: LIVE_PATH_GUARDS,
+    from: "export const REVIEW_ONLY_CONSTRUCTORS = CONTENT_RUN_CALLERS;",
+    to: "export const REVIEW_ONLY_CONSTRUCTORS = [...CONTENT_RUN_CALLERS, \"src/\", \"scripts/\"] as const;",
+    expect: ["CS8."],
+  },
+  {
+    name: "a live module names the review-only context's type",
+    file: LIVE_SCHEDULER_ENTRY,
+    appendText: "\nexport type ReviewOnlyProbe = import(\"../harness/contentRun/executionContext.js\").ReviewOnlyExecutionContext;\n",
+    expect: ["CS9.", "CS3."],
+  },
+  {
+    name: "the context's module gains a run-time import",
+    file: CONTENT_RUN_CONTEXT,
+    from: "import type { CostCeiling, CostCeilingLine, PaidActionKind, RunnerKind } from \"./types.js\";",
+    to: "import type { CostCeiling, CostCeilingLine, PaidActionKind, RunnerKind } from \"./types.js\";\nimport \"./types.js\";",
+    expect: ["CS9."],
+  },
+];
+
+// Content Studio S3, part 2: the worker's safety refusals (§3.2, §5.3, §6.2), each proven by a named
+// check of the Studio worker's offline suite (`suite`).
+const CONTENT_STUDIO_S3_WORKER_MUTATIONS = [
+  {
+    name: "the worker starts beside a forbidden variable",
+    file: STUDIO_WORKER_STARTUP,
+    from: "  if (forbidden.length) {",
+    to: "  if (forbidden.length && Date.now() < 0) {",
+    expect: ["SW1.", "SW1b."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "the worker stops refusing ANTHROPIC_API_KEY in S3",
+    file: STUDIO_WORKER_STARTUP,
+    from: "export const S3_FORBIDDEN_VARIABLES = [\"ANTHROPIC_API_KEY\"] as const;",
+    to: "export const S3_FORBIDDEN_VARIABLES = [] as const;",
+    expect: ["SW1.", "SW1b."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "the worker stops refusing IG_, FB_ and GBP_ names",
+    file: STUDIO_WORKER_STARTUP,
+    from: "  return [...new Set(names)].filter((name) => exact.has(name) || FORBIDDEN_PREFIXES.some((p) => name.startsWith(p))).sort();",
+    to: "  return [...new Set(names)].filter((name) => exact.has(name)).sort();",
+    expect: ["SW1.", "SW1b."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "the worker starts without a full commit SHA",
+    file: STUDIO_WORKER_STARTUP,
+    from: "  if (!/^[0-9a-f]{40}$/.test(commit)) {",
+    to: "  if (!/^[0-9a-f]{40}$/.test(commit) && Date.now() < 0) {",
+    expect: ["SW1a.", "SW1b."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "the entry point falls back to DATABASE_URL's value",
+    file: STUDIO_WORKER_MAIN,
+    from: "    studioDatabaseUrl: process.env.STUDIO_DATABASE_URL,",
+    to: "    studioDatabaseUrl: process.env.STUDIO_DATABASE_URL ?? process.env.DATABASE_URL,",
+    expect: ["SW1c."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "the entry point loads the worker before deciding its environment",
+    file: STUDIO_WORKER_MAIN,
+    from: "import { decideWorkerStartup, WorkerStartupRefusal } from \"./startup.js\";",
+    to: "import { decideWorkerStartup, WorkerStartupRefusal } from \"./startup.js\";\nimport \"./worker.js\";",
+    expect: ["SW1c."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "the entry point is given a paid stage runner",
+    file: STUDIO_WORKER_MAIN,
+    from: "    ready: (line) => console.log(line),",
+    to: "    ready: (line) => console.log(line),\n    paidStageRunner: (async () => ({ text: \"{}\" })) as never,",
+    expect: ["SW8."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "a missing or unreadable deployment cap becomes a default instead of zero",
+    file: STUDIO_WORKER_MONEY,
+    from: "  if (typeof raw !== \"string\" || !/^\\d{1,6}(?:\\.\\d{1,6})?$/.test(raw.trim())) return 0;",
+    to: "  if (typeof raw !== \"string\" || !/^\\d{1,6}(?:\\.\\d{1,6})?$/.test(raw.trim())) return 75_000_000;",
+    expect: ["SW2."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "a ceiling rounds down instead of up",
+    file: STUDIO_WORKER_MONEY,
+    from: "  return Math.ceil(Number((usd * MICROS_PER_USD).toFixed(3)));",
+    to: "  return Math.floor(Number((usd * MICROS_PER_USD).toFixed(3)));",
+    expect: ["SW2a."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "the worker accepts an unmigrated database",
+    file: STUDIO_WORKER_STARTUP,
+    from: "  if (decideStudioIdentity(probe).kind !== \"studio\") {",
+    to: "  if (decideStudioIdentity(probe).kind !== \"studio\" && Date.now() < 0) {",
+    expect: ["SW3."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "the worker accepts a database whose recorded schema is another version",
+    file: STUDIO_WORKER_STARTUP,
+    from: "  if (JSON.stringify(recorded) !== JSON.stringify(expected)) {",
+    to: "  if (JSON.stringify(recorded) !== JSON.stringify(expected) && Date.now() < 0) {",
+    expect: ["SW3a."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "the worker's ownership key is the live worker's",
+    file: STUDIO_WORKER_SESSION,
+    from: "  return [digest.readInt32BE(0), digest.readInt32BE(4)];",
+    to: "  return [LIVE_WORKER_OWNERSHIP_KEY[0], LIVE_WORKER_OWNERSHIP_KEY[1]];",
+    expect: ["SW4."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "the heartbeat is written every minute instead of every 30 seconds",
+    file: STUDIO_WORKER_LIFECYCLE,
+    from: "export const HEARTBEAT_INTERVAL_MS: number = 30_000;",
+    to: "export const HEARTBEAT_INTERVAL_MS: number = 60_000;",
+    expect: ["SW4a."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "a paid unit is sent after the job was cancelled",
+    file: STUDIO_WORKER_SPEND,
+    from: "  if (!s.job || s.job.cancelRequested || s.job.state !== \"running\") {",
+    to: "  if (!s.job || s.job.state !== \"running\") {",
+    expect: ["SW5.", "SW5a."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "a paid unit is sent past the job's wall-clock limit",
+    file: STUDIO_WORKER_SPEND,
+    from: "  if (!(timing.elapsedMs <= timing.limitMs)) {",
+    to: "  if (!(timing.elapsedMs <= timing.limitMs) && Date.now() < 0) {",
+    expect: ["SW5.", "SW5a."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "a paid unit is sent without a live reservation",
+    file: STUDIO_WORKER_SPEND,
+    from: "  if (reserved === null || !(reserved > 0) || s.run.quoteId === null || s.reserves.length !== 1 || s.reserves[0] !== reserved) {",
+    to: "  if (reserved === null || !(reserved > 0)) {",
+    expect: ["SW5."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "a paid unit is sent on a reservation already settled",
+    file: STUDIO_WORKER_SPEND,
+    from: "  if (s.settled) return no(\"reservation_settled\",",
+    to: "  if (s.settled && Date.now() < 0) return no(\"reservation_settled\",",
+    expect: ["SW5."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "a paid unit is sent on another user's quote",
+    file: STUDIO_WORKER_SPEND,
+    from: "  if (!s.quote || !s.quote.consumed || s.quote.userId !== s.run.requestedBy || QUOTE_ACTION[s.run.kind] !== s.quote.action) {",
+    to: "  if (!s.quote || !s.quote.consumed || QUOTE_ACTION[s.run.kind] !== s.quote.action) {",
+    expect: ["SW5."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "a paid unit is sent for a requester no longer an active owner or runner",
+    file: STUDIO_WORKER_SPEND,
+    from: "  if (!s.requester || s.requester.status !== \"active\" || ![\"owner\", \"runner\"].includes(s.requester.role)) {",
+    to: "  if (!s.requester) {",
+    expect: ["SW5."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "a paid unit with no price row is sent",
+    file: STUDIO_WORKER_SPEND,
+    from: "  if ([...price.requestCeilings, ...price.remainingCeilings].some((c) => c === undefined || !Number.isSafeInteger(c) || c <= 0)",
+    to: "  if ([...price.requestCeilings, ...price.remainingCeilings].some((c) => c !== undefined && c < 0)",
+    expect: ["SW5."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "a paid unit is sent while the run's charge exceeds its reservation",
+    file: STUDIO_WORKER_SPEND,
+    from: "  if (s.chargedMicros > reserved) {",
+    to: "  if (s.chargedMicros > reserved && Date.now() < 0) {",
+    expect: ["SW5."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "a paid unit is sent when the ceiling still to come does not fit the reservation",
+    file: STUDIO_WORKER_SPEND,
+    from: "  if (sum(price.remainingCeilings as number[]) > reserved - s.chargedMicros) {",
+    to: "  if (sum(price.requestCeilings as number[]) > reserved - s.chargedMicros) {",
+    expect: ["SW5."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "a paid unit is sent while an overrun is unacknowledged",
+    file: STUDIO_WORKER_SPEND,
+    from: "  if (s.unacknowledgedOverruns > 0) {",
+    to: "  if (s.unacknowledgedOverruns > 1) {",
+    expect: ["SW5.", "SW5a."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "the worker's own daily ceiling is ignored",
+    file: STUDIO_WORKER_SPEND,
+    from: "  const dailyCap = Math.min(caps.dailyMicros, s.settings?.dailyCapMicros ?? 0);",
+    to: "  const dailyCap = s.settings?.dailyCapMicros ?? 0;",
+    expect: ["SW5."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "an unreadable settings row lifts the daily cap",
+    file: STUDIO_WORKER_SPEND,
+    from: "  const dailyCap = Math.min(caps.dailyMicros, s.settings?.dailyCapMicros ?? 0);",
+    to: "  const dailyCap = Math.min(caps.dailyMicros, s.settings?.dailyCapMicros ?? Number.MAX_SAFE_INTEGER);",
+    expect: ["SW5."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "the monthly cap is ignored",
+    file: STUDIO_WORKER_SPEND,
+    from: "  if (!(s.monthSpendMicros <= monthlyCap)) return no(\"cap_exceeded_monthly\",",
+    to: "  if (!(s.monthSpendMicros <= monthlyCap) && Date.now() < 0) return no(\"cap_exceeded_monthly\",",
+    expect: ["SW5."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "the per-user daily cap is ignored",
+    file: STUDIO_WORKER_SPEND,
+    from: "  if (s.requester.dailyCapMicros !== null && !(s.userDaySpendMicros <= s.requester.dailyCapMicros)) {",
+    to: "  if (s.requester.dailyCapMicros !== null && !(s.userDaySpendMicros <= s.requester.dailyCapMicros) && Date.now() < 0) {",
+    expect: ["SW5."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "an overrun is never booked",
+    file: STUDIO_WORKER_SPEND,
+    from: "  if (chargedMicros > reservedMicros) return { entry: \"overrun\", micros: chargedMicros - reservedMicros };",
+    to: "",
+    expect: ["SW6."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "the worker's runtime builds a provider runner when it was given none",
+    file: STUDIO_WORKER_EXECUTE,
+    from: "        if (!paid) throw new WorkerStop(\"live_runs_not_enabled\", \"live runs are not enabled in this worker (Content Studio S6)\");",
+    to: "        if (!paid) return base.stageExecution.createAnthropicStageRunner();",
+    expect: ["SW8."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "a live run starts on a worker with no paid runner",
+    file: STUDIO_WORKER_EXECUTE,
+    from: "  if (!b.worker.paidRunner) {",
+    to: "  if (!b.worker.paidRunner && Date.now() < 0) {",
+    expect: ["SW11."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "a paid job runs on a quote for another worker commit",
+    file: STUDIO_WORKER_EXECUTE,
+    from: "  if (!q || q.workerCommit !== b.worker.commit || q.approvedFactsSha256 !== b.worker.approvedFactsSha256",
+    to: "  if (!q || q.approvedFactsSha256 !== b.worker.approvedFactsSha256",
+    expect: ["SW11."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "a paid job runs on a quote for another price table",
+    file: STUDIO_WORKER_EXECUTE,
+    from: "    || q.factVersionId !== b.run.factVersionId || q.priceTableSha256 !== b.worker.priceTableSha256) {",
+    to: "    || q.factVersionId !== b.run.factVersionId) {",
+    expect: ["SW11."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "the sink stores a rewritten file at its first write",
+    file: STUDIO_WORKER_SINK,
+    from: "  \"resume-meta.json\", \"revision-meta.json\", \"field-measurements.json\", \"field-measurements.md\",\n] as const;",
+    to: "  \"resume-meta.json\", \"field-measurements.json\", \"field-measurements.md\",\n] as const;",
+    expect: ["SW9."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "the sink lets an immutable artifact be written twice",
+    file: STUDIO_WORKER_SINK,
+    from: "    if (this.written.has(name)) {",
+    to: "    if (this.written.has(name) && Date.now() < 0) {",
+    expect: ["SW9."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "a claim is made without proving ownership",
+    file: STUDIO_WORKER_JOBS,
+    from: "  return session.tx(async (client) => {\n    if (!(await holdsOwnership(client))) throw new Error(\"ownership_lost: this session no longer holds the Studio worker lock\");\n    const job = (await client.query(",
+    to: "  return session.tx(async (client) => {\n    const job = (await client.query(",
+    expect: ["SW12."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "a claim waits on a locked job instead of skipping it",
+    file: STUDIO_WORKER_JOBS,
+    from: "        LIMIT 1 FOR UPDATE SKIP LOCKED`)).rows[0];",
+    to: "        LIMIT 1 FOR UPDATE`)).rows[0];",
+    expect: ["SW12."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "a claim takes paid and fake jobs before free preflight jobs",
+    file: STUDIO_WORKER_JOBS,
+    from: "        ORDER BY (kind = 'preflight') DESC, created_at, id",
+    to: "        ORDER BY created_at, id",
+    expect: ["SW12."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "a claim takes an expired job",
+    file: STUDIO_WORKER_JOBS,
+    from: "        WHERE state = 'queued' AND expires_at > now() AND cancel_requested_at IS NULL",
+    to: "        WHERE state = 'queued' AND cancel_requested_at IS NULL",
+    expect: ["SW12."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "a run ends with its unfinished request rows left started",
+    file: STUDIO_WORKER_JOBS,
+    from: "    \"UPDATE studio_run_requests SET outcome = 'failed', finished_at = now() WHERE run_id = $1 AND outcome = 'started'\", [runId]);",
+    to: "    \"SELECT 1 WHERE $1::uuid IS NOT NULL\", [runId]);",
+    expect: ["SW13."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "an overrun no longer fails a run that otherwise succeeded",
+    file: STUDIO_WORKER_JOBS,
+    from: "      if (settlement?.entry === \"overrun\" && runState === \"succeeded\") {",
+    to: "      if (settlement?.entry === \"overrun\" && runState === \"succeeded\" && Date.now() < 0) {",
+    expect: ["SW13."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "restart recovery marks a running run failed instead of interrupted",
+    file: STUDIO_WORKER_JOBS,
+    from: "        runState: \"interrupted\", jobState: \"finished\", failureClass: \"worker_restart\",",
+    to: "        runState: \"failed\", jobState: \"finished\", failureClass: \"worker_restart\",",
+    expect: ["SW13a."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "restart recovery runs without proving ownership",
+    file: STUDIO_WORKER_JOBS,
+    from: "  return session.tx(async (client) => {\n    if (!(await holdsOwnership(client))) throw new Error(\"ownership_lost: this session no longer holds the Studio worker lock\");\n    const runs = (await client.query(",
+    to: "  return session.tx(async (client) => {\n    const runs = (await client.query(",
+    expect: ["SW13a."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "an expired queued job is cancelled instead of expired",
+    file: STUDIO_WORKER_JOBS,
+    from: "        ? { runState: \"cancelled\", jobState: \"expired\", failureClass: \"job_expired\",",
+    to: "        ? { runState: \"cancelled\", jobState: \"cancelled\", failureClass: \"job_expired\",",
+    expect: ["SW13a."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+];
+
 // Every group, in order. MUTATIONS is their concatenation; the groups exist
 // only so `M-inc-sample` can spread its sample across them.
 const MUTATION_GROUPS = [
@@ -4825,6 +5308,7 @@ const MUTATION_GROUPS = [
   ["stated caption and resume", STATED_CAPTION_AND_RESUME_MUTATIONS], ["comparison claim", COMPARISON_CLAIM_MUTATIONS],
   ["revision pass", REVISION_PASS_MUTATIONS], ["contact in overlay", CONTACT_IN_OVERLAY_MUTATIONS],
   ["Content Studio S1", CONTENT_STUDIO_S1_MUTATIONS], ["Content Studio S2", CONTENT_STUDIO_S2_MUTATIONS],
+  ["Content Studio S3 context", CONTENT_STUDIO_S3_CONTEXT_MUTATIONS], ["Content Studio S3 worker", CONTENT_STUDIO_S3_WORKER_MUTATIONS],
 ];
 const MUTATIONS = MUTATION_GROUPS.flatMap(([, group]) => group);
 

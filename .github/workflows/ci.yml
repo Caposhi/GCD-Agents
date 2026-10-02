@@ -132,11 +132,15 @@ jobs:
           M1_READINESS_POSTGRES_ADMIN_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
         run: npm run test:m1-readiness-postgres
 
-      - name: Content Studio schema disposable PostgreSQL suite
+      # The schema suite (S2), then the worker suite (S3), on the same
+      # disposable server; each creates and drops its own gcd_studio.
+      - name: Content Studio schema and worker disposable PostgreSQL suites
         env:
           STUDIO_DISPOSABLE_POSTGRES: "1"
           STUDIO_POSTGRES_ADMIN_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
-        run: npm run test:studio-postgres
+        run: |
+          npm run test:studio-postgres
+          npm run test:studio-worker-postgres
 
       - name: Payload-contract mutation tests, shard ${{ matrix.mutation-shard }}/3
         run: npm run test:payload-mutation -- --shard ${{ matrix.mutation-shard }}/3

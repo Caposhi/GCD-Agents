@@ -2,7 +2,7 @@
  * The content-run pipeline library (Content Studio S1).
  *
  * The pipeline core that `scripts/local/content-run.mjs` used to hold, moved
- * here unchanged in behaviour so the CLI and, later, the Content Studio worker
+ * here unchanged in behaviour so the CLI and the Content Studio worker (S3)
  * run the same code (docs/CONTENT_STUDIO_DESIGN.md §5.1). It loads every stage
  * executor, so only those two callers may import it, and no live `gcd-social-*`
  * entry point may reach it; the offline suite enforces both (§5.4).
@@ -20,7 +20,8 @@ export {
   parseAutomotiveFacts, sha256OfBytes, type EvidenceScope, type RunFingerprints, type TagCounts,
 } from "./evidence.js";
 export {
-  RESUME_POINTS, allStagePolicies, computeCostCeiling, criticLensPolicies, resumePolicies, revisionPolicies,
+  RESUME_POINTS, allStagePolicies, computeCostCeiling, criticLensPolicies, priceTableSha256, resumePolicies,
+  revisionPolicies,
 } from "./pricing.js";
 export { buildFakeStageResponses, fakeStageRunner } from "./fakes.js";
 export { createRunRecorder, measureFields, measurementTable, recordingRunner } from "./recording.js";
@@ -28,6 +29,11 @@ export { markdownSummary, revisionSummaryLines, summaryFooter } from "./summary.
 export { REUSED_STAGE_FILES, nowFromRunDirName, readSavedStage, verifySourceRun } from "./verify.js";
 export { WRITER_STAGE_FILES, replayCritic, resumeFromPackaging, reviseRun, runFullPipeline } from "./pipeline.js";
 export { refuseUnprovenAutomotiveFacts } from "./consent.js";
+export {
+  REVIEW_ONLY_CALLERS, REVIEW_ONLY_CONTEXT_KEYS, ReviewOnlyContextError, createReviewOnlyExecutionContext,
+  isReviewOnlyExecutionContext, requireReviewOnlyExecutionContext,
+  type ReviewOnlyCaller, type ReviewOnlyExecutionContext, type ReviewOnlyRequestCheck, type ReviewOnlyRequestUnit,
+} from "./executionContext.js";
 
 /**
  * Every artifact name a run of each kind can write, derived from this library
