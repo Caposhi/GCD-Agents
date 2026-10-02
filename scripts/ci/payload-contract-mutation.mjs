@@ -336,6 +336,25 @@
  * captured paths: the context's module and nine worker modules (fifty-one in
  * all).
  *
+ * Content Studio S4 moved the worker's pure start-up rules (the shared
+ * forbidden-variable lists, the identity and schema-version decisions) into the
+ * S2 runner module so the web can share them; the three mutations of moved
+ * lines now target `src/studio/db/runner.ts`, with the same edit, the same
+ * suite and the same expected checks. The S4 group, `M590`–`M611`, covers the
+ * web service's authentication, each run in the Studio web's offline suite
+ * (`dist/studio/web/web.offline.selftest.js`) and each failing a named `SA`
+ * check: the `hd`, `email_verified`, audience, issuer, algorithm-allowlist and
+ * nonce checks dropped; the state-cookie comparison skipped; a login attempt
+ * read instead of consumed; the Origin and CSRF checks skipped; HttpOnly,
+ * Secure and the `__Host-` prefix dropped; the bootstrap honoured once an owner
+ * exists; a session's revocation or idle expiry ignored; an email logged; a
+ * redirect taken from a query parameter; `ANTHROPIC_API_KEY` removed from the
+ * web's forbidden list; and the route table's default deny removed. Two more
+ * run the Content Intelligence suite: a web module importing a worker module
+ * (`CS10`, the transitive walk) and a live module importing `jose` (`CS11`,
+ * `CS3`). They add five captured paths, the web's startup, OpenID, session,
+ * store and app modules (fifty-six in all).
+ *
  * It is offline and deterministic: no network, no database, no provider, no
  * credential. The mutations run in parallel on up to MAX_WORKERS workers (the
  * runner's available parallelism, capped), each worker in its OWN disposable
@@ -459,9 +478,16 @@ const STUDIO_WORKER_JOBS = "src/studio/worker/jobs.ts";
 const STUDIO_WORKER_SINK = "src/studio/worker/runSink.ts";
 const STUDIO_WORKER_EXECUTE = "src/studio/worker/execute.ts";
 const STUDIO_WORKER_LIFECYCLE = "src/studio/worker/worker.ts";
+// Content Studio S4: the web service's modules, proven by the Studio web's offline suite.
+const STUDIO_WEB_STARTUP = "src/studio/web/startup.ts";
+const STUDIO_WEB_OIDC = "src/studio/web/oidc.ts";
+const STUDIO_WEB_SESSIONS = "src/studio/web/sessions.ts";
+const STUDIO_WEB_STORE = "src/studio/web/store.ts";
+const STUDIO_WEB_APP = "src/studio/web/app.ts";
 const CONTENT_INTELLIGENCE_SUITE = "dist/harness/contentIntelligence.selftest.js";
 const STUDIO_DB_SUITE = "dist/studio/db/migrate.offline.selftest.js";
 const STUDIO_WORKER_SUITE = "dist/studio/worker/worker.offline.selftest.js";
+const STUDIO_WEB_SUITE = "dist/studio/web/web.offline.selftest.js";
 
 /**
  * Each mutation names the derivation it breaks, the single edit that breaks it,
@@ -4969,7 +4995,8 @@ const CONTENT_STUDIO_S3_WORKER_MUTATIONS = [
   },
   {
     name: "the worker stops refusing IG_, FB_ and GBP_ names",
-    file: STUDIO_WORKER_STARTUP,
+    // S4: the shared start-up rules moved, unchanged, into the S2 runner module; same edit, same checks.
+    file: STUDIO_DB_RUNNER,
     from: "  return [...new Set(names)].filter((name) => exact.has(name) || FORBIDDEN_PREFIXES.some((p) => name.startsWith(p))).sort();",
     to: "  return [...new Set(names)].filter((name) => exact.has(name)).sort();",
     expect: ["SW1.", "SW1b."],
@@ -5025,7 +5052,8 @@ const CONTENT_STUDIO_S3_WORKER_MUTATIONS = [
   },
   {
     name: "the worker accepts an unmigrated database",
-    file: STUDIO_WORKER_STARTUP,
+    // S4: the shared start-up rules moved, unchanged, into the S2 runner module; same edit, same checks.
+    file: STUDIO_DB_RUNNER,
     from: "  if (decideStudioIdentity(probe).kind !== \"studio\") {",
     to: "  if (decideStudioIdentity(probe).kind !== \"studio\" && Date.now() < 0) {",
     expect: ["SW3."],
@@ -5033,7 +5061,8 @@ const CONTENT_STUDIO_S3_WORKER_MUTATIONS = [
   },
   {
     name: "the worker accepts a database whose recorded schema is another version",
-    file: STUDIO_WORKER_STARTUP,
+    // S4: the shared start-up rules moved, unchanged, into the S2 runner module; same edit, same checks.
+    file: STUDIO_DB_RUNNER,
     from: "  if (JSON.stringify(recorded) !== JSON.stringify(expected)) {",
     to: "  if (JSON.stringify(recorded) !== JSON.stringify(expected) && Date.now() < 0) {",
     expect: ["SW3a."],
@@ -5297,6 +5326,186 @@ const CONTENT_STUDIO_S3_WORKER_MUTATIONS = [
   },
 ];
 
+// Content Studio S4: the web service's authentication (design §7, §9.2), each proven by a named check of the
+// Studio web's offline suite (`suite`), and its isolation, proven by the Content Intelligence suite's CS10 and CS11.
+const CONTENT_STUDIO_S4_MUTATIONS = [
+  {
+    name: "the web stops checking the hd claim",
+    file: STUDIO_WEB_OIDC,
+    from: "  if (payload.hd !== expected.allowedHd) refuse(\"hd\");",
+    to: "  if (payload.hd !== expected.allowedHd && Date.now() < 0) refuse(\"hd\");",
+    expect: ["SA13.", "SA14."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "the web stops checking email_verified",
+    file: STUDIO_WEB_OIDC,
+    from: "  if (payload.email_verified !== true) refuse(\"email-unverified\");",
+    to: "  if (payload.email_verified !== true && Date.now() < 0) refuse(\"email-unverified\");",
+    expect: ["SA15.", "SA16.", "SA17."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "the web accepts any audience",
+    file: STUDIO_WEB_OIDC,
+    from: "      audience: expected.clientId,",
+    to: "      // audience: dropped",
+    expect: ["SA18."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "the web accepts any issuer",
+    file: STUDIO_WEB_OIDC,
+    from: "      issuer: [...expected.issuers],",
+    to: "      // issuer: dropped",
+    expect: ["SA19."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "the web drops the RS256-only algorithms allowlist",
+    file: STUDIO_WEB_OIDC,
+    from: "      algorithms: [...ID_TOKEN_ALGORITHMS],",
+    to: "      // algorithms: dropped",
+    expect: ["SA23a."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "the web skips the nonce check",
+    file: STUDIO_WEB_OIDC,
+    from: "  if (!hashMatches(payload.nonce, expected.nonceHash)) refuse(\"nonce\");",
+    to: "  if (!hashMatches(payload.nonce, expected.nonceHash) && Date.now() < 0) refuse(\"nonce\");",
+    expect: ["SA29."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "the callback skips comparing the state with the login cookie",
+    file: STUDIO_WEB_APP,
+    from: "        if (loginCookie === null || loginCookie.length !== state.length || sha256Hex(loginCookie) !== sha256Hex(state)) {",
+    to: "        if (loginCookie === null && Date.now() < 0) {",
+    expect: ["SA27."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "a login attempt is read instead of consumed, so its state is not single-use",
+    file: STUDIO_WEB_STORE,
+    from: "      \"SELECT nonce_hash, pkce_verifier FROM studio_consume_login_attempt($1)\", [stateHash]);",
+    to: "      \"SELECT nonce_hash, pkce_verifier FROM studio_login_attempts WHERE state_hash = $1\", [stateHash]);",
+    expect: ["SA41."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "a POST is accepted without the exact Origin",
+    file: STUDIO_WEB_APP,
+    from: "    if (req.method === \"POST\" && !originAllowed(req.headers.origin, config.publicOrigin)) {",
+    to: "    if (req.method === \"POST\" && !originAllowed(req.headers.origin, config.publicOrigin) && Date.now() < 0) {",
+    expect: ["SA45.", "SA46.", "SA47."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "a POST is accepted without comparing its CSRF token",
+    file: STUDIO_WEB_APP,
+    from: "      if (csrfHash === null || !csrfMatches(presented, csrfHash)) {",
+    to: "      if (csrfHash === null || (!csrfMatches(presented, csrfHash) && Date.now() < 0)) {",
+    expect: ["SA42.", "SA43.", "SA44."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "the cookies lose HttpOnly",
+    file: STUDIO_WEB_SESSIONS,
+    from: "export const COOKIE_ATTRIBUTES = \"Path=/; Secure; HttpOnly; SameSite=Lax\";",
+    to: "export const COOKIE_ATTRIBUTES = \"Path=/; Secure; SameSite=Lax\";",
+    expect: ["SA10.", "SA11."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "the cookies lose Secure",
+    file: STUDIO_WEB_SESSIONS,
+    from: "export const COOKIE_ATTRIBUTES = \"Path=/; Secure; HttpOnly; SameSite=Lax\";",
+    to: "export const COOKIE_ATTRIBUTES = \"Path=/; HttpOnly; SameSite=Lax\";",
+    expect: ["SA10.", "SA11."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "the session cookie loses its __Host- prefix",
+    file: STUDIO_WEB_SESSIONS,
+    from: "export const SESSION_COOKIE = \"__Host-gcd_studio_session\";",
+    to: "export const SESSION_COOKIE = \"gcd_studio_session\";",
+    expect: ["SA10.", "SA11."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "the bootstrap is honoured when an owner exists",
+    file: STUDIO_WEB_SESSIONS,
+    from: "  if (input.activeOwnerExists) return { kind: \"refuse\", reason: \"not-listed\" };",
+    to: "  if (input.activeOwnerExists && Date.now() < 0) return { kind: \"refuse\", reason: \"not-listed\" };",
+    expect: ["SA39.", "SA66."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "the session lookup ignores revoked_at",
+    file: STUDIO_WEB_SESSIONS,
+    from: "  if (row.revoked_at !== null) return { ok: false, reason: \"revoked\" };",
+    to: "  if (row.revoked_at !== null && Date.now() < 0) return { ok: false, reason: \"revoked\" };",
+    expect: ["SA49.", "SA52.", "SA53.", "SA54."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "the session's idle expiry is ignored",
+    file: STUDIO_WEB_SESSIONS,
+    from: "  if (row.idle_expires_at.getTime() <= now) return { ok: false, reason: \"expired-idle\" };",
+    to: "  if (row.idle_expires_at.getTime() <= now && Date.now() < 0) return { ok: false, reason: \"expired-idle\" };",
+    expect: ["SA50."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "a sign-in logs the user's email",
+    file: STUDIO_WEB_APP,
+    from: "      log(\"auth.sign_in\", { user: signedIn.id, bootstrap });",
+    to: "      log(\"auth.sign_in\", { user: signedIn.id, bootstrap, email: signedIn.email });",
+    expect: ["SA64."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "a successful sign-in redirects to a query parameter",
+    file: STUDIO_WEB_APP,
+    from: "      // Always \"/\": no return-to parameter, so no open redirect.\n      redirect(ctx.res, 303, \"/\");",
+    to: "      // Always \"/\": no return-to parameter, so no open redirect.\n      redirect(ctx.res, 303, ctx.url.searchParams.get(\"next\") ?? \"/\");",
+    expect: ["SA40."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "ANTHROPIC_API_KEY is removed from the web's forbidden list",
+    file: STUDIO_WEB_STARTUP,
+    from: "export const WEB_FORBIDDEN_VARIABLES = [\"ANTHROPIC_API_KEY\"] as const;",
+    to: "export const WEB_FORBIDDEN_VARIABLES = [] as const;",
+    expect: ["SA1.", "SA6."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "the route rule's default deny is removed",
+    file: STUDIO_WEB_SESSIONS,
+    from: "  if (need === undefined || have === undefined) return false;",
+    to: "  if (need === undefined || have === undefined) return true;",
+    expect: ["SA59."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    // Not the one-hop CS2 rule (money.js is neither the library nor an executor): the transitive walk.
+    name: "a web module imports a worker module",
+    file: STUDIO_WEB_APP,
+    from: "import type { WebStore } from \"./store.js\";",
+    to: "import type { WebStore } from \"./store.js\";\nimport \"../worker/money.js\";",
+    expect: ["CS10."],
+  },
+  {
+    name: "a live module imports jose",
+    file: LIVE_SCHEDULER_ENTRY,
+    from: "import { briefForDate } from \"../harness/contentCalendar.js\";",
+    to: "import { briefForDate } from \"../harness/contentCalendar.js\";\nimport \"jose\";",
+    expect: ["CS11.", "CS3."],
+  },
+];
+
 // Every group, in order. MUTATIONS is their concatenation; the groups exist
 // only so `M-inc-sample` can spread its sample across them.
 const MUTATION_GROUPS = [
@@ -5309,6 +5518,7 @@ const MUTATION_GROUPS = [
   ["revision pass", REVISION_PASS_MUTATIONS], ["contact in overlay", CONTACT_IN_OVERLAY_MUTATIONS],
   ["Content Studio S1", CONTENT_STUDIO_S1_MUTATIONS], ["Content Studio S2", CONTENT_STUDIO_S2_MUTATIONS],
   ["Content Studio S3 context", CONTENT_STUDIO_S3_CONTEXT_MUTATIONS], ["Content Studio S3 worker", CONTENT_STUDIO_S3_WORKER_MUTATIONS],
+  ["Content Studio S4", CONTENT_STUDIO_S4_MUTATIONS],
 ];
 const MUTATIONS = MUTATION_GROUPS.flatMap(([, group]) => group);
 

@@ -181,9 +181,10 @@ import {
 import { groupDigits } from "./agents/responseFormatKit.js";
 import {
   LIVE_ENTRY_POINTS, LIVE_PATH_MANIFEST, REVIEW_ONLY_CONSTRUCTOR, REVIEW_ONLY_CONTEXT_MODULE, STUDIO_ALLOWED_EXCEPTIONS,
-  STUDIO_FORBIDDEN_MODULES, STUDIO_FORBIDDEN_TREES,
-  callerViolations, contextConstructionViolations, describeViolation, liveEntryPointsFromConfig, moduleReferences,
-  namesContextConstructor,
+  STUDIO_FORBIDDEN_MODULES, STUDIO_FORBIDDEN_TREES, STUDIO_WEB_ENTRY_POINT, STUDIO_WEB_FORBIDDEN_MODULES,
+  STUDIO_WEB_FORBIDDEN_TREES, STUDIO_WEB_PACKAGES,
+  callerViolations, contextConstructionViolations, describeViolation, isStudioWebTestModule, joseImportViolations,
+  liveEntryPointsFromConfig, moduleReferences, namesContextConstructor, studioWebModules,
   reviewOnlyMentions, studioSideEntryPoints, livePathManifestViolations, liveSourceDigests, repositoryCodeFiles,
   walkImportGraph, type LivePathManifest,
 } from "./livePathGuards.js";
@@ -12588,18 +12589,20 @@ async function run(): Promise<void> {
     const cliText = codeFiles.get("scripts/local/content-run.mjs") ?? "";
     const refused = (files: Record<string, string>) => callerViolations(new Map(Object.entries(files))).map((v) => v.file);
     // src/studio/** holds the database tree (src/studio/db/**, S2), which may
-    // not import the library, and the worker (src/studio/worker/**, S3), which
-    // may. The web tree (S4) does not exist yet; the rule for it is enforced
-    // over synthetic files below.
+    // not import the library, the worker (src/studio/worker/**, S3), which
+    // may, and the web tree (src/studio/web/**, S4), which may not. The rule is
+    // enforced over the real web tree and over synthetic files below; CS10
+    // adds the transitive walk.
     check("CS2. only scripts/local/content-run.mjs and src/studio/worker/** import the content-run library, and nothing "
       + "under src/studio/web/** imports it, the stage-execution boundary or a stage executor — over src/studio/db/** "
-      + "(S2) and src/studio/worker/** (S3), the only Studio trees so far"
+      + "(S2), src/studio/worker/** (S3) and src/studio/web/** (S4), the only Studio trees so far"
       + (callers.length ? ` — ${callers.map((v) => `${v.file}: ${v.detail}`).join("; ")}` : ""),
       callers.length === 0 && codeFiles.size > 100 && cliText.length > 0
         && [...codeFiles.keys()].every((file) => !file.startsWith("src/studio/") || file.startsWith("src/studio/db/")
-          || file.startsWith("src/studio/worker/"))
+          || file.startsWith("src/studio/worker/") || file.startsWith("src/studio/web/"))
         && [...codeFiles.keys()].some((file) => file.startsWith("src/studio/db/"))
         && [...codeFiles.keys()].some((file) => file.startsWith("src/studio/worker/"))
+        && [...codeFiles.keys()].some((file) => file.startsWith("src/studio/web/"))
         && refused({ "scripts/local/moved-cli.mjs": cliText }).join() === "scripts/local/moved-cli.mjs"
         && refused({
           "src/studio/worker/run.ts": `import { runFullPipeline } from "../../harness/${LIB}/index.js";\n`,
@@ -12680,10 +12683,105 @@ async function run(): Promise<void> {
         && contextRefs.length === 0
         && fromContext.violations.length === 0 && fromContext.reached.join() === contextCompiled
         && cliStatic.length > 0 && cliStatic.every((r) => "specifier" in r && r.specifier.startsWith("node:"))
-        && studioStarts.length === 1
+        && studioStarts.map(([name]) => name).sort().join() === "start:studio-web,start:studio-worker"
         && studioStarts.every(([, command]) => /^node dist\/studio\/[\w/.-]+\.js$/.test(command))
         && reviewOnlyMentions(`import type { ReviewOnlyExecutionContext } from "../harness/${LIB}/executionContext.js";\n`,
           "src/worker/x.ts").join() === `ReviewOnlyExecutionContext,module ../harness/${LIB}/executionContext.js`);
+
+    // CS10 (Content Studio S4). The web service's TRANSITIVE isolation, beside
+    // CS2's one-hop rule (unchanged): from every compiled web module — its
+    // suites and test support included — no path reaches the content-run
+    // library, the worker, an executor, stageExecution or revision, the fact
+    // loader, the pricing table, any posting, provider, approval or
+    // live-database module, or any package but pg and jose; everything it
+    // reaches is the web tree or the S2 runner. From main.js, no test module
+    // is reachable at all. Synthetic trees prove an intermediary cannot hide one.
+    const webModules = studioWebModules(REPO_ROOT);
+    const webWalk = walkImportGraph({
+      root: REPO_ROOT, entryPoints: webModules, forbiddenModules: STUDIO_WEB_FORBIDDEN_MODULES,
+      forbiddenTrees: STUDIO_WEB_FORBIDDEN_TREES, checkPathLiterals: false, allowedPackages: STUDIO_WEB_PACKAGES,
+    });
+    const webTestModules = webModules.filter(isStudioWebTestModule);
+    const fromWebMain = walkImportGraph({
+      root: REPO_ROOT, entryPoints: [STUDIO_WEB_ENTRY_POINT], forbiddenModules: [...STUDIO_WEB_FORBIDDEN_MODULES, ...webTestModules],
+      forbiddenTrees: STUDIO_WEB_FORBIDDEN_TREES, checkPathLiterals: false, allowedPackages: STUDIO_WEB_PACKAGES,
+    });
+    const webTree = (files: Record<string, string>, entry = "dist/studio/web/main.js") => {
+      const dir = mkdtempSync(join(tmpdir(), "gcd-cs-web-"));
+      for (const [name, text] of Object.entries(files)) {
+        mkdirSync(dirname(join(dir, name)), { recursive: true });
+        writeFileSync(join(dir, name), text, "utf8");
+      }
+      try {
+        return walkImportGraph({ root: dir, entryPoints: [entry], forbiddenModules: [...STUDIO_WEB_FORBIDDEN_MODULES,
+          "dist/studio/web/testSupport.js"], forbiddenTrees: STUDIO_WEB_FORBIDDEN_TREES, checkPathLiterals: false,
+        allowedPackages: STUDIO_WEB_PACKAGES });
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    };
+    const webOnly = (result: ReturnType<typeof webTree>, kind: string) =>
+      result.violations.length > 0 && result.violations.every((v) => v.kind === kind);
+    check("CS10. the Studio web service is isolated TRANSITIVELY: from every compiled dist/studio/web/** module, no path "
+      + "reaches dist/harness/contentRun/**, dist/studio/worker/**, a stage executor, stageExecution, revision, the fact "
+      + "loader, the pricing table, a STUDIO_FORBIDDEN_TREES or STUDIO_FORBIDDEN_MODULES entry, @anthropic-ai/sdk or any "
+      + "package but pg and jose; it reaches only the web tree and the S2 runner; its test support is unreachable from "
+      + "main.js; and an intermediary, a re-export or a dynamic import cannot hide a forbidden reach"
+      + (webWalk.violations.length || fromWebMain.violations.length
+        ? ` — ${[...webWalk.violations, ...fromWebMain.violations].map(describeViolation).join("; ")}` : ""),
+      webWalk.violations.length === 0 && fromWebMain.violations.length === 0
+        && webModules.includes(STUDIO_WEB_ENTRY_POINT) && webModules.includes("dist/studio/web/app.js")
+        && webModules.includes("dist/studio/web/web.offline.selftest.js") && webTestModules.includes("dist/studio/web/testSupport.js")
+        && webWalk.reached.every((m) => m.startsWith("dist/studio/web/") || m === "dist/studio/db/runner.js")
+        && fromWebMain.reached.includes("dist/studio/web/app.js") && fromWebMain.reached.includes("dist/studio/web/oidc.js")
+        && !fromWebMain.reached.some(isStudioWebTestModule)
+        && STUDIO_WEB_PACKAGES.join() === "pg,jose"
+        && ["dist/harness/sdk.js", "dist/harness/evidence/approvedFacts.js", "dist/harness/agents/stageExecution.js",
+          "dist/harness/agents/revision.js", "dist/harness/agents/finalCritic.js", ...STUDIO_FORBIDDEN_MODULES]
+          .every((m) => (STUDIO_WEB_FORBIDDEN_MODULES as readonly string[]).includes(m))
+        && ["dist/harness/contentRun/", "dist/studio/worker/", ...STUDIO_FORBIDDEN_TREES]
+          .every((t) => (STUDIO_WEB_FORBIDDEN_TREES as readonly string[]).includes(t))
+        && webOnly(webTree({ "dist/studio/web/main.js": 'import "./app.js";\n', "dist/studio/web/app.js": 'export * from "../db/x.js";\n',
+          "dist/studio/db/x.js": 'export const m = () => import("../worker/money.js");\n', "dist/studio/worker/money.js": "" }), "forbidden")
+        && webTree({ "dist/studio/web/main.js": 'import "./app.js";\n', "dist/studio/web/app.js": 'export * from "../db/x.js";\n',
+          "dist/studio/db/x.js": 'export const m = () => import("../worker/money.js");\n', "dist/studio/worker/money.js": "" })
+          .violations[0]?.chain.join() === "dist/studio/web/main.js,dist/studio/web/app.js,dist/studio/db/x.js"
+        && webOnly(webTree({ "dist/studio/web/main.js": 'import Anthropic from "@anthropic-ai/sdk";\n' }), "undeclared-package")
+        && webOnly(webTree({ "dist/studio/web/main.js": 'import { PRICE } from "../../harness/sdk.js";\n',
+          "dist/harness/sdk.js": "" }), "forbidden")
+        && webOnly(webTree({ "dist/studio/web/main.js": 'import "./testSupport.js";\n', "dist/studio/web/testSupport.js": "" }), "forbidden")
+        // (the library path is assembled, as in CS2: this suite may not carry one as a string)
+        && webOnly(webTree({ "dist/studio/web/main.js": `import "${["../../harness", LIB, "pricing.js"].join("/")}";\n`,
+          [["dist/harness", LIB, "pricing.js"].join("/")]: "" }), "forbidden")
+        && webTree({ "dist/studio/web/main.js": 'import pg from "pg";\nimport { jwtVerify } from "jose";\nimport "node:http";\n' })
+          .violations.length === 0);
+
+    // CS11 (Content Studio S4). jose is imported only under src/studio/web/**,
+    // and no live entry point reaches it: the live walk is repeated with every
+    // declared dependency allowed EXCEPT jose, so any live path to it is an
+    // undeclared-package violation.
+    const joseImports = joseImportViolations(codeFiles);
+    const liveWithoutJose = walkImportGraph({
+      root: REPO_ROOT, entryPoints: LIVE_ENTRY_POINTS, allowedPackages: dependencies.filter((name) => name !== "jose"),
+    });
+    const joseImporters = [...codeFiles].filter(([file, text]) => moduleReferences(text, file).references
+      .some((r) => "specifier" in r && (r.specifier === "jose" || r.specifier.startsWith("jose/")))).map(([file]) => file);
+    check("CS11. jose is imported only under src/studio/web/**, and no live entry point reaches it — the live graph walks "
+      + "clean with every other dependency allowed and jose not — while a live module, a script or another Studio tree "
+      + "importing it each fail"
+      + (joseImports.length || liveWithoutJose.violations.length
+        ? ` — ${[...joseImports.map((v) => `${v.file}: ${v.detail}`), ...liveWithoutJose.violations.map(describeViolation)].join("; ")}` : ""),
+      joseImports.length === 0 && liveWithoutJose.violations.length === 0 && dependencies.includes("jose")
+        && packageJson.dependencies.jose === "6.2.12"
+        && joseImporters.length > 0 && joseImporters.every((file) => file.startsWith("src/studio/web/"))
+        && joseImporters.includes("src/studio/web/oidc.ts")
+        && JSON.stringify(liveWithoutJose.reached) === JSON.stringify(live.reached)
+        && joseImportViolations(new Map(Object.entries({
+          "src/scheduler/daily.ts": 'import { jwtVerify } from "jose";\n',
+          "src/studio/worker/x.ts": 'export const k = () => import("jose/jwks/remote");\n',
+          "scripts/x.mjs": 'const j = require("jose");\n',
+          "src/studio/web/ok.ts": 'import { SignJWT } from "jose";\n',
+        }))).map((v) => v.file).sort().join() === "scripts/x.mjs,src/scheduler/daily.ts,src/studio/worker/x.ts");
 
     // The shared-module diff guard.
     const manifest = JSON.parse(readFileSync(resolve(REPO_ROOT, LIVE_PATH_MANIFEST), "utf8")) as LivePathManifest;

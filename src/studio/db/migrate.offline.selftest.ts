@@ -230,12 +230,20 @@ async function main(): Promise<void> {
   // Its code, without its comments (which name what it never reads).
   const worker = (studioSources.get(WORKER_ENTRY) ?? "").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
   const workerReads = [...worker.matchAll(/process\.env\.([A-Za-z_][A-Za-z0-9_]*)/g)].map((match) => match[0]);
-  const otherReads = runtimeSources.filter(([path]) => path !== "src/studio/db/migrate.ts" && path !== WORKER_ENTRY)
+  // Since S4 the web service's entry point is the third (design §3.2), held to its own exact list the same
+  // way: the names present, STUDIO_DATABASE_URL, the origin, the hd, the client id and secret, the bootstrap
+  // email, PORT and RENDER_GIT_COMMIT — never DATABASE_URL, a provider key, a cap or a computed name.
+  const WEB_ENTRY = "src/studio/web/main.ts";
+  const web = (studioSources.get(WEB_ENTRY) ?? "").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  const webReads = [...web.matchAll(/process\.env\.([A-Za-z_][A-Za-z0-9_]*)/g)].map((match) => match[0]);
+  const otherReads = runtimeSources.filter(([path]) => path !== "src/studio/db/migrate.ts" && path !== WORKER_ENTRY && path !== WEB_ENTRY)
     .filter(([, text]) => /process\.env|process\[|\benv\s*\[/.test(text)).map(([path]) => path);
   check("SM2b. the entry point reads exactly STUDIO_DATABASE_URL's value and DATABASE_URL's presence "
     + "(`process.env.DATABASE_URL !== undefined`, never its value), in the dot form; the worker's entry point "
     + "(S3) reads exactly the names present, STUDIO_DATABASE_URL, the two caps and RENDER_GIT_COMMIT, in the dot "
-    + "form, and never DATABASE_URL; no other Studio runtime module reads the environment; and no Studio module "
+    + "form, and never DATABASE_URL; the web's entry point (S4) reads exactly the names present, STUDIO_DATABASE_URL, "
+    + "STUDIO_PUBLIC_ORIGIN, STUDIO_ALLOWED_HD, the client id and secret, STUDIO_BOOTSTRAP_OWNER_EMAIL, PORT and "
+    + "RENDER_GIT_COMMIT, in the dot form, and never DATABASE_URL; no other Studio runtime module reads the environment; and no Studio module "
     + "imports the live runtime (config, state or migrate)"
     + (otherReads.length ? ` — ${otherReads.join(", ")}` : ""),
   JSON.stringify(entryReads.sort()) === JSON.stringify(["process.env.DATABASE_URL", "process.env.STUDIO_DATABASE_URL"])
@@ -248,6 +256,11 @@ async function main(): Promise<void> {
     && (worker.match(/process\.env\b(?!\.)/g) ?? []).length === 1 && /names:\s*Object\.keys\(process\.env\),/.test(worker)
     && worker.includes("process.env.STUDIO_DATABASE_URL")
     && !/process\.env\[|process\[|\benv\s*\[|DATABASE_URL/.test(worker.replace(/STUDIO_DATABASE_URL/g, ""))
+    && JSON.stringify(webReads.sort()) === JSON.stringify(["process.env.PORT", "process.env.RENDER_GIT_COMMIT",
+      "process.env.STUDIO_ALLOWED_HD", "process.env.STUDIO_BOOTSTRAP_OWNER_EMAIL", "process.env.STUDIO_DATABASE_URL",
+      "process.env.STUDIO_GOOGLE_CLIENT_ID", "process.env.STUDIO_GOOGLE_CLIENT_SECRET", "process.env.STUDIO_PUBLIC_ORIGIN"])
+    && (web.match(/process\.env\b(?!\.)/g) ?? []).length === 1 && /names:\s*Object\.keys\(process\.env\),/.test(web)
+    && !/process\.env\[|process\[|\benv\s*\[|DATABASE_URL|ANTHROPIC|STUDIO_MAX_/.test(web.replace(/STUDIO_DATABASE_URL/g, ""))
     && otherReads.length === 0
     && [...studioSources.values()].every((text) =>
       !/from\s+["'][^"']*harness\/(?:config|state)\.js["']/.test(text)

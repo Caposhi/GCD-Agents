@@ -28,6 +28,14 @@
  *    extends 2: only `scripts/local/content-run.mjs` and `src/studio/worker/**`
  *    may name its constructor, the library never calls it, and no module the
  *    live entry points load may name the context, its constructor or its module.
+ * 2c. Content Studio S4 — the web service's TRANSITIVE isolation: from every
+ *    compiled `dist/studio/web/**` module, no path reaches the content-run
+ *    library, the worker, a stage executor or the stage-execution boundary, the
+ *    fact loader, the pricing table, any posting, provider, approval or
+ *    live-database module, or any package but `pg` and `jose`; and the web's test
+ *    support is unreachable from its entry point (`STUDIO_WEB_*`). `jose` is
+ *    imported only under `src/studio/web/**` (`joseImportViolations`), and no
+ *    live entry point reaches it.
  *
  * This module is a checker. Nothing live imports it, and it imports nothing
  * from the pipeline.
@@ -111,6 +119,57 @@ export const CONTENT_RUN_CALLERS = ["scripts/local/content-run.mjs", "src/studio
 export const CONTENT_RUN_TREES = ["src/harness/contentRun/", "dist/harness/contentRun/"] as const;
 /** The Studio web service: never a path to a model (§5.4 item 2). */
 export const STUDIO_WEB_TREE = "src/studio/web/";
+
+/**
+ * Content Studio S4: the web service's compiled tree, its entry point, and what
+ * nothing it loads may reach — a stricter, transitive companion to the one-hop
+ * `STUDIO_WEB_TREE` rule in `callerViolations`, which is unchanged.
+ */
+export const STUDIO_WEB_DIST_TREE = "dist/studio/web/";
+export const STUDIO_WEB_ENTRY_POINT = "dist/studio/web/main.js";
+export const STUDIO_WEB_FORBIDDEN_TREES = ["dist/harness/contentRun/", "dist/studio/worker/", ...STUDIO_FORBIDDEN_TREES] as const;
+export const STUDIO_WEB_FORBIDDEN_MODULES = [
+  ...FORBIDDEN_LIVE_MODULES, "dist/harness/agents/revisionInput.js", "dist/harness/evidence/approvedFacts.js",
+  "dist/harness/sdk.js", ...STUDIO_FORBIDDEN_MODULES,
+] as const;
+/** The only packages a web module may import (Node built-ins aside): no provider SDK. */
+export const STUDIO_WEB_PACKAGES = ["pg", "jose"] as const;
+/** The OpenID library: only the web service may import it. */
+export const JOSE_PACKAGE = "jose";
+
+/** Every compiled web module, in path order: the web's walk starts from each one, test modules included. */
+export function studioWebModules(root: string): string[] {
+  const modules: string[] = [];
+  const walk = (dir: string) => {
+    if (!existsSync(resolve(root, dir))) return;
+    for (const name of readdirSync(resolve(root, dir)).sort()) {
+      const path = `${dir}/${name}`;
+      if (statSync(resolve(root, path)).isDirectory()) walk(path);
+      else if (name.endsWith(".js")) modules.push(path);
+    }
+  };
+  walk(STUDIO_WEB_DIST_TREE.replace(/\/$/, ""));
+  return modules;
+}
+
+/** The web's test-only modules: its suites and its test support. None may be reachable from `main.js`. */
+export const isStudioWebTestModule = (path: string): boolean =>
+  path.startsWith(STUDIO_WEB_DIST_TREE) && (/\.selftest\.js$/.test(path) || /(?:^|\/)testSupport\.js$/.test(path));
+
+/** Files outside `src/studio/web/**` that import `jose`, by any import form or a `require`. */
+export function joseImportViolations(files: ReadonlyMap<string, string>): Array<{ file: string; detail: string }> {
+  const violations: Array<{ file: string; detail: string }> = [];
+  for (const [file, text] of files) {
+    if (file.startsWith(STUDIO_WEB_TREE)) continue;
+    for (const reference of moduleReferences(text, file).references) {
+      const named = "specifier" in reference
+        ? packageName(reference.specifier) === JOSE_PACKAGE
+        : /["'`]jose(?:\/[^"'`]*)?["'`]/.test(reference.text);
+      if (named) violations.push({ file, detail: `${reference.kind} reference to ${JOSE_PACKAGE}; only ${STUDIO_WEB_TREE}** may import it` });
+    }
+  }
+  return violations;
+}
 
 export type ModuleReference =
   | { kind: "static" | "dynamic"; specifier: string }

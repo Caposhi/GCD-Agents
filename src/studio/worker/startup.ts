@@ -13,7 +13,8 @@
  */
 
 import {
-  decideStudioIdentity, planStudioMigrations, resolveStudioDatabaseUrl, type LedgerRow, type StudioIdentityProbe,
+  decideRuntimeIdentity, decideRuntimeSchemaVersion, forbiddenNamesPresent, resolveStudioDatabaseUrl, type LedgerRow,
+  type RuntimeRefusal, type StudioIdentityProbe,
 } from "../db/runner.js";
 import { parseCapMicros } from "./money.js";
 
@@ -32,14 +33,10 @@ const refuse = (reason: string, message: string): never => {
 /**
  * Every variable no Studio service may carry (design §3.2), by exact name, plus
  * every `IG_*`, `FB_*` and `GBP_*` name. Present at all, whatever its value,
- * even empty, is a refusal.
+ * even empty, is a refusal. Shared with the web service since S4: the lists
+ * live in the S2 runner module, re-exported here by their S3 names.
  */
-export const FORBIDDEN_VARIABLES = [
-  "DATABASE_URL", "CONSOLE_TOKEN", "GOOGLE_ACCESS_TOKEN", "GOOGLE_REFRESH_TOKEN", "GOOGLE_CLIENT_ID",
-  "GOOGLE_CLIENT_SECRET", "IMAGEGEN_API_KEY", "APPROVAL_CHANNEL_WEBHOOK", "AUTONOMY_PHASE", "PUBLIC_BASE_URL",
-  "ACTIVE_PLATFORMS",
-] as const;
-export const FORBIDDEN_PREFIXES = ["IG_", "FB_", "GBP_"] as const;
+export { FORBIDDEN_PREFIXES, FORBIDDEN_VARIABLES, STUDIO_EXPECTED_MIGRATIONS, STUDIO_SCHEMA_VERSION } from "../db/runner.js";
 /**
  * Refused in S3 only: live runs are enabled in S6, so until then the worker
  * holds no provider key at all — and the live `config.ts`, which the stage
@@ -74,8 +71,7 @@ export interface WorkerStartup {
 
 /** The forbidden variables present, by name, in name order. */
 export function forbiddenVariablesPresent(names: readonly string[]): string[] {
-  const exact = new Set<string>([...FORBIDDEN_VARIABLES, ...S3_FORBIDDEN_VARIABLES]);
-  return [...new Set(names)].filter((name) => exact.has(name) || FORBIDDEN_PREFIXES.some((p) => name.startsWith(p))).sort();
+  return forbiddenNamesPresent(names, S3_FORBIDDEN_VARIABLES);
 }
 
 /**
@@ -110,14 +106,12 @@ export function decideWorkerStartup(env: WorkerEnvironment): WorkerStartup {
   return { connectionString, caps: { dailyMicros, monthlyMicros }, commit, zeroCaps };
 }
 
-/**
- * The Studio migrations this code expects, in order, and so its schema
- * version: the last of them. A database whose ledger is anything else — a
- * migration missing, an extra one, or one whose bytes changed — is refused at
- * start-up, before ownership (design §5.3, version skew).
- */
-export const STUDIO_EXPECTED_MIGRATIONS = ["0001_studio_identity_and_tripwire.sql", "0002_studio_schema.sql"] as const;
-export const STUDIO_SCHEMA_VERSION = STUDIO_EXPECTED_MIGRATIONS[STUDIO_EXPECTED_MIGRATIONS.length - 1]!;
+/** The worker's refusals: its own class, and its own words. */
+const WORKER_REFUSAL: RuntimeRefusal = {
+  refuse,
+  who: "worker",
+  deployHint: "the web service (which runs the migrations) is deployed first, at the same commit.",
+};
 
 /**
  * The database is the Studio's: named `gcd_studio`, no live-schema table, the
@@ -125,9 +119,7 @@ export const STUDIO_SCHEMA_VERSION = STUDIO_EXPECTED_MIGRATIONS[STUDIO_EXPECTED_
  * at run time (design §3.2). An unmigrated database is refused too.
  */
 export function decideWorkerIdentity(probe: StudioIdentityProbe): void {
-  if (decideStudioIdentity(probe).kind !== "studio") {
-    refuse("not-migrated", "the Studio database has not been migrated; the worker runs only against a migrated gcd_studio.");
-  }
+  decideRuntimeIdentity(probe, WORKER_REFUSAL);
 }
 
 /**
@@ -139,19 +131,5 @@ export function decideSchemaVersion(
   ledger: readonly LedgerRow[] | null,
   files: ReadonlyArray<{ name: string; sha256: string }>,
 ): string {
-  const expected = [...STUDIO_EXPECTED_MIGRATIONS];
-  const fileNames = [...files].map((f) => f.name).sort();
-  if (JSON.stringify(fileNames) !== JSON.stringify(expected)) {
-    refuse("schema-version",
-      `this worker's studio/migrations holds ${JSON.stringify(fileNames)}, not the ${JSON.stringify(expected)} its code expects.`);
-  }
-  const recorded = [...(ledger ?? [])].map((row) => row.name).sort();
-  if (JSON.stringify(recorded) !== JSON.stringify(expected)) {
-    refuse("schema-version",
-      `the database's Studio schema is ${JSON.stringify(recorded)}, not the ${STUDIO_SCHEMA_VERSION} this worker expects; `
-      + "the web service (which runs the migrations) is deployed first, at the same commit.");
-  }
-  const plan = planStudioMigrations(files, ledger ?? []);
-  if (plan.pending.length !== 0) refuse("schema-version", "studio migrations remain unapplied.");
-  return STUDIO_SCHEMA_VERSION;
+  return decideRuntimeSchemaVersion(ledger, files, WORKER_REFUSAL);
 }

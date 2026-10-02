@@ -930,6 +930,16 @@ not the only limit, and the live worker's key is never shared with the Studio.
    is the load-bearing step. The dependency lands in `package-lock.json`, which the live services
    also install. S4 records it, and `npm audit --omit=dev` must stay at zero.
 
+**Dated deviation (S4, 2026-10-02; `IMPLEMENTED`, see [Roadmap](ROADMAP.md)): the key set is not
+"cached per its headers".** S4 uses `jose` 6.2.12's own remote key set (`createRemoteJWKSet`) with an
+explicit 5-second timeout, and writes no cache of its own, as its task required. That key set caches
+the fetched keys for a **fixed** maximum age (jose's default, 10 minutes), ignoring the response's
+`Cache-Control`, and refetches early only when a token names an unknown `kid`, at most once per
+30-second cooldown. A key Google rotates out is therefore trusted for up to 10 minutes after Google
+stops publishing it, and a new key is fetched on first sight. Everything else in step 2 is as
+written: the endpoints and issuers are code constants from Google's discovery document (read
+2026-10-02), and the `hd` claim, not the `hd` parameter, is the control.
+
 ### 7.2 Allowlist and roles
 
 **PROPOSED.** Signing in requires an owner-created allowlist entry. There is no self-registration.
@@ -962,6 +972,10 @@ not the only limit, and the live worker's key is never shared with the Studio.
   `POST`. State never changes on a `GET`.
 - **Rate limits:** `GET /auth/login`, the callback and failed sign-ins are rate-limited per client
   address, in-process (the web is one instance). Unconsumed login attempts expire and are purged.
+  *(Dated note, S4, 2026-10-02: "client address" is the direct peer address, as on the live API;
+  forwarding headers are not trusted without a trusted-proxy configuration. Behind Render's proxy
+  every client may share one address, so the limits may act service-wide — TO VERIFY at S8, and an
+  accepted limitation in [Roadmap](ROADMAP.md). The purges follow §4.7's proposed retention.)*
 - **Logout:** a `POST /auth/logout` with CSRF protection. It revokes the session row and clears the
   cookie. The owner can revoke any user's sessions.
 - **No shared tokens and no credentials in URLs.** No console token, no bearer URL, and no token in
@@ -1296,6 +1310,11 @@ prohibition reads "no unrelated release may occur, of any service, for any reaso
   auto-deploy must stay off on all three live services. That was last verified on 2026-09-18
   ([Status](STATUS.md)), and the daily interval monitor does not cover it. Both are re-verified
   read-only before each Studio merge, and S8 must also pass the Blueprint auto-sync check.
+  *(Dated note, owner decision of 2026-10-02, recorded by S4 in [Status](STATUS.md) and
+  [Roadmap](ROADMAP.md): Native auto-deploy is always off on the three live services; per-merge
+  re-verification is no longer requested. This is owner attestation, not reviewer-observed
+  evidence. Last observed by screenshot on 2026-10-01. The deploy-production refusal is still
+  verified from GitHub on every merge. S8's Blueprint auto-sync check is unaffected.)*
 - **No exception is in force.** On 2026-09-29 the owner kept the default: the freeze covers new
   services. Any later change to that is a new owner decision, recorded in [Status](STATUS.md)
   before O3.

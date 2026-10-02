@@ -292,6 +292,89 @@ export async function probeStudioIdentity(client: StudioSqlClient): Promise<Stud
   };
 }
 
+// --- Shared by the Studio's runtime services --------------------------------
+//
+// The worker (S3) and the web service (S4) make the same start-up refusals and
+// the same run-time database check (design §3.2). These rules moved here from
+// `src/studio/worker/startup.ts` in S4, unchanged, so the web can share them
+// without reaching any worker module; the worker re-exports them by their old
+// names. Each refusal is raised through the caller's own `refuse`, so the
+// worker's refusals keep their class, reasons and messages.
+
+/**
+ * Every variable no Studio service may carry (design §3.2), by exact name, plus
+ * every `IG_*`, `FB_*` and `GBP_*` name. Present at all, whatever its value,
+ * even empty, is a refusal.
+ */
+export const FORBIDDEN_VARIABLES = [
+  "DATABASE_URL", "CONSOLE_TOKEN", "GOOGLE_ACCESS_TOKEN", "GOOGLE_REFRESH_TOKEN", "GOOGLE_CLIENT_ID",
+  "GOOGLE_CLIENT_SECRET", "IMAGEGEN_API_KEY", "APPROVAL_CHANNEL_WEBHOOK", "AUTONOMY_PHASE", "PUBLIC_BASE_URL",
+  "ACTIVE_PLATFORMS",
+] as const;
+export const FORBIDDEN_PREFIXES = ["IG_", "FB_", "GBP_"] as const;
+
+/** The forbidden variables present, by name, in name order: the shared list plus a service's own. */
+export function forbiddenNamesPresent(names: readonly string[], alsoForbidden: readonly string[]): string[] {
+  const exact = new Set<string>([...FORBIDDEN_VARIABLES, ...alsoForbidden]);
+  return [...new Set(names)].filter((name) => exact.has(name) || FORBIDDEN_PREFIXES.some((p) => name.startsWith(p))).sort();
+}
+
+/**
+ * The Studio migrations this code expects, in order, and so its schema
+ * version: the last of them. A database whose ledger is anything else — a
+ * migration missing, an extra one, or one whose bytes changed — is refused at
+ * start-up (design §5.3, version skew).
+ */
+export const STUDIO_EXPECTED_MIGRATIONS = ["0001_studio_identity_and_tripwire.sql", "0002_studio_schema.sql"] as const;
+export const STUDIO_SCHEMA_VERSION = STUDIO_EXPECTED_MIGRATIONS[STUDIO_EXPECTED_MIGRATIONS.length - 1]!;
+
+/** How a runtime service raises a refusal, and how its messages name it. */
+export interface RuntimeRefusal {
+  refuse: (reason: string, message: string) => never;
+  /** "worker" or "web service": the messages name the service refusing. */
+  who: string;
+  /** What to do about a schema-version refusal. */
+  deployHint: string;
+}
+
+/**
+ * The database is the Studio's: named `gcd_studio`, no live-schema table, the
+ * tripwire, the ledger and the identity row — S2's runner decision, repeated
+ * at run time (design §3.2). An unmigrated database is refused too.
+ */
+export function decideRuntimeIdentity(probe: StudioIdentityProbe, how: RuntimeRefusal): void {
+  if (decideStudioIdentity(probe).kind !== "studio") {
+    how.refuse("not-migrated", `the Studio database has not been migrated; the ${how.who} runs only against a migrated gcd_studio.`);
+  }
+}
+
+/**
+ * The schema version, or a refusal: the ledger must record exactly the
+ * expected migrations, the service's own migration files must be exactly
+ * those, and every recorded sha256 must match the file at the service's commit.
+ */
+export function decideRuntimeSchemaVersion(
+  ledger: readonly LedgerRow[] | null,
+  files: ReadonlyArray<{ name: string; sha256: string }>,
+  how: RuntimeRefusal,
+): string {
+  const expected = [...STUDIO_EXPECTED_MIGRATIONS];
+  const fileNames = [...files].map((f) => f.name).sort();
+  if (JSON.stringify(fileNames) !== JSON.stringify(expected)) {
+    how.refuse("schema-version",
+      `this ${how.who}'s studio/migrations holds ${JSON.stringify(fileNames)}, not the ${JSON.stringify(expected)} its code expects.`);
+  }
+  const recorded = [...(ledger ?? [])].map((row) => row.name).sort();
+  if (JSON.stringify(recorded) !== JSON.stringify(expected)) {
+    how.refuse("schema-version",
+      `the database's Studio schema is ${JSON.stringify(recorded)}, not the ${STUDIO_SCHEMA_VERSION} this ${how.who} expects; `
+      + how.deployHint);
+  }
+  const plan = planStudioMigrations(files, ledger ?? []);
+  if (plan.pending.length !== 0) how.refuse("schema-version", "studio migrations remain unapplied.");
+  return STUDIO_SCHEMA_VERSION;
+}
+
 // --- The run ------------------------------------------------------------------
 
 const lockKey = (): [number, number] => {

@@ -1,6 +1,6 @@
 # GCD Content Intelligence roadmap
 
-Last reviewed: 2026-10-01.
+Last reviewed: 2026-10-02.
 
 This roadmap is the canonical unfinished-work sequence and the current-phase cursor. It orders work; it does not grant authority to deploy, migrate, call providers, change external configuration, or begin a phase. [Status](STATUS.md) records what is verified true now. Where this file and verified production evidence disagree, resolve the discrepancy rather than following this text. Roadmap continuity is binding — see [`AGENTS.md`](../AGENTS.md).
 
@@ -23,7 +23,297 @@ These are not interchangeable and must not be collapsed into "done". `MERGED` in
 
 ## Implemented repository change awaiting merge
 
-### Content Studio S3 — the review-only execution context (Part 1), and the Studio worker and job queue (Part 2); PR #106 recorded as merged — `IMPLEMENTED`
+### Content Studio S4 — authentication: the `src/studio/web/**` skeleton, Google OpenID Connect, the bootstrap owner, sessions, CSRF, roles and security headers; `jose` added; S3 recorded as merged — `IMPLEMENTED`
+
+**State:** `IMPLEMENTED` on branch `claude/affectionate-dirac-n1tlhn`, based directly on `origin/main` at `0aae05b210fc9d4471efa3a177329981980bb50a` (the merge of PR #107, S3). **Not `MERGED`, not `CONFIGURED`, not `DEPLOYED`, not `ENABLED`, not `PRODUCTION-VALIDATED`.** No Render file names the web service: `render.yaml` is unchanged and `render.studio.yaml` does not exist (S8). No Studio service, database, Google OAuth client, consent screen, secret, `STUDIO_PUBLIC_ORIGIN` or Anthropic key exists. Nothing ran anywhere but this container, against a local fake OpenID issuer and a disposable PostgreSQL 16 server; **no request was made to Google except the one read-only GET of its public discovery document**, and none to Render or Anthropic. No migration, `studio/migrations/**`, `state/migrations/**`, `config/` file, prompt, skill, model id, registry entry or `executionEnabled` value changed; no live-loaded module changed (`scripts/ci/live-path-manifest.json` is unchanged and `CS3` passes). The partial-release interval (bound `2026-10-22T18:52Z`; see [Status](STATUS.md)) is unchanged. The tracked `.DS_Store` is untouched. No model was called.
+
+**PR / merge:** [PR #108](https://github.com/Caposhi/GCD-Agents/pull/108), open, not merged, from `claude/affectionate-dirac-n1tlhn` into `main`. CI is recorded in the PR. **This PR's merge SHA is the blocking follow-up** permitted by the mutable-identifier rule in [`AGENTS.md`](../AGENTS.md).
+
+**Preflight (2026-10-02), all passed before any edit:**
+
+- `origin/main` was exactly `0aae05b…`, with ordered parents `bec4a41…` then `8b3b8d3…`, and `git diff 8b3b8d3 0aae05b` was empty. PR #107 was merged with that merge commit. The only other open PR, #39, touches none of `src/studio/**`, `studio/**`, `src/harness/livePathGuards.ts`, `package.json`, `package-lock.json` or `.github/workflows/**`.
+- CI run 37011861567 (push, head `0aae05b`) completed on attempt 1 with exactly the five jobs, all `success`; `deploy-production` run 72 (37013609061) refused at *Refuse while production automation is disabled* and skipped its release job. The figures are in S3's record below.
+- The working tree was clean and the tracked `.DS_Store` present and unmodified.
+- The baseline on `0aae05b`: `npm ci`, typecheck and build passed; `npm run test:offline` passed eleven suites, 1,872 checks; the harness's source inventory was **589 mutations** (`--list` is not a harness option: the harness printed its inventory and began a full run, which was stopped); each shard passed on the untouched base — shard 0/3 197 mutations in 13m11s, shard 1/3 196 in 14m20s, shard 2/3 196 in 17m01s, 51 captured targets (in a separate worktree, while this change was being built in the main checkout, so the times are under load); and `CS3`, the live-path manifest diff guard, passed.
+- **Render native auto-deploy was not re-verified** (owner decision of 2026-10-02, below).
+
+**Why.** Design §10's S4 row, §7 and §9: the web service's skeleton and authentication, proven against a local fake issuer, before any screen (S5) or paid action (S6) exists.
+
+**Delivered.**
+
+1. **The web service, `src/studio/web/**`, and `npm run start:studio-web`** (`node dist/studio/web/main.js`), on `node:http` as `src/api/server.ts` is, with no framework. Modules: `main.ts` (the entry point), `startup.ts` (the start-up decisions), `server.ts` (the lifecycle), `app.ts` (the route table and handlers), `oidc.ts`, `sessions.ts`, `store.ts` (`WebStore` and `PgWebStore`), `rateLimit.ts`, and the test-only `testSupport.ts`.
+2. **The environment** (design §3.2). `main.ts` reads only `STUDIO_DATABASE_URL`, `STUDIO_PUBLIC_ORIGIN`, `STUDIO_ALLOWED_HD`, `STUDIO_GOOGLE_CLIENT_ID`, `STUDIO_GOOGLE_CLIENT_SECRET`, `STUDIO_BOOTSTRAP_OWNER_EMAIL`, `PORT` and `RENDER_GIT_COMMIT`, each as `process.env.NAME`, plus the names present for the scan. It never reads `STUDIO_MAX_*`. **Refused before any connection:**
+   - (a) any forbidden variable, whatever its value, even empty: `DATABASE_URL`, `CONSOLE_TOKEN`, `GOOGLE_ACCESS_TOKEN`, `GOOGLE_REFRESH_TOKEN`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `IMAGEGEN_API_KEY`, `APPROVAL_CHANNEL_WEBHOOK`, `AUTONOMY_PHASE`, `PUBLIC_BASE_URL`, `ACTIVE_PLATFORMS`, any `IG_*`, `FB_*` or `GBP_*` name, and `ANTHROPIC_API_KEY`, which is forbidden on the web **in every phase**;
+   - (b) a `STUDIO_PUBLIC_ORIGIN` that is not an exact https origin (no path, trailing slash, query, fragment, credentials, upper case or default port);
+   - (c) a `STUDIO_ALLOWED_HD` other than `germancardepot.com`;
+   - (d) a missing or empty client id or client secret;
+   - also a missing or non-PostgreSQL `STUDIO_DATABASE_URL`, a `PORT` that is not a port, and a `RENDER_GIT_COMMIT` that is not a full SHA (as the worker refuses);
+   - (e) then, connected but before listening: the worker's own check — `current_database()` is `gcd_studio`, the `studio_database_identity` row matches, the tripwire and ledger are present, and the applied schema version is exactly `0002_studio_schema.sql`.
+
+   **To share these with the worker without reaching it,** the worker's pure start-up rules — the forbidden lists, `forbiddenNamesPresent`, the expected migrations and the identity and schema-version decisions — moved, unchanged, into the S2 runner module `src/studio/db/runner.ts`. `src/studio/worker/startup.ts` re-exports them under their S3 names and raises every refusal through its own `WorkerStartupRefusal`, with the same reasons and the same words; every `SW` check keeps its name and result (23 of 23), and the three mutations of moved lines (`M549`, `M556`, `M557`) are re-pointed at the runner with the same edit, suite and expected checks.
+3. **Google OpenID Connect** (design §7.1): the authorization-code flow with PKCE S256, `state` and `nonce`.
+   - **The endpoints are code constants** (`GOOGLE_OIDC` in `oidc.ts`), from Google's discovery document `https://accounts.google.com/.well-known/openid-configuration`, read once, read-only, on **2026-10-02 at 13:31:24Z**: authorization `https://accounts.google.com/o/oauth2/v2/auth`, token `https://oauth2.googleapis.com/token`, JWKS `https://www.googleapis.com/oauth2/v3/certs`; issuers `https://accounts.google.com` and `accounts.google.com`. No module but the entry point reads the environment, so no variable can change an endpoint or an issuer. A test injects a fake issuer only through `createStudioWebApp`'s `oidc` parameter, which the entry point never passes (`SA8`); the entry point, executed, redirects to Google's endpoint (`SAP3`).
+   - **`GET /auth/login`** creates a `studio_login_attempts` row — `state` and `nonce` as sha256 hex, the PKCE verifier as issued — sets `__Host-gcd_studio_login` (Secure, HttpOnly, SameSite=Lax, `Path=/`, no `Domain`, 600 s) holding the state, and redirects with `scope=openid email profile`, `hd=germancardepot.com` (a hint only) and a `redirect_uri` derived from `STUDIO_PUBLIC_ORIGIN`, never from `Host`.
+   - **`GET /auth/callback`** refuses an ID or access token in the URL, checks `state` against **both** the cookie and the stored hash, consumes the attempt through `studio_consume_login_attempt` (single use, refuses expired), exchanges the code with the client secret and the verifier within **10 s** (no redirect followed), and accepts the ID token **only** from the token response.
+   - **Verified with `jose`:** algorithms `["RS256"]` only; `iss` one of the two issuers; `aud` the client id; `exp` and `iat` within a **60 s** skew (and `iat` no older than an hour); then the nonce against its stored hash, `hd` equal to `STUDIO_ALLOWED_HD` (missing is refused), `email_verified` the boolean `true`, the lower-cased email ending `@germancardepot.com`, an **active** `studio_users` row, and `google_sub` set at first sign-in and matching on every one after.
+   - **Any failure** shows one generic *Not authorized* page, writes one `studio_audit_log` row (`auth.sign_in_refused`, `detail` `{ "reason": "<class>" }` and nothing else) and creates no session. **Success always redirects to `/`**: there is no return-to parameter.
+   - **The key set** is `jose`'s `createRemoteJWKSet` with an explicit **5 s** timeout; no cache is written here. Its caching is a fixed maximum age, not the response's cache headers — a dated deviation note is at design §7.1.
+4. **The bootstrap owner** (design §7.2). While no active owner exists, a sign-in passing every other check whose verified email equals the lower-cased `STUDIO_BOOTSTRAP_OWNER_EMAIL` creates that user as the active owner, with its `google_sub`, audited (`auth.bootstrap_owner`). It relies on the schema's advisory-locked insert trigger, not re-implemented: two concurrent first sign-ins create exactly one owner (`SAP4`). The variable is ignored once an owner exists and refuses the bootstrap while unset.
+5. **Sessions, CSRF and headers** (design §7.3).
+   - `__Host-gcd_studio_session` holds 32 random bytes; only its sha256 is stored. Same attributes as the login cookie, `Max-Age` 7 days. **12 h idle, 7 d absolute**, extended at most once a minute and never past the absolute expiry; rotated at sign-in (a presented session is revoked). Revoked, expired and disabled-user sessions are refused (`decideSession`).
+   - **CSRF:** a per-session synchronizer token — an HMAC of a fixed label keyed by the session's 32 random bytes — compared in constant time with its stored sha256, **and** `Origin` exactly equal to `STUDIO_PUBLIC_ORIGIN` on every POST; a missing `Origin` or `null` is refused. No GET changes application state.
+   - **`POST /auth/logout`** revokes the session, clears the cookie and redirects to `/`; `GET /auth/logout` is 405.
+   - **Purges** (`DELETE`, at start and every ten minutes): login attempts 1 day after they expire, and sessions 30 days after their idle or absolute expiry or their revocation — design §4.7's retention, which also discharges S2's "purges (S4)" follow-up.
+   - **Rate limits,** in process, per client address: `GET /auth/login` 20 a minute, `GET /auth/callback` 20 a minute, failed sign-ins 10 per 15 minutes (past which the callback refuses before any work).
+   - **Headers on every response,** errors, 404s and `/healthz` included: `Content-Security-Policy: default-src 'self'; script-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'`, `Strict-Transport-Security: max-age=63072000; includeSubDomains`, `Referrer-Policy: no-referrer`, `X-Content-Type-Options: nosniff`, `Cache-Control: no-store`. No CORS header.
+   - **Roles:** one route table, `STUDIO_ROUTE_TABLE`; every route declares `public`, `viewer`, `runner` or `owner`. An undeclared path is 404, an undeclared method 405, and a route whose role is unknown is denied to everyone. The role is checked on every request against the live users row the session lookup reads.
+   - **S4's pages:** signed out, a *Sign in with Google* link; signed in, the escaped display name and role and a logout form. No inline script.
+6. **`/healthz`** (design §3.3): `service: "gcd-studio-web"`, `commit`, `state: "postgres"`, `schema_version` (the newest applied Studio migration) and `worker_heartbeat_age_seconds` (null before the worker's first beat). No authentication, and no user, run or cost data. If the database cannot be read it answers 503 with `state: "unavailable"`.
+7. **Logging** (design §9.2): structured `[studio-web] <event> {…}` lines of ids, classes and counts only — never an email, token, code, state, nonce, cookie, the client secret or an error message (`SA64`, `SAP11`).
+8. **The dependency `jose`, exactly `6.2.12`** (no caret), in `dependencies`. From `package-lock.json`: integrity `sha512-9NiFmJEex0sy2Dk58j2UGBSHgUs2ypF9eZSu4L6vjOX3Dp96Sw1F3uL+H+D1sx02jZZdzUT0HgvCy59CuvXcWw==`, license MIT, **zero transitive runtime dependencies** (its lock entry declares none). `npm audit --omit=dev` stays at 0. **The consequence design §3.1 asks to record:** `jose` lands in the one lockfile the live services also install, so their next authorized release will carry it in `node_modules`, unreached — no live entry point reaches it (`CS11`).
+9. **Two new guards in the Content Intelligence suite, beside `CS1`–`CS9`:**
+   - **`CS10` — the web's TRANSITIVE isolation.** From every compiled `dist/studio/web/**` module (suites and test support included), no path reaches `dist/harness/contentRun/**`, `dist/studio/worker/**`, a stage executor, `stageExecution.js`, `revision.js` or `revisionInput.js`, the fact loader (`approvedFacts.js`), the pricing table (`sdk.js`), any `STUDIO_FORBIDDEN_TREES` or `STUDIO_FORBIDDEN_MODULES` entry, `@anthropic-ai/sdk` or any package but `pg` and `jose`; everything reached is the web tree or the S2 runner; and from `main.js` no test module is reachable at all. Synthetic trees prove an intermediary, a re-export or a dynamic import cannot hide a forbidden reach.
+   - **`CS11` — `jose` only under `src/studio/web/**`**, by any import form, and the live graph walks clean with every other dependency allowed and `jose` not.
+   - **The one-hop `STUDIO_WEB_TREE` rule in `callerViolations` is unchanged.** Two existing checks needed their inventories updated, each stricter, not weaker: `CS2` now names `src/studio/web/**` among the Studio trees and requires it to exist; `CS9` now requires exactly the two `start:studio-*` commands, each running a `dist/studio/` module. `SM2b` holds the web's entry point to its own exact list of variables, as S3 did for the worker's.
+10. **Tests.** `src/studio/web/web.offline.selftest.ts` is the **twelfth** `test:offline` suite (`npm run test:studio-web`); `src/studio/web/web.postgres.selftest.ts` (`npm run test:studio-web-postgres`) joins the existing PostgreSQL step, renamed *Content Studio schema, worker and web disposable PostgreSQL suites*. The fake issuer runs on `node:http` at 127.0.0.1:0 with RSA keys generated at start, and serves an authorization endpoint, a token endpoint (which checks the client secret, the redirect URI and the PKCE S256 verifier) and a JWKS. No test contacts Google.
+
+**Its checks.** Each case is its own named check.
+
+- **Startup:** `SA1` (a), `SA2` (b), `SA3` (c), `SA4` (d), `SA5` (the URL, port and commit), `SA6` (the entry point executed with `ANTHROPIC_API_KEY` set to an empty value, `DATABASE_URL`, an empty `GBP_` name, a trailing-slash origin, another hd, an empty secret and a missing client id — each exit 1, no connection), `SA7` (e), `SA8` (the entry point's reads, order and arguments), `SA9` (the constants, and an app built without an issuer goes to Google).
+- **Login and the accepted paths:** `SA10` (the attempt, the login cookie, the authorization request), `SA11` (a listed user; every cookie attribute; `google_sub` set once), `SA12` (bootstrap with a case-varied variable).
+- **Refusals:** `SA13` hd wrong, `SA14` hd missing, `SA15` `email_verified` false, `SA16` missing, `SA17` the string `"true"`, `SA18` aud, `SA19` iss, `SA20` a bad signature, `SA21` a different key under the same kid, `SA22` alg none, `SA23` HS256 keyed with the public key, `SA23a` RS512 by the right key, `SA24` expired, `SA25` `iat` in the future, `SA26` a replayed state, `SA27` cookie and stored hash disagree, `SA28` state missing, `SA29` nonce mismatch, `SA30` an attempt over 10 minutes old, `SA31` token endpoint error, `SA32` token endpoint timeout, `SA33` an ID token in the callback URL, `SA34` an unlisted email, `SA35` a disabled user, `SA36` a `google_sub` mismatch, `SA37` a non-domain email whose hd passes, `SA38` bootstrap while unset, `SA39` bootstrap once an owner exists; `SA40` no redirect from a query parameter; `SA41` the store consumes attempts only through the schema's function.
+- **CSRF and Origin:** `SA42` no token, `SA43` wrong token, `SA44` another session's token, `SA45` Origin missing, `SA46` `null`, `SA47` another origin, `SA48` GET logout 405, `SA49` a valid logout.
+- **Sessions:** `SA50` idle expiry, `SA51` absolute expiry, `SA52` revocation, `SA53` disabling revokes, `SA54` rotation at sign-in, `SA55` the cookie value never stored.
+- **Headers, health, routes, limits, purge, logs:** `SA56` headers on success, 401, 403, 404, 405, 429, 500 and `/healthz`, no CORS; `SA57` `/healthz`'s body; `SA58` an undeclared route denied; `SA59` default deny and a viewer refused on a test-only owner route (which does not ship); `SA60` the live role; `SA61`–`SA63` the three rate limits; `SA65` the purge; `SA66` the sign-in plan; `SA64` across the whole suite, nothing captured holds a secret, code, state, nonce, verifier, cookie, CSRF token, ID token, email or the client secret.
+- **PostgreSQL:** `SAP1` the web's identity refusal against a database not named `gcd_studio`, through its entry point; `SAP2` an unmigrated `gcd_studio`; `SAP3` the entry point end to end with Google's constants; `SAP4` two concurrent first sign-ins create exactly one owner; `SAP5`/`SAP5a` a sign-in over the real store, nothing secret stored, replay refused; `SAP6` an expired attempt refused and deleted; `SAP7` disabling revokes; `SAP8` the session triggers; `SAP9` the purge; `SAP10` the audit rows; `SAP11` the logs.
+
+**Mutations `M590`–`M611`** (the S4 group, 22). Each fails a named check:
+
+| Id | Mutation | Suite | Expected |
+|---|---|---|---|
+| `M590` | the `hd` check dropped | web | `SA13`, `SA14` |
+| `M591` | the `email_verified` check dropped | web | `SA15`, `SA16`, `SA17` |
+| `M592` | any audience accepted | web | `SA18` |
+| `M593` | any issuer accepted | web | `SA19` |
+| `M594` | the RS256 allowlist dropped | web | `SA23a` |
+| `M595` | the nonce check skipped | web | `SA29` |
+| `M596` | the state-cookie comparison skipped | web | `SA27` |
+| `M597` | a login attempt read instead of consumed (not single-use) | web | `SA41` |
+| `M598` | the Origin check skipped | web | `SA45`, `SA46`, `SA47` |
+| `M599` | the CSRF comparison skipped | web | `SA42`, `SA43`, `SA44` |
+| `M600` | HttpOnly dropped | web | `SA10`, `SA11` |
+| `M601` | Secure dropped | web | `SA10`, `SA11` |
+| `M602` | the `__Host-` prefix dropped | web | `SA10`, `SA11` |
+| `M603` | the bootstrap honoured when an owner exists | web | `SA39`, `SA66` |
+| `M604` | the session lookup ignoring `revoked_at` | web | `SA49`, `SA52`, `SA53`, `SA54` |
+| `M605` | idle expiry ignored | web | `SA50` |
+| `M606` | an email logged | web | `SA64` |
+| `M607` | the redirect taken from a query parameter | web | `SA40` |
+| `M608` | `ANTHROPIC_API_KEY` removed from the web's forbidden list | web | `SA1`, `SA6` |
+| `M609` | the route rule's default deny removed | web | `SA59` |
+| `M610` | a web module importing a worker module (not the library: the transitive guard) | Content Intelligence | `CS10` |
+| `M611` | a live module importing `jose` | Content Intelligence | `CS11`, `CS3` |
+
+**611 mutations in all (609 prohibited, 2 coordinated-authority), over 56 captured paths** (was 589 over 51): the five new paths are `src/studio/web/{startup,oidc,sessions,store,app}.ts`. The shard each runs in follows from its index (`M-shard`).
+
+**Migrations / schema impact:** none. S4 uses S2's schema unchanged: the login-attempt function, the users triggers, the session guard and lifetimes, the disable-revokes trigger and the audit log. [Data model](DATA_MODEL.md) is checked and unchanged; its S4 rows (the hash discipline, the bootstrap email, the purges) are now implemented as recorded there.
+
+**Material design decisions.**
+
+- **Decisions are pure functions; the store only reads and writes rows.** `decideSession`, `planSignIn`, `roleAllows`, `csrfMatches`, `originAllowed`, `checkIdentityClaims` and `decideWebStartup` take data. The store returns a session with its live users row unfiltered, so revocation, expiry and status are decided in one place, and the offline suite and the mutation harness can prove each one. The schema's own rules (single use, the bootstrap trigger, the session guard) are relied on, not re-implemented, and proven on PostgreSQL.
+- **The CSRF token is derived, not stored in the clear:** an HMAC keyed by the session's 32 random bytes. It is per session, unforgeable without the HttpOnly cookie, and only its sha256 is stored, as the schema requires, so the server never holds a token it could leak.
+- **The shared start-up rules moved into the S2 runner module,** not a new tree, so the worker's entry point still reaches only `startup.ts`, `money.ts` and the runner (`SW1c` unchanged) and the web reaches no worker module.
+- **One audit row per refusal, carrying only the reason class,** and logs of ids and classes only. This is why a failed sign-in's audit row carries no email (an accepted limitation below).
+- **A route table with default deny,** so a later route cannot be added without a declared role.
+- **`/healthz` reads the session not at all,** and answers 503 rather than a false `postgres` when the database cannot be read.
+
+**Material rejected alternatives.**
+
+- **A web framework** (Express, Fastify). Rejected: the task requires `node:http`, as the live API, and a framework would be a further dependency in the shared lockfile.
+- **Writing the JWKS fetch and cache by hand.** Rejected: the design makes `jose` the load-bearing verifier; jose's own remote key set, with a timeout, is used, and its caching difference is recorded as a deviation.
+- **Trusting `X-Forwarded-For` for the rate limits.** Rejected for now, as on the live API: it is spoofable without a trusted-proxy configuration. Behind Render's proxy the limits may therefore be service-wide (TO VERIFY at S8; an accepted limitation).
+- **Re-checking the bootstrap race in application code.** Rejected: the schema's advisory-locked trigger already serializes it, and the task forbids re-implementing it.
+- **Testing every flow only against PostgreSQL.** Rejected: the mutation harness runs offline, so each decision is proven offline against a store that keeps the schema's rules, and the PostgreSQL suite proves the real schema.
+- **A new CI job for the web's PostgreSQL suite.** Rejected: it would change the five-job shape; it runs in the existing step.
+
+**Automated validation.** *(Figures from this container: 4 CPUs, Node 22.22.0; PostgreSQL 16.14 from the container's own packages. PostgreSQL 18 was not available locally — CI's PostgreSQL 18 job proves it.)*
+
+- **Build and typecheck:** `npm run build` and `npm run typecheck` pass.
+- **`npm run test:offline`:** now **twelve suites**, all pass. Totals went from **1,872 to 1,941** checks: Content Intelligence 1,328 → 1,330 (`CS10`, `CS11`), plus the web's new offline suite of 67 (about 3 s). The other suites are unchanged: posting 52, image 18, orchestrator 119, gate 56, API 51, render identity 1, ownership 112, interval 94, Studio database 18, Studio worker 23.
+- **The Studio PostgreSQL suites on PostgreSQL 16.14** (a disposable local cluster): the schema suite 217 checks and the worker suite 19, unchanged after the start-up rules moved; the web suite 12 checks in about 1.0–1.7 s, **12 passing runs in a row** (the last after the §4.7 purge change). PostgreSQL 18 was not available here; CI's PostgreSQL 18 job runs all three.
+- **The payload-contract mutation harness, all three shards** (`--shard k/3`, on commit `ed2701f` in a clean worktree, nothing else edited meanwhile): **ALL PASS** — shard 0/3 ran 204 of 611 mutations in **14m21s**, shard 1/3 204 in **14m00s**, shard 2/3 203 in **14m33s**, 4 workers each, **56 captured targets**. Each `M-shard` is green, and the three id sets are disjoint and together exactly `M1`–`M611`. Every harness invariant is green in every shard (`M-isolation`, `M-capture`, `M-kill`, `M0`, `M-inc0`, `M-order`, `M-inc-restore` 90 + 91 + 84 compiled, `M-inc-sample` M344 in shard 1 and M354, M447, M498 in shard 2, `M-inc-end`, `M-end`, `M-inc-sample-fault`, `M-inc-tsc`, `M-inc-fault`, `M-copies`, `M-authority`). `M549`, `M556`, `M557` and `M590`–`M611` each reported their expected checks by name. *(An earlier shard 0 run on the same code caught all 204 of its mutations but failed `M-authority`, because documentation was being edited in the authoritative checkout during the run: that check compares the whole repository's `git status`. The run above, from a separate worktree, is the evidence.)*
+- **Each new and re-pointed mutation, applied one at a time in a scratch copy before the harness run:** all 25 (`M549`, `M556`, `M557`, `M590`–`M611`) failed exactly their expected checks.
+- **The shard guard** (`npm run check:mutation-shards`): ALL PASS, all 11 injected faults refused, with the renamed step; the workflow YAML parses.
+- **Other checks:** the M1 readiness offline suite, 461 checks; the simulated dry run, OK; the deployment-controller fixtures, PASS; `npm audit --omit=dev`, 0 vulnerabilities; Markdown links, 66 files; environment coverage, **45 variables** (was 40: the five web variables are added); the sensitive scan, 234 text files, no finding, manually triaged (the new files hold only synthetic values: generated keys, `.test` and `.invalid` hosts, addresses assembled at run time, the placeholder `fake-access-token`); `git diff --check`, clean.
+- **AgentShield 1.4.0** exited zero at **B/87**, with the same 18 findings as on `main` (9 medium, 9 low, none critical or high, none on a changed file).
+- **What did not run:** no model, provider, Google sign-in, live database, Render, approval, publication, deployment or release action. The only external request was the one read-only GET of Google's discovery document.
+
+**Production evidence:** none, and none is possible: nothing is deployed, no OAuth client exists, and no Studio service exists.
+
+**Rollback / recovery:** revert the commit. No state outside the repository changes; there is no Studio database, OAuth client or secret.
+
+**Security and privacy implications.** See [Security and continuity](SECURITY_AND_CONTINUITY.md).
+
+- The web holds the Studio's own OAuth client secret (never the live GBP client's) and no provider key; it refuses to start beside one.
+- Every outbound call is to the three Google constants; nothing else is fetched (design §9.1, SSRF).
+- No credential, token, cookie value or email is logged or stored in the clear; the cookie and CSRF values are stored only as sha256; the PKCE verifier is stored as issued until it is consumed or purged (design §4.1).
+- `jose` is a new production dependency in the shared lockfile, with no transitive runtime dependencies and zero audit findings, reachable only from the web.
+- Fixtures are synthetic: generated keys, `.test` hosts, and addresses assembled at run time.
+
+**Accepted limitations.**
+
+- **A failed sign-in's audit row carries no email** (only the reason class), so the owner cannot see from the Studio who tried to sign in.
+- **The rate limits key on the direct peer address.** Behind Render's proxy every client may share one address, so the limits may act service-wide (TO VERIFY at S8) — a sign-in lockout is then a denial-of-service risk, not an authentication bypass.
+- **The key set is cached for jose's fixed 10 minutes,** not per the response's cache headers; an unknown `kid` refetches after a 30-second cooldown (dated note at design §7.1).
+- **The owner cannot yet revoke another user's sessions or manage users in the Studio** — the Users screen is S7; until then that is an audited database statement, as design §7.2 records for owner lockout.
+- **The web cannot yet show "worker offline"** or refuse paid confirmations on a stale heartbeat (S6); `/healthz` reports the heartbeat's age.
+
+**TO VERIFY / owner prerequisites — not done:**
+
+- **O1:** the Google Cloud OAuth client (a Web application client whose only redirect URI is `<STUDIO_PUBLIC_ORIGIN>/auth/callback`) in a project owned by the Workspace organization;
+- **the Internal consent screen** (that it is available for the organization);
+- **`STUDIO_PUBLIC_ORIGIN`**, once Render assigns the Studio's address (S8, O3);
+- whether Render's proxy forwards the client address in a way a later change could trust.
+
+**Unresolved follow-ups.**
+
+- **This PR's merge SHA** (mutable-identifier exception) — **blocking**.
+- **This PR's own CI:** each job's and each shard's duration on the final head, recorded in the PR and reconciled here with the merge SHA.
+- The watch item on the PostgreSQL jobs' 30-minute limit (the cursor).
+- Carried: the web's least-privilege database role (S8); the audit-log and ledger two-year purge (a future reviewed migration).
+
+**Documents updated:**
+
+- this file: this record; S3's record moved to *Merged repository change awaiting rollout* and reconciled; the cursor; *Planned — Content Studio*; the owner decision of 2026-10-02;
+- [Content Studio design](CONTENT_STUDIO_DESIGN.md): dated notes at §7.1 (the key set's caching), §7.3 (the rate limits' client address) and the §10 freeze-gate bullet (the owner decision);
+- [Status](STATUS.md), [README](../README.md), [Environment](ENVIRONMENT.md), `.env.example` (`STUDIO_PUBLIC_ORIGIN`, `STUDIO_ALLOWED_HD`, `STUDIO_GOOGLE_CLIENT_ID`, `STUDIO_GOOGLE_CLIENT_SECRET`, `STUDIO_BOOTSTRAP_OWNER_EMAIL`), [Security and continuity](SECURITY_AND_CONTINUITY.md), [Testing](TESTING.md), [Architecture](ARCHITECTURE.md), [AI handoff](AI_HANDOFF.md), [`AGENTS.md`](../AGENTS.md) (twelve suites), and the mutation harness's header.
+
+**Checked and deliberately left unchanged:**
+
+- [Data model](DATA_MODEL.md): no schema change;
+- [Deployment control](DEPLOYMENT.md) and [Operations](OPERATIONS.md): no deployment, service or runbook changed;
+- `render.yaml`, `scripts/ci/live-path-manifest.json`, `deploy-production.yml`, every migration, `config/**`, prompts, skills and model ids;
+- the M1 readiness runner: the five jobs are unchanged.
+
+## Next repository change — Content Studio S5 (read-only screens), pending S4's merge
+
+**The next repository change is Content Studio S5:** the read-only screens — the runs list, the run report (Copy buttons, findings grouping, *Needs your decision*, cost) and file downloads — on S4's route table, sessions and roles. See the [Content Studio design](CONTENT_STUDIO_DESIGN.md) §8 and §10.
+
+- **S4 is `IMPLEMENTED`**, not merged (the record at the top of this file). **S5 begins after it merges.** The design's PRs are serial.
+- **S3 is `MERGED`** through PR #107 at `0aae05b…` (2026-10-02); its record is under *Merged repository change awaiting rollout* below. *(Until 2026-10-02 this item read: S3 `IMPLEMENTED`, not merged; S4 begins after it merges.)*
+- **The owner prerequisites S4 depends on are not done and are TO VERIFY:** O1 (the Studio's Google OAuth client), the Internal consent screen, and the real `STUDIO_PUBLIC_ORIGIN` (S8, O3). S5 does not need them; the first real sign-in does.
+- S5 needs its own explicit authorization; nothing here grants it.
+- Nothing here authorizes enabling any stage, creating any Render service, database or OAuth client, any release, or any change to the Phase-A approval gate.
+
+**Owner decision of 2026-10-02 — Render native auto-deploy.** Native auto-deploy is always off on the three live services; per-merge re-verification is no longer requested. This is owner attestation, not reviewer-observed evidence. Last observed by screenshot on 2026-10-01. The deploy-production refusal is still verified from GitHub on every merge. S8's Blueprint auto-sync check is unaffected. *(Recorded in [Status](STATUS.md) and as a dated note at the design's §10 freeze-gate bullet. It changes how the freeze gate's second condition is evidenced for S4 and later Studio merges, not the condition itself.)*
+
+This section was headed *Next repository change — not chosen*, then *… Content Studio PR 1 (library extraction), pending the owner's approval of the design*, *… Content Studio S1 (library extraction)*, *… Content Studio S2 (Studio schema and migrations), pending S1's merge*, *… Content Studio S2 (Studio schema and migrations), pending the mutation-harness speed-up's merge*, *… Content Studio S3 (worker and queue), pending S2's merge*, *… Content Studio S3 (worker and queue), pending the mutation-harness shards change's merge*, and *… Content Studio S4 (authentication), pending S3's merge*. Earlier records refer to it by those names.
+
+Open items, carried unchanged except where S4, at the top of this file, says otherwise:
+
+- **`reasoning-standard` output headroom:** 126,000 of the model's 128,000 output tokens since PR #95; recovering it by narrowing the `claimUse[].summary` allowance is open.
+- **`brand-compliance-critic` is still on `claude-sonnet-4-6`** (`agents/brand-compliance-critic.md`) — Lane S work; routing it, and the two `sdk.ts` fallbacks with it, is open (see the legacy model migration record).
+- **The M1→M2 interval ends `2026-10-22T18:52Z`**; the expiry is a decision point for the owner (see [Status](STATUS.md)).
+- **AgentShield grade B/87** (9 medium oversized-agent, 9 low unspecified-model findings; no critical or high).
+- **Splitting completed phases out of this file** into `docs/COMPLETED_ROADMAP_PHASES.md`, a separate documentation change.
+- **Stage 2's restrictions can misdescribe the evidence** — a follow-up candidate recorded by the PR #99 record (*Documentation reconciliation — PR #98 recorded as merged, the revision pass's two owner-run rounds, and a corrected "critic gap"*, under *Merged repository change awaiting rollout* below); no fix is chosen.
+- **`--resume-from production-direction`** — a follow-up candidate recorded by the contact-in-overlay change (PR #101, under *Merged repository change awaiting rollout* below): a live run refused at stage 4 cannot be resumed there today, so stages 1–3 are paid again; not built.
+- Carried from the revision-pass record: describing the identity records in `SCRIPT_CLAIMS` and `PLATFORM_CLAIMS` in the critic prompts; tuning `POLICY_EFFORT.critic` and `THINKING_RESERVE_TOKENS` per lens.
+- **`DEFERRED`, as the owner listed them on 2026-09-28** (not previously recorded in this repository; recorded here so they are not lost): Mercedes 223.2 and the round-2 fluids; the DPF/GPF bulk-oil question; the Spanish version.
+- ~~**The owner's post-merge fake-runner check of S1** on the real facts file and one real run folder (fake runner only, no cost; the commands are in S1's PR).~~ **Done 2026-09-30** (operator-local; recorded in S1's record below).
+- ~~**The mutation step's growth.**~~ **Discharged 2026-10-01 by S3** (its record, now under *Merged repository change awaiting rollout*)**:** PR #106 merged the shards, and every shard's CI step took under 12 minutes on its PR (11m18s, 11m36s, 11m08s; run 36900834356) and under 10 minutes on `main` (9m51s, 6m20s, 8m35s; run 36902831610), comfortably under the owner's 30-minute bar. *As carried until then:* After the speed-up (PR #104, now under *Merged repository change awaiting rollout*) the suite is about 95% of the harness's time and every mutation still runs it whole, so the step still grows with each mutation. The levers left are the owner's: a larger (paid) CI runner with `MAX_WORKERS` raised, a higher `timeout-minutes`, or restructuring the gate. The owner's merge bar for the speed-up is **30 minutes** for the CI mutation step (2026-09-30). *(2026-09-30: the speed-up merged through PR #104 with a CI mutation step of 26m59s on the PR and 26m34s on `main`. S2's first head, adding 11 mutations and 31 sampled clean builds, took 32m15s, over the bar; S2 now samples four per run (2026-10-01), and its revised CI figure is in PR #105. Still open.)* *(2026-10-01: S2 merged through PR #105. Its CI mutation step took **18m09s** on the PR and **30m13s** on `main`, for the same code: runner variance of more than ten minutes, and 13 seconds over the bar on `main`. **The mutation-harness shards change at the top of this file** (`IMPLEMENTED`, not merged) splits the harness into three shards, one in each of the three existing Node and PostgreSQL jobs, with no new job, paid runner or gate change; its local figures are in its record. This item stays open until all three shards have a CI figure from that change's PR, and is discharged only if each is comfortably under 30 minutes. *(PR #106's first run measured shard 0 at 11m19s and shard 2 at 10m35s; shard 1 did not run, because the Studio suite's race failed its job first.)* Those figures are recorded in its PR and reconciled with its merge SHA. Still open until then.)*
+- **An independent review of the Content Studio design** before later Studio PRs, carried from the design record.
+- **Watch item (2026-10-01): the PostgreSQL jobs' `timeout-minutes: 30` now binds first.** *(2026-10-02, S3's figures: *PostgreSQL 16 integration* 11m31s and *PostgreSQL 18 integration* 14m55s on PR #107's final run, 15m00s and 15m48s on `main`, with shards at 13m23s and 14m10s there; S4's are in its record and PR. Still under the owner's 20-minute stop limit; not a defect today.)* Each PostgreSQL job carries a mutation shard since PR #106, so its 30-minute limit, not the quality job's 60, is the nearest. Totals: *PostgreSQL 16 integration* 13m02s and *PostgreSQL 18 integration* 12m40s on PR #106's final run, 7m41s and 10m11s on `main`; S3's own figures are in its record. The owner's stop limit for this work is 20 minutes for a PostgreSQL job. Levers when it nears: raise `n` (more than one shard step in a job is already allowed by the guard), or the owner's runner and timeout choices. Not a defect today.
+- **The merge SHA of Content Studio S4 at the top of this file** (mutable-identifier exception) — **blocking**; it is reconciled into that record once merged. *(Content Studio S3's merge-SHA follow-up, formerly here, is discharged by S4: `0aae05b…`; the mutation-harness shards change's by S3: `bec4a41…`; Content Studio S2's by the shards change: `fd88a2c…`; the mutation-harness speed-up's by S2: `0bb3f0b…`; S1's by the speed-up: `c1c19f4…`; PR #102's by S1: `4664515…`; PR #101's by PR #102: `f111012…`.)*
+- ~~**From the shards change's validation:** the race in S2's disposable-PostgreSQL suite (an unhandled pool `'error'` when a test database is dropped while a pooled client is still closing; 4 of 14 local runs under load) — a separate fix; see that record's follow-ups.~~ **Fixed in the shards change itself** (owner decision of 2026-10-01; item 8 of its record).
+- **From S2:** the least-privilege database role for the Studio web (design §9.1; S8, once Render's plan is known), ~~the login-attempt and session purges (S4)~~ *(built by S4, at the top of this file: §4.7's retention, by `DELETE`)*, and the audit-log and ledger two-year purge (a future reviewed migration).
+
+## Planned — Content Studio (owner decisions of 2026-09-29) — `PLANNED`
+
+**State:** `PLANNED`. The design is [`docs/CONTENT_STUDIO_DESIGN.md`](CONTENT_STUDIO_DESIGN.md), added by the documentation change now recorded under *Merged repository change awaiting rollout* (PR #102). It was first recorded with the owner's approval pending. **The owner approved it on 2026-09-29, with the answers below.** Approval is not implementation. **S1 — the pipeline library and the §5.4 protections — is `IMPLEMENTED`, not merged** (*Content Studio S1*, at the top of this file). *(Corrected 2026-09-30: S1 is `MERGED` through PR #103 at `c1c19f4…`, not deployed or enabled; its record is under *Merged repository change awaiting rollout* below.)* No Studio service exists: no `src/studio/**` code, Studio migration, Render service, database, Google OAuth client, secret or Anthropic key. *(2026-09-30: S2 — `src/studio/db/**` and `studio/migrations/**`, the Studio schema and its runner — is `IMPLEMENTED`, not merged, at the top of this file; still no Render service, database, OAuth client, secret or key, and nothing has been migrated.)* *(2026-10-01: S2 is `MERGED` through PR #105 at `fd88a2c…`, not deployed or enabled; its record is under *Merged repository change awaiting rollout* below. Still no Render service, database, OAuth client, secret or key, and nothing has been migrated.)* *(2026-10-01: S3 — the review-only execution context and the worker, `src/studio/worker/**` — is `IMPLEMENTED`, not merged, fake runner only, at the top of this file. No Render file names the worker; still no Render service, database, OAuth client, secret or key.)* *(2026-10-02: S3 is `MERGED` through PR #107 at `0aae05b…`, not deployed or enabled; its record is under *Merged repository change awaiting rollout* below. S4 — the web service's authentication, `src/studio/web/**`, with `jose` — is `IMPLEMENTED`, not merged, at the top of this file. No Render file names the web service; still no Render service, database, Google OAuth client, consent screen, secret, `STUDIO_PUBLIC_ORIGIN` or key.)* This entry sits outside the production-wiring sequence: the Studio implements none of P1–P8, performs none of M2–M7, and moves no production-wiring milestone.
+
+**Owner decisions (2026-09-29), recorded verbatim:**
+
+1. Build a web interface that removes manual terminal runs of the content pipeline and lets the owner and staff view every run and report in a browser.
+2. **A separate, review-only "Content Studio"** in the same `render.yaml`: its own web service, background worker, optional cron job and its own PostgreSQL database. It is **not** built inside the live `gcd-social-*` services.
+3. **Users:** the owner plus a few staff, signing in with Google, restricted to `@germancardepot.com`. The owner decides which users may start paid runs.
+4. **Runs are on demand only at launch.** The cron job is designed but disabled until the owner decides otherwise.
+5. **The manufacturer facts file** (`config/automotive-facts.local.json`, today only on the owner's Mac) may be uploaded to the Studio and stored in its private database. It is never committed to GitHub.
+
+**Amendment to decision 2 (owner, 2026-09-29).** The Studio gets a **separate Blueprint file, `render.studio.yaml`**, not the shared `render.yaml`. Decision 2 is otherwise unchanged. Whether Render supports a Blueprint at a non-default path is TO VERIFY. If it does not, the Studio's resources are created by hand from that checked-in file, which is the specification. **`render.yaml` is not modified at all by any Studio PR.** Decision 2 above is kept as first given.
+
+**The owner's answers of 2026-09-29 to the design's §11.1** (recorded in full in design §11.1a):
+
+1. **The design is approved** as amended. It stays `PLANNED`, and each S-PR and owner action still needs its own authorization.
+2. **Decision 2 is amended** as above.
+3. **The freeze covers new services; the default is kept.** No Studio service is created (O3) until the M1→M2 interval (bound `2026-10-22T18:52Z`) is closed, or under whatever terms are then in force.
+4. **Caps:**
+   - owner caps $50 a day and $200 a month;
+   - deployment ceilings `STUDIO_MAX_DAILY_USD` = 75 and `STUDIO_MAX_MONTHLY_USD` = 300;
+   - an Anthropic workspace spend limit of $300 a month for the Studio key.
+
+   The reservation stays at the full printed ceiling. Tightening the estimate is a separate, reviewed future change.
+5. **Only the owner is a `runner` at launch;** staff are `viewer`. Runners added later get a $25 per-user daily cap.
+6. **Time zone:** `America/New_York`.
+7. **Retention:** runs are kept until the owner deletes them. The audit log and spend ledger are kept for 2 years.
+8. **The worker starts on `standard`,** is measured, and may move down to `starter`. Plan prices are TO VERIFY.
+9. **The P2 conflict is a binding rule.** Whichever comes first, production-wiring P2 or Studio S3, must define an explicit, separately reviewed review-only execution context, so that the local CLI and the Studio keep working. It can never approve or publish, and it sits beside the live authority gate, never replacing it. A dated pointer at P2 in [PRODUCTION_WIRING_DESIGN.md](PRODUCTION_WIRING_DESIGN.md) records it.
+10. **A separate Anthropic workspace and key for the Studio is required.** O2 must happen before the first live run.
+11. **Fake runs stay in the Studio, owner-only,** labelled on every screen.
+
+**Operational note (owner, 2026-09-29).** `STUDIO_BOOTSTRAP_OWNER_EMAIL` must name a real Google Workspace **user** account, not a shared mailbox, an alias or a group, because the `hd` and `email_verified` checks only work for Workspace user accounts. The owner enters the value in Render; it is never committed.
+
+**Sequence (design §10), serial, each separately authorized:**
+
+- **S1** library extraction — **`MERGED`** through PR #103 at `c1c19f4…` (2026-09-30), not deployed or enabled;
+- **S2** Studio schema and migrations — **`MERGED`** through PR #105 at `fd88a2c…` (2026-10-01), not deployed or enabled; *(until 2026-10-01: `IMPLEMENTED`, not merged; until 2026-09-30: the next repository change, pending the mutation-harness speed-up's merge, which is `MERGED` through PR #104 at `0bb3f0b…`)*;
+- **S3** worker and queue, and the review-only execution context — **`MERGED`** through PR #107 at `0aae05b…` (2026-10-02), not deployed or enabled, fake runner only; *(until 2026-10-02: `IMPLEMENTED`, not merged; until 2026-10-01: the next repository change, pending S2's merge and then the mutation-harness shards change's, which is `MERGED` through PR #106 at `bec4a41…`)*;
+- **S4** authentication — **`IMPLEMENTED`**, not merged (the record at the top of this file); no OAuth client, secret or origin exists *(until 2026-10-02: the next repository change, pending S3's merge)*;
+- **S5** read-only screens — the next repository change, pending S4's merge;
+- **S6** run and revise actions with caps;
+- **S7** fact upload and legacy import;
+- **S8** a new `render.studio.yaml`, with `render.yaml` byte-identical;
+- **S9** the cron, built disabled.
+
+**Owner actions, named separately:**
+
+- **O1** create the Google OAuth client;
+- **O2** create the Studio's Anthropic key;
+- **O3** create the Studio resources from `render.studio.yaml`;
+- **O4** set the secrets;
+- **O5** the first deploy and setup;
+- **O6** the first live run.
+
+**Gates:**
+
+- ~~**Owner approval of the design.**~~ **Given 2026-09-29.**
+- **The release-freeze gate — confirmed by the owner.** The M1→M2 interval is bound at `2026-10-22T18:52Z`, and its prohibition covers "any service". No Studio service is created (O3) until the interval is closed, or under the terms then in force. Merging S1–S9 is not a release, while `deploy-production` keeps refusing at its disabled gate and native auto-deploy stays off on the live services (design §10). *(Owner decision of 2026-10-02: native auto-deploy being off is now an owner attestation, not re-verified per merge — last observed by screenshot on 2026-10-01; the `deploy-production` refusal is still verified from GitHub on every merge; S8's Blueprint auto-sync check is unaffected. See the cursor above.)*
+- **The Blueprint check before S8 merges.** Is this repository linked to a Render Blueprint, which file does it read, and is auto-sync on? S8 adds only `render.studio.yaml` and leaves `render.yaml` byte-identical. Any Blueprint or dashboard action touching a `gcd-social-*` resource is a stop condition (design §3.6).
+- ~~**The P2 rule** (design §5.4): whichever comes first, P2 or S3, defines the review-only execution context.~~ **Met by S3** (`IMPLEMENTED`; *`MERGED` through PR #107 since 2026-10-02*): it defines the context and how C2 and C3 would accept it; P2 is unchanged.
+- **O2 before O6:** no live Studio run without the separate Anthropic workspace and key.
+
+**Open questions:** answered by the owner on 2026-09-29 (design §11.1 and §11.1a).
+
+## Merged repository change awaiting rollout
+
+### Content Studio S3 — the review-only execution context (Part 1), and the Studio worker and job queue (Part 2); PR #106 recorded as merged — `MERGED`
+
+**Merge reconciliation (recorded 2026-10-02 by Content Studio S4, at the top of this file):** `MERGED` through [PR #107](https://github.com/Caposhi/GCD-Agents/pull/107) at `0aae05b210fc9d4471efa3a177329981980bb50a`. Its ordered parents are `bec4a41449fac5fd50e631c62b9424924afe260c` (the PR #106 merge) and then reviewed head `8b3b8d374544b695e63413459da5bcdd35dcc33a`; `git diff 8b3b8d3 0aae05b` is empty. Nothing followed it on `main` when S4 began.
+
+- **PR CI:** final [run 36961697170](https://github.com/Caposhi/GCD-Agents/actions/runs/36961697170) (run 251) on head `8b3b8d3` passed all five jobs on attempt 1:
+  - *Node 22 offline quality gates* **15m08s** of 60 (03:47:27–04:02:35Z), with shard 0/3 **13m30s** (03:48:06–04:01:36Z);
+  - *PostgreSQL 16 integration* **11m31s** of 30 (03:47:27–03:58:58Z), with the Content Studio step 14s and shard 1/3 **9m48s** (03:49:07–03:58:55Z);
+  - *PostgreSQL 18 integration* **14m55s** of 30 (03:47:26–04:02:21Z), with the Content Studio step 13s and shard 2/3 **13m21s** (03:48:58–04:02:19Z);
+  - *AgentShield 1.4.0* 11s; *Workflow and YAML static validation* 7s.
+- **`main` push:** [run 37011861567](https://github.com/Caposhi/GCD-Agents/actions/runs/37011861567) (run 252) on `0aae05b` passed all five jobs on attempt 1:
+  - *Node 22 offline quality gates* **14m58s** (13:16:08–13:31:06Z), with shard 0/3 **13m22s** (13:16:46–13:30:08Z);
+  - *PostgreSQL 16 integration* **15m00s** (13:16:07–13:31:07Z), with the Content Studio step 14s and shard 1/3 **13m23s** (13:17:43–13:31:06Z);
+  - *PostgreSQL 18 integration* **15m48s** (13:16:08–13:31:56Z), with the Content Studio step 13s and shard 2/3 **14m10s** (13:17:43–13:31:53Z);
+  - *AgentShield 1.4.0* 9s; *Workflow and YAML static validation* 6s.
+- **Deploy:** the `deploy-production` workflow, [run 37013609061](https://github.com/Caposhi/GCD-Agents/actions/runs/37013609061) (run 72), refused at *Refuse while production automation is disabled*, and its release job was skipped.
+- **Render native auto-deploy was not re-verified for this merge:** by the owner's decision of 2026-10-02 (the cursor, below) it is an owner attestation, last observed by screenshot on 2026-10-01.
+
+**Not `DEPLOYED`, not `ENABLED`, not `PRODUCTION-VALIDATED`; fake runner only.** This paragraph discharges the blocking merge-SHA follow-up and the PR-CI follow-up below. Where the record says `IMPLEMENTED`, not merged, or that its CI is recorded only in the PR, this paragraph supersedes it. The watch item stands: the PostgreSQL jobs took 15m00s and 15m48s on `main`, under the owner's 20-minute stop limit and the 30-minute timeout. The record was written at the top of this file, so where it says *Next repository change* or *Planned — Content Studio* "below", those entries are now above it. The rest of this record is preserved as written at implementation.
 
 **State:** `IMPLEMENTED` on branch `claude/sharp-gates-4pnvcs`, based directly on `origin/main` at `bec4a41449fac5fd50e631c62b9424924afe260c` (the merge of PR #106). **Not `MERGED`, not `DEPLOYED`, not `ENABLED`, not `PRODUCTION-VALIDATED`.** **Fake runner only.** No Render file names the worker: `render.yaml` is unchanged and `render.studio.yaml` does not exist (S8). No Studio service, database, OAuth client, secret or Anthropic key exists. Nothing ran anywhere but disposable PostgreSQL 16 and 18 servers. All six stages keep `executionEnabled: false`, the registry is unchanged, and no live-loaded module changed (`scripts/ci/live-path-manifest.json` is unchanged and `CS3` passes). No migration, `config/` file, prompt, skill, model, limit or dependency changed. The partial-release interval (bound `2026-10-22T18:52Z`; see [Status](STATUS.md)) is unchanged. The tracked `.DS_Store` is untouched. No model was called.
 
@@ -259,105 +549,6 @@ These are not interchangeable and must not be collapsed into "done". `MERGED` in
 - [Deployment control](DEPLOYMENT.md) and [Operations](OPERATIONS.md): no deployment, service or runbook changed;
 - `render.yaml`, `scripts/ci/live-path-manifest.json`, every live service, every migration;
 - the M1 readiness runner: the five jobs are unchanged.
-
-## Next repository change — Content Studio S4 (authentication), pending S3's merge
-
-**The next repository change is Content Studio S4:** the `src/studio/web/**` skeleton — `/healthz`, Google OIDC login, callback and logout, sessions, CSRF, roles, the bootstrap owner and the security headers, with `jose` added — proven against a local fake OIDC issuer. See the [Content Studio design](CONTENT_STUDIO_DESIGN.md) §7 and §10.
-
-- **S3 is `IMPLEMENTED`**, not merged (the record at the top of this file). **S4 begins after it merges.** The design's PRs are serial.
-- **The mutation-harness shards change is `MERGED`** through PR #106 at `bec4a41…` (2026-10-01); its record is under *Merged repository change awaiting rollout* below. *(Until 2026-10-01 this item read: the shards change `IMPLEMENTED`, not merged; S3 begins after it merges.)*
-- **The P2 binding rule is met by S3** (design §5.4): S3 defines the review-only execution context and writes down, without building them, how P2's C2 and C3 accept it. P2 itself is unchanged and unauthorized.
-- S4 needs its own explicit authorization; nothing here grants it.
-- Nothing here authorizes enabling any stage, creating any Render service, database or OAuth client, any release, or any change to the Phase-A approval gate.
-
-This section was headed *Next repository change — not chosen*, then *… Content Studio PR 1 (library extraction), pending the owner's approval of the design*, *… Content Studio S1 (library extraction)*, *… Content Studio S2 (Studio schema and migrations), pending S1's merge*, *… Content Studio S2 (Studio schema and migrations), pending the mutation-harness speed-up's merge*, *… Content Studio S3 (worker and queue), pending S2's merge*, and *… Content Studio S3 (worker and queue), pending the mutation-harness shards change's merge*. Earlier records refer to it by those names.
-
-Open items, carried unchanged except where S3, at the top of this file, says otherwise:
-
-- **`reasoning-standard` output headroom:** 126,000 of the model's 128,000 output tokens since PR #95; recovering it by narrowing the `claimUse[].summary` allowance is open.
-- **`brand-compliance-critic` is still on `claude-sonnet-4-6`** (`agents/brand-compliance-critic.md`) — Lane S work; routing it, and the two `sdk.ts` fallbacks with it, is open (see the legacy model migration record).
-- **The M1→M2 interval ends `2026-10-22T18:52Z`**; the expiry is a decision point for the owner (see [Status](STATUS.md)).
-- **AgentShield grade B/87** (9 medium oversized-agent, 9 low unspecified-model findings; no critical or high).
-- **Splitting completed phases out of this file** into `docs/COMPLETED_ROADMAP_PHASES.md`, a separate documentation change.
-- **Stage 2's restrictions can misdescribe the evidence** — a follow-up candidate recorded by the PR #99 record (*Documentation reconciliation — PR #98 recorded as merged, the revision pass's two owner-run rounds, and a corrected "critic gap"*, under *Merged repository change awaiting rollout* below); no fix is chosen.
-- **`--resume-from production-direction`** — a follow-up candidate recorded by the contact-in-overlay change (PR #101, under *Merged repository change awaiting rollout* below): a live run refused at stage 4 cannot be resumed there today, so stages 1–3 are paid again; not built.
-- Carried from the revision-pass record: describing the identity records in `SCRIPT_CLAIMS` and `PLATFORM_CLAIMS` in the critic prompts; tuning `POLICY_EFFORT.critic` and `THINKING_RESERVE_TOKENS` per lens.
-- **`DEFERRED`, as the owner listed them on 2026-09-28** (not previously recorded in this repository; recorded here so they are not lost): Mercedes 223.2 and the round-2 fluids; the DPF/GPF bulk-oil question; the Spanish version.
-- ~~**The owner's post-merge fake-runner check of S1** on the real facts file and one real run folder (fake runner only, no cost; the commands are in S1's PR).~~ **Done 2026-09-30** (operator-local; recorded in S1's record below).
-- ~~**The mutation step's growth.**~~ **Discharged 2026-10-01 by S3, at the top of this file:** PR #106 merged the shards, and every shard's CI step took under 12 minutes on its PR (11m18s, 11m36s, 11m08s; run 36900834356) and under 10 minutes on `main` (9m51s, 6m20s, 8m35s; run 36902831610), comfortably under the owner's 30-minute bar. *As carried until then:* After the speed-up (PR #104, now under *Merged repository change awaiting rollout*) the suite is about 95% of the harness's time and every mutation still runs it whole, so the step still grows with each mutation. The levers left are the owner's: a larger (paid) CI runner with `MAX_WORKERS` raised, a higher `timeout-minutes`, or restructuring the gate. The owner's merge bar for the speed-up is **30 minutes** for the CI mutation step (2026-09-30). *(2026-09-30: the speed-up merged through PR #104 with a CI mutation step of 26m59s on the PR and 26m34s on `main`. S2's first head, adding 11 mutations and 31 sampled clean builds, took 32m15s, over the bar; S2 now samples four per run (2026-10-01), and its revised CI figure is in PR #105. Still open.)* *(2026-10-01: S2 merged through PR #105. Its CI mutation step took **18m09s** on the PR and **30m13s** on `main`, for the same code: runner variance of more than ten minutes, and 13 seconds over the bar on `main`. **The mutation-harness shards change at the top of this file** (`IMPLEMENTED`, not merged) splits the harness into three shards, one in each of the three existing Node and PostgreSQL jobs, with no new job, paid runner or gate change; its local figures are in its record. This item stays open until all three shards have a CI figure from that change's PR, and is discharged only if each is comfortably under 30 minutes. *(PR #106's first run measured shard 0 at 11m19s and shard 2 at 10m35s; shard 1 did not run, because the Studio suite's race failed its job first.)* Those figures are recorded in its PR and reconciled with its merge SHA. Still open until then.)*
-- **An independent review of the Content Studio design** before later Studio PRs, carried from the design record.
-- **Watch item (2026-10-01): the PostgreSQL jobs' `timeout-minutes: 30` now binds first.** Each PostgreSQL job carries a mutation shard since PR #106, so its 30-minute limit, not the quality job's 60, is the nearest. Totals: *PostgreSQL 16 integration* 13m02s and *PostgreSQL 18 integration* 12m40s on PR #106's final run, 7m41s and 10m11s on `main`; S3's own figures are in its record. The owner's stop limit for this work is 20 minutes for a PostgreSQL job. Levers when it nears: raise `n` (more than one shard step in a job is already allowed by the guard), or the owner's runner and timeout choices. Not a defect today.
-- **The merge SHA of Content Studio S3 at the top of this file** (mutable-identifier exception) — **blocking**; it is reconciled into that record once merged. *(The mutation-harness shards change's merge-SHA follow-up, formerly here, is discharged by S3: `bec4a41…`; Content Studio S2's by the shards change: `fd88a2c…`; the mutation-harness speed-up's by S2: `0bb3f0b…`; S1's by the speed-up: `c1c19f4…`; PR #102's by S1: `4664515…`; PR #101's by PR #102: `f111012…`.)*
-- ~~**From the shards change's validation:** the race in S2's disposable-PostgreSQL suite (an unhandled pool `'error'` when a test database is dropped while a pooled client is still closing; 4 of 14 local runs under load) — a separate fix; see that record's follow-ups.~~ **Fixed in the shards change itself** (owner decision of 2026-10-01; item 8 of its record).
-- **From S2:** the least-privilege database role for the Studio web (design §9.1; S8, once Render's plan is known), the login-attempt and session purges (S4), and the audit-log and ledger two-year purge (a future reviewed migration).
-
-## Planned — Content Studio (owner decisions of 2026-09-29) — `PLANNED`
-
-**State:** `PLANNED`. The design is [`docs/CONTENT_STUDIO_DESIGN.md`](CONTENT_STUDIO_DESIGN.md), added by the documentation change now recorded under *Merged repository change awaiting rollout* (PR #102). It was first recorded with the owner's approval pending. **The owner approved it on 2026-09-29, with the answers below.** Approval is not implementation. **S1 — the pipeline library and the §5.4 protections — is `IMPLEMENTED`, not merged** (*Content Studio S1*, at the top of this file). *(Corrected 2026-09-30: S1 is `MERGED` through PR #103 at `c1c19f4…`, not deployed or enabled; its record is under *Merged repository change awaiting rollout* below.)* No Studio service exists: no `src/studio/**` code, Studio migration, Render service, database, Google OAuth client, secret or Anthropic key. *(2026-09-30: S2 — `src/studio/db/**` and `studio/migrations/**`, the Studio schema and its runner — is `IMPLEMENTED`, not merged, at the top of this file; still no Render service, database, OAuth client, secret or key, and nothing has been migrated.)* *(2026-10-01: S2 is `MERGED` through PR #105 at `fd88a2c…`, not deployed or enabled; its record is under *Merged repository change awaiting rollout* below. Still no Render service, database, OAuth client, secret or key, and nothing has been migrated.)* *(2026-10-01: S3 — the review-only execution context and the worker, `src/studio/worker/**` — is `IMPLEMENTED`, not merged, fake runner only, at the top of this file. No Render file names the worker; still no Render service, database, OAuth client, secret or key.)* This entry sits outside the production-wiring sequence: the Studio implements none of P1–P8, performs none of M2–M7, and moves no production-wiring milestone.
-
-**Owner decisions (2026-09-29), recorded verbatim:**
-
-1. Build a web interface that removes manual terminal runs of the content pipeline and lets the owner and staff view every run and report in a browser.
-2. **A separate, review-only "Content Studio"** in the same `render.yaml`: its own web service, background worker, optional cron job and its own PostgreSQL database. It is **not** built inside the live `gcd-social-*` services.
-3. **Users:** the owner plus a few staff, signing in with Google, restricted to `@germancardepot.com`. The owner decides which users may start paid runs.
-4. **Runs are on demand only at launch.** The cron job is designed but disabled until the owner decides otherwise.
-5. **The manufacturer facts file** (`config/automotive-facts.local.json`, today only on the owner's Mac) may be uploaded to the Studio and stored in its private database. It is never committed to GitHub.
-
-**Amendment to decision 2 (owner, 2026-09-29).** The Studio gets a **separate Blueprint file, `render.studio.yaml`**, not the shared `render.yaml`. Decision 2 is otherwise unchanged. Whether Render supports a Blueprint at a non-default path is TO VERIFY. If it does not, the Studio's resources are created by hand from that checked-in file, which is the specification. **`render.yaml` is not modified at all by any Studio PR.** Decision 2 above is kept as first given.
-
-**The owner's answers of 2026-09-29 to the design's §11.1** (recorded in full in design §11.1a):
-
-1. **The design is approved** as amended. It stays `PLANNED`, and each S-PR and owner action still needs its own authorization.
-2. **Decision 2 is amended** as above.
-3. **The freeze covers new services; the default is kept.** No Studio service is created (O3) until the M1→M2 interval (bound `2026-10-22T18:52Z`) is closed, or under whatever terms are then in force.
-4. **Caps:**
-   - owner caps $50 a day and $200 a month;
-   - deployment ceilings `STUDIO_MAX_DAILY_USD` = 75 and `STUDIO_MAX_MONTHLY_USD` = 300;
-   - an Anthropic workspace spend limit of $300 a month for the Studio key.
-
-   The reservation stays at the full printed ceiling. Tightening the estimate is a separate, reviewed future change.
-5. **Only the owner is a `runner` at launch;** staff are `viewer`. Runners added later get a $25 per-user daily cap.
-6. **Time zone:** `America/New_York`.
-7. **Retention:** runs are kept until the owner deletes them. The audit log and spend ledger are kept for 2 years.
-8. **The worker starts on `standard`,** is measured, and may move down to `starter`. Plan prices are TO VERIFY.
-9. **The P2 conflict is a binding rule.** Whichever comes first, production-wiring P2 or Studio S3, must define an explicit, separately reviewed review-only execution context, so that the local CLI and the Studio keep working. It can never approve or publish, and it sits beside the live authority gate, never replacing it. A dated pointer at P2 in [PRODUCTION_WIRING_DESIGN.md](PRODUCTION_WIRING_DESIGN.md) records it.
-10. **A separate Anthropic workspace and key for the Studio is required.** O2 must happen before the first live run.
-11. **Fake runs stay in the Studio, owner-only,** labelled on every screen.
-
-**Operational note (owner, 2026-09-29).** `STUDIO_BOOTSTRAP_OWNER_EMAIL` must name a real Google Workspace **user** account, not a shared mailbox, an alias or a group, because the `hd` and `email_verified` checks only work for Workspace user accounts. The owner enters the value in Render; it is never committed.
-
-**Sequence (design §10), serial, each separately authorized:**
-
-- **S1** library extraction — **`MERGED`** through PR #103 at `c1c19f4…` (2026-09-30), not deployed or enabled;
-- **S2** Studio schema and migrations — **`MERGED`** through PR #105 at `fd88a2c…` (2026-10-01), not deployed or enabled; *(until 2026-10-01: `IMPLEMENTED`, not merged; until 2026-09-30: the next repository change, pending the mutation-harness speed-up's merge, which is `MERGED` through PR #104 at `0bb3f0b…`)*;
-- **S3** worker and queue, and the review-only execution context — **`IMPLEMENTED`**, not merged (the record at the top of this file), fake runner only; *(until 2026-10-01: the next repository change, pending S2's merge and then the mutation-harness shards change's, which is `MERGED` through PR #106 at `bec4a41…`)*;
-- **S4** authentication — the next repository change, pending S3's merge;
-- **S5** read-only screens;
-- **S6** run and revise actions with caps;
-- **S7** fact upload and legacy import;
-- **S8** a new `render.studio.yaml`, with `render.yaml` byte-identical;
-- **S9** the cron, built disabled.
-
-**Owner actions, named separately:**
-
-- **O1** create the Google OAuth client;
-- **O2** create the Studio's Anthropic key;
-- **O3** create the Studio resources from `render.studio.yaml`;
-- **O4** set the secrets;
-- **O5** the first deploy and setup;
-- **O6** the first live run.
-
-**Gates:**
-
-- ~~**Owner approval of the design.**~~ **Given 2026-09-29.**
-- **The release-freeze gate — confirmed by the owner.** The M1→M2 interval is bound at `2026-10-22T18:52Z`, and its prohibition covers "any service". No Studio service is created (O3) until the interval is closed, or under the terms then in force. Merging S1–S9 is not a release, while `deploy-production` keeps refusing at its disabled gate and native auto-deploy stays off on the live services (design §10).
-- **The Blueprint check before S8 merges.** Is this repository linked to a Render Blueprint, which file does it read, and is auto-sync on? S8 adds only `render.studio.yaml` and leaves `render.yaml` byte-identical. Any Blueprint or dashboard action touching a `gcd-social-*` resource is a stop condition (design §3.6).
-- ~~**The P2 rule** (design §5.4): whichever comes first, P2 or S3, defines the review-only execution context.~~ **Met by S3** (`IMPLEMENTED`): it defines the context and how C2 and C3 would accept it; P2 is unchanged.
-- **O2 before O6:** no live Studio run without the separate Anthropic workspace and key.
-
-**Open questions:** answered by the owner on 2026-09-29 (design §11.1 and §11.1a).
-
-## Merged repository change awaiting rollout
 
 ### Mutation-harness shards — `--shard k/n` in the payload-contract mutation harness, three shards inside the three existing Node and PostgreSQL CI jobs, and a static guard; the Studio PostgreSQL suite's teardown race fixed; Content Studio S2 recorded as merged — `MERGED`
 
