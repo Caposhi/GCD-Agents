@@ -182,7 +182,7 @@ import { groupDigits } from "./agents/responseFormatKit.js";
 import {
   LIVE_ENTRY_POINTS, LIVE_PATH_MANIFEST, REVIEW_ONLY_CONSTRUCTOR, REVIEW_ONLY_CONTEXT_MODULE, STUDIO_ALLOWED_EXCEPTIONS,
   STUDIO_FORBIDDEN_MODULES, STUDIO_FORBIDDEN_TREES, STUDIO_WEB_ENTRY_POINT, STUDIO_WEB_FORBIDDEN_MODULES,
-  STUDIO_WEB_FORBIDDEN_TREES, STUDIO_WEB_PACKAGES,
+  STUDIO_WEB_FORBIDDEN_TREES, STUDIO_WEB_PACKAGES, STUDIO_WEB_SHARED_LEAF,
   callerViolations, contextConstructionViolations, describeViolation, isStudioWebTestModule, joseImportViolations,
   liveEntryPointsFromConfig, moduleReferences, namesContextConstructor, studioWebModules,
   reviewOnlyMentions, studioSideEntryPoints, livePathManifestViolations, liveSourceDigests, repositoryCodeFiles,
@@ -1213,7 +1213,7 @@ async function run(): Promise<void> {
     check("AF5. exactly six stage executors exist — strategy-concept, automotive-truth, hook-story-script, production-direction, packaging-adaptation, final-critic",
       agentModules.join()
         === "automotiveTruth.ts,contactLine.ts,finalCritic.ts,hookStoryScript.ts,identityFacts.ts,modelPolicy.ts,"
-          + "overlayContact.ts,packagingAdaptation.ts,payloadContract.ts,productionDirection.ts,registry.ts,"
+          + "overlayContact.ts,packagingAdaptation.ts,payloadContract.ts,productionDirection.ts,providerText.ts,registry.ts,"
           + "responseFormatKit.ts,revision.ts,revisionInput.ts,stageExecution.ts,strategyConcept.ts");
     // `responseFormatKit.ts` is in that list and is deliberately NOT an
     // executor: it holds the builders each stage uses to construct its own
@@ -1254,6 +1254,15 @@ async function run(): Promise<void> {
         + "invocation, no runner, no model call",
         !/invokeStage|executeStage|StageRunner|runAgent|messages\.(create|stream)|anthropic/i.test(contactCode)
           && !TARGET_STAGE_IDS.some((id) => id === ("contact-line" as never)));
+    }
+    // `providerText.ts` (Content Studio S5) is in that list and is NOT an
+    // executor: the import-free leaf holding the provider-visible text of a
+    // package, which contactLine.ts and packagingAdaptation.ts re-export.
+    {
+      const leafCode = (await readFile(resolve(REPO_ROOT, "src/harness/agents/providerText.ts"), "utf8"))
+        .replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+      check("AF5f. the provider-text leaf is code, not a seventh executor: no stage invocation, no runner, no model call",
+        !/invokeStage|executeStage|StageRunner|runner|runAgent|messages\.(create|stream)|anthropic|stageExecution/i.test(leafCode));
     }
     const apiSource = await readFile(resolve(REPO_ROOT, "src/api/server.ts"), "utf8");
     check("AF6. no HTTP route reaches the executor",
@@ -12694,8 +12703,9 @@ async function run(): Promise<void> {
     // library, the worker, an executor, stageExecution or revision, the fact
     // loader, the pricing table, any posting, provider, approval or
     // live-database module, or any package but pg and jose; everything it
-    // reaches is the web tree or the S2 runner. From main.js, no test module
-    // is reachable at all. Synthetic trees prove an intermediary cannot hide one.
+    // reaches is the web tree, the S2 runner or (S5) the one import-free leaf
+    // STUDIO_WEB_SHARED_LEAF. From main.js, no test module is reachable at all.
+    // Synthetic trees prove an intermediary cannot hide one.
     const webModules = studioWebModules(REPO_ROOT);
     const webWalk = walkImportGraph({
       root: REPO_ROOT, entryPoints: webModules, forbiddenModules: STUDIO_WEB_FORBIDDEN_MODULES,
@@ -12725,14 +12735,17 @@ async function run(): Promise<void> {
     check("CS10. the Studio web service is isolated TRANSITIVELY: from every compiled dist/studio/web/** module, no path "
       + "reaches dist/harness/contentRun/**, dist/studio/worker/**, a stage executor, stageExecution, revision, the fact "
       + "loader, the pricing table, a STUDIO_FORBIDDEN_TREES or STUDIO_FORBIDDEN_MODULES entry, @anthropic-ai/sdk or any "
-      + "package but pg and jose; it reaches only the web tree and the S2 runner; its test support is unreachable from "
-      + "main.js; and an intermediary, a re-export or a dynamic import cannot hide a forbidden reach"
+      + "package but pg and jose; it reaches only the web tree, the S2 runner and (S5) the one import-free leaf "
+      + "dist/harness/agents/providerText.js; its test support is unreachable from main.js; and an intermediary, a "
+      + "re-export or a dynamic import cannot hide a forbidden reach"
       + (webWalk.violations.length || fromWebMain.violations.length
         ? ` — ${[...webWalk.violations, ...fromWebMain.violations].map(describeViolation).join("; ")}` : ""),
       webWalk.violations.length === 0 && fromWebMain.violations.length === 0
         && webModules.includes(STUDIO_WEB_ENTRY_POINT) && webModules.includes("dist/studio/web/app.js")
         && webModules.includes("dist/studio/web/web.offline.selftest.js") && webTestModules.includes("dist/studio/web/testSupport.js")
-        && webWalk.reached.every((m) => m.startsWith("dist/studio/web/") || m === "dist/studio/db/runner.js")
+        && webWalk.reached.every((m) => m.startsWith("dist/studio/web/") || m === "dist/studio/db/runner.js"
+          || m === STUDIO_WEB_SHARED_LEAF)
+        && STUDIO_WEB_SHARED_LEAF === "dist/harness/agents/providerText.js" && fromWebMain.reached.includes(STUDIO_WEB_SHARED_LEAF)
         && fromWebMain.reached.includes("dist/studio/web/app.js") && fromWebMain.reached.includes("dist/studio/web/oidc.js")
         && !fromWebMain.reached.some(isStudioWebTestModule)
         && STUDIO_WEB_PACKAGES.join() === "pg,jose"
@@ -12755,6 +12768,27 @@ async function run(): Promise<void> {
           [["dist/harness", LIB, "pricing.js"].join("/")]: "" }), "forbidden")
         && webTree({ "dist/studio/web/main.js": 'import pg from "pg";\nimport { jwtVerify } from "jose";\nimport "node:http";\n' })
           .violations.length === 0);
+
+    // CS10a (Content Studio S5). The leaf the web may reach imports NOTHING at
+    // run time, in source or compiled, so widening CS10 by it can never widen
+    // what the web reaches: no static import, re-export, dynamic import or
+    // require, and no package; a type-only import compiles away.
+    const leafSource = readFileSync(resolve(REPO_ROOT, "src/harness/agents/providerText.ts"), "utf8");
+    const leafCompiled = readFileSync(resolve(REPO_ROOT, STUDIO_WEB_SHARED_LEAF), "utf8");
+    const leafRefs = [...moduleReferences(leafSource, "src/harness/agents/providerText.ts").references,
+      ...moduleReferences(leafCompiled, STUDIO_WEB_SHARED_LEAF).references];
+    const leafWalk = walkImportGraph({ root: REPO_ROOT, entryPoints: [STUDIO_WEB_SHARED_LEAF], allowedPackages: [] });
+    check("CS10a. the one module CS10 lets the web reach beyond its own tree, src/harness/agents/providerText.ts, has "
+      + "zero runtime imports — no static import, re-export, dynamic import or require, in source or compiled — so it "
+      + "reaches nothing; contactLine.ts and packagingAdaptation.ts re-export its functions, and a runtime import "
+      + "added to it is refused"
+      + (leafRefs.length ? ` — ${leafRefs.map((r) => ("specifier" in r ? r.specifier : r.text)).join(", ")}` : ""),
+      leafRefs.length === 0 && leafWalk.violations.length === 0
+        && JSON.stringify(leafWalk.reached) === JSON.stringify([STUDIO_WEB_SHARED_LEAF])
+        && !/\bimport\s*\(|\brequire\s*\(|^\s*(?:import|export)\b[^;]*\bfrom\b/m.test(leafCompiled)
+        && moduleReferences('import { x } from "./other.js";\n', "leaf.ts").references.length === 1
+        && moduleReferences('import type { X } from "./other.js";\n', "leaf.ts").references.length === 0
+        && moduleReferences('export const y = () => import("./other.js");\n', "leaf.ts").references.length === 1);
 
     // CS11 (Content Studio S4). jose is imported only under src/studio/web/**,
     // and no live entry point reaches it: the live walk is repeated with every
