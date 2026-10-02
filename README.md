@@ -346,8 +346,9 @@ injected-fault proof (`M-inc-sample-fault`). *(Its first sample of 31 took the C
 32m15s, over the 30-minute bar; owner decision of 2026-10-01.)* *(2026-10-01: S2 is `MERGED` through
 PR #105; its CI mutation step took 18m09s on the PR and 30m13s on `main`, for the same code.)*
 *(The mutation-harness shards change, `IMPLEMENTED`, not merged; *`MERGED` through PR #106 at `bec4a41…` since 2026-10-01, each shard's CI step under 12 minutes on the PR and on `main`*:)* `--shard k/n` runs the mutations
-whose zero-based index modulo `n` is `k`. CI runs three shards inside the existing jobs: shard 0 in
-the quality job, and shards 1 and 2 as the last step of the PostgreSQL 16 and 18 jobs. Every per-run
+whose zero-based index modulo `n` is `k`. CI runs four shards inside the existing jobs (three until
+Content Studio S5): shards 0 and 3 as two steps of the quality job, and shards 1 and 2 as the last
+step of the PostgreSQL 16 and 18 jobs. Every per-run
 proof runs in every shard, `M-shard` checks each shard's ids, and `scripts/ci/check-mutation-shards.rb`
 refuses a `ci.yml` that does not run each shard exactly once. No CI job was added, removed or
 renamed. *(Content Studio S3, `IMPLEMENTED`; *`MERGED` through PR #107*: 589 mutations; `M534`–`M589` cover the review-only
@@ -390,7 +391,7 @@ npm ci
 npm run typecheck
 npm run build
 npm run test:offline
-npm run test:payload-mutation   # or one shard: npm run test:payload-mutation -- --shard 1/3
+npm run test:payload-mutation   # or one shard: npm run test:payload-mutation -- --shard 1/4
 npm run dryrun
 npm run test:deployment-controller
 npm run check:markdown-links

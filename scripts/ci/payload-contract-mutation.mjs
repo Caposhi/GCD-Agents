@@ -368,8 +368,9 @@
  *
  * SHARDS. `--shard k/n` runs exactly the mutations whose zero-based index
  * modulo n is k (see `parseShard`), so shards 0 to n-1 are disjoint and together
- * run every mutation. CI runs n = 3: shard 0 in the Node 22 quality job, shards 1
- * and 2 in the PostgreSQL 16 and 18 jobs, and the workflow-validation job's
+ * run every mutation. CI runs n = 4 (n = 3 until Content Studio S5): shards 0 and
+ * 3 as two steps of the Node 22 quality job, shards 1 and 2 in the PostgreSQL 16
+ * and 18 jobs, and the workflow-validation job's
  * `scripts/ci/check-mutation-shards.rb` refuses a `ci.yml` that does not run each
  * shard exactly once with the same n, or that runs the harness without
  * `--shard`. Every per-run proof runs in every shard. `M-inc-sample` keeps its

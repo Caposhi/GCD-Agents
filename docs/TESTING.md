@@ -326,11 +326,11 @@ The log ends with the wall time of each kind of work summed over the workers; `-
 
 - **The harness refuses before any work, with exit 2:** a second `--shard`, any other option spelled `--shard…` (such as `--shard=1/3`), a value that is not `k/n` in whole numbers without leading zeros, `k ≥ n`, and `n` above the mutation count.
 - **Every per-run proof runs in every shard:** `M0`, `M-isolation`, `M-kill`, `M-capture`, `M-inc0`, `M-inc-restore` (the shard's own compiled mutations), `M-inc-end`, `M-inc-fault`, `M-inc-tsc`, `M-inc-sample-fault`, `M-end`, `M-copies`, `M-authority`, and `M-order`, which checks the shard's own ids in ascending order, each once.
-- **`M-inc-sample`** keeps the global seeded choice of four. `GITHUB_SHA` is the same in every job of a run, so the three shards agree on it. Each shard compares only the sampled ids it owns, which may be none. The `M-inc-sample seed:` line adds `this shard's share: …`, and the check requires one comparison per owned id.
+- **`M-inc-sample`** keeps the global seeded choice of four. `GITHUB_SHA` is the same in every job of a run, so every shard agrees on it. Each shard compares only the sampled ids it owns, which may be none. The `M-inc-sample seed:` line adds `this shard's share: …`, and the check requires one comparison per owned id.
 - **`M-shard`** prints `M-shard: k=…, n=…; <total> mutations in all; this shard ran <count>: M…, M…` — every id the shard took from the queue. It checks that `0 ≤ k < n ≤` the mutation count, and that the ids are exactly `k, k + n, k + 2n, …` (shown one-based as `M…`), each once. It also checks that their number equals `⌊(total − 1 − k) / n⌋ + 1`, computed independently of the filter that chose them. An unsharded run prints `k=0, n=1` and every id.
-- **CI runs `n = 3`.** Shard 0 runs in *Node 22 offline quality gates* (step *Payload-contract mutation tests, shard 0/3*). Shards 1 and 2 run as the last step of *PostgreSQL 16 integration* and *PostgreSQL 18 integration*: the matrix's `include` entries give `"16"` the value `mutation-shard: "1"` and `"18"` the value `"2"`, and the step runs `npm run test:payload-mutation -- --shard ${{ matrix.mutation-shard }}/3`. No job was added, removed or renamed, and no `timeout-minutes` changed. The PostgreSQL jobs' limit of **30 minutes** now also bounds shards 1 and 2.
+- **CI runs `n = 4`** (Content Studio S5; `n = 3` from PR #106 until then). Shards 0 and 3 run as two consecutive steps of *Node 22 offline quality gates* (*Payload-contract mutation tests, shard 0/4* and *…, shard 3/4*), under that job's 60-minute limit. Shards 1 and 2 run as the last step of *PostgreSQL 16 integration* and *PostgreSQL 18 integration*: the matrix's `include` entries give `"16"` the value `mutation-shard: "1"` and `"18"` the value `"2"`, and the step runs `npm run test:payload-mutation -- --shard ${{ matrix.mutation-shard }}/4`. No job was added, removed or renamed, no `timeout-minutes` or runner changed. The PostgreSQL jobs' limit of **30 minutes** also bounds shards 1 and 2; the owner's stop limit for a PostgreSQL job is 20 minutes, which is why S5 raised `n` (the [Roadmap](ROADMAP.md) watch item). *(Until S5 this read: CI runs `n = 3`, shard 0 in the quality job.)*
 - **The guard, `scripts/ci/check-mutation-shards.rb`,** runs in the workflow-validation job's step *Parse checked-in YAML and check the mutation shards*. It parses `ci.yml`, expands each job's matrix (lists and `include`), and substitutes `${{ matrix.KEY }}` per combination. It fails if any command running the harness (`test:payload-mutation` or `payload-contract-mutation.mjs`) lacks exactly one `--shard k/n`, if the shards disagree on `n`, or if any `k` in `0..n−1` is not run exactly once. It refuses a matrix expression, `exclude` and an unresolved `${{ }}` rather than guess. It then applies **eleven injected faults** to the workflow's own text and requires each to be refused for its expected reason:
-  - a shard missing;
+  - a shard missing — the quality job's shard 0/4 step, and (added by S5) its shard 3/4 step;
   - a shard duplicated, two ways;
   - a different `n`;
   - `k ≥ n`;
@@ -340,18 +340,18 @@ The log ends with the wall time of each kind of work summed over the workers; `-
   - an unresolved expression;
   - `exclude`.
 
-  Each fault's anchor must occur exactly once in the workflow, so a drifted workflow fails the self-test instead of passing it vacuously.
+  Twelve faults in all (eleven until S5 added the shard 3/4 one). Each fault's anchor must occur exactly once in the workflow, so a drifted workflow fails the self-test instead of passing it vacuously.
 
 Locally:
 
 ```bash
 npm run test:payload-mutation                      # every mutation (shard 0/1), as before
-npm run test:payload-mutation -- --shard 1/3       # one shard
-for k in 0 1 2; do npm run test:payload-mutation -- --shard "$k/3" || break; done   # all three, one after another
+npm run test:payload-mutation -- --shard 1/4       # one shard
+for k in 0 1 2 3; do npm run test:payload-mutation -- --shard "$k/4" || break; done   # all four, one after another
 npm run check:mutation-shards                      # the ci.yml guard and its injected faults (needs Ruby)
 ```
 
-Run the shards one after another, not concurrently: each already uses up to four workers. The union of the three `M-shard` lines is every id.
+Run the shards one after another, not concurrently: each already uses up to four workers. The union of the `M-shard` lines of shards `0/n` to `(n − 1)/n` is every id.
 
 **Mutation-harness shards — local validation, 2026-10-01** (4 CPUs, 4 workers, default seed; full figures in [Roadmap](ROADMAP.md)).
 
