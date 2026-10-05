@@ -325,7 +325,11 @@ export function forbiddenNamesPresent(names: readonly string[], alsoForbidden: r
  * migration missing, an extra one, or one whose bytes changed — is refused at
  * start-up (design §5.3, version skew).
  */
-export const STUDIO_EXPECTED_MIGRATIONS = ["0001_studio_identity_and_tripwire.sql", "0002_studio_schema.sql"] as const;
+export const STUDIO_EXPECTED_MIGRATIONS = [
+  "0001_studio_identity_and_tripwire.sql",
+  "0002_studio_schema.sql",
+  "0003_studio_preflight_requests.sql",
+] as const;
 export const STUDIO_SCHEMA_VERSION = STUDIO_EXPECTED_MIGRATIONS[STUDIO_EXPECTED_MIGRATIONS.length - 1]!;
 
 /** How a runtime service raises a refusal, and how its messages name it. */

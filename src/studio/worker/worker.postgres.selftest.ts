@@ -27,7 +27,7 @@ import pg from "pg";
 
 import * as lib from "../../harness/contentRun/index.js";
 import type { ContentRunRuntime } from "../../harness/contentRun/index.js";
-import { runStudioMigrations, STUDIO_DATABASE_NAME } from "../db/runner.js";
+import { runStudioMigrations, STUDIO_DATABASE_NAME, STUDIO_EXPECTED_MIGRATIONS, STUDIO_SCHEMA_VERSION } from "../db/runner.js";
 import { closeRun, type PaidStageRunner } from "./execute.js";
 import { CRITIC_ARTIFACT } from "./findings.js";
 import { ceilingMicros, microsToNumeric, numericToMicros } from "./money.js";
@@ -138,11 +138,11 @@ interface Studio {
   close(): Promise<void>;
 }
 
-async function migrate(url: string): Promise<void> {
+async function migrate(url: string, directory = resolve(REPO_ROOT, "studio/migrations")): Promise<void> {
   const client = new pg.Client({ connectionString: url });
   await client.connect();
   try {
-    await runStudioMigrations(client, { directory: resolve(REPO_ROOT, "studio/migrations") });
+    await runStudioMigrations(client, { directory });
   } finally {
     await client.end();
   }
@@ -348,13 +348,13 @@ async function startupGroup(dbs: Databases): Promise<void> {
     mkdirSync(join(root, "config"), { recursive: true });
     cpSync(resolve(REPO_ROOT, "config/approved-facts.json"), join(root, "config/approved-facts.json"));
     cpSync(resolve(REPO_ROOT, "studio/migrations"), join(root, "studio/migrations"), { recursive: true });
-    writeFileSync(join(root, "studio/migrations/0003_later.sql"), "SELECT 1;\n");
+    writeFileSync(join(root, "studio/migrations/0004_later.sql"), "SELECT 1;\n");
     const extraFile = await refusalOf(inProcess(st, { repoRoot: root }));
-    rmSync(join(root, "studio/migrations/0003_later.sql"));
+    rmSync(join(root, "studio/migrations/0004_later.sql"));
     writeFileSync(join(root, "studio/migrations/0002_studio_schema.sql"),
       `${readFileSync(join(root, "studio/migrations/0002_studio_schema.sql"), "utf8")}\n-- edited\n`);
     const changed = await refusalOf(inProcess(st, { repoRoot: root }));
-    await st.pool.query("INSERT INTO studio_schema_migrations (name, sha256) VALUES ('0003_later.sql', $1)", [hex("later")]);
+    await st.pool.query("INSERT INTO studio_schema_migrations (name, sha256) VALUES ('0004_later.sql', $1)", [hex("later")]);
     const extraRow = await refusalOf(inProcess(st));
     const beats = (await st.pool.query("SELECT count(*)::int AS n FROM studio_worker_heartbeat")).rows[0].n;
     check("startup", "SWP1b. the worker refuses any schema version but the one its code expects — an extra migration in "
@@ -365,6 +365,35 @@ async function startupGroup(dbs: Databases): Promise<void> {
   } finally {
     rmSync(root, { recursive: true, force: true });
     await st.close();
+  }
+
+  // Content Studio S6.1: a database migrated to 0002 alone, then to 0003.
+  const older = await studio(dbs, "schema-0002", { migrated: false });
+  const only0002 = mkdtempSync(join(tmpdir(), "gcd-studio-0002-"));
+  try {
+    for (const name of STUDIO_EXPECTED_MIGRATIONS.slice(0, 2)) {
+      cpSync(resolve(REPO_ROOT, "studio/migrations", name), join(only0002, name));
+    }
+    await migrate(older.url, only0002);
+    const ledgerBefore = (await older.pool.query("SELECT name FROM studio_schema_migrations ORDER BY name")).rows.map((r) => r.name);
+    const refused = await refusalOf(inProcess(older));
+    const beatsBefore = (await older.pool.query("SELECT count(*)::int AS n FROM studio_worker_heartbeat")).rows[0].n;
+    const heldBefore = await holders(older.pool);
+    await migrate(older.url);
+    const worker = inProcess(older);
+    const accepted = await worker.ready.then(() => true, () => false);
+    const beat = (await older.pool.query("SELECT schema_version FROM studio_worker_heartbeat")).rows[0];
+    await worker.stop();
+    check("startup", "SWP18. a database migrated to 0002 alone is refused at start-up (schema-version) — before ownership, "
+      + "writing no heartbeat — and the same database, once 0003 is applied on top, is accepted: the worker becomes "
+      + `ready and its heartbeat names ${STUDIO_SCHEMA_VERSION}`,
+      JSON.stringify(ledgerBefore) === JSON.stringify(STUDIO_EXPECTED_MIGRATIONS.slice(0, 2)) && refused === "schema-version"
+        && beatsBefore === 0 && heldBefore === 0 && accepted && beat?.schema_version === STUDIO_SCHEMA_VERSION
+        && STUDIO_SCHEMA_VERSION === "0003_studio_preflight_requests.sql",
+      `${JSON.stringify(ledgerBefore)} ${refused} ${beatsBefore} ${heldBefore} ${accepted} ${beat?.schema_version}`);
+  } finally {
+    rmSync(only0002, { recursive: true, force: true });
+    await older.close();
   }
 }
 
@@ -711,7 +740,7 @@ async function paidGroup(dbs: Databases): Promise<void> {
     const beat2 = (await st.pool.query("SELECT beat_at::text AS at FROM studio_worker_heartbeat")).rows[0];
     check("paid", "SWP12. the worker writes the singleton heartbeat — its commit, the schema version, the approved-facts "
       + "sha256 and tag counts, and the price table's sha256 — and keeps it fresh on its interval",
-      beat1.commit === COMMIT && beat1.schema_version === "0002_studio_schema.sql" && beat1.approved_facts_sha256 === approvedSha
+      beat1.commit === COMMIT && beat1.schema_version === "0003_studio_preflight_requests.sql" && beat1.approved_facts_sha256 === approvedSha
         && beat1.price_table_sha256 === lib.priceTableSha256() && Object.keys(beat1.approved_facts_tag_counts).length > 0
         && beat2.at > beat1.at);
     check("paid", "SWP13. fake runner only: across every worker in this suite the real provider runner factory was "

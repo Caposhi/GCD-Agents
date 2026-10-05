@@ -527,6 +527,23 @@ deployed commit, recorded by sha256 as the CLI already does.
 | `studio_jobs` | `id`, `run_id` (unique), `kind` (`preflight` \| `paid` \| `fake`), `state`, `created_at`, `expires_at`, `claimed_at`, `heartbeat_at`, `cancel_requested_at`, `worker_commit` | One job per run. No `attempts` column: a job is never retried ([§5.3](#53-the-job-queue)). A queued job past `expires_at` is never started |
 | `studio_worker_heartbeat` (singleton) | `commit`, `schema_version`, `approved_facts_sha256`, `approved_facts_tag_counts` (jsonb), `price_table_sha256`, `beat_at` | Written only by the worker. The web reads the tag counts and fingerprints from here, so the web never loads the fact files or the pricing code itself |
 
+*(Dated note, owner decisions of 2026-10-05, Content Studio S6.1 — an addition to this section.
+S2's tables cannot carry the free preflight of §6.1 steps 1–2: a `preflight` job has no parameters,
+`studio_quotes` holds only `params_sha256` and requires `ceiling_usd > 0`, so it cannot hold a
+refusal, and nothing stores the revise plan §8.4 shows. Studio migration
+`0003_studio_preflight_requests.sql` adds one table, **`studio_preflight_requests`**: one row per
+`preflight` job, written by the web, holding the requester (an active owner or runner), the action,
+the parameters (a full run's goal of 1–2,000 characters and no source; a revise, replay or resume's
+source run, not deleted, and no goal; a non-empty set of platforms; scope tags or NULL for
+unscoped, never empty; the fact version) and `params_sha256` over a canonical form fixed in the
+migration and in [Data model](DATA_MODEL.md#content-studio-schema--the-separate-gcd_studio-database);
+and the worker's outcome, written once and immutable after — `quoted`, naming a quote for the same
+user, action, `params_sha256` and fact version, or `refused`, with a failure-class-shaped class and
+a message of at most 4,000 characters — plus `revise_plan`, planRevision's plan, on a revise only.
+The owner rejected carrying any of this through `studio_audit_log`, which would have made the
+append-only log a queue and dropped the refusal text. The database enforces every invariant; S6.2
+writes the rows.)*
+
 ### 4.7 Retention and backup
 
 **Confirmed by the owner on 2026-09-29** ([§11.1a](#111a-owner-decisions-of-2026-09-29--answers-to-111)) for runs, the audit log and the spend ledger. Fact-version retention and the session and login-attempt purges remain PROPOSED:
@@ -543,6 +560,13 @@ database plan. S8 records what the chosen plan provides. Before the first live r
 performs one restore drill: restore into a new, disposable Render database, open it read-only, and
 delete it. A Studio restore has no external side effects to reconcile: nothing was published, no
 Slack message was sent, and the only external effect is model spend, which the ledger records.
+
+*(Dated note, owner decision of 2026-10-05, Content Studio S6.1 — an addition to the table above.
+**Preflight requests** (`studio_preflight_requests`) are kept at least **30 days**. After that, a
+request may be deleted only when no consumed quote depends on it: one that was refused, never
+answered, or quoted but whose quote was never consumed. A request whose quote was consumed is the
+record of how its run was priced and is kept with the run. The database stamps `created_at` and
+enforces the rule; the purge itself is S6.2's.)*
 
 ---
 
@@ -1281,6 +1305,22 @@ The names S1–S9 are new, so they cannot be confused with the production-wiring
 | **S7** | **Fact upload and legacy import.** Owner-only upload with the existing loader, versions, the active pointer, and the import into `verified` or `archived_unverified` | Loader refusals shown. A pinned version survives replacement. A synthetic legacy folder imports `verified`; one with an older approved-facts hash imports `archived_unverified` and is refused as a paid source | No |
 | **S8** | **Adds `render.studio.yaml`**, a new Blueprint file for `gcd-studio-web`, `gcd-studio-worker` and `gcd-studio-db` (not the cron), with auto-deploy off, `sync: false` secrets and `ipAllowList: []`. **`render.yaml` stays byte-identical.** Adds the static check of [§3.2](#32-environment-variables-per-service), which also asserts that `render.yaml` contains no `gcd-studio-*` entry and `render.studio.yaml` no `gcd-social-*` entry. Adds the Studio release checklist, and the by-hand creation steps if Render cannot read a Blueprint at that path, to [Operations](OPERATIONS.md) | YAML parse (the CI YAML step must include the new file) and actionlint; the static check, including, for this Studio PR, a byte comparison of `render.yaml` against its merge base; the deployment-controller fixtures unchanged. **Entry gate: the Blueprint check in [§3.6](#36-applying-the-blueprint--a-gate-not-a-formality) is recorded, and the freeze gate below still holds for O3** | Adds `render.studio.yaml`, the static-check script and a one-line change to `.github/workflows/ci.yml`'s YAML-parse step so it also parses the new file. **`render.yaml`, `deploy-production.yml` and every `gcd-social-*` definition are unchanged.** The [Status](STATUS.md) and [README](../README.md) statements that `render.yaml` is unchanged since artifact `A` stay true |
 | **S9** | **Cron, built disabled.** `src/studio/cron/**`, enqueue-only, with the double gate and the owner pre-authorization row. Not added to `render.studio.yaml`, and never to `render.yaml` | Refuses with either gate off. An unspent pre-authorization cannot exceed its per-run ceiling or the caps. No runner call from the cron process | No |
+
+*(Dated note, owner decisions of 2026-10-05 — the S6 row is split, and a live-runner step is
+added. (1) S6's stop report is accepted: S2's schema cannot carry the preflight → quote flow (see
+the dated note at the end of §4.6). (2) **S6 becomes two PRs.** **S6.1** adds Studio migration
+`0003_studio_preflight_requests.sql` and moves every Studio runtime's expected schema version to it —
+no screen, route or worker job behaviour. **S6.2** is the S6 row's scope — new run, revise, critic
+replay and resume; the free preflight, quotes, confirmation, caps, per-user permission,
+cancellation and the spend panel — on 0003, **built and tested with fake runners only**: the
+worker's production entry point constructs no paid runner and still refuses to start beside
+`ANTHROPIC_API_KEY`, and a confirmed live run is refused as `live_runs_not_enabled`, its reservation
+released, with zero runner calls. (3) **S6b — live-runner enablement — `PLANNED`, after S8 and
+before O6,** its own PR and its own authorization: it connects the real Anthropic runner. **Until S6b,
+no Studio code path can spend money.** (4) The audit-log-as-channel workaround is rejected. The §8.7
+users and caps settings screens are not assigned by the S6 row, which assigns the caps'
+enforcement; they remain unassigned (the seeded settings row already holds the owner's caps of
+2026-09-29).)*
 
 **Documents each PR must update**, beyond [Roadmap](ROADMAP.md), [Status](STATUS.md) and the root
 [README](../README.md), under [`AGENTS.md`](../AGENTS.md)'s binding rule. This change adds only a labelled planned note to
