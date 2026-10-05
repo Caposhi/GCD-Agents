@@ -120,7 +120,7 @@ Money is `numeric(12,6)` USD, times `timestamptz`, ids UUIDs. Singletons have a 
 | `studio_fact_versions` | Validated fact files, exact bytes, sha256, counts, status | The manufacturer facts file (owner-only bytes) |
 | `studio_settings` (singleton) | Active fact version, daily and monthly caps, `scheduled_runs_enabled` | Configuration |
 | `studio_quotes` | The worker's price ceilings, bound to user, action, parameters, commit, fingerprints, price table; single use | Cost metadata |
-| `studio_preflight_requests` (S6.1, migration 0003) | One row per free preflight job: the parameters the web asked the worker to check and price (action, goal, platforms, scope tags, source run, fact version, `params_sha256`), and the worker's one-time outcome — a quote, or a refusal class and message — with a revise plan on a revise | Goals, refusal messages that may quote saved stage output, and revise plans holding finding text |
+| `studio_preflight_requests` (S6.1, migration 0003) | One row per free preflight job: the parameters the web asked the worker to check and price (action, goal, platforms, scope tags, source run, fact version, `params_sha256`), and the worker's one-time outcome — a quote, or a refusal class and message — with the revise plan a quoted revise (or one refused as `no_revisable_blocking_finding`) requires | Goals, refusal messages that may quote saved stage output, and revise plans holding finding text |
 | `studio_runs` | Every run and import: kind, lineage, state, fingerprints, quote, reservation, verdict, counts, failure, tombstone | Goals and failure messages |
 | `studio_run_artifacts` | Each run's CLI files, byte for byte, with sha256 and length | Model output and cited claims, including the approved booking link inside contact lines |
 | `studio_run_requests` | One row per provider request, its ceiling, tokens, cost and the generated `charged_usd` | Cost metadata |
@@ -183,7 +183,7 @@ Each is proven by attempting the forbidden write and requiring its refusal, besi
 | | `params_sha256` lower-case hex; created without an outcome; `created_at` stamped by the database | `CHECK`, trigger | `SP323`, `SP324`, `SP368` |
 | | The outcome is written once and never changes: `quoted` names a quote for the same user, action, `params_sha256` and fact version, with no refusal; `refused` has a failure-class-shaped class and a message of 1–4,000 characters, with no quote; the database stamps `outcome_at` | trigger, `CHECK`s | `SP328`–`SP333`, `SP335`–`SP338`, `SP350`–`SP354`, `SP356`, `SP357` |
 | | The parameters never change, before or after the outcome | trigger | `SP339`, `SP343`–`SP349` |
-| | `revise_plan` only on a revise — quoted, or refused as `no_revisable_blocking_finding` — a JSON object of at most 1 MiB | `CHECK`s | `SP334`, `SP355`, `SP359`–`SP364` |
+| | `revise_plan` **required** on a revise that was quoted or refused as `no_revisable_blocking_finding`, and allowed nowhere else; a JSON object of at most 1 MiB | `CHECK`s | `SP334`, `SP355`, `SP359`–`SP364`, `SP372`, `SP373` |
 | | Never truncated; deleted only 30 days after creation and only if no consumed quote depends on it; a quote it names cannot be deleted first | triggers, `ON DELETE RESTRICT` | `SP341`, `SP365`–`SP371` |
 
 ## §4 rules that are not the database's to enforce, and who owns each

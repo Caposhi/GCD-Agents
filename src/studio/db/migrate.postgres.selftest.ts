@@ -1478,6 +1478,17 @@ async function invariants(pool: pg.Pool): Promise<void> {
       await c.query("DELETE FROM studio_preflight_requests WHERE id = ANY ($1::uuid[])", [[old, oldQuoted]]);
       await c.query("DELETE FROM studio_quotes WHERE id = $1", [q]);
     });
+
+  // The plan is required where it is allowed (reviewer request, 2026-10-05).
+  await refuses("a quoted revise without its plan", /studio_preflight_requests_revise_plan_required/, async (c) => {
+    const id = await pfRequest(c, { action: "revise", params: pfParams("revise-no-plan") });
+    await quoted(c, id, await pfQuote(c, runner, "revise", pfParams("revise-no-plan")));
+  });
+  await refuses("a revise refused as no_revisable_blocking_finding without its plan", /studio_preflight_requests_revise_plan_required/,
+    async (c) => {
+      const id = await pfRequest(c, { action: "revise", params: pfParams("no-revision-no-plan") });
+      await refused(c, id, "no_revisable_blocking_finding", "no blocking finding is revisable");
+    });
 }
 
 async function main(): Promise<void> {

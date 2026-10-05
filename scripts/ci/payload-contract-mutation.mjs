@@ -379,7 +379,7 @@
  * and the runner's own suite (`SM3c`) — and the schema version taken from the
  * wrong entry is run against the web (`SA7`). The table's invariants are SQL
  * and are proven by the disposable-PostgreSQL refusals (`SP16`, `SP17`,
- * `SP303`–`SP371`, `SWP18`, `SAP15`), as S2's were, not by this harness. No
+ * `SP303`–`SP373`, `SWP18`, `SAP15`), as S2's were, not by this harness. No
  * captured path is added (the runner module already is one): sixty-one in all.
  *
  * It is offline and deterministic: no network, no database, no provider, no

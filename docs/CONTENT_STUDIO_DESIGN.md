@@ -539,7 +539,8 @@ unscoped, never empty; the fact version) and `params_sha256` over a canonical fo
 migration and in [Data model](DATA_MODEL.md#content-studio-schema--the-separate-gcd_studio-database);
 and the worker's outcome, written once and immutable after — `quoted`, naming a quote for the same
 user, action, `params_sha256` and fact version, or `refused`, with a failure-class-shaped class and
-a message of at most 4,000 characters — plus `revise_plan`, planRevision's plan, on a revise only.
+a message of at most 4,000 characters — plus `revise_plan`, planRevision's plan, required on a
+revise that was quoted or refused because no blocking finding is revisable, and allowed nowhere else.
 The owner rejected carrying any of this through `studio_audit_log`, which would have made the
 append-only log a queue and dropped the refusal text. The database enforces every invariant; S6.2
 writes the rows.)*

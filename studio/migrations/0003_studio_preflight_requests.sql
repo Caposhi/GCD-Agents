@@ -8,7 +8,8 @@
 -- cannot hold a refusal), and nothing stores a revise plan. This table holds
 -- all three: the web writes the request beside its preflight job, and the
 -- worker writes its outcome once — a quote, or a refusal with its reason, and
--- for a revise the plan from planRevision (§8.4).
+-- for a quoted revise (or one refused because no blocking finding is
+-- revisable) the plan from planRevision (§8.4), which is then required.
 --
 -- Every invariant below is proven on disposable PostgreSQL 16 and 18 by
 -- src/studio/db/migrate.postgres.selftest.ts, which attempts each forbidden
@@ -96,8 +97,9 @@ CREATE TABLE studio_preflight_requests (
   -- is; never logged (design §9.2).
   refusal_message text
     CONSTRAINT studio_preflight_requests_refusal_message_bounded CHECK (char_length(refusal_message) BETWEEN 1 AND 4000),
-  -- planRevision's plan (§8.4), for the web to show: on a quoted revise, or on a
-  -- revise refused because no blocking finding is revisable. At most 1 MiB: a
+  -- planRevision's plan (§8.4), for the web to show: required on a quoted revise
+  -- and on a revise refused because no blocking finding is revisable, and
+  -- allowed nowhere else. At most 1 MiB: a
   -- full panel is 4 lenses of at most 20 findings, each issue at most 600 and
   -- each suggested action at most 300 characters (CRITIC_FIELD_LIMITS).
   revise_plan jsonb
@@ -114,6 +116,9 @@ CREATE TABLE studio_preflight_requests (
     OR (outcome = 'refused' AND quote_id IS NULL AND refusal_class IS NOT NULL AND refusal_message IS NOT NULL
         AND outcome_at IS NOT NULL)),
   CONSTRAINT studio_preflight_requests_revise_plan_when CHECK (revise_plan IS NULL OR (action = 'revise' AND (
+    outcome IS NOT DISTINCT FROM 'quoted'
+    OR (outcome IS NOT DISTINCT FROM 'refused' AND refusal_class IS NOT DISTINCT FROM 'no_revisable_blocking_finding')))),
+  CONSTRAINT studio_preflight_requests_revise_plan_required CHECK (revise_plan IS NOT NULL OR NOT (action = 'revise' AND (
     outcome IS NOT DISTINCT FROM 'quoted'
     OR (outcome IS NOT DISTINCT FROM 'refused' AND refusal_class IS NOT DISTINCT FROM 'no_revisable_blocking_finding'))))
 );
