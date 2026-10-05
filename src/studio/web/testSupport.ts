@@ -11,6 +11,9 @@
  *   own rules (single-use, expiring login attempts; the bootstrap-owner rule;
  *   the immutable `google_sub`; the session guard; a disabled user's sessions
  *   revoked with it). The PostgreSQL suite proves the real schema does the same.
+ *   For S5 it also holds runs, artifacts, findings and request rows, which a
+ *   test adds directly (`addRun`, `addArtifact`) — including, test-only, an
+ *   artifact whose bytes no longer match its stored sha256.
  *
  * Every address it makes is assembled at run time, and every host is `.test`.
  */
@@ -20,6 +23,9 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { SignJWT, exportJWK, type JWK, type JWTPayload } from "jose";
 
 import type { OidcProvider } from "./oidc.js";
+import type {
+  ArtifactMeta, FindingRow, RequestRow, RunFilters, RunLineage, RunListRow, RunRow, StoredArtifact,
+} from "./runs.js";
 import type { SessionRow, StudioUserRow } from "./sessions.js";
 import type { AuditEntry, WebHealth, WebStore } from "./store.js";
 
@@ -189,6 +195,13 @@ export class MemoryWebStore implements WebStore {
   heartbeatAt: number | null = null;
   failHealth = false;
   failSessions = false;
+  /** S5: runs (with their tombstone), artifacts, findings and request rows, by run id. */
+  readonly runs = new Map<string, RunRow>();
+  readonly artifacts = new Map<string, Map<string, StoredArtifact>>();
+  readonly findings = new Map<string, FindingRow[]>();
+  readonly requests = new Map<string, RequestRow[]>();
+  /** Every runs-list query's arguments, as the store received them. */
+  readonly runQueries: Array<{ filters: Omit<RunFilters, "page">; limit: number; offset: number }> = [];
 
   constructor(private readonly clock: () => number) {}
 
@@ -340,6 +353,80 @@ export class MemoryWebStore implements WebStore {
     };
   }
 
+  // --- S5 -------------------------------------------------------------------
+
+  /** A run row with defaults: a finished fake full run, requested by `requestedBy`. */
+  addRun(requestedBy: StudioUserRow, row: Partial<RunRow> = {}): RunRow {
+    const id = row.id ?? crypto.randomUUID();
+    const created = row.created_at ?? new Date(this.clock() - this.runs.size * 1_000);
+    const run: RunRow = {
+      id, kind: "full", state: "succeeded", runner: "fake", goal: "Synthetic goal", verdict: "provisional_pass",
+      blocking_findings: null, advisory_findings: null, actual_usd: null, import_tier: null, created_at: created,
+      requested_by: requestedBy.id, requester_name: requestedBy.display_name, source_run_id: null, platforms: ["instagram"],
+      scope_tags: null, fact_version_id: null, approved_facts_sha256: null, automotive_facts_sha256: null,
+      evidence_pack_sha256: null, code_commit: null, reserved_usd: null, owner_item_findings: null, failure_class: null,
+      failure_message: null, started_at: created, finished_at: created, deleted_at: null, ...row,
+    };
+    this.runs.set(id, run);
+    return run;
+  }
+
+  /** Stores bytes as the sink does (sha256 and length of the bytes), or — `tamper`, test-only — with other bytes. */
+  addArtifact(runId: string, name: string, bytes: string | Buffer, tamper?: Buffer): void {
+    const content = Buffer.from(bytes);
+    const stored: StoredArtifact = {
+      name, content: tamper ?? content, sha256: createHash("sha256").update(content).digest("hex"), byte_length: content.length,
+    };
+    if (!this.artifacts.has(runId)) this.artifacts.set(runId, new Map());
+    this.artifacts.get(runId)!.set(name, stored);
+  }
+
+  async listRuns(filters: Omit<RunFilters, "page">, limit: number, offset: number): Promise<RunListRow[]> {
+    this.calls.push("listRuns");
+    this.runQueries.push({ filters: { ...filters }, limit, offset });
+    return [...this.runs.values()]
+      .filter((r) => r.deleted_at === null && (filters.state === null || r.state === filters.state)
+        && (filters.kind === null || r.kind === filters.kind) && (filters.requester === null || r.requested_by === filters.requester))
+      .sort((a, b) => b.created_at.getTime() - a.created_at.getTime() || (a.id < b.id ? 1 : -1))
+      .slice(offset, offset + limit)
+      .map((r) => structuredClone(r));
+  }
+
+  /** As the PostgreSQL store: the run as stored, deleted or not. */
+  async findRun(id: string): Promise<RunRow | null> {
+    this.calls.push("findRun");
+    const run = this.runs.get(id);
+    return run ? structuredClone(run) : null;
+  }
+
+  async runLineage(run: Pick<RunRow, "id" | "source_run_id">): Promise<RunLineage> {
+    const parent = run.source_run_id === null ? undefined : this.runs.get(run.source_run_id);
+    return {
+      parent: parent ? { id: parent.id, deleted: parent.deleted_at !== null } : null,
+      children: [...this.runs.values()].filter((r) => r.source_run_id === run.id && r.deleted_at === null)
+        .sort((a, b) => a.created_at.getTime() - b.created_at.getTime()).map((r) => ({ id: r.id, kind: r.kind, state: r.state })),
+    };
+  }
+
+  async listArtifacts(runId: string): Promise<ArtifactMeta[]> {
+    return [...(this.artifacts.get(runId)?.values() ?? [])].sort((a, b) => (a.name < b.name ? -1 : 1))
+      .map(({ name, sha256, byte_length }) => ({ name, sha256, byte_length }));
+  }
+
+  async readArtifact(runId: string, name: string): Promise<StoredArtifact | null> {
+    this.calls.push("readArtifact");
+    const stored = this.artifacts.get(runId)?.get(name);
+    return stored ? { ...stored, content: Buffer.from(stored.content) } : null;
+  }
+
+  async listFindings(runId: string): Promise<FindingRow[]> {
+    return structuredClone(this.findings.get(runId) ?? []).sort((a, b) => a.idx - b.idx);
+  }
+
+  async listRequests(runId: string): Promise<RequestRow[]> {
+    return structuredClone(this.requests.get(runId) ?? []).sort((a, b) => a.seq - b.seq);
+  }
+
   /** Everything stored, as text: for proving no cookie value or token is ever kept. */
   dump(): string {
     return JSON.stringify({ users: [...this.users.values()], attempts: [...this.attempts], sessions: [...this.sessions],
@@ -350,4 +437,70 @@ export class MemoryWebStore implements WebStore {
     return { id: user.id, email: user.email, google_sub: user.google_sub, display_name: user.display_name, role: user.role,
       status: user.status };
   }
+}
+
+// --- S5: synthetic run artifacts -----------------------------------------------
+
+/** The synthetic contact values every fixture uses: a `.invalid` booking host and a 555 number. */
+export const SYNTHETIC_SHOP = "Synthetic Shop";
+export const SYNTHETIC_PHONE = "555-0100";
+export const SYNTHETIC_BOOKING_URL = "https://booking.invalid/synthetic";
+
+/**
+ * The stored files of one finished run, in the shapes the CLI writes (stage
+ * results `{ output, metadata }`, `05b-contact-lines.json`), with every
+ * displayed field marked `<mark>[field]` so a test can find each one. `mark`
+ * is the text a hostile-content test puts in every field.
+ */
+export function syntheticRunArtifacts(mark = "", platforms: readonly string[] = ["instagram", "facebook", "google_business_profile"]):
+  Record<string, string> {
+  const f = (field: string) => `${mark}[${field}]`;
+  const stage = (output: unknown) => JSON.stringify({ output, metadata: { synthetic: true } }, null, 2);
+  const contact = (platform: string) => platform === "instagram"
+    ? { kind: "deterministic_contact", text: `${f("contact-instagram")}Call ${SYNTHETIC_SHOP}: ${SYNTHETIC_PHONE}`,
+      sourceFactIds: ["approved-facts:shop", "approved-facts:phone"] }
+    : platform === "facebook"
+      ? { kind: "deterministic_contact",
+        text: `${f("contact-facebook")}Call ${SYNTHETIC_SHOP}: ${SYNTHETIC_PHONE} · Book online: ${SYNTHETIC_BOOKING_URL}`,
+        sourceFactIds: ["approved-facts:shop", "approved-facts:phone", "approved-facts:bookingurl"] }
+      : { kind: "deterministic_contact", text: null, gbpCta: { actionType: "BOOK", url: `${SYNTHETIC_BOOKING_URL}?${f("cta")}` },
+        sourceFactIds: ["approved-facts:bookingurl"] };
+  return {
+    "run-meta.json": JSON.stringify({ schema: "gcd-content-run-meta/1", goal: f("goal"), runner: "fake", platforms }, null, 2),
+    "03-hook-story-script.json": stage({
+      provisional: { kind: "provisional_model_prose", hook: f("hook"),
+        storyBeats: [{ beat: f("beat-1"), role: "setup" }, { beat: f("beat-2"), role: "payoff" }], script: f("script"),
+        openQuestions: [] },
+      claimUse: { kind: "typed_claim_use", used: [] },
+    }),
+    "04-production-direction.json": stage({
+      provisional: {
+        visualApproach: f("visual-approach"),
+        shots: [0, 1].map((i) => ({ purpose: "hook", subject: f(`shot-${i}-subject`), framing: "close", movement: "static",
+          action: f(`shot-${i}-action`), composition: f(`shot-${i}-composition`), continuityNote: f(`shot-${i}-continuity`) })),
+        overlayText: [{ text: f("overlay"), shotIndex: 1, role: "headline", wordingVerified: false }],
+        productionRequirements: [{ requirement: f("requirement"), category: "location", availabilityVerified: false }],
+        openQuestions: [],
+      },
+      claimVisuals: { kind: "typed_visual_claim_use", used: [] },
+    }),
+    "05-packaging-adaptation.json": stage({
+      provisional: {
+        kind: "provisional_model_prose", publishable: false, verified: false, executable: false,
+        packages: platforms.map((platform) => ({
+          platform, caption: `${f(`caption-${platform}`)}\nSecond line.\r\nThird line.`, captionVerified: false,
+          hashtags: platform === "google_business_profile" ? [] : [`#${f(`tag-${platform}`)}`, "#Synthetic"],
+          localKeywords: [f(`keyword-${platform}`)], selectionVerified: false, recommendedTime: "09:00 ET", timingVerified: false,
+          schedulable: false, openQuestions: [],
+        })),
+      },
+      claimUse: { kind: "typed_packaging_claim_use", used: [] },
+    }),
+    "05b-contact-lines.json": JSON.stringify({
+      schema: "gcd-content-contact-lines/1", note: "Attached by code from approved-facts records after stage 5 validated. Not model-written.",
+      packages: platforms.map((platform) => ({ platform, contact: contact(platform) })),
+    }, null, 2),
+    "06-final-critic.json": stage({ provisional: { verdict: "needs_revision", findings: [], lenses: [] } }),
+    "summary.md": `# Content Intelligence local run\n\n- Goal: ${f("goal")}\n`,
+  };
 }

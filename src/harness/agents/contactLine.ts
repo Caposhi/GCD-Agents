@@ -67,7 +67,6 @@
 
 import type { EvidenceRecord } from "../evidence/contract.js";
 import type { EvidencePack } from "../evidence/pack.js";
-import type { GbpActionType } from "../../mcp/posting-tool/index.js";
 import type { AgentStageId } from "./registry.js";
 import type { AutomotiveTruthOutput } from "./automotiveTruth.js";
 import type { HookStoryScriptOutput } from "./hookStoryScript.js";
@@ -81,7 +80,6 @@ import {
   type ProvisionalPackaging,
   type ProvisionalPlatformPackage,
   contactReserveChars,
-  proposedProviderText,
   revalidatePackagingAdaptationOutput,
 } from "./packagingAdaptation.js";
 import { StageExecutionError } from "./stageExecution.js";
@@ -92,6 +90,13 @@ import {
   isBoundedSerializableText,
   utf8ByteLength,
 } from "./payloadContract.js";
+import { GBP_CONTACT_ACTION_TYPE, providerTextWithContact, type ContactLine } from "./providerText.js";
+
+// Moved to the leaf module `providerText.ts` by Content Studio S5 (so the
+// Studio web can build its Copy text with the same function) and re-exported
+// here unchanged: every existing caller keeps importing them from this module.
+export { CONTACT_LINE_SEPARATOR, GBP_CONTACT_ACTION_TYPE, providerTextWithContact } from "./providerText.js";
+export type { ContactCta, ContactLine } from "./providerText.js";
 
 /** The approved-facts records a contact line may be built from, and nothing else. */
 export const CONTACT_FACTS = {
@@ -101,38 +106,12 @@ export const CONTACT_FACTS = {
 } as const;
 export type ContactFactKey = keyof typeof CONTACT_FACTS;
 
-/** The separator before contact text. Its length is `CONTACT_LINE_SEPARATOR_CHARS`. */
-export const CONTACT_LINE_SEPARATOR = "\n\n";
-
-/** The one action a structured Google Business Profile call to action carries here. */
-export const GBP_CONTACT_ACTION_TYPE = "BOOK" satisfies GbpActionType;
-
 /** Which records each platform's line needs, in the order they are cited. */
 export const CONTACT_FACTS_BY_PLATFORM: Record<PackagingPlatform, readonly ContactFactKey[]> = {
   instagram: ["shop", "phone"],
   facebook: ["shop", "phone", "bookingUrl"],
   google_business_profile: ["bookingUrl"],
 };
-
-/** A structured Google Business Profile call to action. */
-export interface ContactCta {
-  actionType: typeof GBP_CONTACT_ACTION_TYPE;
-  url: string;
-}
-
-/**
- * The deterministic contact line one package carries.
- *
- * `text` is the provider-visible contact line, or `null` where the platform
- * carries none (Google Business Profile). `gbpCta` is present only on Google
- * Business Profile. `sourceFactIds` are exactly the records used.
- */
-export interface ContactLine {
-  readonly kind: "deterministic_contact";
-  text: string | null;
-  gbpCta?: ContactCta;
-  sourceFactIds: string[];
-}
 
 /** A stage 5 package with its contact line attached. */
 export interface ContactedPlatformPackage extends ProvisionalPlatformPackage {
@@ -288,16 +267,6 @@ export function buildContactLine(platform: PackagingPlatform, pack: EvidencePack
     fail(`the ${platform} call-to-action link exceeds CONTACT_CTA_URL_CHARS (${CONTACT_CTA_URL_CHARS})`);
   }
   return line;
-}
-
-/**
- * The full provider-visible text a package would carry: caption, separator,
- * canonical hashtags, then separator and contact text. What the platform limit
- * is measured against.
- */
-export function providerTextWithContact(caption: string, hashtags: string[], contact: ContactLine): string {
-  const base = proposedProviderText(caption, hashtags);
-  return contact.text === null ? base : `${base}${CONTACT_LINE_SEPARATOR}${contact.text}`;
 }
 
 /**

@@ -27,7 +27,8 @@ import { GOOGLE_OIDC } from "./oidc.js";
 import { csrfTokenFor, LOGIN_COOKIE, SESSION_COOKIE, sessionIdHash } from "./sessions.js";
 import { STUDIO_ALLOWED_HD } from "./startup.js";
 import { PgWebStore } from "./store.js";
-import { FakeIssuer, STUDIO_DOMAIN, syntheticEmail } from "./testSupport.js";
+import { FakeIssuer, STUDIO_DOMAIN, syntheticEmail, syntheticRunArtifacts } from "./testSupport.js";
+import { providerTextWithContact } from "../../harness/agents/providerText.js";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const ORIGIN = "https://studio.test";
@@ -125,9 +126,9 @@ async function migrate(url: string): Promise<void> {
 
 interface Web { app: StudioWebApp; base: string; close(): Promise<void> }
 
-async function web(pool: pg.Pool, issuer: FakeIssuer, bootstrapOwnerEmail: string | null = null): Promise<Web> {
+async function web(pool: pg.Pool, issuer: FakeIssuer, bootstrapOwnerEmail: string | null = null, store?: PgWebStore): Promise<Web> {
   const app = createStudioWebApp({
-    store: new PgWebStore(pool, pool), log, oidc: issuer.provider, commit: COMMIT,
+    store: store ?? new PgWebStore(pool, pool), log, oidc: issuer.provider, commit: COMMIT,
     config: { publicOrigin: ORIGIN, allowedHd: STUDIO_ALLOWED_HD, clientId: CLIENT_ID, clientSecret: CLIENT_SECRET, bootstrapOwnerEmail },
   });
   const server: Server = createServer((req, res) => { void app.handle(req, res); });
@@ -460,6 +461,117 @@ async function suite(pool: pg.Pool, url: string, issuer: FakeIssuer): Promise<vo
         && attempts.join() === [sha("attempt-1-hour"), sha("attempt-live")].sort().join()
         && sessions.join() === [sha("idle-1-day"), sha("live"), sha("revoked-1-hour")].sort().join(),
       JSON.stringify(result));
+  }
+
+  // SAP12–SAP14 (Content Studio S5): the read-only screens over the real store.
+  {
+    const insertRun = async (goal: string, extra: { state?: string; failure?: string; created?: string } = {}) => {
+      const id = (await pool.query(
+        "INSERT INTO studio_runs (kind, requested_by, runner, goal, platforms) VALUES ('full', $1, 'fake', $2, $3) RETURNING id::text AS id",
+        [owner.id, goal, ["instagram", "facebook", "google_business_profile"]])).rows[0].id as string;
+      if (extra.state === "queued") return id;
+      await pool.query("UPDATE studio_runs SET state = 'running', started_at = now() WHERE id = $1", [id]);
+      return id;
+    };
+    const finish = (id: string, state: string, set = "") => pool.query(
+      `UPDATE studio_runs SET state = $2, finished_at = now()${set} WHERE id = $1`, [id, state]);
+    const files = syntheticRunArtifacts("");
+    const done = await insertRun("SYNTHETIC S5 succeeded run");
+    for (const [name, text] of Object.entries(files)) {
+      const bytes = Buffer.from(text, "utf8");
+      await pool.query("INSERT INTO studio_run_artifacts (run_id, name, content, sha256, byte_length) VALUES ($1, $2, $3, $4, $5)",
+        [done, name, bytes, createHash("sha256").update(bytes).digest("hex"), bytes.length]);
+    }
+    const finding = (idx: number, lens: string, severity: string, category: string, ownerName: string) => pool.query(
+      `INSERT INTO studio_findings (run_id, idx, lens, severity, category, owner, issue, owner_item)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $6 = 'human_review' OR $5 = 'human_decision')`,
+      [done, idx, lens, severity, category, ownerName, `SYNTHETIC issue ${idx}`]);
+    await finding(0, "evidence-fidelity", "advisory", "claim_fidelity", "packaging-adaptation");
+    await finding(1, "production-coherence", "blocking", "production_coherence", "production-direction");
+    await finding(2, "production-coherence", "advisory", "human_decision", "human_review");
+    await finding(3, "voice-and-craft", "blocking", "human_decision", "packaging-adaptation");
+    await finish(done, "succeeded", ", verdict = 'needs_revision', blocking_findings = 2, advisory_findings = 2, owner_item_findings = 2");
+    const failed = await insertRun("SYNTHETIC S5 failed run");
+    await finish(failed, "failed", ", failure_class = 'stage_execution_error', failure_message = '<b>SYNTHETIC</b> message'");
+    const gone = await insertRun("SYNTHETIC S5 deleted run");
+    await finish(gone, "succeeded");
+    await pool.query("UPDATE studio_runs SET deleted_at = now(), deleted_by = $2 WHERE id = $1", [gone, owner.id]);
+    const queued = await insertRun("SYNTHETIC S5 queued run", { state: "queued" });
+
+    const w = await web(pool, issuer);
+    issuer.identity = { email: viewer.email, sub: viewerSub, name: "Synthetic Viewer" };
+    const jar = new Jar();
+    await get(w.base, await startSignIn(w, jar), jar);
+    const all = await get(w.base, "/runs", jar);
+    const listed = [...all.body.matchAll(/<li class="run"><p class="run-goal"><a href="\/runs\/([0-9a-f-]{36})">/g)].map((m) => m[1]);
+    const onlyQueued = await get(w.base, "/runs?state=queued", jar);
+    const byOwner = await get(w.base, `/runs?requester=${owner.id}&kind=full`, jar);
+    const byViewer = await get(w.base, `/runs?requester=${viewer.id}`, jar);
+    const runsBefore = (await pool.query("SELECT count(*)::int AS n FROM studio_runs")).rows[0].n;
+    const injected = await Promise.all(["state=succeeded'%20OR%20'1'%3D'1", "kind=full%3B%20DELETE%20FROM%20studio_runs",
+      `requester=${owner.id}'%20OR%20true--`].map((q) => get(w.base, `/runs?${q}`, jar)));
+    const runsAfter = (await pool.query("SELECT count(*)::int AS n FROM studio_runs")).rows[0].n;
+    check("SAP12. over PostgreSQL the runs list shows live runs newest first, never a deleted one; a state, kind or "
+      + "requester filter is bound as a parameter and narrows exactly; SQL metacharacters are 400 and change nothing",
+      all.status === 200 && JSON.stringify(listed) === JSON.stringify([queued, failed, done]) && !all.body.includes(gone)
+        && all.body.includes(`<meta http-equiv="refresh"`)
+        && onlyQueued.body.includes(queued) && !onlyQueued.body.includes(done) && !onlyQueued.body.includes(failed)
+        && byOwner.body.includes(done) && byOwner.body.includes(queued) && !byViewer.body.includes(done)
+        && byViewer.body.includes("No runs match.") && injected.every((r) => r.status === 400) && runsBefore === runsAfter,
+      JSON.stringify(listed));
+
+    const report = await get(w.base, `/runs/${done}`, jar);
+    const failedReport = await get(w.base, `/runs/${failed}`, jar);
+    const goneReport = await get(w.base, `/runs/${gone}`, jar);
+    const goneFile = await get(w.base, `/runs/${gone}/files/summary.md`, jar);
+    const decisions = report.body.slice(report.body.indexOf('class="decisions'), report.body.indexOf("</section>", report.body.indexOf('class="decisions')));
+    const pkgs = JSON.parse(files["05-packaging-adaptation.json"]!).output.provisional.packages;
+    const contacts = JSON.parse(files["05b-contact-lines.json"]!).packages;
+    const copied = [...report.body.matchAll(/data-copy-kind="full" data-copy="([^"]*)"/g)].map((m) => m[1]!
+      .replace(/&(amp|lt|gt|quot|#39|#13);/g, (_x, e: string) => ({ amp: "&", lt: "<", gt: ">", quot: '"', "#39": "'", "#13": "\r" })[e]!));
+    check("SAP13. over PostgreSQL the report reads the worker's rows and the stored artifacts: \"Needs your decision\" is "
+      + "exactly the owner_item rows, the counts are the run's, the Copy text is providerTextWithContact's, a failed run "
+      + "shows its escaped message, and a deleted run is 404 with its files",
+      report.status === 200 && /SYNTHETIC issue 2/.test(decisions) && /SYNTHETIC issue 3/.test(decisions)
+        && !/SYNTHETIC issue [01]/.test(decisions) && report.body.includes("<p>2 blocking · 2 advisory</p>")
+        && copied.length === 2 && copied[0] === providerTextWithContact(pkgs[0].caption, pkgs[0].hashtags, contacts[0].contact)
+        && copied[1] === providerTextWithContact(pkgs[1].caption, pkgs[1].hashtags, contacts[1].contact)
+        && failedReport.body.includes("&lt;b&gt;SYNTHETIC&lt;/b&gt; message") && goneReport.status === 404 && goneFile.status === 404,
+      `${report.status} ${goneReport.status} ${goneFile.status} ${copied.length}`);
+
+    const name = "05-packaging-adaptation.json";
+    const download = await fetch(`${w.base}/runs/${done}/files/${name}`, { headers: { cookie: jar.header() } });
+    const bytes = Buffer.from(await download.arrayBuffer());
+    const storedRow = (await pool.query("SELECT sha256 FROM studio_run_artifacts WHERE run_id = $1 AND name = $2", [done, name])).rows[0];
+    let immutable: unknown = null;
+    try {
+      await pool.query("UPDATE studio_run_artifacts SET content = $3 WHERE run_id = $1 AND name = $2", [done, name, Buffer.from("x")]);
+    } catch (error) {
+      immutable = (error as { code?: unknown }).code;
+    }
+    // A test-only path: a store that hands the web other bytes than the row's own.
+    const tamperingStore = new PgWebStore(pool, pool);
+    const read = tamperingStore.readArtifact.bind(tamperingStore);
+    tamperingStore.readArtifact = async (runId, artifact) => {
+      const row = await read(runId, artifact);
+      return row ? { ...row, content: Buffer.concat([row.content, Buffer.from(" ")]) } : row;
+    };
+    const tw = await web(pool, issuer, null, tamperingStore);
+    const tjar = new Jar();
+    await get(tw.base, await startSignIn(tw, tjar), tjar);
+    const tampered = await get(tw.base, `/runs/${done}/files/${name}`, tjar);
+    await tw.close();
+    check("SAP14. over PostgreSQL a download is the stored bytes exactly (their sha256 is the row's), as an attachment with "
+      + "nosniff and the sandboxing CSP; the schema refuses changing an artifact, and bytes changed through a test-only "
+      + "path are refused, never served",
+      download.status === 200 && createHash("sha256").update(bytes).digest("hex") === storedRow.sha256
+        && bytes.equals(Buffer.from(files[name]!, "utf8"))
+        && download.headers.get("content-disposition") === `attachment; filename="${name}"`
+        && download.headers.get("content-type") === "application/json" && download.headers.get("x-content-type-options") === "nosniff"
+        && download.headers.get("content-security-policy") === "default-src 'none'; sandbox"
+        && immutable === "23514" && tampered.status === 500 && tampered.headers.get("content-disposition") === null,
+      `${download.status} ${String(immutable)} ${tampered.status}`);
+    await w.close();
   }
 
   // SAP10: the audit rows the web wrote hold no email, token or secret.

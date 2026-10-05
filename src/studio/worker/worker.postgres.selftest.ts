@@ -28,7 +28,8 @@ import pg from "pg";
 import * as lib from "../../harness/contentRun/index.js";
 import type { ContentRunRuntime } from "../../harness/contentRun/index.js";
 import { runStudioMigrations, STUDIO_DATABASE_NAME } from "../db/runner.js";
-import type { PaidStageRunner } from "./execute.js";
+import { closeRun, type PaidStageRunner } from "./execute.js";
+import { CRITIC_ARTIFACT } from "./findings.js";
 import { ceilingMicros, microsToNumeric, numericToMicros } from "./money.js";
 import { studioOwnershipKey } from "./session.js";
 import { confirmationsLocked, OVERRUN_ACKNOWLEDGED } from "./spend.js";
@@ -36,9 +37,9 @@ import { fakeTranscript, replayRunner, syntheticFactsBytes, type ReplayCall } fr
 import { startWorker, type WorkerHandle, type WorkerOptions } from "./worker.js";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
-const GROUPS = ["startup", "queue", "paid", "identical"] as const;
+const GROUPS = ["startup", "queue", "paid", "identical", "findings"] as const;
 type Group = typeof GROUPS[number];
-const counts: Record<Group, number> = { startup: 0, queue: 0, paid: 0, identical: 0 };
+const counts: Record<Group, number> = { startup: 0, queue: 0, paid: 0, identical: 0, findings: 0 };
 let failures = 0;
 function check(group: Group, name: string, cond: boolean, detail = ""): void {
   console.log(`${cond ? "PASS" : "FAIL"}  [${group}] ${name}${cond || !detail ? "" : ` — ${detail}`}`);
@@ -786,6 +787,97 @@ async function identicalGroup(dbs: Databases): Promise<void> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// findings (Content Studio S5): the worker's derivation, over PostgreSQL
+// ---------------------------------------------------------------------------
+
+async function findingsGroup(dbs: Databases): Promise<void> {
+  const st = await studio(dbs, "findings");
+  const worker = inProcess(st);
+  try {
+    const job = await fakeJob(st);
+    const row = await terminal(st, job.runId);
+    await worker.stop();
+    const stored = (await st.pool.query("SELECT content FROM studio_run_artifacts WHERE run_id = $1 AND name = $2",
+      [job.runId, CRITIC_ARTIFACT])).rows[0];
+    const panel = JSON.parse((stored.content as Buffer).toString("utf8")).output.provisional.findings as Array<Record<string, string>>;
+    const rows = (await st.pool.query(
+      "SELECT idx, lens, severity, category, owner, issue, owner_item FROM studio_findings WHERE run_id = $1 ORDER BY idx",
+      [job.runId])).rows;
+    const counts = (await st.pool.query(
+      `SELECT r.blocking_findings, r.advisory_findings, r.owner_item_findings,
+              (SELECT count(*) FILTER (WHERE severity = 'blocking') FROM studio_findings f WHERE f.run_id = r.id)::int AS blocking,
+              (SELECT count(*) FILTER (WHERE severity = 'advisory') FROM studio_findings f WHERE f.run_id = r.id)::int AS advisory,
+              (SELECT count(*) FILTER (WHERE owner_item) FROM studio_findings f WHERE f.run_id = r.id)::int AS owner_items,
+              (SELECT bool_and(owner_item = (owner = 'human_review' OR category = 'human_decision'))
+                 FROM studio_findings f WHERE f.run_id = r.id) AS rule
+         FROM studio_runs r WHERE r.id = $1`, [job.runId])).rows[0];
+    check("findings", "SWP15. a fake run through the worker ends with studio_findings rebuilt from its own stored "
+      + "06-final-critic.json — one row per panel finding, its fields exactly — and the run's blocking, advisory and "
+      + "owner-item counts equal to its rows",
+      row.state === "succeeded" && rows.length === panel.length && rows.length === 3
+        && rows.every((r, i) => r.idx === i && r.lens === panel[i]!.lens && r.severity === panel[i]!.severity
+          && r.category === panel[i]!.category && r.owner === panel[i]!.owner && r.issue === panel[i]!.issue)
+        && counts.blocking_findings === counts.blocking && counts.advisory_findings === counts.advisory
+        && counts.owner_item_findings === counts.owner_items && counts.blocking === 1 && counts.advisory === 2
+        && counts.owner_items === 1 && logs.some((l) => l.startsWith("findings.derived ") && l.includes(job.runId)),
+      JSON.stringify({ row, counts, rows: rows.length }));
+
+    // owner_item is the schema CHECK's rule on every row, and a row that breaks it cannot be written.
+    let refusedCode: unknown = null;
+    try {
+      await st.pool.query(
+        `INSERT INTO studio_findings (run_id, idx, lens, severity, category, owner, issue, owner_item)
+         VALUES ($1, 99, 'voice-and-craft', 'blocking', 'human_decision', 'packaging-adaptation', 'x', false)`, [job.runId]);
+    } catch (error) {
+      refusedCode = (error as { code?: unknown }).code;
+    }
+    check("findings", "SWP16. every derived row's owner_item agrees with the schema's CHECK (a human_review owner or a "
+      + "human_decision category), and a row that disagrees is refused by it (23514) — the web reads owner_item, never "
+      + "re-derives it",
+      counts.rule === true && refusedCode === "23514", `${counts.rule} ${String(refusedCode)}`);
+
+    // A malformed critic artifact, through closeRun in one real transaction.
+    const malformedRun = (await st.pool.query(
+      `INSERT INTO studio_runs (kind, requested_by, runner, goal) VALUES ('full', $1, 'fake', 'malformed critic') RETURNING id`,
+      [st.owner])).rows[0].id as string;
+    await st.pool.query("UPDATE studio_runs SET state = 'running', started_at = now() WHERE id = $1", [malformedRun]);
+    const edited = JSON.parse((stored.content as Buffer).toString("utf8"));
+    edited.output.provisional.lenses[0].findingCount = 3;
+    const bad = Buffer.from(JSON.stringify(edited, null, 2));
+    await st.pool.query(
+      "INSERT INTO studio_run_artifacts (run_id, name, content, sha256, byte_length) VALUES ($1, $2, $3, $4, $5)",
+      [malformedRun, CRITIC_ARTIFACT, bad, createHash("sha256").update(bad).digest("hex"), bad.length]);
+    const logged: string[] = [];
+    const client = await st.pool.connect();
+    let ended: { runState: string } | undefined;
+    try {
+      await client.query("BEGIN");
+      ended = await closeRun(client, {
+        sink: { flush: async () => {} }, runId: malformedRun, jobId: null, timedOut: false, rt: lib.loadRuntime(),
+        end: { runState: "succeeded", jobState: "finished", verdict: "needs_revision" },
+        log: (event, fields) => logged.push(`${event} ${JSON.stringify(fields ?? {})}`),
+      });
+      await client.query("COMMIT");
+    } finally {
+      client.release();
+    }
+    const after = (await st.pool.query(
+      `SELECT state, verdict, blocking_findings, advisory_findings, owner_item_findings,
+              (SELECT count(*)::int FROM studio_findings WHERE run_id = $1) AS rows FROM studio_runs WHERE id = $1`,
+      [malformedRun])).rows[0];
+    check("findings", "SWP17. over PostgreSQL, a malformed critic artifact writes no finding row and no count, and the "
+      + "run still ends exactly as it would have (succeeded, its verdict kept); the worker logs the failure class only",
+      ended?.runState === "succeeded" && after.state === "succeeded" && after.verdict === "needs_revision" && after.rows === 0
+        && after.blocking_findings === null && after.advisory_findings === null && after.owner_item_findings === null
+        && logged.length === 1 && logged[0] === `findings.not_derived ${JSON.stringify({ run: malformedRun, failure_class: "critic_artifact_malformed" })}`,
+      `${JSON.stringify(after)} ${logged.join(" | ")}`);
+  } finally {
+    await worker.stop().catch(() => undefined);
+    await st.close();
+  }
+}
+
 async function main(): Promise<void> {
   const admin = adminUrl();
   const adminPool = openPool("admin", { connectionString: admin, max: 3, connectionTimeoutMillis: 10_000 });
@@ -807,6 +899,7 @@ async function main(): Promise<void> {
     await queueGroup(dbs);
     await paidGroup(dbs);
     await identicalGroup(dbs);
+    await findingsGroup(dbs);
   } finally {
     for (const name of [...dbs.created]) await dbs.drop(name).catch((e) => console.error(`[studio-worker-postgres] drop ${name}: ${(e as Error).message}`));
     await closePool(adminPool);

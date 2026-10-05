@@ -8,7 +8,8 @@
  *   `oidc` parameter, which the entry point never passes.
  * - **The ID token is accepted only from the token response**, never from the
  *   callback URL, and is verified server-side with `jose`: RS256 only, the
- *   issuer, the audience, `exp` and `iat` within a 60-second skew, and then
+ *   issuer, the audience, `exp` and `iat` within a 60-second skew; then
+ *   (`checkAudienceParty`, S5) a single audience and a matching `azp`; and then
  *   (`checkIdentityClaims`) the nonce, `hd`, `email_verified` and the email domain.
  * - **The keys** come from `jose`'s remote key set with an explicit timeout. Its
  *   cache is jose's own (a fixed maximum age, not the response's cache headers;
@@ -179,6 +180,7 @@ function joseReason(error: unknown): string {
 export async function verifyIdToken(idToken: string, keys: JWTVerifyGetKey, expected: {
   issuers: readonly string[]; clientId: string; now: number;
 }): Promise<JWTPayload> {
+  let verified: JWTPayload;
   try {
     const { payload } = await jwtVerify(idToken, keys, {
       algorithms: [...ID_TOKEN_ALGORITHMS],
@@ -189,10 +191,23 @@ export async function verifyIdToken(idToken: string, keys: JWTVerifyGetKey, expe
       requiredClaims: ["exp", "iat", "sub"],
       currentDate: new Date(expected.now),
     });
-    return payload;
+    verified = payload;
   } catch (error) {
     return refuse(joseReason(error));
   }
+  checkAudienceParty(verified, expected.clientId);
+  return verified;
+}
+
+/**
+ * After jose's audience check (Content Studio S5, from the S4 review; OpenID
+ * Connect Core §3.1.3.7 items 3–5): an `aud` array naming more than one
+ * audience is refused even when it includes this client, and an `azp`, when
+ * present, must be exactly this client id.
+ */
+export function checkAudienceParty(payload: JWTPayload, clientId: string): void {
+  if (Array.isArray(payload.aud) && payload.aud.length > 1) refuse("audience-multiple");
+  if (payload.azp !== undefined && payload.azp !== clientId) refuse("authorized-party");
 }
 
 /** Who a verified ID token names. */

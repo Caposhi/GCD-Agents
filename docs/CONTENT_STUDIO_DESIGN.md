@@ -1068,6 +1068,16 @@ A failed or refused run shows the library's error message, the stage it stopped 
 it saved (for example `rejected-responses.json`). It also offers **Resume from packaging** when the
 failure was at stage 5, as the CLI allows.
 
+*(Dated notes, Content Studio S5, 2026-10-02 — where S5 deviates from or interprets this section.
+**Item 8:** the whole-run JSON bundle is **not** offered by S5. §8.6 fixes its bounds (at most 20
+files and 10 MB, each file base64 with its sha256) but not its exact document format, so it is
+deferred to S7, which defines the import format; every single artifact downloads as specified.
+**Item 2:** Google Business Profile's one Copy button copies its caption alone — the same text the
+second button would copy — so its card shows one button, not two. **Item 6:** "first on a phone"
+is read as first among the report's sections, below the header that identifies the run. **The
+failure display:** "the stage it stopped at" is the stage of the run's last request that did not
+succeed, else the first stage file it did not save; the Resume control is S6's, so S5 shows none.)*
+
 ### 8.3 New run
 
 For an `owner` or a `runner`:

@@ -14,6 +14,9 @@
 
 import pg from "pg";
 
+import type {
+  ArtifactMeta, FindingRow, RequestRow, RunFilters, RunLineage, RunListRow, RunRow, StoredArtifact,
+} from "./runs.js";
 import type { Role, SessionRow, StudioUserRow } from "./sessions.js";
 
 export interface AuditEntry {
@@ -58,7 +61,39 @@ export interface WebStore {
    */
   purge(attemptsExpiredBefore: Date, sessionsEndedBefore: Date): Promise<{ loginAttempts: number; sessions: number }>;
   health(): Promise<WebHealth>;
+
+  // --- Content Studio S5: read-only. Every argument was validated by the caller (`runs.ts`); every query binds it.
+  /** Live (not deleted) runs, newest first, filtered; at most `limit` rows from `offset`. */
+  listRuns(filters: Omit<RunFilters, "page">, limit: number, offset: number): Promise<RunListRow[]>;
+  /** One run as stored, its tombstone included (`runVisible` decides), or null when there is none. */
+  findRun(id: string): Promise<RunRow | null>;
+  runLineage(run: Pick<RunRow, "id" | "source_run_id">): Promise<RunLineage>;
+  listArtifacts(runId: string): Promise<ArtifactMeta[]>;
+  readArtifact(runId: string, name: string): Promise<StoredArtifact | null>;
+  /** The worker's rows (S5's derivation), in the panel's order. The web derives none of them. */
+  listFindings(runId: string): Promise<FindingRow[]>;
+  listRequests(runId: string): Promise<RequestRow[]>;
 }
+
+const RUN_LIST_COLUMNS = `r.id::text AS id, r.kind, r.state, r.runner, r.goal, r.verdict, r.blocking_findings,
+  r.advisory_findings, r.actual_usd::text AS actual_usd, r.import_tier, r.created_at, r.requested_by::text AS requested_by,
+  u.display_name AS requester_name`;
+const RUN_COLUMNS = `${RUN_LIST_COLUMNS}, r.source_run_id::text AS source_run_id, r.platforms, r.scope_tags,
+  r.fact_version_id::text AS fact_version_id, r.approved_facts_sha256, r.automotive_facts_sha256, r.evidence_pack_sha256,
+  r.code_commit, r.reserved_usd::text AS reserved_usd, r.owner_item_findings, r.failure_class, r.failure_message,
+  r.started_at, r.finished_at, r.deleted_at`;
+
+const runListRow = (row: Record<string, unknown>): RunListRow => ({
+  id: String(row.id), kind: String(row.kind), state: String(row.state), runner: String(row.runner),
+  goal: row.goal === null ? null : String(row.goal), verdict: row.verdict === null ? null : String(row.verdict),
+  blocking_findings: row.blocking_findings === null ? null : Number(row.blocking_findings),
+  advisory_findings: row.advisory_findings === null ? null : Number(row.advisory_findings),
+  actual_usd: row.actual_usd === null ? null : String(row.actual_usd),
+  import_tier: row.import_tier === null ? null : String(row.import_tier),
+  created_at: row.created_at as Date, requested_by: String(row.requested_by),
+  requester_name: row.requester_name === null ? null : String(row.requester_name),
+});
+const textOrNull = (value: unknown) => (value === null || value === undefined ? null : String(value));
 
 type Queryable = Pick<pg.Pool, "query"> | Pick<pg.PoolClient, "query">;
 
@@ -189,6 +224,85 @@ export class PgWebStore implements WebStore {
         WHERE absolute_expires_at <= $1 OR idle_expires_at <= $1 OR (revoked_at IS NOT NULL AND revoked_at <= $1)`,
       [sessionsEndedBefore]);
     return { loginAttempts: attempts.rowCount ?? 0, sessions: sessions.rowCount ?? 0 };
+  }
+
+  async listRuns(filters: Omit<RunFilters, "page">, limit: number, offset: number): Promise<RunListRow[]> {
+    const { rows } = await this.db.query(
+      `SELECT ${RUN_LIST_COLUMNS} FROM studio_runs r JOIN studio_users u ON u.id = r.requested_by
+        WHERE r.deleted_at IS NULL AND ($1::text IS NULL OR r.state = $1) AND ($2::text IS NULL OR r.kind = $2)
+          AND ($3::uuid IS NULL OR r.requested_by = $3::uuid)
+        ORDER BY r.created_at DESC, r.id DESC LIMIT $4 OFFSET $5`,
+      [filters.state, filters.kind, filters.requester, limit, offset]);
+    return rows.map(runListRow);
+  }
+
+  async findRun(id: string): Promise<RunRow | null> {
+    const { rows } = await this.db.query(
+      `SELECT ${RUN_COLUMNS} FROM studio_runs r JOIN studio_users u ON u.id = r.requested_by
+        WHERE r.id = $1::uuid`, [id]);
+    if (rows.length !== 1) return null;
+    const row = rows[0]!;
+    return {
+      ...runListRow(row),
+      source_run_id: textOrNull(row.source_run_id), platforms: (row.platforms as string[] | null) ?? null,
+      scope_tags: (row.scope_tags as string[] | null) ?? null, fact_version_id: textOrNull(row.fact_version_id),
+      approved_facts_sha256: textOrNull(row.approved_facts_sha256), automotive_facts_sha256: textOrNull(row.automotive_facts_sha256),
+      evidence_pack_sha256: textOrNull(row.evidence_pack_sha256), code_commit: textOrNull(row.code_commit),
+      reserved_usd: textOrNull(row.reserved_usd),
+      owner_item_findings: row.owner_item_findings === null ? null : Number(row.owner_item_findings),
+      failure_class: textOrNull(row.failure_class), failure_message: textOrNull(row.failure_message),
+      started_at: (row.started_at as Date | null) ?? null, finished_at: (row.finished_at as Date | null) ?? null,
+      deleted_at: (row.deleted_at as Date | null) ?? null,
+    };
+  }
+
+  async runLineage(run: Pick<RunRow, "id" | "source_run_id">): Promise<RunLineage> {
+    const parent = run.source_run_id === null ? [] : (await this.db.query(
+      "SELECT id::text AS id, deleted_at IS NOT NULL AS deleted FROM studio_runs WHERE id = $1::uuid", [run.source_run_id])).rows;
+    const children = (await this.db.query(
+      `SELECT id::text AS id, kind, state FROM studio_runs WHERE source_run_id = $1::uuid AND deleted_at IS NULL
+        ORDER BY created_at, id`, [run.id])).rows;
+    return {
+      parent: parent.length === 1 ? { id: String(parent[0]!.id), deleted: parent[0]!.deleted === true } : null,
+      children: children.map((c) => ({ id: String(c.id), kind: String(c.kind), state: String(c.state) })),
+    };
+  }
+
+  async listArtifacts(runId: string): Promise<ArtifactMeta[]> {
+    const { rows } = await this.db.query(
+      "SELECT name, sha256, byte_length FROM studio_run_artifacts WHERE run_id = $1::uuid ORDER BY name", [runId]);
+    return rows.map((r) => ({ name: String(r.name), sha256: String(r.sha256), byte_length: Number(r.byte_length) }));
+  }
+
+  async readArtifact(runId: string, name: string): Promise<StoredArtifact | null> {
+    const { rows } = await this.db.query(
+      "SELECT name, content, sha256, byte_length FROM studio_run_artifacts WHERE run_id = $1::uuid AND name = $2", [runId, name]);
+    if (rows.length !== 1) return null;
+    const r = rows[0]!;
+    return { name: String(r.name), content: r.content as Buffer, sha256: String(r.sha256), byte_length: Number(r.byte_length) };
+  }
+
+  async listFindings(runId: string): Promise<FindingRow[]> {
+    const { rows } = await this.db.query(
+      `SELECT idx, lens, severity, category, owner, issue, owner_item FROM studio_findings WHERE run_id = $1::uuid
+        ORDER BY idx`, [runId]);
+    return rows.map((r) => ({
+      idx: Number(r.idx), lens: String(r.lens), severity: String(r.severity), category: String(r.category),
+      owner: String(r.owner), issue: String(r.issue), owner_item: r.owner_item === true,
+    }));
+  }
+
+  async listRequests(runId: string): Promise<RequestRow[]> {
+    const { rows } = await this.db.query(
+      `SELECT seq, stage, lens, model, ceiling_usd::text AS ceiling_usd, input_tokens, output_tokens,
+              cost_usd::text AS cost_usd, charged_usd::text AS charged_usd, outcome
+         FROM studio_run_requests WHERE run_id = $1::uuid ORDER BY seq`, [runId]);
+    return rows.map((r) => ({
+      seq: Number(r.seq), stage: String(r.stage), lens: textOrNull(r.lens), model: String(r.model),
+      ceiling_usd: String(r.ceiling_usd), input_tokens: r.input_tokens === null ? null : Number(r.input_tokens),
+      output_tokens: r.output_tokens === null ? null : Number(r.output_tokens), cost_usd: textOrNull(r.cost_usd),
+      charged_usd: String(r.charged_usd), outcome: String(r.outcome),
+    }));
   }
 
   async health(): Promise<WebHealth> {

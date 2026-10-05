@@ -137,6 +137,9 @@ import {
   PACKAGING_FIELD_LIMITS, EVIDENCE_LIMITS, HANDOFF_GUARDS, PACKAGING_OUTPUT, isBoundedSerializableText,
   statedCeiling, statedCaptionTarget, CONTACT_LINE_RESERVE_CHARS,
 } from "./payloadContract.js";
+import { proposedProviderText } from "./providerText.js";
+
+export { proposedProviderText } from "./providerText.js";
 
 export const PACKAGING_ADAPTATION_STAGE = "packaging-adaptation" as const;
 
@@ -535,14 +538,8 @@ function requireUrlFreeText(value: string, field: string): string {
   return value;
 }
 
-/**
- * The provider-visible text a package proposes: caption, then the canonical
- * tags after a blank line. Exported so the local run's field measurement
- * reports the same length this validator compares, not a second formula.
- */
-export function proposedProviderText(caption: string, hashtags: string[]): string {
-  return hashtags.length ? `${caption}\n\n${hashtags.join(" ")}` : caption;
-}
+// `proposedProviderText` moved, unchanged, to the leaf module `providerText.ts`
+// (Content Studio S5); it is imported and re-exported from this module, above.
 
 function requirePlatform(value: unknown, field: string): PackagingPlatform {
   if (typeof value !== "string" || !(PACKAGING_PLATFORMS as readonly string[]).includes(value)) {

@@ -34,10 +34,11 @@ import type {
   ContentRunRuntime, CostCeilingLine, FactFile, PaidActionRequest, RunFailureContext, RunIo, RunOptions,
 } from "../../harness/contentRun/index.js";
 import { ceilingMicros, microsToNumeric } from "./money.js";
-import { audit, terminalize, type ClaimedJob, type Terminal } from "./jobs.js";
+import { rebuildFindings } from "./findings.js";
+import { audit, terminalize, type ClaimedJob, type Terminal, type Terminalized } from "./jobs.js";
 import { DbRunSink, dbRunOutputs, dbRunSource } from "./runSink.js";
 import type { WorkerSession } from "./session.js";
-import { decidePaidUnit, readPaidUnitSnapshot, type PaidRefusal } from "./spend.js";
+import { decidePaidUnit, readPaidUnitSnapshot, type PaidRefusal, type SqlClient } from "./spend.js";
 import type { WorkerCaps } from "./startup.js";
 
 /** The stage runner a paid path uses: in S3, only ever a fake supplied by the PostgreSQL suite. */
@@ -373,16 +374,32 @@ export async function executeJob(ctx: WorkerJobContext, job: ClaimedJob): Promis
       failureMessage: String((cause ?? (failure as Error))?.message ?? failure).slice(0, 4000),
     };
   }
-  const ended = await session.tx(async (client) => {
-    if (!timedOut) await sink.flush(client);
-    return terminalize(client, runId, job.jobId, end);
-  });
+  const ended = await session.tx((client) => closeRun(client, { sink, runId, jobId: job.jobId, end, timedOut, rt, log: ctx.log }));
   ctx.log("job.finished", {
     job: job.jobId, run: runId, kind, runner: run.runner, state: ended.runState,
     failure_class: ended.runState === end.runState ? end.failureClass ?? null : "cost_ceiling_exceeded",
     charged_usd: run.runner === "live" ? microsToNumeric(ended.chargedMicros) : null,
   });
   return ended.runState;
+}
+
+/**
+ * The run's end, in ONE transaction (Content Studio S5): the held artifacts are
+ * flushed, the findings are rebuilt from the run's own stored
+ * `06-final-critic.json` (`rebuildFindings`), and only then is the run closed.
+ * The derivation never changes `end`: a malformed critic artifact writes no
+ * rows and is logged by class. A timed-out run flushes nothing, so it derives
+ * nothing either.
+ */
+export async function closeRun(client: SqlClient, run: {
+  sink: Pick<DbRunSink, "flush">; runId: string; jobId: string | null; end: Terminal; timedOut: boolean;
+  rt: ContentRunRuntime; log: WorkerLog;
+}): Promise<Terminalized> {
+  if (!run.timedOut) {
+    await run.sink.flush(client);
+    await rebuildFindings(client, run.rt, run.runId, run.log);
+  }
+  return terminalize(client, run.runId, run.jobId, run.end);
 }
 
 /** A revision that found no revisable blocking finding: it made no request and wrote nothing. */

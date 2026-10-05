@@ -15,6 +15,12 @@
  * - **Every URL** is derived from `STUDIO_PUBLIC_ORIGIN`, never from `Host`.
  * - **Logs** are structured lines of ids, classes and counts (design §9.2):
  *   never an email, token, code, state, nonce, cookie, secret or error message.
+ * - **Content Studio S5's read-only screens** (design §8.1, §8.2): `GET /runs`,
+ *   `GET /runs/:id`, `GET /runs/:id/files/:name` and the two static files, each
+ *   `viewer`. A route parameter is matched as one non-empty path segment and
+ *   then validated by its handler — a run id as a UUID, a file name by the
+ *   schema's artifact-name shape — so anything else is a 404, as an unknown or
+ *   deleted run is. Every S5 route is a GET and changes nothing.
  */
 
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -32,6 +38,13 @@ import {
 } from "./sessions.js";
 import type { WebConfig } from "./startup.js";
 import type { WebStore } from "./store.js";
+import { escapeHtml } from "./html.js";
+import { downloadHeaders, verifiedBytes } from "./downloads.js";
+import {
+  ARTIFACT_NAME_SHAPE, MAX_DISPLAY_ARTIFACT_BYTES, parseGrouping, parseRunFilters, runVisible, RUNS_PAGE_SIZE, UUID_SHAPE,
+} from "./runs.js";
+import { STATIC_ASSETS, STATIC_CACHE_CONTROL } from "./static.js";
+import { listPolls, REPORT_ARTIFACTS, reportBody, reportPolls, runsListBody, shell } from "./views.js";
 
 export const STUDIO_WEB_SERVICE = "gcd-studio-web";
 
@@ -61,10 +74,13 @@ export interface RouteContext {
   user: StudioUserRow | null;
   /** The session cookie's value, when the session is live. */
   sessionCookie: string | null;
+  /** The route's `:name` segments, percent-decoded, not yet validated (each handler validates its own). */
+  params: Readonly<Record<string, string>>;
 }
 
 export interface RouteDeclaration {
   method: "GET" | "POST";
+  /** A literal path, or one with `:name` segments (each one non-empty path segment). */
   path: string;
   minRole: MinRole;
   /** False for routes that never read a session (`/healthz`). */
@@ -74,14 +90,44 @@ export interface Route extends RouteDeclaration {
   handle(ctx: RouteContext): Promise<void>;
 }
 
-/** The S4 route table: every route the service ships, each with its minimum role. */
+/** The route table: every route the service ships, each with its minimum role (S4's five, then S5's five). */
 export const STUDIO_ROUTE_TABLE: readonly RouteDeclaration[] = Object.freeze([
   { method: "GET", path: "/", minRole: "public" },
   { method: "GET", path: "/healthz", minRole: "public", session: false },
   { method: "GET", path: "/auth/login", minRole: "public" },
   { method: "GET", path: "/auth/callback", minRole: "public" },
   { method: "POST", path: "/auth/logout", minRole: "viewer" },
+  { method: "GET", path: "/runs", minRole: "viewer" },
+  { method: "GET", path: "/runs/:id", minRole: "viewer" },
+  { method: "GET", path: "/runs/:id/files/:name", minRole: "viewer" },
+  { method: "GET", path: STATIC_ASSETS.css.path, minRole: "viewer" },
+  { method: "GET", path: STATIC_ASSETS.js.path, minRole: "viewer" },
 ] as const);
+
+/**
+ * A request path against a route path: the `:name` segments, percent-decoded,
+ * when it matches; null otherwise. A parameter is exactly one non-empty segment.
+ */
+export function matchRoute(pattern: string, pathname: string): Record<string, string> | null {
+  const want = pattern.split("/");
+  const have = pathname.split("/");
+  if (want.length !== have.length) return null;
+  const params: Record<string, string> = {};
+  for (const [index, segment] of want.entries()) {
+    const actual = have[index]!;
+    if (!segment.startsWith(":")) {
+      if (segment !== actual) return null;
+      continue;
+    }
+    if (actual === "") return null;
+    try {
+      params[segment.slice(1)] = decodeURIComponent(actual);
+    } catch {
+      return null;
+    }
+  }
+  return params;
+}
 
 export interface StudioWebOptions {
   store: WebStore;
@@ -109,9 +155,7 @@ export interface StudioWebApp {
 
 // --- Responses -----------------------------------------------------------------
 
-export function escapeHtml(value: string): string {
-  return value.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
-}
+export { escapeHtml } from "./html.js";
 
 function addCookie(res: ServerResponse, cookie: string): void {
   const existing = res.getHeader("set-cookie");
@@ -139,13 +183,31 @@ function redirect(res: ServerResponse, status: 302 | 303, location: string): voi
   res.end();
 }
 
+/** An S5 page, already rendered by `views.ts`. */
+function htmlPage(res: ServerResponse, status: number, html: string): void {
+  res.statusCode = status;
+  res.setHeader("content-type", "text/html; charset=utf-8");
+  res.end(html);
+}
+
+const notFound = (res: ServerResponse) => page(res, 404, "Not found", "<h1>Not found</h1>");
+
+/** A static file: its own type, nosniff and the CSP (every response's), cached for a year (the URL carries its version). */
+function staticFile(res: ServerResponse, asset: (typeof STATIC_ASSETS)[keyof typeof STATIC_ASSETS]): void {
+  res.statusCode = 200;
+  res.setHeader("content-type", asset.contentType);
+  res.setHeader("cache-control", STATIC_CACHE_CONTROL);
+  res.setHeader("content-length", String(asset.body.length));
+  res.end(asset.body);
+}
+
 const signedOutPage = (res: ServerResponse) => page(res, 200, "Sign in",
   "<h1>Content Studio</h1><p><a href=\"/auth/login\">Sign in with Google</a></p>");
 const notAuthorizedPage = (res: ServerResponse) => page(res, 403, "Not authorized",
   "<h1>Not authorized</h1><p>This account cannot sign in to the Content Studio.</p><p><a href=\"/\">Back</a></p>");
 const signedInPage = (res: ServerResponse, user: StudioUserRow, csrfToken: string) => page(res, 200, "Signed in",
   `<h1>Content Studio</h1><p>Signed in as <strong>${escapeHtml(user.display_name ?? "(no display name)")}</strong>`
-  + ` — role: <strong>${escapeHtml(user.role)}</strong></p>`
+  + ` — role: <strong>${escapeHtml(user.role)}</strong></p><p><a href="/runs">Runs</a></p>`
   + `<form method="post" action="/auth/logout"><input type="hidden" name="csrf" value="${escapeHtml(csrfToken)}">`
   + "<button type=\"submit\">Sign out</button></form>");
 
@@ -316,6 +378,70 @@ export function createStudioWebApp(options: StudioWebOptions): StudioWebApp {
       redirect(ctx.res, 303, "/");
     },
 
+    "GET /runs": async (ctx) => {
+      const decision = parseRunFilters(ctx.url.searchParams);
+      if (!decision.ok) {
+        log("runs.filter_refused", {});
+        return page(ctx.res, 400, "Bad request", "<h1>Bad request</h1><p>That filter is not one the runs list accepts.</p>"
+          + "<p><a href=\"/runs\">All runs</a></p>");
+      }
+      const { page: pageNumber, ...filters } = decision.filters;
+      // One row past the page tells whether an older page exists; never more than the page is shown.
+      const rows = await store.listRuns(filters, RUNS_PAGE_SIZE + 1, (pageNumber - 1) * RUNS_PAGE_SIZE);
+      const shown = rows.slice(0, RUNS_PAGE_SIZE);
+      htmlPage(ctx.res, 200, shell({
+        title: "Runs", user: ctx.user!, csrfToken: csrfTokenFor(ctx.sessionCookie!), poll: listPolls(shown),
+        body: runsListBody(shown, decision.filters, rows.length > RUNS_PAGE_SIZE),
+      }));
+    },
+
+    "GET /runs/:id": async (ctx) => {
+      const id = ctx.params.id!;
+      const group = parseGrouping(ctx.url.searchParams);
+      if (group === null) return page(ctx.res, 400, "Bad request", "<h1>Bad request</h1><p>Unknown grouping.</p>");
+      const run = UUID_SHAPE.test(id) ? await store.findRun(id) : null;
+      if (!runVisible(run)) return notFound(ctx.res);
+      const [lineage, artifacts, findings, requests] = await Promise.all([
+        store.runLineage(run), store.listArtifacts(run.id), store.listFindings(run.id), store.listRequests(run.id),
+      ]);
+      const content = new Map<string, Buffer>();
+      for (const name of REPORT_ARTIFACTS) {
+        const meta = artifacts.find((a) => a.name === name);
+        if (!meta) continue;
+        // Too large to parse, or failing its sha256: shown as "cannot display; download the file" (an empty
+        // buffer never parses), and never read past its row's length.
+        const stored = meta.byte_length > MAX_DISPLAY_ARTIFACT_BYTES ? null : await store.readArtifact(run.id, name);
+        content.set(name, (stored ? verifiedBytes(stored) : null) ?? Buffer.alloc(0));
+      }
+      htmlPage(ctx.res, 200, shell({
+        title: "Run report", user: ctx.user!, csrfToken: csrfTokenFor(ctx.sessionCookie!), poll: reportPolls(run),
+        body: reportBody({ run, lineage, artifacts, content, findings, requests, group }),
+      }));
+    },
+
+    "GET /runs/:id/files/:name": async (ctx) => {
+      const { id, name } = ctx.params as { id: string; name: string };
+      if (!UUID_SHAPE.test(id) || !ARTIFACT_NAME_SHAPE.test(name)) return notFound(ctx.res);
+      const run = await store.findRun(id);
+      const stored = runVisible(run) ? await store.readArtifact(run.id, name) : null;
+      if (!stored) return notFound(ctx.res);
+      const bytes = verifiedBytes(stored);
+      if (!bytes) {
+        log("download.refused", { run: run!.id, reason: "sha256-mismatch" });
+        return page(ctx.res, 500, "Integrity check failed",
+          "<h1>This file failed its integrity check</h1><p>It does not match its stored sha256, so it was not served.</p>");
+      }
+      // The page headers are replaced by the download's exact set (downloads.ts).
+      for (const header of ctx.res.getHeaderNames()) ctx.res.removeHeader(header);
+      for (const [header, value] of Object.entries(downloadHeaders(name, bytes.length))) ctx.res.setHeader(header, value);
+      ctx.res.statusCode = 200;
+      log("download", { run: run!.id, bytes: bytes.length });
+      ctx.res.end(bytes);
+    },
+
+    [`GET ${STATIC_ASSETS.css.path}`]: async ({ res }) => staticFile(res, STATIC_ASSETS.css),
+    [`GET ${STATIC_ASSETS.js.path}`]: async ({ res }) => staticFile(res, STATIC_ASSETS.js),
+
     "POST /auth/logout": async (ctx) => {
       const user = ctx.user!;
       await store.revokeSession(sessionIdHash(ctx.sessionCookie!), new Date(ctx.now));
@@ -337,7 +463,7 @@ export function createStudioWebApp(options: StudioWebOptions): StudioWebApp {
     const now = clock();
     // Parsed against the configured origin: the Host header is never read.
     const url = new URL(req.url ?? "/", config.publicOrigin);
-    const declared = routes.filter((route) => route.path === url.pathname);
+    const declared = routes.filter((route) => matchRoute(route.path, url.pathname) !== null);
     if (declared.length === 0) {
       log("http.denied", { status: 404 });
       return page(res, 404, "Not found", "<h1>Not found</h1>");
@@ -384,7 +510,7 @@ export function createStudioWebApp(options: StudioWebOptions): StudioWebApp {
         return page(res, 403, "Forbidden", "<h1>Forbidden</h1>");
       }
     }
-    await route.handle({ req, res, url, now, user, sessionCookie });
+    await route.handle({ req, res, url, now, user, sessionCookie, params: matchRoute(route.path, url.pathname)! });
   };
 
   return {
