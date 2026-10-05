@@ -44,7 +44,7 @@
 
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import pg from "pg";
@@ -75,7 +75,7 @@ const mail = (local: string) => `${local}@${DOMAIN}`;
 const hex = (seed: string) => createHash("sha256").update(seed).digest("hex");
 const commit = (seed: string) => hex(seed).slice(0, 40);
 const repoRoot = process.cwd();
-const EXPECTED_FILES = ["0001_studio_identity_and_tripwire.sql", "0002_studio_schema.sql"];
+const EXPECTED_FILES = ["0001_studio_identity_and_tripwire.sql", "0002_studio_schema.sql", "0003_studio_preflight_requests.sql"];
 
 // ---------------------------------------------------------------------------
 // Environment and disposable databases
@@ -435,7 +435,8 @@ async function studioDatabase(dbs: Databases): Promise<void> {
         const client = await pool.connect();
         try {
           const probe = await probeStudioIdentity(client);
-          return probe.migrationsTable === "tripwire" && probe.liveTables.length === 0 && probe.ledger?.length === 2;
+          return probe.migrationsTable === "tripwire" && probe.liveTables.length === 0
+            && probe.ledger?.length === EXPECTED_FILES.length;
         } finally {
           client.release();
         }
@@ -478,7 +479,7 @@ async function studioDatabase(dbs: Databases): Promise<void> {
       [["brief_queue", "approval_queue", "session_state", "media", "events", "content_evidence"]])).rows[0]?.n === "0");
 
     await invariants(pool);
-    check("runner", "SP15. after every invariant probe, a further Studio run still skips both files and the "
+    check("runner", "SP15. after every invariant probe, a further Studio run still skips every file and the "
       + "schema is unchanged", await (async () => {
       const catalog = (text: string) => text.split("\n").filter((line) => !line.startsWith("studio_database_identity"))
         .join("\n");
@@ -489,6 +490,56 @@ async function studioDatabase(dbs: Databases): Promise<void> {
   } finally {
     await closePool(pool);
     for (const dir of scratch) await rm(dir, { recursive: true, force: true });
+    await dbs.drop(STUDIO_DATABASE_NAME);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Content Studio S6.1: migration 0003 applied on top of a database at 0002
+// ---------------------------------------------------------------------------
+
+async function upgradeFromSchema0002(dbs: Databases): Promise<void> {
+  const url = await dbs.create(STUDIO_DATABASE_NAME);
+  const pool = openPool("Studio gcd_studio at 0002", { connectionString: url, max: 2 });
+  const olderRoot = await mkdtemp(join(tmpdir(), "gcd-studio-0002-"));
+  try {
+    await mkdir(join(olderRoot, STUDIO_MIGRATIONS_DIRECTORY), { recursive: true });
+    for (const name of EXPECTED_FILES.slice(0, 2)) {
+      await cp(resolve(repoRoot, STUDIO_MIGRATIONS_DIRECTORY, name), join(olderRoot, STUDIO_MIGRATIONS_DIRECTORY, name));
+    }
+    const older = await studioRunner(url, olderRoot);
+    const ledgerAt0002 = (await pool.query("SELECT name, sha256 FROM studio_schema_migrations ORDER BY name")).rows;
+    // Rows a 0002-era Studio would hold: the bootstrap owner and a queued preflight job.
+    await pool.query("INSERT INTO studio_users (email, role, google_sub) VALUES ($1, 'owner', 'sub-upgrade-owner')", [mail("upgrade.owner")]);
+    await pool.query("INSERT INTO studio_jobs (kind) VALUES ('preflight')");
+    const rows = async () => JSON.stringify([
+      (await pool.query("SELECT id, email, role, status FROM studio_users ORDER BY id")).rows,
+      (await pool.query("SELECT id, kind, state, created_at::text FROM studio_jobs ORDER BY id")).rows,
+    ]);
+    const rowsBefore = await rows();
+    const upgrade = await studioRunner(url);
+    const files = await readStudioMigrationFiles(resolve(repoRoot, STUDIO_MIGRATIONS_DIRECTORY));
+    const ledger = (await pool.query("SELECT name, sha256 FROM studio_schema_migrations ORDER BY name")).rows;
+    check("runner", "SP16. migration 0003 applies on top of a database migrated to 0002 alone, with rows in it: the "
+      + "runner skips 0001 and 0002 (their recorded sha256 values unchanged), applies 0003 alone, records its sha256, and "
+      + "leaves the 0002-era rows as they were",
+    older.code === 0 && JSON.stringify(ledgerAt0002.map((row) => row.name)) === JSON.stringify(EXPECTED_FILES.slice(0, 2))
+      && upgrade.code === 0
+      && EXPECTED_FILES.slice(0, 2).every((name) => upgrade.stdout.includes(`[studio-migrate] skip ${name}`))
+      && upgrade.stdout.includes(`[studio-migrate] applied ${EXPECTED_FILES[2]}`)
+      && JSON.stringify(ledger) === JSON.stringify(files.map((file) => ({ name: file.name, sha256: file.sha256 })))
+      && JSON.stringify(ledger.slice(0, 2)) === JSON.stringify(ledgerAt0002)
+      && (await pool.query("SELECT to_regclass('public.studio_preflight_requests') IS NOT NULL AS present")).rows[0]?.present === true
+      && rowsBefore === await rows(), `${older.stderr} ${upgrade.stderr}`);
+    const before = await snapshot(pool);
+    const again = await studioRunner(url);
+    check("runner", "SP17. after that upgrade a further run is idempotent: every file skipped with a matching sha256, "
+      + "and the schema, ledger and identity byte-for-byte unchanged",
+    again.code === 0 && EXPECTED_FILES.every((name) => again.stdout.includes(`[studio-migrate] skip ${name}`))
+      && !again.stdout.includes("[studio-migrate] applied") && before === await snapshot(pool), again.stderr);
+  } finally {
+    await closePool(pool);
+    await rm(olderRoot, { recursive: true, force: true });
     await dbs.drop(STUDIO_DATABASE_NAME);
   }
 }
@@ -1169,7 +1220,7 @@ async function invariants(pool: pg.Pool): Promise<void> {
     (c) => c.query("INSERT INTO studio_audit_log (action, detail) VALUES ('test.event', jsonb_build_object('x', repeat('a', 5000)))"));
   const beat = (c: pg.PoolClient, singleton = true) => c.query(
     `INSERT INTO studio_worker_heartbeat (singleton, commit, schema_version, approved_facts_sha256, approved_facts_tag_counts, price_table_sha256)
-     VALUES ($1, $2, '0002_studio_schema.sql', $3, '{}', $3)`, [singleton, commit("worker"), hex("approved")]);
+     VALUES ($1, $2, '0003_studio_preflight_requests.sql', $3, '{}', $3)`, [singleton, commit("worker"), hex("approved")]);
   await accepts("the worker's heartbeat row", (c) => beat(c));
   await refuses("a second heartbeat row", /studio_worker_heartbeat_pkey/, (c) => beat(c));
   await refuses("a heartbeat row that is not the singleton", /studio_worker_heartbeat_singleton/, (c) => beat(c, false));
@@ -1183,6 +1234,261 @@ async function invariants(pool: pg.Pool): Promise<void> {
   await refuses("the Studio ledger truncated", /immutable/, (c) => c.query("TRUNCATE studio_schema_migrations"));
   await refuses("a row written to the tripwire _migrations", new RegExp(STUDIO_TRIPWIRE_CONSTRAINT),
     (c) => c.query("INSERT INTO _migrations (name) VALUES ('001_init.sql')"));
+
+  // ---- Content Studio S6.1: migration 0003, the preflight request ------------------------
+  // Fixtures: a second fact version (for a quote that names another one), a disabled runner,
+  // and a live run that is not deleted (paidRun) as a source; childA is a deleted one.
+  const factBytes2 = Buffer.from(JSON.stringify({ facts: [{ id: "synthetic-fixture-2" }] }), "utf8");
+  let factVersion2 = "";
+  let disabledRunner = "";
+  await accepts("S6.1 fixtures: a second fact version and a disabled runner", async (c) => {
+    await stage(c, owner, factBytes2, shaOf(factBytes2));
+    factVersion2 = String((await c.query(
+      `INSERT INTO studio_fact_versions (sha256, content, byte_length, record_count, tag_counts, uploaded_by)
+       VALUES ($1, $2, $3, 1, '{"oil": 1}', $4) RETURNING id`, [shaOf(factBytes2), factBytes2, factBytes2.length, owner])).rows[0]?.id);
+    await c.query("DELETE FROM studio_fact_uploads");
+    disabledRunner = String((await insertUser(c, mail("disabled.runner"), "runner", owner, null)).rows[0]?.id);
+    await c.query("UPDATE studio_users SET status = 'disabled' WHERE id = $1", [disabledRunner]);
+  });
+  const ALL_PLATFORMS = ["instagram", "facebook", "google_business_profile"];
+  const pfParams = (seed: string) => hex(`preflight-params-${seed}`);
+  const pfJob = async (c: pg.PoolClient) =>
+    String((await c.query("INSERT INTO studio_jobs (kind) VALUES ('preflight') RETURNING id")).rows[0]?.id);
+  const pfRequest = async (c: pg.PoolClient, o: {
+    job?: string; user?: string; action?: string; goal?: string | null; platforms?: string[]; scope?: string[] | null;
+    source?: string | null; fact?: string | null; params?: string;
+  } = {}) => {
+    const action = o.action ?? "full";
+    return String((await c.query(
+      `INSERT INTO studio_preflight_requests (job_id, user_id, action, goal, platforms, scope_tags, source_run_id,
+                                              fact_version_id, params_sha256)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
+      [o.job ?? await pfJob(c), o.user ?? runner, action,
+        o.goal !== undefined ? o.goal : action === "full" ? "synthetic fixture goal" : null,
+        o.platforms ?? ALL_PLATFORMS, o.scope ?? null,
+        o.source !== undefined ? o.source : action === "full" ? null : paidRun,
+        o.fact !== undefined ? o.fact : factVersion, o.params ?? pfParams("default")])).rows[0]?.id);
+  };
+  const pfQuote = async (c: pg.PoolClient, user: string, action: string, params: string, fact = factVersion) =>
+    String((await c.query(
+      `INSERT INTO studio_quotes (user_id, action, params_sha256, worker_commit, approved_facts_sha256, fact_version_id,
+                                  price_table_sha256, ceiling_usd, breakdown)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 21.65, '[{"stage": "strategy-concept"}]') RETURNING id`,
+      [user, action, params, commit("worker"), hex("approved"), fact, hex("prices")])).rows[0]?.id);
+  const quoted = (c: pg.PoolClient, id: string, quoteId: string, plan: string | null = null) =>
+    c.query("UPDATE studio_preflight_requests SET outcome = 'quoted', quote_id = $2, revise_plan = $3::jsonb WHERE id = $1",
+      [id, quoteId, plan]);
+  const refused = (c: pg.PoolClient, id: string, cls: string, message: string, plan: string | null = null) =>
+    c.query(`UPDATE studio_preflight_requests SET outcome = 'refused', refusal_class = $2, refusal_message = $3,
+                    revise_plan = $4::jsonb WHERE id = $1`, [id, cls, message, plan]);
+  /** Test-only: a row stamped 31 days old, written with triggers off (a superuser's session_replication_role). */
+  const pfBackdated = async (c: pg.PoolClient, o: { params: string; outcome: string; quote?: string | null }) => {
+    const job = await pfJob(c);
+    await c.query("SET LOCAL session_replication_role = replica");
+    const id = String((await c.query(
+      `INSERT INTO studio_preflight_requests (job_id, user_id, action, goal, platforms, fact_version_id, params_sha256,
+                                              created_at, outcome, quote_id, refusal_class, refusal_message, outcome_at)
+       VALUES ($1, $2, 'full', 'synthetic fixture goal', $3, $4, $5, now() - interval '31 days', $6, $7, $8, $9,
+               now() - interval '31 days') RETURNING id`,
+      [job, runner, ALL_PLATFORMS, factVersion, o.params, o.outcome, o.quote ?? null,
+        o.outcome === "refused" ? "scope_over_cap" : null, o.outcome === "refused" ? "synthetic refusal" : null])).rows[0]?.id);
+    await c.query("SET LOCAL session_replication_role = origin");
+    return id;
+  };
+  const plan = JSON.stringify({ kind: "revision", startStage: "production-direction", stages: [], ownerItems: [], notRerun: [] });
+
+  // The parameters.
+  await refuses("a preflight request for a job that is not a preflight job", /belongs to a preflight job, not a paid job/,
+    async (c) => pfRequest(c, { job: String((await c.query("SELECT id FROM studio_jobs WHERE run_id = $1", [paidRun])).rows[0]?.id) }));
+  await refuses("a preflight request by a viewer", /requested only by an active owner or runner/,
+    (c) => pfRequest(c, { user: viewer }));
+  await refuses("a preflight request by a disabled runner", /requested only by an active owner or runner/,
+    (c) => pfRequest(c, { user: disabledRunner }));
+  await refuses("a full-run preflight with no goal", /studio_preflight_requests_goal_for_full/,
+    (c) => pfRequest(c, { goal: null }));
+  await refuses("a full-run preflight with an empty goal", /studio_preflight_requests_goal_bounded/,
+    (c) => pfRequest(c, { goal: "" }));
+  await refuses("a full-run preflight with a goal of 2,001 characters", /studio_preflight_requests_goal_bounded/,
+    (c) => pfRequest(c, { goal: "g".repeat(2001) }));
+  for (const action of ["revise", "replay_critic", "resume_packaging"]) {
+    await refuses(`a ${action} preflight carrying a goal (it uses its source run's)`, /studio_preflight_requests_goal_for_full/,
+      (c) => pfRequest(c, { action, goal: "synthetic fixture goal" }));
+  }
+  await refuses("a preflight for an action no quote can carry", /studio_preflight_requests_action/,
+    (c) => pfRequest(c, { action: "imported" }));
+  await refuses("a preflight with an empty platforms array", /studio_preflight_requests_platforms/,
+    (c) => pfRequest(c, { platforms: [] }));
+  await refuses("a preflight naming an unknown platform", /studio_preflight_requests_platforms/,
+    (c) => pfRequest(c, { platforms: ["instagram", "tiktok"] }));
+  await refuses("a preflight naming a platform twice (platforms are a set)", /studio_preflight_requests_platforms/,
+    (c) => pfRequest(c, { platforms: ["instagram", "instagram"] }));
+  await refuses("a preflight with an empty scope (an unscoped run is NULL)", /studio_preflight_requests_scope_tags/,
+    (c) => pfRequest(c, { scope: [] }));
+  await refuses("a preflight whose scope names a tag twice", /studio_preflight_requests_scope_tags/,
+    (c) => pfRequest(c, { scope: ["oil", "oil"] }));
+  await refuses("a revise preflight with no source run (required)", /studio_preflight_requests_lineage/,
+    (c) => pfRequest(c, { action: "revise", source: null }));
+  await refuses("a full-run preflight naming a source run (forbidden)", /studio_preflight_requests_lineage/,
+    (c) => pfRequest(c, { source: paidRun }));
+  await refuses("a revise preflight whose source run is deleted", /deleted run cannot be a preflight's source/,
+    (c) => pfRequest(c, { action: "revise", source: childA }));
+  await refuses("a preflight with no fact version", /null value in column "fact_version_id"/,
+    (c) => pfRequest(c, { fact: null }));
+  await refuses("a preflight whose params_sha256 is not a lower-case sha256", /studio_preflight_requests_params_sha256_shape/,
+    (c) => pfRequest(c, { params: pfParams("x").toUpperCase() }));
+  await refuses("a preflight request created with an outcome already written", /created without an outcome/,
+    async (c) => c.query(
+      `INSERT INTO studio_preflight_requests (job_id, user_id, action, goal, platforms, fact_version_id, params_sha256,
+                                              outcome, refusal_class, refusal_message, outcome_at)
+       VALUES ($1, $2, 'full', 'synthetic fixture goal', $3, $4, $5, 'refused', 'scope_over_cap', 'synthetic', now())`,
+      [await pfJob(c), runner, ALL_PLATFORMS, factVersion, pfParams("born-answered")]));
+  let sharedJob = "";
+  await accepts("a runner's full-run preflight request, beside its preflight job", async (c) => {
+    sharedJob = await pfJob(c);
+    await pfRequest(c, { job: sharedJob, params: pfParams("first-on-job") });
+  });
+  await refuses("a second preflight request for the same job", /studio_preflight_requests_one_per_job/,
+    (c) => pfRequest(c, { job: sharedJob, params: pfParams("second-on-job") }));
+
+  // The outcome: quoted.
+  const pQuoted = pfParams("quoted");
+  let reqQuoted = "";
+  await accepts("an owner's full-run request with a 2,000-character goal, every platform and a scope", async (c) => {
+    reqQuoted = await pfRequest(c, { user: owner, goal: "goal ".repeat(400), scope: ["brakes", "oil"], params: pQuoted });
+  });
+  for (const [label, user, action, params, fact] of [
+    ["another user", runner, "full", pQuoted, factVersion],
+    ["another action", owner, "replay_critic", pQuoted, factVersion],
+    ["other parameters", owner, "full", pfParams("other"), factVersion],
+    ["another fact version", owner, "full", pQuoted, factVersion2],
+  ] as const) {
+    await refuses(`a quoted outcome naming a quote for ${label}`, /quote must match its user, action, parameters and fact version/,
+      async (c) => quoted(c, reqQuoted, await pfQuote(c, user, action, params, fact)));
+  }
+  await refuses("a quoted outcome with no quote", /studio_preflight_requests_outcome_shape/,
+    (c) => c.query("UPDATE studio_preflight_requests SET outcome = 'quoted' WHERE id = $1", [reqQuoted]));
+  await refuses("a quoted outcome that also carries a refusal", /studio_preflight_requests_outcome_shape/, async (c) =>
+    c.query("UPDATE studio_preflight_requests SET outcome = 'quoted', quote_id = $2, refusal_class = 'scope_over_cap' WHERE id = $1",
+      [reqQuoted, await pfQuote(c, owner, "full", pQuoted)]));
+  await refuses("a revise plan on a full run's quoted outcome", /studio_preflight_requests_revise_plan_when/,
+    async (c) => quoted(c, reqQuoted, await pfQuote(c, owner, "full", pQuoted), plan));
+  let quoteForQuoted = "";
+  await accepts("the quoted path: the worker writes the outcome once, naming a quote for the same user, action, "
+    + "parameters and fact version", async (c) => {
+    quoteForQuoted = await pfQuote(c, owner, "full", pQuoted);
+    await quoted(c, reqQuoted, quoteForQuoted);
+  });
+  holds("the database stamps the outcome's time, and the request keeps its parameters",
+    await (async () => {
+      const row = await one("SELECT outcome, quote_id, outcome_at IS NOT NULL AS stamped, goal, platforms, scope_tags FROM studio_preflight_requests WHERE id = $1", [reqQuoted]);
+      return row.outcome === "quoted" && row.quote_id === quoteForQuoted && row.stamped === true
+        && row.goal === "goal ".repeat(400) && JSON.stringify(row.platforms) === JSON.stringify(ALL_PLATFORMS)
+        && JSON.stringify(row.scope_tags) === JSON.stringify(["brakes", "oil"]);
+    })());
+  await refuses("a second outcome written over a quoted one", /outcome is written once and never changes/,
+    (c) => refused(c, reqQuoted, "scope_over_cap", "synthetic refusal"));
+  await refuses("a quoted outcome re-pointed at another quote", /outcome is written once and never changes/,
+    async (c) => c.query("UPDATE studio_preflight_requests SET quote_id = $2 WHERE id = $1", [reqQuoted, await pfQuote(c, owner, "full", pQuoted)]));
+  await refuses("an answered request's parameters changed", /outcome is written once and never changes/,
+    (c) => c.query("UPDATE studio_preflight_requests SET goal = 'another goal' WHERE id = $1", [reqQuoted]));
+  await refuses("one quote named by two requests", /studio_preflight_requests_one_per_quote/, async (c) => {
+    const other = await pfRequest(c, { user: owner, goal: "goal ".repeat(400), scope: ["brakes", "oil"], params: pQuoted });
+    await quoted(c, other, quoteForQuoted);
+  });
+  await refuses("a quote deleted while a preflight request names it (restrictive foreign key)", /foreign key constraint/,
+    (c) => c.query("DELETE FROM studio_quotes WHERE id = $1", [quoteForQuoted]));
+
+  // The outcome: refused; parameters never change.
+  let reqPending = "";
+  await accepts("a runner's unanswered request", async (c) => { reqPending = await pfRequest(c, { params: pfParams("pending") }); });
+  for (const [column, value] of [["goal", "'another goal'"], ["platforms", "ARRAY['instagram']"], ["scope_tags", "ARRAY['oil']"],
+    ["fact_version_id", `'${factVersion2}'`], ["params_sha256", `'${pfParams("changed")}'`], ["user_id", `'${owner}'`],
+    ["created_at", "now() - interval '40 days'"]] as const) {
+    await refuses(`an unanswered request's ${column} changed`, /parameters never change/,
+      (c) => c.query(`UPDATE studio_preflight_requests SET ${column} = ${value} WHERE id = $1`, [reqPending]));
+  }
+  await refuses("an update that writes no outcome (a plan alone)", /updated only to write its outcome/,
+    (c) => c.query("UPDATE studio_preflight_requests SET revise_plan = $2::jsonb WHERE id = $1", [reqPending, plan]));
+  await refuses("a refused outcome with no message", /studio_preflight_requests_outcome_shape/,
+    (c) => c.query("UPDATE studio_preflight_requests SET outcome = 'refused', refusal_class = 'scope_over_cap' WHERE id = $1", [reqPending]));
+  await refuses("a refused outcome that also names a quote", /studio_preflight_requests_outcome_shape/, async (c) =>
+    c.query(`UPDATE studio_preflight_requests SET outcome = 'refused', refusal_class = 'scope_over_cap', refusal_message = 'x',
+                    quote_id = $2 WHERE id = $1`, [reqPending, await pfQuote(c, runner, "full", pfParams("pending"))]));
+  await refuses("a refusal class that is not the failure-class shape", /studio_preflight_requests_refusal_class_shape/,
+    (c) => refused(c, reqPending, "Scope Over Cap", "synthetic refusal"));
+  await refuses("a refusal message of 4,001 characters", /studio_preflight_requests_refusal_message_bounded/,
+    (c) => refused(c, reqPending, "scope_over_cap", "m".repeat(4001)));
+  await refuses("a revise plan on a full run's refusal", /studio_preflight_requests_revise_plan_when/,
+    (c) => refused(c, reqPending, "no_revisable_blocking_finding", "synthetic refusal", plan));
+  await accepts("the refused path: a refusal with its class and a 4,000-character message, at no cost",
+    (c) => refused(c, reqPending, "scope_over_cap", "m".repeat(4000)));
+  await refuses("a second outcome written over a refused one", /outcome is written once and never changes/,
+    async (c) => quoted(c, reqPending, await pfQuote(c, runner, "full", pfParams("pending"))));
+
+  // A revise, with its plan.
+  const pRevise = pfParams("revise");
+  let reqRevise = "";
+  await accepts("a runner's revise request: a source run, a subset of platforms, no goal", async (c) => {
+    reqRevise = await pfRequest(c, { action: "revise", platforms: ["instagram", "facebook"], params: pRevise });
+  });
+  await refuses("a revise plan that is not a JSON object", /studio_preflight_requests_revise_plan_object/,
+    async (c) => quoted(c, reqRevise, await pfQuote(c, runner, "revise", pRevise), "[]"));
+  await refuses("a revise plan over 1 MiB", /studio_preflight_requests_revise_plan_bounded/,
+    async (c) => quoted(c, reqRevise, await pfQuote(c, runner, "revise", pRevise), JSON.stringify({ kind: "revision", x: "p".repeat(1_048_576) })));
+  await refuses("a revise plan on a refusal of another class", /studio_preflight_requests_revise_plan_when/,
+    (c) => refused(c, reqRevise, "source_unverified", "synthetic refusal", plan));
+  await accepts("the revise path: a quoted revise carrying planRevision's plan",
+    async (c) => quoted(c, reqRevise, await pfQuote(c, runner, "revise", pRevise), plan));
+  holds("the stored plan is the plan written (jsonb equality)", (await one(
+    "SELECT revise_plan = $2::jsonb AS same FROM studio_preflight_requests WHERE id = $1", [reqRevise, plan])).same === true);
+  await accepts("a revise refused because no blocking finding is revisable keeps its plan, with no quote", async (c) => {
+    const id = await pfRequest(c, { action: "revise", params: pfParams("no-revision") });
+    await refused(c, id, "no_revisable_blocking_finding", "no blocking finding is revisable",
+      JSON.stringify({ kind: "no_revision", stages: [], ownerItems: [], notRerun: [] }));
+  });
+
+  // Retention, TRUNCATE and DELETE.
+  await refuses("the preflight requests truncated", /immutable/, (c) => c.query("TRUNCATE studio_preflight_requests"));
+  await refuses("a quoted request whose quote was never consumed, deleted inside 30 days", /kept for 30 days/,
+    (c) => c.query("DELETE FROM studio_preflight_requests WHERE id = $1", [reqQuoted]));
+  await refuses("a refused request deleted inside 30 days", /kept for 30 days/,
+    (c) => c.query("DELETE FROM studio_preflight_requests WHERE id = $1", [reqPending]));
+  await refuses("a request inserted with a created_at 40 days old (the database stamps now), deleted at once", /kept for 30 days/,
+    async (c) => {
+      const id = String((await c.query(
+        `INSERT INTO studio_preflight_requests (job_id, user_id, action, goal, platforms, fact_version_id, params_sha256, created_at)
+         VALUES ($1, $2, 'full', 'synthetic fixture goal', $3, $4, $5, now() - interval '40 days') RETURNING id`,
+        [await pfJob(c), runner, ALL_PLATFORMS, factVersion, pfParams("back-dated")])).rows[0]?.id);
+      await c.query("DELETE FROM studio_preflight_requests WHERE id = $1", [id]);
+    });
+  const pConsumed = pfParams("consumed");
+  let reqConsumed = "";
+  await accepts("test fixture: a 31-day-old quoted request whose quote was then consumed by a confirmation", async (c) => {
+    const q = await pfQuote(c, runner, "full", pConsumed);
+    await confirm(c, q, runner);
+    reqConsumed = await pfBackdated(c, { params: pConsumed, outcome: "quoted", quote: q });
+  });
+  await refuses("a request whose quote was consumed, deleted even after 30 days", /quote was consumed is never deleted/,
+    (c) => c.query("DELETE FROM studio_preflight_requests WHERE id = $1", [reqConsumed]));
+  await accepts("after 30 days a refused request, and a quoted one whose quote was never consumed (then its quote), are deleted",
+    async (c) => {
+      const old = await pfBackdated(c, { params: pfParams("old-refused"), outcome: "refused" });
+      const q = await pfQuote(c, runner, "full", pfParams("old-quoted"));
+      const oldQuoted = await pfBackdated(c, { params: pfParams("old-quoted"), outcome: "quoted", quote: q });
+      await c.query("DELETE FROM studio_preflight_requests WHERE id = ANY ($1::uuid[])", [[old, oldQuoted]]);
+      await c.query("DELETE FROM studio_quotes WHERE id = $1", [q]);
+    });
+
+  // The plan is required where it is allowed (reviewer request, 2026-10-05).
+  await refuses("a quoted revise without its plan", /studio_preflight_requests_revise_plan_required/, async (c) => {
+    const id = await pfRequest(c, { action: "revise", params: pfParams("revise-no-plan") });
+    await quoted(c, id, await pfQuote(c, runner, "revise", pfParams("revise-no-plan")));
+  });
+  await refuses("a revise refused as no_revisable_blocking_finding without its plan", /studio_preflight_requests_revise_plan_required/,
+    async (c) => {
+      const id = await pfRequest(c, { action: "revise", params: pfParams("no-revision-no-plan") });
+      await refused(c, id, "no_revisable_blocking_finding", "no blocking finding is revisable");
+    });
 }
 
 async function main(): Promise<void> {
@@ -1199,6 +1505,7 @@ async function main(): Promise<void> {
     }
     await runnerAndCross(dbs);
     await studioDatabase(dbs);
+    await upgradeFromSchema0002(dbs);
   } finally {
     const leftovers = [...dbs.created];
     for (const name of leftovers) await dbs.drop(name).catch((error) => console.error(`[studio-postgres] drop ${name}: ${(error as Error).message}`));

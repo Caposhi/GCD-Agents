@@ -18,6 +18,7 @@ import { createServer, type Socket } from "node:net";
 import { resolve } from "node:path";
 import { CRITIC_FINDING_CATEGORIES, CRITIC_FINDING_OWNERS, CRITIC_FINDING_SEVERITIES,
   CRITIC_LENS_CATEGORIES, CRITIC_VERDICTS } from "../../harness/agents/finalCritic.js";
+import { PACKAGING_PLATFORMS } from "../../harness/agents/packagingAdaptation.js";
 import { CRITIC_LENSES } from "../../harness/agents/payloadContract.js";
 import { TARGET_STAGE_IDS } from "../../harness/agents/registry.js";
 import {
@@ -29,8 +30,10 @@ import {
   runStudioMigrations,
   sha256Hex,
   STUDIO_DATABASE_NAME,
+  STUDIO_EXPECTED_MIGRATIONS,
   STUDIO_IDENTITY_MARKER,
   STUDIO_MIGRATIONS_DIRECTORY,
+  STUDIO_SCHEMA_VERSION,
   STUDIO_TRIPWIRE_CONSTRAINT,
   StudioMigrationRefusal,
   type StudioIdentityProbe,
@@ -299,10 +302,16 @@ async function main(): Promise<void> {
   check(`SM3b. ${STUDIO_MIGRATIONS_DIRECTORY}/ holds the Studio migrations in order, each fingerprinted by the `
     + "sha256 of its exact bytes, and plans cleanly from an empty ledger",
   JSON.stringify(repositoryFiles.map((file) => file.name))
-      === JSON.stringify(["0001_studio_identity_and_tripwire.sql", "0002_studio_schema.sql"])
+      === JSON.stringify(["0001_studio_identity_and_tripwire.sql", "0002_studio_schema.sql",
+        "0003_studio_preflight_requests.sql"])
     && repositoryFiles.every((file) => file.sha256
       === sha256Hex(readFileSync(resolve(root, STUDIO_MIGRATIONS_DIRECTORY, file.name))))
     && planStudioMigrations(repositoryFiles, []).pending.length === repositoryFiles.length);
+  check("SM3c. every runtime's expected migrations are exactly the repository's files, 0001, 0002 and 0003, in order, "
+    + "and the schema version they expect is 0003_studio_preflight_requests.sql",
+  JSON.stringify([...STUDIO_EXPECTED_MIGRATIONS]) === JSON.stringify(repositoryFiles.map((file) => file.name))
+    && STUDIO_EXPECTED_MIGRATIONS.length === 3 && STUDIO_SCHEMA_VERSION === "0003_studio_preflight_requests.sql"
+    && planStudioMigrations(repositoryFiles, repositoryFiles.slice(0, 2)).pending.join(",") === STUDIO_SCHEMA_VERSION);
 
   // --- SM4: the identity decision ---------------------------------------------
   check("SM4. the identity decision refuses any database not named gcd_studio",
@@ -422,6 +431,14 @@ async function main(): Promise<void> {
     && CRITIC_LENSES.every((lens) => same(lensCategoriesInSql(lens), CRITIC_LENS_CATEGORIES[lens]))
     && same(sqlSet("studio_runs_verdict"), CRITIC_VERDICTS)
     && studioSql.includes("CHECK (owner_item = (owner = 'human_review' OR category = 'human_decision'))"));
+  const preflightSql = repositoryFiles.find((file) => file.name === "0003_studio_preflight_requests.sql")?.sql ?? "";
+  const platformsInSql = [...(/platforms <@ ARRAY\[([^\]]*)\]::text\[\]/.exec(preflightSql)?.[1] ?? "").matchAll(/'([^']*)'/g)]
+    .map((value) => value[1]!);
+  check("SM6d. the preflight request's closed sets match the pipeline's and the quote's: its platforms are exactly "
+    + "PACKAGING_PLATFORMS and its actions exactly studio_quotes' actions",
+  platformsInSql.length === PACKAGING_PLATFORMS.length && same(platformsInSql, PACKAGING_PLATFORMS)
+    && sqlSet("studio_preflight_requests_action").length === 4
+    && same(sqlSet("studio_preflight_requests_action"), sqlSet("studio_quotes_action")));
 
   const scripts = (JSON.parse(readFileSync(resolve(root, "package.json"), "utf8")) as { scripts: Record<string, string> }).scripts;
   const envExample = readFileSync(resolve(root, ".env.example"), "utf8");

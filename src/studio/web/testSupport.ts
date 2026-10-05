@@ -348,7 +348,7 @@ export class MemoryWebStore implements WebStore {
   async health(): Promise<WebHealth> {
     if (this.failHealth) throw new Error("store unavailable");
     return {
-      schemaVersion: "0002_studio_schema.sql",
+      schemaVersion: "0003_studio_preflight_requests.sql",
       workerHeartbeatAgeSeconds: this.heartbeatAt === null ? null : Math.round((this.clock() - this.heartbeatAt) / 1000),
     };
   }

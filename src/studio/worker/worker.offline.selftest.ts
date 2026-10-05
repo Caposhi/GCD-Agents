@@ -193,16 +193,19 @@ async function startupChecks(): Promise<void> {
       && refusalOf(() => decideWorkerIdentity(probe({ identityRows: [] }) as never)) === "identity-mismatch"
       && refusalOf(() => decideWorkerIdentity(probe({ ledger: null, identityRows: null, studioTables: [], migrationsTable: "absent" }) as never))
         === "not-migrated");
-  const extraFile = { name: "0003_later.sql", sha256: "f".repeat(64) };
+  const extraFile = { name: "0004_later.sql", sha256: "f".repeat(64) };
   check(`SW3a. the worker refuses any schema version but ${STUDIO_SCHEMA_VERSION}: a migration missing from the ledger, an `
     + "extra one recorded or on disk, or a recorded file whose bytes changed",
-    decideSchemaVersion(ledger, files) === STUDIO_SCHEMA_VERSION && STUDIO_SCHEMA_VERSION === "0002_studio_schema.sql"
+    decideSchemaVersion(ledger, files) === STUDIO_SCHEMA_VERSION && STUDIO_SCHEMA_VERSION === "0003_studio_preflight_requests.sql"
       && refusalOf(() => decideSchemaVersion(ledger.slice(0, 1), files)) === "schema-version"
+      && refusalOf(() => decideSchemaVersion(ledger.slice(0, 2), files)) === "schema-version"
+      && refusalOf(() => decideSchemaVersion(ledger.slice(0, 2), files.slice(0, 2))) === "schema-version"
       && refusalOf(() => decideSchemaVersion(null, files)) === "schema-version"
       && refusalOf(() => decideSchemaVersion([...ledger, extraFile], [...files, extraFile])) === "schema-version"
       && refusalOf(() => decideSchemaVersion([...ledger, extraFile], files)) === "schema-version"
       && refusalOf(() => decideSchemaVersion(ledger, [...files, extraFile])) === "schema-version"
-      && refusalOf(() => decideSchemaVersion([ledger[0]!, { ...ledger[1]!, sha256: "0".repeat(64) }], files)) === "migration-changed"
+      && refusalOf(() => decideSchemaVersion([ledger[0]!, { ...ledger[1]!, sha256: "0".repeat(64) }, ledger[2]!], files)) === "migration-changed"
+      && refusalOf(() => decideSchemaVersion([ledger[0]!, ledger[1]!, { ...ledger[2]!, sha256: "0".repeat(64) }], files)) === "migration-changed"
       && JSON.stringify(readdirSync(resolve(REPO_ROOT, "studio/migrations")).filter((n) => n.endsWith(".sql")).sort())
         === JSON.stringify([...STUDIO_EXPECTED_MIGRATIONS]));
 

@@ -372,6 +372,16 @@
  * `CS10`). They add five captured paths — the web's views, runs and downloads
  * modules, the worker's findings module and the leaf — sixty-one in all.
  *
+ * Content Studio S6.1's group, `M630`–`M633`, covers the one TypeScript line
+ * migration 0003 changes: the shared expected-migrations list in the S2 runner
+ * module, and the schema version derived from it. The list losing 0003 is run
+ * against each runtime that checks it — the worker (`SW3a`), the web (`SA7`)
+ * and the runner's own suite (`SM3c`) — and the schema version taken from the
+ * wrong entry is run against the web (`SA7`). The table's invariants are SQL
+ * and are proven by the disposable-PostgreSQL refusals (`SP16`, `SP17`,
+ * `SP303`–`SP373`, `SWP18`, `SAP15`), as S2's were, not by this harness. No
+ * captured path is added (the runner module already is one): sixty-one in all.
+ *
  * It is offline and deterministic: no network, no database, no provider, no
  * credential. The mutations run in parallel on up to MAX_WORKERS workers (the
  * runner's available parallelism, capped), each worker in its OWN disposable
@@ -5681,6 +5691,45 @@ const CONTENT_STUDIO_S5_MUTATIONS = [
   },
 ];
 
+// Content Studio S6.1: migration 0003 and the one TypeScript line it changes,
+// the shared expected-migrations list, run against each runtime that checks it.
+const CONTENT_STUDIO_S6_1_MUTATIONS = [
+  {
+    // The list keeps its declared tuple type (a cast), so the tree still
+    // compiles and the break is the value at run time, as the checks see it.
+    name: "the worker's expected migrations lose 0003",
+    file: STUDIO_DB_RUNNER,
+    from: "  \"0003_studio_preflight_requests.sql\",\n] as const;",
+    to: "] as unknown as readonly [\"0001_studio_identity_and_tripwire.sql\", \"0002_studio_schema.sql\", \"0003_studio_preflight_requests.sql\"];",
+    expect: ["SW3a."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "the web's expected migrations lose 0003",
+    file: STUDIO_DB_RUNNER,
+    from: "  \"0003_studio_preflight_requests.sql\",\n] as const;",
+    to: "] as unknown as readonly [\"0001_studio_identity_and_tripwire.sql\", \"0002_studio_schema.sql\", \"0003_studio_preflight_requests.sql\"];",
+    expect: ["SA7."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "the runner's expected migrations lose 0003",
+    file: STUDIO_DB_RUNNER,
+    from: "  \"0003_studio_preflight_requests.sql\",\n] as const;",
+    to: "] as unknown as readonly [\"0001_studio_identity_and_tripwire.sql\", \"0002_studio_schema.sql\", \"0003_studio_preflight_requests.sql\"];",
+    expect: ["SM3c."],
+    suite: STUDIO_DB_SUITE,
+  },
+  {
+    name: "the schema version is taken from an earlier expected migration than the last",
+    file: STUDIO_DB_RUNNER,
+    from: "export const STUDIO_SCHEMA_VERSION = STUDIO_EXPECTED_MIGRATIONS[STUDIO_EXPECTED_MIGRATIONS.length - 1]!;",
+    to: "export const STUDIO_SCHEMA_VERSION = STUDIO_EXPECTED_MIGRATIONS[STUDIO_EXPECTED_MIGRATIONS.length - 2]!;",
+    expect: ["SA7."],
+    suite: STUDIO_WEB_SUITE,
+  },
+];
+
 // Every group, in order. MUTATIONS is their concatenation; the groups exist
 // only so `M-inc-sample` can spread its sample across them.
 const MUTATION_GROUPS = [
@@ -5694,6 +5743,7 @@ const MUTATION_GROUPS = [
   ["Content Studio S1", CONTENT_STUDIO_S1_MUTATIONS], ["Content Studio S2", CONTENT_STUDIO_S2_MUTATIONS],
   ["Content Studio S3 context", CONTENT_STUDIO_S3_CONTEXT_MUTATIONS], ["Content Studio S3 worker", CONTENT_STUDIO_S3_WORKER_MUTATIONS],
   ["Content Studio S4", CONTENT_STUDIO_S4_MUTATIONS], ["Content Studio S5", CONTENT_STUDIO_S5_MUTATIONS],
+  ["Content Studio S6.1", CONTENT_STUDIO_S6_1_MUTATIONS],
 ];
 const MUTATIONS = MUTATION_GROUPS.flatMap(([, group]) => group);
 

@@ -16,12 +16,14 @@
 
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
+import { copyFileSync, mkdtempSync, rmSync } from "node:fs";
 import { createServer, type Server } from "node:http";
-import { dirname, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
 
-import { runStudioMigrations, STUDIO_DATABASE_NAME } from "../db/runner.js";
+import { runStudioMigrations, STUDIO_DATABASE_NAME, STUDIO_EXPECTED_MIGRATIONS, STUDIO_SCHEMA_VERSION } from "../db/runner.js";
 import { createStudioWebApp, type StudioWebApp, type WebLog } from "./app.js";
 import { GOOGLE_OIDC } from "./oidc.js";
 import { csrfTokenFor, LOGIN_COOKIE, SESSION_COOKIE, sessionIdHash } from "./sessions.js";
@@ -112,11 +114,11 @@ class Databases {
   }
 }
 
-async function migrate(url: string): Promise<void> {
+async function migrate(url: string, directory = resolve(REPO_ROOT, "studio/migrations")): Promise<void> {
   const client = new pg.Client({ connectionString: url });
   await client.connect();
   try {
-    await runStudioMigrations(client, { directory: resolve(REPO_ROOT, "studio/migrations") });
+    await runStudioMigrations(client, { directory });
   } finally {
     await client.end();
   }
@@ -210,6 +212,21 @@ async function main(): Promise<void> {
       const unmigrated = await runEntryPoint(url, String(await freePort()), 20_000);
       check("SAP2. the web refuses an unmigrated gcd_studio (not-migrated) before it listens",
         unmigrated.code === 1 && /refused \(not-migrated\)/.test(unmigrated.stderr) && !unmigrated.ready, unmigrated.stderr.trim());
+      // SAP15 (Content Studio S6.1): migrated to 0002 alone, the web refuses; SAP3 then shows 0003 accepted.
+      const only0002 = mkdtempSync(join(tmpdir(), "gcd-studio-web-0002-"));
+      try {
+        for (const name of STUDIO_EXPECTED_MIGRATIONS.slice(0, 2)) {
+          copyFileSync(resolve(REPO_ROOT, "studio/migrations", name), join(only0002, name));
+        }
+        await migrate(url, only0002);
+      } finally {
+        rmSync(only0002, { recursive: true, force: true });
+      }
+      const older = await runEntryPoint(url, String(await freePort()), 20_000);
+      check("SAP15. the web refuses, through its entry point, a gcd_studio migrated to 0002 alone — exit 1, refused "
+        + `(schema-version), before it listens; once 0003 is applied on top it starts (SAP3, schema ${STUDIO_SCHEMA_VERSION})`,
+        older.code === 1 && /refused \(schema-version\)/.test(older.stderr) && !older.ready
+          && STUDIO_SCHEMA_VERSION === "0003_studio_preflight_requests.sql", older.stderr.trim());
       await migrate(url);
       const pool = openPool("web", { connectionString: url, max: 6 });
       try {
@@ -283,11 +300,11 @@ async function suite(pool: pg.Pool, url: string, issuer: FakeIssuer): Promise<vo
     const doc = JSON.parse(health?.body ?? "{}") as Record<string, unknown>;
     const attempts = Number((await pool.query("SELECT count(*) AS n FROM studio_login_attempts")).rows[0].n);
     check("SAP3. `npm run start:studio-web`, executed against the migrated gcd_studio: it starts, /healthz reports "
-      + "gcd-studio-web, the commit, postgres, schema 0002 and no heartbeat yet, with the security headers; and its "
+      + "gcd-studio-web, the commit, postgres, schema 0003 and no heartbeat yet, with the security headers; and its "
       + "/auth/login redirects to Google's authorization endpoint — the entry point passes Google's constants — after "
       + "storing one login attempt",
       run.ready && health?.status === 200 && doc.service === "gcd-studio-web" && doc.commit === COMMIT && doc.state === "postgres"
-        && doc.schema_version === "0002_studio_schema.sql" && doc.worker_heartbeat_age_seconds === null
+        && doc.schema_version === "0003_studio_preflight_requests.sql" && doc.worker_heartbeat_age_seconds === null
         && health.headers.get("content-security-policy")?.startsWith("default-src 'self'") === true
         && login?.status === 302 && login.location!.startsWith(`${GOOGLE_OIDC.authorizationEndpoint}?`)
         && new URL(login.location!).searchParams.get("redirect_uri") === `${ORIGIN}/auth/callback` && attempts === 1,
