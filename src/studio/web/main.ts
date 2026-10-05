@@ -8,8 +8,11 @@
  * opened and before the server module loads. It reads: the names of every
  * variable present (for the refusal), `STUDIO_DATABASE_URL`,
  * `STUDIO_PUBLIC_ORIGIN`, `STUDIO_ALLOWED_HD`, `STUDIO_GOOGLE_CLIENT_ID`,
- * `STUDIO_GOOGLE_CLIENT_SECRET`, `STUDIO_BOOTSTRAP_OWNER_EMAIL`, `PORT` and
- * Render's `RENDER_GIT_COMMIT`. It never reads `DATABASE_URL`'s value.
+ * `STUDIO_GOOGLE_CLIENT_SECRET`, `STUDIO_BOOTSTRAP_OWNER_EMAIL`, `PORT`,
+ * Render's `RENDER_GIT_COMMIT` and (Content Studio S6.2) the two deployment
+ * ceilings `STUDIO_MAX_DAILY_USD` and `STUDIO_MAX_MONTHLY_USD`, which bound every
+ * confirmation; a missing or unparsable ceiling is zero. It never reads
+ * `DATABASE_URL`'s value.
  *
  * It passes no OpenID provider: the service always uses Google's endpoints
  * and issuers, which are code constants (`oidc.ts`).
@@ -38,7 +41,10 @@ async function main(): Promise<void> {
     bootstrapOwnerEmail: process.env.STUDIO_BOOTSTRAP_OWNER_EMAIL,
     port: process.env.PORT,
     commit: process.env.RENDER_GIT_COMMIT,
+    maxDailyUsd: process.env.STUDIO_MAX_DAILY_USD,
+    maxMonthlyUsd: process.env.STUDIO_MAX_MONTHLY_USD,
   });
+  if (startup.zeroCaps.length) log("caps.zero", { caps: startup.zeroCaps.join(","), effect: "every confirmation is refused" });
   const { startStudioWeb } = await import("./server.js");
   const web = await startStudioWeb(startup, { repoRoot: REPO_ROOT, log });
   const shutdown = () => { log("stopping", { reason: "signal" }); void web.stop().then(() => log("stopped", {})); };

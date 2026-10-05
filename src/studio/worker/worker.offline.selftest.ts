@@ -18,9 +18,14 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import * as lib from "../../harness/contentRun/index.js";
-import type { CostCeilingLine, ReviewOnlyRequestUnit } from "../../harness/contentRun/index.js";
+import type { ContentRunRuntime, CostCeilingLine, ReviewOnlyRequestUnit } from "../../harness/contentRun/index.js";
 import { STUDIO_MIGRATION_LOCK_NAMESPACE } from "../db/runner.js";
-import { closeRun, decideBeforeWork, failureClassOf, workerRuntime, WorkerStop, type BeforeWork } from "./execute.js";
+import { closeRun, decideBeforeWork, executeJob, failureClassOf, workerRuntime, WorkerStop, type BeforeWork } from "./execute.js";
+import {
+  decidePreflight, writePreflightOutcome, type PreflightInputs, type PreflightOutcome, type PreflightRequestRow, type PreflightSourceRun,
+} from "./preflight.js";
+import { preflightParamsSha256 } from "../db/runner.js";
+import { preflightRequest } from "../web/actions.js";
 import { CRITIC_ARTIFACT, deriveFindings } from "./findings.js";
 import { providerTextWithContact } from "../../harness/agents/providerText.js";
 import { readCaptions, readScript, readShotList } from "../web/runs.js";
@@ -33,7 +38,7 @@ import {
   decideSchemaVersion, decideWorkerIdentity, decideWorkerStartup, forbiddenVariablesPresent, FORBIDDEN_PREFIXES,
   FORBIDDEN_VARIABLES, S3_FORBIDDEN_VARIABLES, STUDIO_EXPECTED_MIGRATIONS, STUDIO_SCHEMA_VERSION, type WorkerEnvironment,
 } from "./startup.js";
-import { memoryIo, memorySink, repoFacts } from "./testSupport.js";
+import { fakeTranscript, memoryIo, memorySink, replayRunner, repoFacts, syntheticFactsBytes } from "./testSupport.js";
 import { HEARTBEAT_INTERVAL_MS } from "./worker.js";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -75,7 +80,7 @@ async function startupChecks(): Promise<void> {
   const forbidden = [...FORBIDDEN_VARIABLES, ...S3_FORBIDDEN_VARIABLES, "IG_ACCESS_TOKEN", "FB_PAGE_ACCESS_TOKEN", "GBP_LOCATION_ID"];
   const refusals = forbidden.map((name) => refusalOf(() => decideWorkerStartup(env({ names: [...env().names, name] }))));
   check("SW1. the worker refuses to start beside any forbidden variable — DATABASE_URL, every live credential, "
-    + "AUTONOMY_PHASE, PUBLIC_BASE_URL, ACTIVE_PLATFORMS, any IG_/FB_/GBP_ name and, until S6, ANTHROPIC_API_KEY — "
+    + "AUTONOMY_PHASE, PUBLIC_BASE_URL, ACTIVE_PLATFORMS, any IG_/FB_/GBP_ name and, until S6b, ANTHROPIC_API_KEY — "
     + "whatever its value; with none it starts with its own caps and commit",
     ok.connectionString === URL_OK && ok.commit === COMMIT && ok.caps.dailyMicros === 75_000_000
       && ok.caps.monthlyMicros === 300_000_000 && ok.zeroCaps.length === 0
@@ -699,6 +704,289 @@ async function findingsChecks(): Promise<void> {
       && readScript(files.get("03-hook-story-script.json")).ok && readShotList(files.get("04-production-direction.json")).ok);
 }
 
+// --- SW18-SW24 (Content Studio S6.2): the free preflight, its outcome, and a live run with no paid runner -------
+
+/** A runtime whose stage executors and provider factory count every call: a preflight must make none. */
+function countedRuntime(): { rt: ContentRunRuntime; calls: () => number } {
+  const base = lib.loadRuntime();
+  let calls = 0;
+  const count = <T extends Record<string, unknown>>(mod: T, name: string): T => ({
+    ...mod, [name]: (...args: unknown[]) => { calls += 1; return (mod[name] as (...a: unknown[]) => unknown)(...args); },
+  });
+  return {
+    rt: {
+      ...base,
+      strategy: count(base.strategy, "executeStrategyConcept"), truth: count(base.truth, "executeAutomotiveTruth"),
+      script: count(base.script, "executeHookStoryScript"), direction: count(base.direction, "executeProductionDirection"),
+      packaging: count(base.packaging, "executePackagingAdaptation"), critic: count(base.critic, "executeFinalCritic"),
+      stageExecution: { ...base.stageExecution, createAnthropicStageRunner: () => { calls += 1; throw new Error("provider factory"); } },
+    } as ContentRunRuntime,
+    calls: () => calls,
+  };
+}
+
+const ALL_PLATFORMS = ["instagram", "facebook", "google_business_profile"];
+const FACT_VERSION = "0b8f2a4e-6c1d-4f3a-9e7b-2d5c8a1f0e93";
+const SOURCE_RUN = "5f0c7d2e-1a3b-4c5d-8e9f-0a1b2c3d4e5f";
+const approvedRepo = () => {
+  const bytes = readFileSync(resolve(REPO_ROOT, "config/approved-facts.json"));
+  return { bytes, sha256: createHash("sha256").update(bytes).digest("hex") };
+};
+const approvedWithout = (key: string) => {
+  const parsed = JSON.parse(readFileSync(resolve(REPO_ROOT, "config/approved-facts.json"), "utf8"));
+  delete parsed[key];
+  const bytes = Buffer.from(JSON.stringify(parsed, null, 2), "utf8");
+  return { bytes, sha256: createHash("sha256").update(bytes).digest("hex") };
+};
+const version = (bytes: Buffer = syntheticFactsBytes()) => ({ content: bytes, sha256: createHash("sha256").update(bytes).digest("hex") });
+
+/** A request row whose params_sha256 is the canonical one (unless `sha` overrides it). */
+function requestRow(edit: Partial<PreflightRequestRow> = {}, sha?: string): PreflightRequestRow {
+  const row: PreflightRequestRow = {
+    id: "req-1", jobId: "job-1", userId: "user-1", action: "full", goal: "SW preflight synthetic goal",
+    platforms: [...ALL_PLATFORMS], scopeTags: null, sourceRunId: null, factVersionId: FACT_VERSION, paramsSha256: "", ...edit,
+  };
+  row.paramsSha256 = sha ?? preflightParamsSha256(row);
+  return row;
+}
+
+/** A finished run's files, as a source: a fake run, or a live run through a replaying runner (`edit` changes its transcript). */
+async function sourceFiles(kind: "fake" | "live", edit: (t: { stages: string[]; lenses: Map<string, string> }) => void = () => {}) {
+  const sink = memorySink("source-run");
+  const goal = "SW preflight source goal";
+  if (kind === "fake") {
+    await lib.runFullPipeline(lib.loadRuntime(), { runner: "fake", facts: repoFacts(REPO_ROOT), goal, reviewedAt: new Date().toISOString(),
+      reviewedAtExplicit: false }, memoryIo(sink));
+  } else {
+    const transcript = await fakeTranscript(REPO_ROOT, goal);
+    edit(transcript);
+    await lib.runFullPipeline(workerRuntime(lib.loadRuntime(), replayRunner(transcript)), {
+      runner: "live", facts: repoFacts(REPO_ROOT), goal, reviewedAt: new Date().toISOString(), reviewedAtExplicit: false,
+    }, memoryIo(sink, { consent: async () => {}, execution: lib.createReviewOnlyExecutionContext({ caller: "studio-worker", checkRequests: async () => {} }) }));
+  }
+  return sink.files;
+}
+const sourceOf = (files: Map<string, Buffer>, edit: Partial<Omit<PreflightSourceRun, "source">> = {}): PreflightSourceRun => ({
+  state: "succeeded", deleted: false, kind: "full", importTier: null, factVersionId: FACT_VERSION,
+  source: { label: "source-run", displayLabel: "source-run", name: "source-run", exists: () => true,
+    readArtifact: async (name) => (files.has(name) ? new Uint8Array(files.get(name)!) : undefined) },
+  ...edit,
+});
+
+async function preflightOf(edit: Partial<PreflightInputs> & { request?: PreflightRequestRow } = {}) {
+  const counted = countedRuntime();
+  const outcome = await decidePreflight({
+    request: requestRow(), factVersion: version(), sourceRun: null, approvedFacts: approvedRepo(), repoRoot: REPO_ROOT,
+    runtime: counted.rt, ...edit,
+  });
+  return { outcome, calls: counted.calls() };
+}
+const refusedAs = (r: { outcome: PreflightOutcome; calls: number }, cls: string | RegExp, message?: RegExp) =>
+  r.outcome.outcome === "refused" && r.calls === 0 && (typeof cls === "string" ? r.outcome.refusalClass === cls : cls.test(r.outcome.refusalClass))
+  && r.outcome.message.length >= 1 && r.outcome.message.length <= 4000 && (!message || message.test(r.outcome.message))
+  && /^[a-z][a-z0-9_]{0,63}$/.test(r.outcome.refusalClass);
+
+/** A session whose transactions are recorded: BEGIN, each statement, then COMMIT or ROLLBACK. */
+function txRecorder(answer: (text: string) => { rows: Array<Record<string, unknown>>; rowCount: number }) {
+  const log: string[] = [];
+  const client = { query: async (text: string, values: unknown[] = []) => { log.push(text.replace(/\s+/g, " ").trim()); void values; return answer(text); } };
+  const session = {
+    tx: async <T>(fn: (c: typeof client) => Promise<T>): Promise<T> => {
+      log.push("BEGIN");
+      try { const result = await fn(client); log.push("COMMIT"); return result; } catch (error) { log.push("ROLLBACK"); throw error; }
+    },
+  };
+  return { log, session: session as unknown as Pick<WorkerSession, "tx">, values: [] as unknown[] };
+}
+
+async function preflightChecks(): Promise<void> {
+  // SW18: the parameters are recomputed by the one canonical function before anything else.
+  const mismatch = await preflightOf({ request: requestRow({}, "f".repeat(64)) });
+  const reordered = await preflightOf({ request: requestRow({ platforms: ["google_business_profile", "facebook", "instagram"] }) });
+  const otherFormula = await preflightOf({ request: requestRow({}, createHash("sha256").update(JSON.stringify({
+    schema: "gcd-studio-preflight-params/1", action: "full", goal: "SW preflight synthetic goal", platforms: ALL_PLATFORMS,
+    scopeTags: null, sourceRunId: null, factVersionId: FACT_VERSION })).digest("hex")) });
+  check("SW18. the free preflight recomputes params_sha256 with the canonical function first: a request whose hash does not "
+    + "match its parameters — any other hash, or the same object hashed without the canonical sort — is refused as "
+    + "params_mismatch with nothing checked and zero executor or provider calls; the same parameters in another order are accepted",
+    refusedAs(mismatch, "params_mismatch") && refusedAs(otherFormula, "params_mismatch")
+      && reordered.outcome.outcome === "quoted" && reordered.calls === 0,
+    `${JSON.stringify(mismatch.outcome).slice(0, 120)} ${JSON.stringify(otherFormula.outcome).slice(0, 120)} ${reordered.outcome.outcome}`);
+
+  // SW18a: the web's request row and the worker's recomputation are the same function.
+  const webRow = preflightRequest({ userId: "user-1", action: "full", goal: "SW preflight synthetic goal", platforms: ["facebook", "instagram"],
+    scopeTags: ["synthetic-worker"], sourceRunId: null, factVersionId: FACT_VERSION });
+  const fromWeb = await preflightOf({ request: { ...requestRow(), ...webRow, id: "req-web", jobId: "job-web" } });
+  check("SW18a. a request row as the web writes it (preflightRequest, the web's only path) is accepted by the worker's "
+    + "recomputation: both call preflightParamsSha256 from the S2 runner module",
+    fromWeb.outcome.outcome === "quoted" && webRow.paramsSha256 === preflightParamsSha256(webRow) && fromWeb.calls === 0,
+    JSON.stringify(fromWeb.outcome).slice(0, 200));
+
+  // SW19, SW19a: the quote is computeCostCeiling's lines, the critic panel one item.
+  const rt = lib.loadRuntime();
+  const full = await preflightOf();
+  const lines = full.outcome.outcome === "quoted" ? full.outcome.items.flatMap((i) => i.lines) : [];
+  const expected = lib.computeCostCeiling(rt, lib.allStagePolicies(rt)).lines;
+  const sum = expected.reduce((t, l) => t + ceilingMicros(l.costUsd!), 0);
+  check("SW19. a full run is quoted by the library's own path, stopped at its consent: the breakdown's lines are exactly "
+    + "computeCostCeiling's lines for the run's requests (never a second formula), the ceiling is their sum each rounded up "
+    + "to the micro-dollar, and no executor, provider factory or output was reached",
+    full.outcome.outcome === "quoted" && full.calls === 0 && JSON.stringify(lines) === JSON.stringify(expected)
+      && full.outcome.ceilingMicros === sum && full.outcome.revisePlan === null && expected.length === 9,
+    `${JSON.stringify(full.outcome).slice(0, 200)}`);
+  const items = full.outcome.outcome === "quoted" ? full.outcome.items : [];
+  const panel = items.filter((i) => i.unit === "critic-panel");
+  const replayFiles = await sourceFiles("fake");
+  const replay = await preflightOf({ request: requestRow({ action: "replay_critic", goal: null, sourceRunId: SOURCE_RUN }), sourceRun: sourceOf(replayFiles) });
+  const replayItems = replay.outcome.outcome === "quoted" ? replay.outcome.items : [];
+  check("SW19a. the critic's four lenses are ONE item — the critic panel, its four lines in lens order — and each stage "
+    + "request its own; a critic replay is quoted as that one item; every item's ceiling is the sum of its own lines'",
+    items.length === 6 && panel.length === 1 && panel[0]!.lines.map((l) => l.label).join()
+      === rt.payloadContract.CRITIC_LENSES.map((lens) => `final-critic:${lens}`).join()
+      && items.filter((i) => i.unit === "request").every((i) => i.lines.length === 1 && i.item === i.lines[0]!.label)
+      && items.every((i) => numericToMicros(i.ceilingUsd) === i.lines.reduce((t, l) => t + ceilingMicros(l.costUsd!), 0))
+      && replayItems.length === 1 && replayItems[0]!.unit === "critic-panel" && replayItems[0]!.lines.length === 4 && replay.calls === 0,
+    `${items.map((i) => `${i.item}:${i.lines.length}`).join()} | ${JSON.stringify(replay.outcome).slice(0, 160)}`);
+
+  // SW20: a model with no price row makes no quote.
+  const unpricedRt = countedRuntime();
+  const resolve0 = unpricedRt.rt.modelPolicy.resolveModelPolicy;
+  const unpriced: PreflightOutcome = await decidePreflight({
+    request: requestRow(), factVersion: version(), sourceRun: null, approvedFacts: approvedRepo(), repoRoot: REPO_ROOT,
+    runtime: { ...unpricedRt.rt, modelPolicy: { ...unpricedRt.rt.modelPolicy,
+      resolveModelPolicy: ((policy: Parameters<typeof resolve0>[0]) => (policy === "critic"
+        ? { ...resolve0(policy), model: "claude-unpriced-test-model" } : resolve0(policy))) as typeof resolve0 } } as ContentRunRuntime,
+  }).catch((error: unknown) => ({ outcome: "refused", refusalClass: "threw", message: String(error), revisePlan: null }));
+  check("SW20. a request whose model has no price row is refused as unpriced_request, naming the model, with no quote: an "
+    + "unknown price cannot be reserved",
+    refusedAs({ outcome: unpriced, calls: unpricedRt.calls() }, "unpriced_request", /claude-unpriced-test-model/),
+    JSON.stringify(unpriced).slice(0, 200));
+
+  // SW21: each free refusal, with its class and its message, and no request.
+  const manyFacts = Buffer.from(JSON.stringify({ facts: Array.from({ length: 70 }, (_, i) => ({
+    id: `synthetic-bulk-${i}`, claim: `SYNTHETIC BULK FIXTURE ${i} - not a real automotive fact.`, subject: "synthetic-bulk",
+    attribute: `synthetic-bulk-${i}`, tags: ["synthetic-bulk"], sourceType: "repository_config", sourceRef: "synthetic://bulk",
+    provenance: "synthetic fixture", reviewedAt: "2026-09-01T00:00:00.000Z" })) }), "utf8");
+  const tampered = new Map(replayFiles);
+  // A saved stage 2 output that cites a fact id the rebuilt pack does not hold: its own validator refuses it.
+  tampered.set("02-automotive-truth.json", Buffer.from(String(tampered.get("02-automotive-truth.json"))
+    .replaceAll("synthetic-worker-fact-0", "synthetic-worker-fact-unknown")));
+  const cases: Array<[string, Awaited<ReturnType<typeof preflightOf>>, string | RegExp, RegExp?]> = [
+    ["no fact version", await preflightOf({ factVersion: null }), "fact_version_missing"],
+    ["the 64-record pack cap", await preflightOf({ factVersion: version(manyFacts), request: requestRow({ scopeTags: ["synthetic-bulk"] }) }),
+      /^[a-z_]+$/, /exceeds 64/],
+    ["an evidence class no record supplies", await preflightOf({ request: requestRow({ scopeTags: ["no-record-carries-this-tag"] }) }),
+      /^[a-z_]+$/, /evidence pack cannot satisfy/],
+    ["the contact records", await preflightOf({ approvedFacts: approvedWithout("phone") }), /^[a-z_]+$/, /phone/i],
+    ["the identity records", await preflightOf({ approvedFacts: approvedWithout("serviceArea") }), /^[a-z_]+$/, /servicearea|service area|identity/i],
+    ["a deleted source", await preflightOf({ request: requestRow({ action: "revise", goal: null, sourceRunId: SOURCE_RUN }),
+      sourceRun: sourceOf(replayFiles, { deleted: true }) }), "source_unavailable"],
+    ["an unfinished source", await preflightOf({ request: requestRow({ action: "replay_critic", goal: null, sourceRunId: SOURCE_RUN }),
+      sourceRun: sourceOf(replayFiles, { state: "running" }) }), "source_not_finished"],
+    ["an unverified import", await preflightOf({ request: requestRow({ action: "replay_critic", goal: null, sourceRunId: SOURCE_RUN }),
+      sourceRun: sourceOf(replayFiles, { kind: "imported", importTier: "archived_unverified" }) }), "source_not_verified"],
+    ["another fact version than the source pinned", await preflightOf({ request: requestRow({ action: "revise", goal: null, sourceRunId: SOURCE_RUN }),
+      sourceRun: sourceOf(replayFiles, { factVersionId: "11111111-1111-4111-8111-111111111111" }) }), "fact_version_mismatch"],
+    ["source verification (a saved output edited)", await preflightOf({ request: requestRow({ action: "replay_critic", goal: null, sourceRunId: SOURCE_RUN }),
+      sourceRun: sourceOf(tampered) }), "stage_execution_error", /not a citable fact in this pack/],
+    ["the source's automotive facts", await preflightOf({ request: requestRow({ action: "resume_packaging", goal: null, sourceRunId: SOURCE_RUN }),
+      factVersion: version(manyFacts), sourceRun: sourceOf(replayFiles) }), /^[a-z_]+$/, /automotive facts file .* does not match the source run/],
+    ["a scope that differs from the source's", await preflightOf({ request: requestRow({ action: "replay_critic", goal: null,
+      sourceRunId: SOURCE_RUN, scopeTags: ["synthetic-worker"] }), sourceRun: sourceOf(replayFiles) }), /^[a-z_]+$/, /differs from the source run's recorded scope/],
+  ];
+  const wrong = cases.filter(([, r, cls, msg]) => !refusedAs(r, cls, msg)).map(([name, r]) => `${name}: ${JSON.stringify(r.outcome).slice(0, 160)} calls ${r.calls}`);
+  check("SW21. each free check the CLI makes refuses before any cost, with its class (failure-class shaped) and its "
+    + "message (1-4,000 characters) and zero executor or provider calls: no fact version, the 64-record pack cap, an evidence "
+    + "class no record supplies, the contact records, the identity records, a deleted, unfinished or unverified source, a fact "
+    + "version other than the source's, source verification of an edited saved output, the source's automotive facts, and a "
+    + "scope other than the source's",
+    wrong.length === 0 && cases.length === 12, wrong.join(" | "));
+
+  // SW23, SW23a: a revise's plan is planRevision's, captured from the library's own call.
+  const reviseRequest = requestRow({ action: "revise", goal: null, sourceRunId: SOURCE_RUN });
+  const revise = await preflightOf({ request: reviseRequest, sourceRun: sourceOf(replayFiles) });
+  const savedCritic = JSON.parse(String(replayFiles.get("06-final-critic.json"))).output;
+  const expectedPlan = JSON.parse(JSON.stringify(rt.revision.planRevision(savedCritic)));
+  const reviseLines = revise.outcome.outcome === "quoted" ? revise.outcome.items.flatMap((i) => i.lines) : [];
+  check("SW23. a revise is quoted with planRevision's plan, as the library's own call returned it, stored beside its quote; "
+    + "its lines are computeCostCeiling's for the round the plan starts",
+    revise.outcome.outcome === "quoted" && JSON.stringify(revise.outcome.revisePlan) === JSON.stringify(expectedPlan)
+      && expectedPlan.kind === "revision" && revise.calls === 0
+      && JSON.stringify(reviseLines) === JSON.stringify(lib.computeCostCeiling(rt, lib.revisionPolicies(rt, expectedPlan.startStage)).lines),
+    JSON.stringify(revise.outcome).slice(0, 240));
+  const passFiles = await sourceFiles("live", (t) => {
+    t.lenses.set("production-coherence", JSON.stringify({ verdict: "provisional_pass",
+      summary: "Synthetic pass: no production concern.", findings: [] }));
+  });
+  const noRevision = await preflightOf({ request: reviseRequest, sourceRun: sourceOf(passFiles) });
+  const passPlan = JSON.parse(JSON.stringify(rt.revision.planRevision(JSON.parse(String(passFiles.get("06-final-critic.json"))).output)));
+  check("SW23a. a revise whose source has no revisable blocking finding is refused as no_revisable_blocking_finding, with "
+    + "planRevision's plan (no quote, no request)",
+    refusedAs(noRevision, "no_revisable_blocking_finding") && passPlan.kind === "no_revision"
+      && JSON.stringify(noRevision.outcome.revisePlan) === JSON.stringify(passPlan),
+    JSON.stringify(noRevision.outcome).slice(0, 240));
+
+  // SW22: the outcome and its quote in ONE transaction.
+  const binding = { commit: COMMIT, approvedFactsSha256: "a".repeat(64), priceTableSha256: "b".repeat(64) };
+  const ok = (text: string) => ({ rows: /INSERT INTO studio_quotes/.test(text) ? [{ id: "quote-1" }] : [], rowCount: 1 });
+  const quoted = txRecorder(ok);
+  await writePreflightOutcome(quoted.session, binding, requestRow(), full.outcome);
+  const refusedTx = txRecorder(ok);
+  await writePreflightOutcome(refusedTx.session, binding, requestRow(), cases[0]![1].outcome);
+  const conflict = txRecorder((text) => ({ rows: /INSERT INTO studio_quotes/.test(text) ? [{ id: "quote-2" }] : [],
+    rowCount: /UPDATE studio_preflight_requests/.test(text) ? 0 : 1 }));
+  const conflicted = await writePreflightOutcome(conflict.session, binding, requestRow(), full.outcome).then(() => "written", () => "refused");
+  const order = (log: string[]) => log.map((t) => (t === "BEGIN" || t === "COMMIT" || t === "ROLLBACK" ? t
+    : /^INSERT INTO studio_quotes/.test(t) ? "quote" : /SET outcome = 'quoted'/.test(t) ? "quoted"
+      : /SET outcome = 'refused'/.test(t) ? "refused" : /UPDATE studio_jobs SET state = 'finished'/.test(t) ? "job"
+        : /INSERT INTO studio_audit_log/.test(t) ? "audit" : t)).join(",");
+  check("SW22. the outcome is written in ONE transaction: the quote, the request's quoted outcome naming it, the job's end "
+    + "and the audit row commit together (BEGIN … COMMIT, once); a refusal likewise; and when the request already has an "
+    + "outcome the transaction is rolled back, so neither half is written alone",
+    order(quoted.log) === "BEGIN,quote,quoted,job,audit,COMMIT" && order(refusedTx.log) === "BEGIN,refused,job,audit,COMMIT"
+      && conflicted === "refused" && order(conflict.log) === "BEGIN,quote,quoted,ROLLBACK",
+    `${order(quoted.log)} | ${order(refusedTx.log)} | ${order(conflict.log)}`);
+}
+
+/** SW24: a confirmed live run on the production wiring (no paid runner) is refused before any work, its reservation released. */
+async function productionWiringChecks(): Promise<void> {
+  const statements: Array<{ text: string; values: unknown[] }> = [];
+  const client = {
+    query: async (text: string, values: unknown[] = []) => {
+      statements.push({ text, values });
+      if (/SELECT kind, runner, goal/.test(text)) {
+        return { rows: [{ kind: "full", runner: "live", goal: "g", platforms: ALL_PLATFORMS, scope_tags: null, fact_version_id: FACT_VERSION,
+          source_run_id: null, quote_id: "q1" }], rowCount: 1 };
+      }
+      if (/FROM studio_quotes WHERE id/.test(text)) {
+        return { rows: [{ worker_commit: COMMIT, approved_facts_sha256: "a".repeat(64), fact_version_id: FACT_VERSION,
+          price_table_sha256: "b".repeat(64) }], rowCount: 1 };
+      }
+      if (/SELECT runner, kind, state, reserved_usd/.test(text)) return { rows: [{ runner: "live", kind: "full", state: "running", reserved: "21.650000" }], rowCount: 1 };
+      if (/SELECT entry FROM studio_spend_ledger/.test(text)) return { rows: [{ entry: "reserve" }], rowCount: 1 };
+      if (/COALESCE\(SUM\(charged_usd\)/.test(text)) return { rows: [{ charged: "0" }], rowCount: 1 };
+      return { rows: [], rowCount: 1 };
+    },
+  };
+  const session = { tx: async (fn: (c: typeof client) => Promise<unknown>) => fn(client), run: async (fn: (c: typeof client) => Promise<unknown>) => fn(client),
+    query: client.query } as unknown as WorkerSession;
+  const counted = countedRuntime();
+  const logged: string[] = [];
+  const state = await executeJob({
+    session, commit: COMMIT, caps: CAPS, runtime: counted.rt, repoRoot: REPO_ROOT, approvedFacts: { bytes: Buffer.from("{}"), sha256: "a".repeat(64) },
+    priceTableSha256: "b".repeat(64), log: (event, fields) => { logged.push(`${event} ${JSON.stringify(fields)}`); },
+  }, { jobId: "j1", kind: "paid", runId: "r1" }).catch(() => "threw");
+  const release = statements.find((s) => /INSERT INTO studio_spend_ledger/.test(s.text));
+  const runEnd = statements.find((s) => /UPDATE studio_runs SET state = \$2/.test(s.text));
+  check("SW24. on the production wiring — no paid stage runner, as start:studio-worker gives none — a confirmed live run "
+    + "is refused before any work as live_runs_not_enabled: no fact is read, no executor or provider factory is called, and "
+    + "its whole reservation is released",
+    state === "refused" && counted.calls() === 0 && release?.values[0] === "release" && release?.values[2] === "21.650000"
+      && runEnd?.values[1] === "refused" && runEnd?.values[2] === "live_runs_not_enabled"
+      && !statements.some((s) => /studio_fact_versions|studio_run_requests \(/.test(s.text)),
+    `${state} ${counted.calls()} ${JSON.stringify(release?.values)} ${JSON.stringify(runEnd?.values?.slice(0, 3))}`);
+}
+
 async function main(): Promise<void> {
   await startupChecks();
   beforeWorkChecks();
@@ -707,6 +995,8 @@ async function main(): Promise<void> {
   await gateChecks();
   await fakeOnlyChecks();
   await findingsChecks();
+  await preflightChecks();
+  await productionWiringChecks();
   console.log(failures === 0 ? `\n[studio-worker] ALL PASS (${total} checks)` : `\n[studio-worker] ${failures} FAILURE(S) of ${total}`);
   process.exit(failures === 0 ? 0 : 1);
 }

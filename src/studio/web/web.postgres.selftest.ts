@@ -23,9 +23,12 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
 
-import { runStudioMigrations, STUDIO_DATABASE_NAME, STUDIO_EXPECTED_MIGRATIONS, STUDIO_SCHEMA_VERSION } from "../db/runner.js";
+import {
+  preflightParamsSha256, runStudioMigrations, STUDIO_DATABASE_NAME, STUDIO_EXPECTED_MIGRATIONS, STUDIO_SCHEMA_VERSION,
+} from "../db/runner.js";
 import { createStudioWebApp, type StudioWebApp, type WebLog } from "./app.js";
 import { GOOGLE_OIDC } from "./oidc.js";
+import { localDay, preflightRequest } from "./actions.js";
 import { csrfTokenFor, LOGIN_COOKIE, SESSION_COOKIE, sessionIdHash } from "./sessions.js";
 import { STUDIO_ALLOWED_HD } from "./startup.js";
 import { PgWebStore } from "./store.js";
@@ -131,7 +134,8 @@ interface Web { app: StudioWebApp; base: string; close(): Promise<void> }
 async function web(pool: pg.Pool, issuer: FakeIssuer, bootstrapOwnerEmail: string | null = null, store?: PgWebStore): Promise<Web> {
   const app = createStudioWebApp({
     store: store ?? new PgWebStore(pool, pool), log, oidc: issuer.provider, commit: COMMIT,
-    config: { publicOrigin: ORIGIN, allowedHd: STUDIO_ALLOWED_HD, clientId: CLIENT_ID, clientSecret: CLIENT_SECRET, bootstrapOwnerEmail },
+    config: { publicOrigin: ORIGIN, allowedHd: STUDIO_ALLOWED_HD, clientId: CLIENT_ID, clientSecret: CLIENT_SECRET, bootstrapOwnerEmail,
+      ceilings: { dailyMicros: 75_000_000, monthlyMicros: 300_000_000 } },
   });
   const server: Server = createServer((req, res) => { void app.handle(req, res); });
   await new Promise<void>((settle) => server.listen(0, "127.0.0.1", settle));
@@ -605,6 +609,274 @@ async function suite(pool: pg.Pool, url: string, issuer: FakeIssuer): Promise<vo
   check("SAP11. nothing the app logged during this suite holds an email address, the client secret or an issued secret",
     logLines.length > 5 && !logLines.some((l) => /@/.test(l) || l.includes(CLIENT_SECRET))
       && ![...issuer.secrets].some((s) => s.length >= 8 && logLines.some((l) => l.includes(s))));
+
+  // (S6.2's checks run after SAP10 and SAP11, which hold every audit row and log line the S4/S5 web wrote; the
+  // settings changes below write the schema's own settings.update audit rows.)
+  // SAP16-SAP25 (Content Studio S6.2): the actions over the real store and schema. The worker's answers are written
+  // here as the worker writes them (a quote and the request's outcome); the worker suite runs the worker itself.
+  {
+    const CEILINGS = { dailyMicros: 75_000_000, monthlyMicros: 300_000_000 };
+    /** Wide deployment ceilings, for the checks after the caps' own (the day's spend has grown by then). */
+    const WIDE = { dailyMicros: 1_000_000_000, monthlyMicros: 10_000_000_000 };
+    const sleep = (ms: number) => new Promise<void>((settle) => setTimeout(settle, ms));
+    const COMMIT_S62 = "c".repeat(40);
+    const APPROVED = "a".repeat(64);
+    const PRICES = "b".repeat(64);
+    const addUser = async (role: string, label: string) => {
+      const sub = `sub-${label}-${randomBytes(4).toString("hex")}`;
+      const email = syntheticEmail(label);
+      const id = (await pool.query("INSERT INTO studio_users (email, role, created_by, google_sub, display_name) VALUES ($1, $2, $3, $4, $5) RETURNING id::text AS id",
+        [email, role, owner.id, sub, `Synthetic ${label}`])).rows[0].id as string;
+      return { id, email, sub };
+    };
+    const runnerA = await addUser("runner", "s62-runner-a");
+    const runnerB = await addUser("runner", "s62-runner-b");
+    const facts = Buffer.from(JSON.stringify({ facts: [], note: `synthetic ${randomBytes(4).toString("hex")}` }), "utf8");
+    const factSha = createHash("sha256").update(facts).digest("hex");
+    await pool.query("INSERT INTO studio_fact_uploads (content, sha256, byte_length, uploaded_by) VALUES ($1, $2, $3, $4)",
+      [facts, factSha, facts.length, owner.id]);
+    const factVersion = (await pool.query(
+      `INSERT INTO studio_fact_versions (sha256, content, byte_length, record_count, tag_counts, uploaded_by)
+       VALUES ($1, $2, $3, 0, '{"synthetic-tag":2}', $4) RETURNING id::text AS id`, [factSha, facts, facts.length, owner.id])).rows[0].id as string;
+    await pool.query("DELETE FROM studio_fact_uploads");
+    await pool.query("UPDATE studio_settings SET active_fact_version_id = $1, updated_by = $2", [factVersion, owner.id]);
+    const beat = () => pool.query(
+      `INSERT INTO studio_worker_heartbeat (singleton, commit, schema_version, approved_facts_sha256, approved_facts_tag_counts, price_table_sha256, beat_at)
+       VALUES (true, $1, $2, $3, '{"synthetic-approved":3}', $4, now())
+       ON CONFLICT (singleton) DO UPDATE SET commit = EXCLUDED.commit, approved_facts_sha256 = EXCLUDED.approved_facts_sha256,
+         price_table_sha256 = EXCLUDED.price_table_sha256, beat_at = now()`, [COMMIT_S62, STUDIO_SCHEMA_VERSION, APPROVED, PRICES]);
+    await beat();
+    const store = new PgWebStore(pool, pool);
+    const w = await web(pool, issuer);
+    const signedIn = async (who: { email: string; sub: string }) => {
+      issuer.identity = { email: who.email, sub: who.sub };
+      const jar = new Jar();
+      await get(w.base, await startSignIn(w, jar), jar);
+      return jar;
+    };
+    const post = (path: string, jar: Jar, fields: Array<[string, string]> = []) => get(w.base, path, jar, {
+      method: "POST", headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams([...fields, ["csrf", csrfTokenFor(jar.values.get(SESSION_COOKIE)!)]]).toString(),
+    });
+    const ownerSub = String((await pool.query("SELECT google_sub FROM studio_users WHERE id = $1", [owner.id])).rows[0].google_sub);
+    const ownerJar = await signedIn({ email: owner.email, sub: ownerSub });
+    const jarA = await signedIn(runnerA);
+    const jarB = await signedIn(runnerB);
+    const ask = async (jar: Jar, goal = "SYNTHETIC S6.2 goal") => {
+      const reply = await post("/new/price", jar, [["goal", goal], ["platform", "instagram"], ["platform", "facebook"]]);
+      return /^\/preflights\/([0-9a-f-]{36})$/.exec(reply.location ?? "")?.[1] ?? "";
+    };
+    /** The worker's answer, as `writePreflightOutcome` writes it. */
+    const answer = async (requestId: string, ceiling = "21.650000", edit: { commit?: string; agedMinutes?: number } = {}) => {
+      const c = await pool.connect();
+      try {
+        await c.query("BEGIN");
+        const quote = (await c.query(
+          `INSERT INTO studio_quotes (user_id, action, params_sha256, worker_commit, approved_facts_sha256, fact_version_id,
+                                      price_table_sha256, ceiling_usd, breakdown, created_at, expires_at)
+           SELECT user_id, action, params_sha256, $2, $3, fact_version_id, $4, $5,
+                  '[{"item":"strategy-concept","unit":"request","ceilingUsd":"1.000000","lines":[]}]',
+                  now() - make_interval(mins => $6), now() - make_interval(mins => $6) + interval '10 minutes'
+             FROM studio_preflight_requests WHERE id = $1 RETURNING id::text AS id`,
+          [requestId, edit.commit ?? COMMIT_S62, APPROVED, PRICES, ceiling, edit.agedMinutes ?? 0])).rows[0].id as string;
+        await c.query("UPDATE studio_preflight_requests SET outcome = 'quoted', quote_id = $2 WHERE id = $1", [requestId, quote]);
+        await c.query("COMMIT");
+        return quote;
+      } catch (error) {
+        await c.query("ROLLBACK");
+        throw error;
+      } finally {
+        c.release();
+      }
+    };
+    const tally = async () => (await pool.query(
+      `SELECT (SELECT count(*) FROM studio_runs WHERE runner = 'live')::int AS runs, (SELECT count(*) FROM studio_jobs WHERE kind = 'paid')::int AS jobs,
+              (SELECT count(*) FROM studio_spend_ledger)::int AS ledger,
+              (SELECT count(*) FROM studio_quotes WHERE consumed_at IS NOT NULL)::int AS consumed`)).rows[0];
+
+    // SAP16: the price request, atomically, and the schema's own refusal.
+    const requestId = await ask(jarA);
+    const row = (await pool.query(
+      `SELECT r.*, j.kind AS job_kind, j.state AS job_state FROM studio_preflight_requests r JOIN studio_jobs j ON j.id = r.job_id WHERE r.id = $1`,
+      [requestId])).rows[0];
+    const jobsBefore = (await pool.query("SELECT count(*)::int AS n FROM studio_jobs")).rows[0].n;
+    const direct = (userId: string) => store.createPreflightRequest(preflightRequest({ userId, action: "full", goal: "x",
+      platforms: ["instagram"], scopeTags: null, sourceRunId: null, factVersionId: factVersion })).then(() => "written", (e) => String(e.code));
+    const viewerRefused = await direct(viewer.id);
+    const disabledUser = await addUser("runner", "s62-disabled");
+    await pool.query("UPDATE studio_users SET status = 'disabled' WHERE id = $1", [disabledUser.id]);
+    const disabledRefused = await direct(disabledUser.id);
+    const jobsAfter = (await pool.query("SELECT count(*)::int AS n FROM studio_jobs")).rows[0].n;
+    check("SAP16. over PostgreSQL a runner's price request writes its preflight job and its request in ONE transaction, with "
+      + "params_sha256 by the canonical function; a viewer's or a disabled user's, written straight through the store, is "
+      + "refused by migration 0003's trigger and leaves no job behind",
+      row?.job_kind === "preflight" && row.job_state === "queued" && row.user_id === runnerA.id && row.action === "full"
+        && row.params_sha256 === preflightParamsSha256({ action: "full", goal: row.goal, platforms: row.platforms, scopeTags: row.scope_tags,
+          sourceRunId: null, factVersionId: factVersion })
+        && viewerRefused === "23514" && disabledRefused === "23514" && jobsAfter === jobsBefore,
+      `${viewerRefused} ${disabledRefused} ${jobsBefore}→${jobsAfter}`);
+
+    // SAP17: the confirmation over the real schema.
+    const quoteA = await answer(requestId);
+    const confirmed = await post(`/quotes/${quoteA}/confirm`, jarA);
+    const runId = /^\/runs\/([0-9a-f-]{36})$/.exec(confirmed.location ?? "")?.[1] ?? "";
+    const made = (await pool.query(
+      `SELECT r.state, r.runner, r.kind, r.reserved_usd::text AS reserved, r.requested_by::text AS by, r.automotive_facts_sha256 AS fact_sha,
+              q.consumed_at IS NOT NULL AS consumed, l.amount_usd::text AS amount, l.day_local::text AS day,
+              studio_local_day(now())::text AS today, j.kind AS job
+         FROM studio_runs r JOIN studio_quotes q ON q.id = r.quote_id JOIN studio_spend_ledger l ON l.run_id = r.id AND l.entry = 'reserve'
+         JOIN studio_jobs j ON j.run_id = r.id WHERE r.id = $1`, [runId])).rows[0];
+    check("SAP17. over PostgreSQL a confirmation creates the queued live run, consumes its quote, books one reserve entry equal "
+      + "to the ceiling to today's America/New_York day (the web's day equals studio_local_day(now())), and creates the paid "
+      + "job — the schema's deferred confirmation check accepting the one transaction",
+      confirmed.status === 303 && made?.state === "queued" && made.runner === "live" && made.kind === "full" && made.reserved === "21.650000"
+        && made.by === runnerA.id && made.consumed === true && made.amount === "21.650000" && made.day === made.today
+        && made.day === localDay(Date.now()) && made.job === "paid" && made.fact_sha === factSha,
+      `${confirmed.status} ${JSON.stringify(made)}`);
+
+    // SAP18: a double confirmation.
+    const before18 = await tally();
+    const twice = await Promise.all([post(`/quotes/${quoteA}/confirm`, jarA), post(`/quotes/${quoteA}/confirm`, jarA)]);
+    const doubled = await Promise.all([ask(jarA).then(answer), Promise.resolve()]).then(async ([q]) =>
+      Promise.all([store.confirmQuote({ quoteId: q, userId: runnerA.id, ceilings: CEILINGS }), store.confirmQuote({ quoteId: q, userId: runnerA.id, ceilings: CEILINGS })]));
+    const after18 = await tally();
+    check("SAP18. over PostgreSQL a double confirmation creates exactly one run, one job and one reserve entry: a used quote "
+      + "is refused (quote_used), and two confirmations of one fresh quote at once confirm it once",
+      twice.every((r) => r.status === 409 && r.body.includes("<code>quote_used</code>"))
+        && doubled.filter((r) => r.ok).length === 1 && doubled.some((r) => !r.ok && r.refusal === "quote_used")
+        && after18.runs === before18.runs + 1 && after18.jobs === before18.jobs + 1 && after18.ledger === before18.ledger + 1,
+      `${JSON.stringify(before18)} → ${JSON.stringify(after18)}`);
+
+    // SAP19: refusals over the real store, each writing nothing.
+    const refusedWith = async (quoteId: string, userId: string, ceilings = CEILINGS) => {
+      const before = await tally();
+      const result = await store.confirmQuote({ quoteId, userId, ceilings });
+      const after = await tally();
+      return result.ok ? "confirmed" : JSON.stringify(before) === JSON.stringify(after) ? result.refusal : `${result.refusal}+wrote`;
+    };
+    const cases19 = [
+      await refusedWith(crypto.randomUUID(), runnerA.id),
+      await refusedWith(await answer(await ask(jarA)), runnerB.id),
+      await refusedWith(await answer(await ask(jarA), "21.650000", { agedMinutes: 11 }), runnerA.id),
+      await refusedWith(await answer(await ask(jarA), "21.650000", { commit: "d".repeat(40) }), runnerA.id),
+      await (async () => { const q = await answer(await ask(jarA)); await pool.query("UPDATE studio_worker_heartbeat SET beat_at = now() - interval '3 minutes'");
+        const r = await refusedWith(q, runnerA.id); await beat(); return r; })(),
+      await refusedWith(await answer(await ask(jarA)), runnerA.id, { dailyMicros: 0, monthlyMicros: 300_000_000 }),
+      await refusedWith(await answer(await ask(jarA), "60.000000"), runnerA.id),
+    ];
+    check("SAP19. over PostgreSQL, with nothing written: no quote, another user's quote, an expired one, one whose worker "
+      + "commit differs from the heartbeat's, a stale heartbeat, a zero deployment ceiling, and a ceiling over the owner's "
+      + "$50 daily cap are each refused",
+      cases19.join() === "no_quote,quote_not_yours,quote_expired,quote_stale,worker_offline,cap_exceeded_daily,cap_exceeded_daily",
+      cases19.join());
+
+    // SAP20: two confirmations against the same headroom, over PostgreSQL.
+    await pool.query("UPDATE studio_settings SET daily_cap_usd = $1, updated_by = $2", [
+      (Number((await pool.query("SELECT studio_spend_for_day(studio_local_day(now()))::text AS s")).rows[0].s) + 30).toFixed(6), owner.id]);
+    const [q1, q2] = [await answer(await ask(jarA)), await answer(await ask(jarB))];
+    let release!: () => void;
+    const held = new Promise<void>((settle) => { release = settle; });
+    const first = store.confirmQuote({ quoteId: q1, userId: runnerA.id, ceilings: CEILINGS }, { beforeCommit: () => held });
+    await sleep(200);
+    const second = store.confirmQuote({ quoteId: q2, userId: runnerB.id, ceilings: CEILINGS });
+    const secondEarly = await Promise.race([second.then(() => "settled"), sleep(700).then(() => "waiting")]);
+    release();
+    const [r1, r2] = await Promise.all([first, second]);
+    check("SAP20. over PostgreSQL two confirmations against the same headroom (each $21.65, $30 left today): the second waits "
+      + "on the settings row's FOR UPDATE while the first is open, then reads the first's reservation and is refused by the "
+      + "cap; exactly one is confirmed",
+      secondEarly === "waiting" && r1.ok && !r2.ok && r2.refusal === "cap_exceeded_daily",
+      `${secondEarly} ${JSON.stringify(r1)} ${JSON.stringify(r2)}`);
+    await pool.query("UPDATE studio_settings SET daily_cap_usd = 1000, monthly_cap_usd = 10000, updated_by = $1", [owner.id]);
+
+    // SAP21: cancellation.
+    const toCancel = r1.ok ? r1.runId : "";
+    const runnerBCancels = await post(`/runs/${toCancel}/cancel`, jarB);
+    const ownerCancels = await post(`/runs/${toCancel}/cancel`, ownerJar);
+    const cancelled = (await pool.query(
+      `SELECT r.state, r.failure_class, j.state AS job, (SELECT string_agg(entry || ':' || amount_usd::text || ':' || day_local::text, ',' ORDER BY entry DESC)
+         FROM studio_spend_ledger WHERE run_id = r.id) AS ledger
+         FROM studio_runs r JOIN studio_jobs j ON j.run_id = r.id WHERE r.id = $1`, [toCancel])).rows[0];
+    const today = localDay(Date.now());
+    check("SAP21. over PostgreSQL a runner cannot cancel another user's run (403, nothing changes), and the owner's "
+      + "cancellation of a queued run cancels its job before any claim and releases its whole reservation, booked to the "
+      + "reserve's day",
+      runnerBCancels.status === 403 && ownerCancels.status === 303 && cancelled?.state === "cancelled"
+        && cancelled.failure_class === "job_cancelled" && cancelled.job === "cancelled"
+        && cancelled.ledger === `reserve:21.650000:${today},release:21.650000:${today}`,
+      `${runnerBCancels.status} ${ownerCancels.status} ${JSON.stringify(cancelled)}`);
+
+    // SAP22: fake runs.
+    const fakeOwner = await post("/new/fake", ownerJar, [["goal", "SYNTHETIC fake wiring goal"], ["platform", "instagram"]]);
+    const fakeId = /^\/runs\/([0-9a-f-]{36})$/.exec(fakeOwner.location ?? "")?.[1] ?? "";
+    const fakeRow = (await pool.query(
+      "SELECT r.runner, r.quote_id, r.reserved_usd, j.kind FROM studio_runs r JOIN studio_jobs j ON j.run_id = r.id WHERE r.id = $1", [fakeId])).rows[0];
+    const fakeRunner = await post("/new/fake", jarA, [["goal", "SYNTHETIC fake wiring goal"], ["platform", "instagram"]]);
+    const fakeDirect = await store.createFakeRun({ ownerId: runnerA.id, goal: "x", platforms: ["instagram"], scopeTags: null,
+      factVersionId: null }).then(() => "written", (e) => String(e.code));
+    check("SAP22. over PostgreSQL a fake run is the owner's alone: the owner's has a fake job, no quote and no reservation; "
+      + "a runner's is refused by the route (403) and, written straight through the store, by the runs trigger",
+      fakeOwner.status === 303 && fakeRow?.runner === "fake" && fakeRow.quote_id === null && fakeRow.reserved_usd === null
+        && fakeRow.kind === "fake" && fakeRunner.status === 403 && fakeDirect === "23514",
+      `${fakeOwner.status} ${fakeRunner.status} ${fakeDirect}`);
+
+    // SAP23: the overrun lock and its acknowledgement; the spend panel.
+    // An overrun on SAP17's live run (the worker's own path to one is proven in the worker suite).
+    const overrunRun = runId;
+    await pool.query("INSERT INTO studio_spend_ledger (entry, run_id, amount_usd) VALUES ('overrun', $1, 0.5)", [overrunRun]);
+    const lockedQuote = await answer(await ask(jarA));
+    const locked = await refusedWith(lockedQuote, runnerA.id);
+    const panel = await get(w.base, "/spend", ownerJar);
+    const runnerAck = await post(`/spend/overruns/${overrunRun}/acknowledge`, jarA);
+    const ownerAck = await post(`/spend/overruns/${overrunRun}/acknowledge`, ownerJar);
+    const unlocked = await store.confirmQuote({ quoteId: lockedQuote, userId: runnerA.id, ceilings: WIDE });
+    check("SAP23. over PostgreSQL an unacknowledged overrun locks confirmations (confirmations_locked) and shows on the spend "
+      + "panel with the owner's acknowledge button; a runner cannot acknowledge (403); the owner's acknowledgement writes "
+      + "S3's audit row and the next confirmation succeeds",
+      locked === "confirmations_locked" && panel.status === 200 && panel.body.includes(`/spend/overruns/${overrunRun}/acknowledge`)
+        && runnerAck.status === 403 && ownerAck.status === 303 && unlocked.ok
+        && (await pool.query("SELECT count(*)::int AS n FROM studio_audit_log WHERE action = 'spend.overrun_acknowledged' AND target_id = $1",
+          [overrunRun])).rows[0].n === 1,
+      `${locked} ${panel.status} ${runnerAck.status} ${ownerAck.status} ${JSON.stringify(unlocked)}`);
+
+    // SAP24: the purge of preflight requests.
+    const refusedOld = await ask(jarA);
+    await pool.query("UPDATE studio_preflight_requests SET outcome = 'refused', refusal_class = 'params_mismatch', refusal_message = 'm' WHERE id = $1", [refusedOld]);
+    const unusedOld = await ask(jarA);
+    await answer(unusedOld);
+    const consumedOld = await ask(jarA);
+    const consumedQuote = await answer(consumedOld);
+    const consumedRun = await store.confirmQuote({ quoteId: consumedQuote, userId: runnerA.id, ceilings: WIDE });
+    const recent = await ask(jarA);
+    const age = await pool.connect();
+    try {
+      await age.query("SET session_replication_role = replica");
+      await age.query("UPDATE studio_preflight_requests SET created_at = now() - interval '40 days' WHERE id = ANY($1::uuid[])",
+        [[refusedOld, unusedOld, consumedOld]]);
+      await age.query("SET session_replication_role = origin");
+    } finally {
+      age.release();
+    }
+    const purged = await w.app.purge();
+    const left = (await pool.query("SELECT id::text AS id FROM studio_preflight_requests WHERE id = ANY($1::uuid[])",
+      [[refusedOld, unusedOld, consumedOld, recent]])).rows.map((r) => r.id).sort();
+    check("SAP24. over PostgreSQL the purge deletes the preflight requests older than 30 days on which no consumed quote "
+      + "depends — a refused one and one quoted but never confirmed — and keeps one whose quote was consumed (0003's trigger "
+      + "would refuse it) and every request inside 30 days",
+      consumedRun.ok && purged.preflightRequests === 2 && left.join() === [consumedOld, recent].sort().join(),
+      `${JSON.stringify(purged)} ${left.join()} ${JSON.stringify(consumedRun)}`);
+
+    // SAP25: the spend panel and the America/New_York day.
+    const spend = await get(w.base, "/spend", jarA);
+    const dbDay = (await pool.query("SELECT studio_local_day(now())::text AS d")).rows[0].d;
+    check("SAP25. over PostgreSQL the spend panel is readable, shows today's America/New_York day as the schema books it "
+      + "(the web's localDay equals studio_local_day(now())) and lists each user's spend and every overrun as acknowledged",
+      spend.status === 200 && dbDay === localDay(Date.now()) && spend.body.includes(`Today (${dbDay})`)
+        && spend.body.includes("Synthetic s62-runner-a") && spend.body.includes("acknowledged"),
+      `${spend.status} ${dbDay}`);
+    await w.close();
+  }
+
   void STUDIO_DOMAIN;
 }
 

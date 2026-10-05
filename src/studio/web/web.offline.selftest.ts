@@ -22,7 +22,14 @@ import { createServer as createNetServer } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { FORBIDDEN_PREFIXES, FORBIDDEN_VARIABLES } from "../db/runner.js";
+import {
+  FORBIDDEN_PREFIXES, FORBIDDEN_VARIABLES, microsToNumeric, numericToMicros, parseCapMicros, preflightParamsSha256,
+} from "../db/runner.js";
+import {
+  codePoints, decideConfirm, GOAL_MAX_CHARS, localDay, monthOf, offeredTags, PACK_RECORD_CAP, PLATFORMS, preflightPurgeable,
+  preflightRequest, scopeUpperBound, type ConfirmSnapshot,
+} from "./actions.js";
+import { PREFLIGHT_POLL_SECONDS } from "./actionViews.js";
 import {
   CONTENT_SECURITY_POLICY, createStudioWebApp, SECURITY_HEADERS, STUDIO_ROUTE_TABLE, type Route, type StudioWebApp, type WebLog,
 } from "./app.js";
@@ -109,8 +116,10 @@ interface World {
   close(): Promise<void>;
 }
 
-const CONFIG = (bootstrapOwnerEmail: string | null = null): WebConfig => ({
-  publicOrigin: ORIGIN, allowedHd: STUDIO_ALLOWED_HD, clientId: CLIENT_ID, clientSecret: CLIENT_SECRET, bootstrapOwnerEmail,
+/** The deployment ceilings O4 sets (design §3.2): $75 a day, $300 a month. */
+const CEILINGS = { dailyMicros: 75_000_000, monthlyMicros: 300_000_000 };
+const CONFIG = (bootstrapOwnerEmail: string | null = null, ceilings = CEILINGS): WebConfig => ({
+  publicOrigin: ORIGIN, allowedHd: STUDIO_ALLOWED_HD, clientId: CLIENT_ID, clientSecret: CLIENT_SECRET, bootstrapOwnerEmail, ceilings,
 });
 
 async function world(options: {
@@ -234,7 +243,7 @@ const URL_OK = "postgresql://web:placeholder@127.0.0.1:5432/gcd_studio";
 const env = (extra: Partial<WebEnvironment> = {}): WebEnvironment => ({
   names: ["PATH", "NODE_ENV", "STUDIO_DATABASE_URL", "STUDIO_PUBLIC_ORIGIN"], studioDatabaseUrl: URL_OK, publicOrigin: ORIGIN,
   allowedHd: STUDIO_ALLOWED_HD, googleClientId: CLIENT_ID, googleClientSecret: CLIENT_SECRET, bootstrapOwnerEmail: undefined,
-  port: "10000", commit: COMMIT, ...extra,
+  port: "10000", commit: COMMIT, maxDailyUsd: "75", maxMonthlyUsd: "300", ...extra,
 });
 
 {
@@ -376,14 +385,15 @@ const env = (extra: Partial<WebEnvironment> = {}): WebEnvironment => ({
   const mainRefs = moduleReferences(readFileSync(resolve(REPO_ROOT, "dist/studio/web/main.js"), "utf8"));
   const appCall = /createStudioWebApp\(\{([^}]*)\}\)/.exec(serverSource)?.[1] ?? "";
   check("SA8. the entry point reads only STUDIO_DATABASE_URL, STUDIO_PUBLIC_ORIGIN, STUDIO_ALLOWED_HD, the client id and "
-    + "secret, STUDIO_BOOTSTRAP_OWNER_EMAIL, PORT and RENDER_GIT_COMMIT, in the dot form, plus the names for the scan; it "
+    + "secret, STUDIO_BOOTSTRAP_OWNER_EMAIL, PORT, RENDER_GIT_COMMIT and (S6.2) the two deployment ceilings "
+    + "STUDIO_MAX_DAILY_USD and STUDIO_MAX_MONTHLY_USD, in the dot form, plus the names for the scan; it "
     + "decides before the server module loads (its static imports reach only startup.js and the S2 runner); and the "
     + "only app it builds is given store, config, commit and log — never an issuer, routes or a clock",
     [...mainSource.matchAll(/process\.env\.([A-Z_]+)/g)].map((m) => m[1]).sort().join() === ["PORT", "RENDER_GIT_COMMIT",
       "STUDIO_ALLOWED_HD", "STUDIO_BOOTSTRAP_OWNER_EMAIL", "STUDIO_DATABASE_URL", "STUDIO_GOOGLE_CLIENT_ID",
-      "STUDIO_GOOGLE_CLIENT_SECRET", "STUDIO_PUBLIC_ORIGIN"].join()
+      "STUDIO_GOOGLE_CLIENT_SECRET", "STUDIO_MAX_DAILY_USD", "STUDIO_MAX_MONTHLY_USD", "STUDIO_PUBLIC_ORIGIN"].join()
       && (mainSource.match(/process\.env\b(?!\.)/g) ?? []).length === 1 && mainSource.includes("names: Object.keys(process.env),")
-      && !/process\.env\[|STUDIO_MAX_|ANTHROPIC/.test(mainSource)
+      && !/process\.env\[|ANTHROPIC/.test(mainSource)
       && mainStatic.join() === ["dist/studio/db/runner.js", "dist/studio/web/main.js", "dist/studio/web/startup.js"].join()
       && mainRefs.some((r) => r.kind === "dynamic" && r.specifier === "./server.js")
       && mainSource.indexOf("decideWebStartup(") < mainSource.indexOf('await import("./server.js")')
@@ -886,7 +896,11 @@ const undeclaredRole: Route = { method: "GET", path: "/test/undeclared-role", mi
         "GET /auth/login public", "GET /auth/callback public", "POST /auth/logout viewer",
         // Content Studio S5's read-only routes: every one a GET, every one viewer.
         "GET /runs viewer", "GET /runs/:id viewer", "GET /runs/:id/files/:name viewer", "GET /static/studio.css viewer",
-        "GET /static/studio.js viewer"].join()
+        "GET /static/studio.js viewer",
+        // Content Studio S6.2's actions: every POST runner or owner; the screens runner, and the spend panel viewer.
+        "GET /new runner", "POST /new/price runner", "POST /new/fake owner", "POST /runs/:id/price runner",
+        "POST /runs/:id/cancel runner", "GET /preflights/:id runner", "POST /quotes/:id/confirm runner", "GET /spend viewer",
+        "POST /spend/overruns/:id/acknowledge owner"].join()
       && w.app.routes.length === STUDIO_ROUTE_TABLE.length + 2,
     undeclared.map((r) => r.status).join());
   const viewer = new Jar();
@@ -1050,7 +1064,7 @@ async function s5World(options: { mark?: string; displayName?: string; run?: Par
   const afterDisable = await Promise.all(S5_ROUTES(run.id, name).map((path) => request(w, path, { jar: disabledJar })));
   check("SA67. every S5 route is a GET declared viewer in the one route table — /runs, /runs/:id, /runs/:id/files/:name, "
     + "/static/studio.css and /static/studio.js — and none accepts a POST",
-    STUDIO_ROUTE_TABLE.slice(5).map((r) => `${r.method} ${r.path} ${r.minRole}`).join() === ["GET /runs viewer",
+    STUDIO_ROUTE_TABLE.slice(5, 10).map((r) => `${r.method} ${r.path} ${r.minRole}`).join() === ["GET /runs viewer",
       "GET /runs/:id viewer", "GET /runs/:id/files/:name viewer", "GET /static/studio.css viewer", "GET /static/studio.js viewer"].join()
       && (await request(w, `/runs/${run.id}`, { method: "POST", jar, headers: { origin: ORIGIN } })).status === 405);
   check("SA68. signed out, every S5 route is 401, with nothing read from the runs store",
@@ -1480,6 +1494,702 @@ await refusal("SA96. refused: an azp other than the client id", "authorized-part
       && refusalOf(() => checkAudienceParty({ aud: CLIENT_ID, azp: "y" }, CLIENT_ID)) === "authorized-party"
       && refusalOf(() => checkAudienceParty({ aud: CLIENT_ID }, CLIENT_ID)) === "accepted", `${ok.status}`);
   await w.close();
+}
+
+// =====================================================================================================
+// Content Studio S6.2: the run and revise actions with caps (design §6.1-§6.4, §8.3, §8.4)
+// =====================================================================================================
+
+const S62_COMMIT = "c".repeat(40);
+const APPROVED_SHA = "a".repeat(64);
+const PRICE_SHA = "b".repeat(64);
+const CEILING = 21_650_000;
+
+interface S62 {
+  w: World; owner: Jar; runner: Jar; viewer: Jar; runnerUser: StudioUserRow; viewerUser: StudioUserRow; factVersion: string;
+}
+
+async function s62World(options: { ceilings?: WebConfig["ceilings"]; withVersion?: boolean } = {}): Promise<S62> {
+  const w = await world();
+  if (options.ceilings) {
+    await w.close();
+    const clock = w.clock;
+    const store = w.store;
+    const app = createStudioWebApp({ store, config: CONFIG(null, options.ceilings), commit: COMMIT, log, now: () => clock.now, oidc: issuer.provider });
+    const server: Server = createHttpServer((req, res) => { void app.handle(req, res); });
+    await new Promise<void>((settle) => server.listen(0, "127.0.0.1", settle));
+    Object.assign(w, { app, base: `http://127.0.0.1:${(server.address() as { port: number }).port}`,
+      close: () => new Promise<void>((settle) => { server.closeAllConnections(); server.close(() => settle()); }) });
+  }
+  const runnerUser = listed(w, "runner");
+  const viewerUser = listed(w, "viewer");
+  const jars = { owner: new Jar(), runner: new Jar(), viewer: new Jar() };
+  await signIn(w, jars.owner, { identity: identityOf(w.owner) });
+  await signIn(w, jars.runner, { identity: identityOf(runnerUser) });
+  await signIn(w, jars.viewer, { identity: identityOf(viewerUser) });
+  for (const jar of Object.values(jars)) secrets.add(csrfTokenFor(jar.values.get(SESSION_COOKIE)!));
+  const factVersion = options.withVersion === false ? "" : w.store.addFactVersion({ "synthetic-tag-a": 3, "synthetic-tag-b": 2 });
+  w.store.heartbeat = { commit: S62_COMMIT, approvedFactsSha256: APPROVED_SHA, priceTableSha256: PRICE_SHA,
+    tagCounts: { "synthetic-approved": 5, "synthetic-tag-a": 1 }, beatAtMs: w.clock.now };
+  // Every user row predates the quotes this world makes.
+  for (const id of w.store.users.keys()) w.store.userUpdatedAt.set(id, w.clock.now - 60_000);
+  return { w, ...jars, runnerUser, viewerUser, factVersion };
+}
+
+/** A POST with the session's synchronizer token and the configured Origin. */
+async function post(w: World, path: string, jar: Jar, fields: Array<[string, string]> = []): Promise<Reply> {
+  const body = new URLSearchParams([...fields, ["csrf", csrfTokenFor(jar.values.get(SESSION_COOKIE)!)]]).toString();
+  return request(w, path, { method: "POST", jar, headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" }, body });
+}
+const newRunFields = (goal = "Synthetic S6.2 goal", extra: Array<[string, string]> = []): Array<[string, string]> =>
+  [["goal", goal], ["platform", "instagram"], ["platform", "facebook"], ...extra];
+const requestIdOf = (reply: Reply) => /^\/preflights\/([0-9a-f-]{36})$/.exec(reply.location ?? "")?.[1] ?? "";
+
+/** Ask for a full run's price as `jar`, then answer it as the worker would: a quote of `ceiling`. */
+async function quoteFor(s: S62, jar: Jar, ceiling = CEILING, edit: Parameters<MemoryWebStore["answerPreflight"]>[1] extends infer A
+  ? (A extends { quote: infer Q } ? Partial<Q> : never) : never = {}): Promise<{ requestId: string; quoteId: string }> {
+  const reply = await post(s.w, "/new/price", jar, newRunFields());
+  const requestId = requestIdOf(reply);
+  const quoteId = s.w.store.answerPreflight(requestId, { quote: { ceilingMicros: ceiling, ...edit } })!;
+  return { requestId, quoteId };
+}
+const counts = (w: World) => ({
+  runs: [...w.store.runs.values()].filter((r) => r.runner === "live").length,
+  jobs: [...w.store.jobs.values()].filter((j) => j.kind === "paid").length,
+  ledger: w.store.ledger.length,
+  consumed: [...w.store.quotes.values()].filter((q) => q.consumedAtMs !== null).length,
+});
+const same = (a: ReturnType<typeof counts>, b: ReturnType<typeof counts>) => JSON.stringify(a) === JSON.stringify(b);
+/** A refused confirmation: its status, its class on the page, and nothing written. */
+async function confirmRefused(s: S62, jar: Jar, quoteId: string, refusal: string, status = 409): Promise<{ ok: boolean; detail: string }> {
+  const before = counts(s.w);
+  const reply = await post(s.w, `/quotes/${quoteId}/confirm`, jar);
+  const after = counts(s.w);
+  return { ok: reply.status === status && reply.body.includes(`<code>${refusal}</code>`) && same(before, after),
+    detail: `${reply.status} ${/<code>([a-z_]+)<\/code>/.exec(reply.body)?.[1]} ${JSON.stringify(before)}→${JSON.stringify(after)}` };
+}
+
+{
+  // SA99-SA101: asking for a price.
+  const s = await s62World();
+  const callsBefore = s.w.store.calls.length;
+  const asked = await post(s.w, "/new/price", s.runner, newRunFields("  A goal kept exactly as typed\r\n", [["tag", "synthetic-tag-b"], ["tag", "synthetic-tag-a"]]));
+  const requestId = requestIdOf(asked);
+  const row = s.w.store.preflight.get(requestId);
+  const job = row ? s.w.store.jobs.get(row.jobId) : undefined;
+  check("SA99. a runner's price request creates, together, one preflight job and its request — the action, the goal exactly "
+    + "as typed, the platforms, the scope tags sorted, no source, the active fact version and params_sha256 by the canonical "
+    + "function — with an audit row of classes only, and redirects to the request's page",
+    asked.status === 303 && row !== undefined && job?.kind === "preflight" && job.state === "queued" && job.runId === null
+      && row.action === "full" && row.goal === "  A goal kept exactly as typed\r\n" && row.platforms.join() === "instagram,facebook"
+      && row.scopeTags?.join() === "synthetic-tag-a,synthetic-tag-b" && row.sourceRunId === null && row.factVersionId === s.factVersion
+      && row.paramsSha256 === preflightParamsSha256(row) && row.userId === s.runnerUser.id
+      && s.w.store.auditLog.at(-1)?.action === "preflight.request" && JSON.stringify(s.w.store.auditLog.at(-1)?.detail) === '{"action":"full"}'
+      && s.w.store.calls.slice(callsBefore).filter((c) => c === "createPreflightRequest").length === 1,
+    `${asked.status} ${asked.location} ${JSON.stringify(row)}`);
+
+  const jobsBefore = s.w.store.jobs.size;
+  const viewerAsks = await post(s.w, "/new/price", s.viewer, newRunFields());
+  const viewerForm = await request(s.w, "/new", { jar: s.viewer });
+  const disabledJar = new Jar();
+  const disabled = listed(s.w, "runner");
+  await signIn(s.w, disabledJar, { identity: identityOf(disabled) });
+  s.w.store.setStatus(disabled.id, "disabled");
+  const disabledAsks = await post(s.w, "/new/price", disabledJar, newRunFields());
+  const storeRefuses = await s.w.store.createPreflightRequest(preflightRequest({ userId: s.viewerUser.id, action: "full", goal: "x",
+    platforms: ["instagram"], scopeTags: null, sourceRunId: null, factVersionId: s.factVersion })).then(() => "written", (e) => String(e.code));
+  check("SA99a. a viewer's or a disabled user's price request is refused before anything is written — the viewer by the "
+    + "route's role (403), the disabled user's session by its live users row — and the store refuses one written directly, "
+    + "as 0003's trigger does",
+    viewerAsks.status === 403 && viewerForm.status === 403 && disabledAsks.status === 401 && storeRefuses === "23514"
+      && s.w.store.jobs.size === jobsBefore,
+    `${viewerAsks.status} ${viewerForm.status} ${disabledAsks.status} ${storeRefuses}`);
+  await s.w.close();
+
+  const none = await s62World({ withVersion: false });
+  const form = await request(none.w, "/new", { jar: none.runner });
+  const refused = await post(none.w, "/new/price", none.runner, newRunFields());
+  check("SA99b. with no active fact version the new-run page says so and offers no price (its button disabled), and a "
+    + "price request is refused (409) with no job or request written",
+    form.status === 200 && form.body.includes("No fact version is active, so no price can be offered")
+      && form.body.includes("<button type=\"submit\" disabled>Check and get a price</button>")
+      && refused.status === 409 && refused.body.includes("<code>no_fact_version</code>") && none.w.store.preflight.size === 0
+      && none.w.store.jobs.size === 0, `${form.status} ${refused.status}`);
+  await none.w.close();
+}
+
+{
+  const s = await s62World();
+  const astral = "𝔊".repeat(GOAL_MAX_CHARS);
+  const bad: Array<[string, Array<[string, string]>]> = [
+    ["empty goal", newRunFields("")], ["blank goal", newRunFields("   ")], ["2,001 characters", newRunFields("x".repeat(GOAL_MAX_CHARS + 1))],
+    ["two goals", [...newRunFields(), ["goal", "second"]]], ["no platform", [["goal", "g"]]],
+    ["an unknown platform", [["goal", "g"], ["platform", "tiktok"]]], ["a repeated platform", [["goal", "g"], ["platform", "instagram"], ["platform", "instagram"]]],
+    ["a tag not offered", newRunFields("g", [["tag", "not-offered"]])], ["a repeated tag", newRunFields("g", [["tag", "synthetic-tag-a"], ["tag", "synthetic-tag-a"]])],
+  ];
+  const replies = await Promise.all(bad.map(([, fields]) => post(s.w, "/new/price", s.runner, fields)));
+  const longest = await post(s.w, "/new/price", s.runner, newRunFields(astral));
+  check("SA100. the new-run form is validated before anything is written: an empty, blank or 2,001-character goal, two "
+    + "goals, no platform, an unknown or repeated platform, and a tag not offered or repeated are each refused (400); a goal "
+    + "of exactly 2,000 characters counted as PostgreSQL counts them (code points, here astral) is accepted",
+    replies.every((r) => r.status === 400) && s.w.store.preflight.size === 1 && longest.status === 303
+      && codePoints(astral) === GOAL_MAX_CHARS && astral.length === 2 * GOAL_MAX_CHARS,
+    replies.map((r) => r.status).join());
+  const page = await request(s.w, "/new", { jar: s.runner });
+  const migration = readFileSync(resolve(REPO_ROOT, "studio/migrations/0003_studio_preflight_requests.sql"), "utf8");
+  const contract = readFileSync(resolve(REPO_ROOT, "src/harness/agents/payloadContract.ts"), "utf8");
+  check("SA101. the new-run page offers the goal, the three platforms (all checked) and the scope tags with their record "
+    + "counts (the heartbeat's and the active fact version's, summed), and shows the in-scope count as an UPPER BOUND, labelled "
+    + "as such, beside the 64-record cap — which the worker enforces exactly; the platforms are 0003's and the cap the payload "
+    + "contract's",
+    page.status === 200 && page.body.includes('name="goal"') && page.body.includes(`maxlength="${GOAL_MAX_CHARS}"`)
+      && PLATFORMS.every((p) => page.body.includes(`value="${p}" checked>`))
+      && page.body.includes('value="synthetic-tag-a" data-count="4"') && page.body.includes('value="synthetic-approved" data-count="5"')
+      && page.body.includes("The count shown is an upper bound") && page.body.includes("data-scope-bound")
+      && page.body.includes(`${PACK_RECORD_CAP}-record cap exactly`) && scopeUpperBound(offeredTags({ a: 3, b: 2 }, { a: 1 }), ["a", "b"]) === 6
+      && migration.includes(`ARRAY[${PLATFORMS.map((p) => `'${p}'`).join(", ")}]::text[]`)
+      && /maxProjectedRecords:\s*64,/.test(contract) && PACK_RECORD_CAP === 64,
+    `${page.status}`);
+  await s.w.close();
+}
+
+{
+  // SA102: the request's page, before and after the worker answers.
+  const s = await s62World();
+  const asked = await post(s.w, "/new/price", s.runner, newRunFields());
+  const id = requestIdOf(asked);
+  const pending = await request(s.w, `/preflights/${id}`, { jar: s.runner });
+  const breakdown = [
+    { item: "strategy-concept", unit: "request", ceilingUsd: "3.000000", lines: [{ label: "strategy-concept", model: "synthetic-model-a", maxTokens: 64000, costUsd: 3 }] },
+    { item: "final-critic", unit: "critic-panel", ceilingUsd: "18.650000", lines: ["evidence-fidelity", "platform-and-local", "voice-and-craft", "production-coherence"]
+      .map((lens) => ({ label: `final-critic:${lens}`, model: "synthetic-model-a", maxTokens: 32000, costUsd: 4.6625 })) },
+  ];
+  s.w.store.answerPreflight(id, { quote: { ceilingMicros: CEILING, breakdown } });
+  const quoted = await request(s.w, `/preflights/${id}`, { jar: s.runner });
+  const otherRunner = listed(s.w, "runner");
+  const otherJar = new Jar();
+  await signIn(s.w, otherJar, { identity: identityOf(otherRunner) });
+  const asOther = await request(s.w, `/preflights/${id}`, { jar: otherJar });
+  const asOwner = await request(s.w, `/preflights/${id}`, { jar: s.owner });
+  check("SA102. a price request's page polls until the worker answers; then shows the quote's lines (the critic panel's four "
+    + "lenses as one item), its total, the caps remaining today and this month, its expiry, and a Confirm button only to the "
+    + "user who asked; an owner may view it without the button, another runner sees nothing (404)",
+    pending.status === 200 && pending.body.includes(`<meta http-equiv="refresh" content="${PREFLIGHT_POLL_SECONDS}">`)
+      && quoted.status === 200 && !quoted.body.includes("http-equiv=\"refresh\"") && quoted.body.includes("final-critic panel — 4 lenses, run together, one item")
+      && quoted.body.includes("$18.650000") && quoted.body.includes("Total ceiling: <strong>$21.65</strong>")
+      && quoted.body.includes("<dt>Left today</dt><dd>$50.00 of $50.00</dd>") && quoted.body.includes("<dt>Left this month</dt><dd>$200.00 of $200.00</dd>")
+      && quoted.body.includes("Expires ") && quoted.body.includes(`action="/quotes/${s.w.store.preflight.get(id)!.quoteId}/confirm"`)
+      && quoted.body.includes("Confirm and reserve $21.65") && quoted.body.includes("live_runs_not_enabled")
+      && asOther.status === 404 && asOwner.status === 200 && !asOwner.body.includes("Confirm and reserve"),
+    `${pending.status} ${quoted.status} ${asOther.status} ${asOwner.status}`);
+  await s.w.close();
+}
+
+{
+  // SA103-SA104: confirmation.
+  const s = await s62World();
+  const { quoteId } = await quoteFor(s, s.runner);
+  const reply = await post(s.w, `/quotes/${quoteId}/confirm`, s.runner);
+  const runId = /^\/runs\/([0-9a-f-]{36})$/.exec(reply.location ?? "")?.[1] ?? "";
+  const run = s.w.store.runs.get(runId);
+  const ledger = s.w.store.ledger.filter((l) => l.runId === runId);
+  const job = [...s.w.store.jobs.values()].find((j) => j.runId === runId);
+  check("SA103. confirming a quote creates, together, the live run (queued, the quote's action, user, parameters and fact "
+    + "version, reserved at the quote's ceiling), the quote's consumption, ONE reserve entry equal to the ceiling booked to "
+    + "today's America/New_York day, the paid job and an audit row; the web computed no price",
+    reply.status === 303 && run?.runner === "live" && run.state === "queued" && run.kind === "full" && run.requested_by === s.runnerUser.id
+      && run.reserved_usd === "21.650000" && run.fact_version_id === s.factVersion && run.goal === "Synthetic S6.2 goal"
+      && s.w.store.quotes.get(quoteId)!.consumedAtMs !== null && ledger.length === 1 && ledger[0]!.entry === "reserve"
+      && ledger[0]!.amountMicros === CEILING && ledger[0]!.day === localDay(s.w.clock.now) && job?.kind === "paid" && job.state === "queued"
+      && s.w.store.auditLog.at(-1)?.action === "run.confirm",
+    `${reply.status} ${JSON.stringify(run)?.slice(0, 120)} ${JSON.stringify(ledger)}`);
+  const again = await confirmRefused(s, s.runner, quoteId, "quote_used");
+  const twice = await Promise.all([post(s.w, `/quotes/${quoteId}/confirm`, s.runner), post(s.w, `/quotes/${quoteId}/confirm`, s.runner)]);
+  check("SA104. a double confirmation creates exactly one run, one job and one reserve entry: pressing Confirm again — once "
+    + "after, and twice at once — is refused as quote_used",
+    again.ok && twice.every((r) => r.status === 409) && counts(s.w).runs === 1 && counts(s.w).jobs === 1 && counts(s.w).ledger === 1,
+    again.detail);
+  await s.w.close();
+}
+
+{
+  const cases: Array<[string, (s: S62) => Promise<{ ok: boolean; detail: string }>]> = [
+    ["SA104a. no quote: a quote id that names none is refused (404, no_quote) with nothing written", async (s) =>
+      confirmRefused(s, s.runner, crypto.randomUUID(), "no_quote", 404)],
+    ["SA104b. another user's quote is refused (quote_not_yours)", async (s) =>
+      confirmRefused(s, s.owner, (await quoteFor(s, s.runner)).quoteId, "quote_not_yours")],
+    ["SA104c. an expired quote is refused (quote_expired)", async (s) => {
+      const { quoteId } = await quoteFor(s, s.runner);
+      s.w.clock.now += 10 * 60_000 + 1;
+      s.w.store.heartbeat!.beatAtMs = s.w.clock.now;
+      return confirmRefused(s, s.runner, quoteId, "quote_expired");
+    }],
+    ["SA104d. a quote whose worker commit differs from the heartbeat's is refused (quote_stale)", async (s) =>
+      confirmRefused(s, s.runner, (await quoteFor(s, s.runner, CEILING, { workerCommit: "d".repeat(40) })).quoteId, "quote_stale")],
+    ["SA104e. a quote whose approved-facts sha256 differs from the heartbeat's is refused (quote_stale)", async (s) =>
+      confirmRefused(s, s.runner, (await quoteFor(s, s.runner, CEILING, { approvedFactsSha256: "e".repeat(64) })).quoteId, "quote_stale")],
+    ["SA104f. a quote whose price-table sha256 differs from the heartbeat's is refused (quote_stale)", async (s) =>
+      confirmRefused(s, s.runner, (await quoteFor(s, s.runner, CEILING, { priceTableSha256: "f".repeat(64) })).quoteId, "quote_stale")],
+    ["SA104g. a quote whose fact version is no longer the current one (the active version changed) is refused (quote_stale)", async (s) => {
+      const { quoteId } = await quoteFor(s, s.runner);
+      s.w.store.addFactVersion({});
+      return confirmRefused(s, s.runner, quoteId, "quote_stale");
+    }],
+    ["SA104h. a stale heartbeat (older than two minutes), and none at all, is refused (worker_offline)", async (s) => {
+      const { quoteId } = await quoteFor(s, s.runner);
+      s.w.store.heartbeat!.beatAtMs = s.w.clock.now - 2 * 60_000 - 1;
+      const stale = await confirmRefused(s, s.runner, quoteId, "worker_offline");
+      s.w.store.heartbeat = null;
+      const gone = await confirmRefused(s, s.runner, quoteId, "worker_offline");
+      return { ok: stale.ok && gone.ok, detail: `${stale.detail} | ${gone.detail}` };
+    }],
+    ["SA104i. a viewer cannot confirm (the route's role, 403), and a disabled user's session is refused (401)", async (s) => {
+      const { quoteId } = await quoteFor(s, s.runner);
+      const before = counts(s.w);
+      const viewer = await post(s.w, `/quotes/${quoteId}/confirm`, s.viewer);
+      s.w.store.setStatus(s.runnerUser.id, "disabled");
+      const disabled = await post(s.w, `/quotes/${quoteId}/confirm`, s.runner);
+      return { ok: viewer.status === 403 && disabled.status === 401 && same(before, counts(s.w)), detail: `${viewer.status} ${disabled.status}` };
+    }],
+    ["SA104j. a role changed after quoting is refused: demoted to viewer (the route, 403), and an owner demoted to runner "
+      + "after the quote, which keeps the route (user_changed)", async (s) => {
+      const { quoteId } = await quoteFor(s, s.runner);
+      const before = counts(s.w);
+      s.w.store.users.get(s.runnerUser.id)!.role = "viewer";
+      const demoted = await post(s.w, `/quotes/${quoteId}/confirm`, s.runner);
+      const second = listed(s.w, "owner");
+      const jar = new Jar();
+      await signIn(s.w, jar, { identity: identityOf(second) });
+      s.w.store.userUpdatedAt.set(second.id, s.w.clock.now - 60_000);
+      const { quoteId: ownerQuote } = await quoteFor(s, jar);
+      s.w.clock.now += 1_000;
+      s.w.store.users.get(second.id)!.role = "runner";
+      s.w.store.userUpdatedAt.set(second.id, s.w.clock.now);
+      s.w.store.heartbeat!.beatAtMs = s.w.clock.now;
+      const changed = await confirmRefused(s, jar, ownerQuote, "user_changed");
+      return { ok: demoted.status === 403 && same(before, counts(s.w)) && changed.ok, detail: `${demoted.status} ${changed.detail}` };
+    }],
+    ["SA104k. the owner's daily cap: a ceiling that does not fit what remains of today's is refused (cap_exceeded_daily)", async (s) => {
+      s.w.store.settings!.dailyCapMicros = CEILING - 1;
+      return confirmRefused(s, s.runner, (await quoteFor(s, s.runner)).quoteId, "cap_exceeded_daily");
+    }],
+    ["SA104l. the owner's monthly cap: today's caps fit (both raised) but the month does not (cap_exceeded_monthly)", async (s) => {
+      const { quoteId } = await quoteFor(s, s.runner);
+      s.w.store.settings!.dailyCapMicros = 1_000_000_000;
+      s.w.store.ledger.push({ entry: "reserve", runId: crypto.randomUUID(), amountMicros: 190_000_000, day: localDay(s.w.clock.now) });
+      return confirmRefused(s, s.runner, quoteId, "cap_exceeded_monthly");
+    }],
+    ["SA104m. the runner's own daily cap: a ceiling over what remains of it is refused although the owner's caps fit "
+      + "(cap_exceeded_user_daily)", async (s) => {
+      s.w.store.userCaps.set(s.runnerUser.id, 25_000_000);
+      const first = await quoteFor(s, s.runner, 10_000_000);
+      const ok = await post(s.w, `/quotes/${first.quoteId}/confirm`, s.runner);
+      const refusal = await confirmRefused(s, s.runner, (await quoteFor(s, s.runner, 15_000_001)).quoteId, "cap_exceeded_user_daily");
+      return { ok: ok.status === 303 && refusal.ok, detail: `${ok.status} ${refusal.detail}` };
+    }],
+    ["SA104n. the deployment ceiling bounds the owner's cap: with STUDIO_MAX_DAILY_USD below the owner's $50, a ceiling "
+      + "the owner's cap would allow is refused (cap_exceeded_daily)", async (s) =>
+      confirmRefused(s, s.runner, (await quoteFor(s, s.runner)).quoteId, "cap_exceeded_daily")],
+    ["SA104o. an unacknowledged overrun locks every confirmation (confirmations_locked); the owner's acknowledgement unlocks it", async (s) => {
+      const overrunRun = s.w.store.addRun(s.runnerUser, { runner: "live", state: "failed", failure_class: "cost_ceiling_exceeded" });
+      s.w.store.ledger.push({ entry: "reserve", runId: overrunRun.id, amountMicros: 1_000_000, day: localDay(s.w.clock.now) },
+        { entry: "overrun", runId: overrunRun.id, amountMicros: 500_000, day: localDay(s.w.clock.now) });
+      const { quoteId } = await quoteFor(s, s.runner);
+      const locked = await confirmRefused(s, s.runner, quoteId, "confirmations_locked");
+      const ack = await post(s.w, `/spend/overruns/${overrunRun.id}/acknowledge`, s.owner);
+      const unlocked = await post(s.w, `/quotes/${quoteId}/confirm`, s.runner);
+      return { ok: locked.ok && ack.status === 303 && unlocked.status === 303, detail: `${locked.detail} ${ack.status} ${unlocked.status}` };
+    }],
+  ];
+  for (const [name, run] of cases) {
+    const s = await s62World(name.startsWith("SA104n.") ? { ceilings: { dailyMicros: CEILING - 1, monthlyMicros: 300_000_000 } }
+      : name.startsWith("SA104l.") ? { ceilings: { dailyMicros: 1_000_000_000, monthlyMicros: 300_000_000 } } : {});
+    const result = await run(s);
+    check(name, result.ok, result.detail);
+    await s.w.close();
+  }
+}
+
+{
+  // SA105: the deployment ceilings as the entry point reads them.
+  const parsed = (daily: string | undefined, monthly: string | undefined) => decideWebStartup(env({ maxDailyUsd: daily, maxMonthlyUsd: monthly }));
+  const zeroCases = [parsed(undefined, "300"), parsed("abc", "300"), parsed("", "300"), parsed("-5", "300"), parsed("75.1234567", "300"),
+    parsed("1e3", "300")];
+  const ok = parsed("75", "300.50");
+  const results: string[] = [];
+  for (const startup of zeroCases.slice(0, 3)) {
+    const s = await s62World({ ceilings: startup.config.ceilings });
+    const r = await confirmRefused(s, s.runner, (await quoteFor(s, s.runner)).quoteId, "cap_exceeded_daily");
+    results.push(r.ok ? "refused" : r.detail);
+    await s.w.close();
+  }
+  check("SA105. the web reads STUDIO_MAX_DAILY_USD and STUDIO_MAX_MONTHLY_USD through the worker's parseCapMicros (one "
+    + "function, in the S2 runner module): a missing, unparsable, empty, negative or over-precise ceiling is ZERO and named "
+    + "in zeroCaps, and a confirmation under a missing, unparsable or empty ceiling is refused (fail closed)",
+    zeroCases.every((x) => x.config.ceilings.dailyMicros === 0 && x.zeroCaps.join() === "STUDIO_MAX_DAILY_USD")
+      && ok.config.ceilings.dailyMicros === 75_000_000 && ok.config.ceilings.monthlyMicros === 300_500_000 && ok.zeroCaps.length === 0
+      && [undefined, "abc", "", "-5", "75.1234567", "1e3", "75", "300.50"].every((raw) => parsed(raw, "300").config.ceilings.dailyMicros === parseCapMicros(raw))
+      && results.every((r) => r === "refused"),
+    results.join(" | "));
+}
+
+/**
+ * A scripted PostgreSQL for the confirmation transaction: it answers each statement PgWebStore.confirmQuote makes,
+ * and models what the transaction relies on — a `FOR UPDATE` on the settings row is held until COMMIT or ROLLBACK
+ * and a second one waits for it, as PostgreSQL's row lock does; each statement sees only committed rows (READ
+ * COMMITTED); a transaction's own writes apply at COMMIT. Every statement is recorded with its transaction, and every
+ * statement yields first, so two transactions interleave.
+ */
+class ScriptedConfirmDb {
+  readonly statements: Array<{ tx: number | null; text: string }> = [];
+  committedReserves: Array<{ runId: string; amountMicros: number; userId: string }> = [];
+  consumed = new Set<string>();
+  private lockHeld: number | null = null;
+  private waiters: Array<() => void> = [];
+  private nextTx = 1;
+  constructor(readonly state: { nowMs: number; userId: string; dailyCap: string; quotes: Map<string, { ceiling: string }> }) {}
+
+  private async lock(tx: number): Promise<void> {
+    while (this.lockHeld !== null && this.lockHeld !== tx) await new Promise<void>((settle) => this.waiters.push(settle));
+    this.lockHeld = tx;
+  }
+  private unlock(tx: number): void {
+    if (this.lockHeld !== tx) return;
+    this.lockHeld = null;
+    for (const wake of this.waiters.splice(0)) wake();
+  }
+  private answer(tx: number | null, text: string, values: unknown[], pending: { reserves: ScriptedConfirmDb["committedReserves"]; consumed: string[] }) {
+    const t = text.replace(/\s+/g, " ");
+    const st = this.state;
+    if (/FROM studio_settings WHERE singleton/.test(t)) return [{ daily: st.dailyCap, monthly: "200", active: "fv-1" }];
+    if (/^SELECT \(extract\(epoch FROM now\(\)\) \* 1000\)::float8 AS now$/.test(t.trim())) return [{ now: st.nowMs }];
+    if (/FROM studio_users WHERE id/.test(t)) return [{ id: st.userId, role: "runner", status: "active", cap: null, updated: st.nowMs - 60_000 }];
+    if (/FROM studio_quotes q LEFT JOIN studio_fact_versions/.test(t)) {
+      const q = st.quotes.get(String(values[0]));
+      return q ? [{ id: values[0], user_id: st.userId, action: "full", params_sha256: "p".repeat(64), worker_commit: S62_COMMIT,
+        approved_facts_sha256: APPROVED_SHA, fact_version_id: "fv-1", price_table_sha256: PRICE_SHA, ceiling: q.ceiling,
+        created: st.nowMs - 1_000, expires: st.nowMs + 60_000, consumed: this.consumed.has(String(values[0])), fact_sha: "d".repeat(64) }] : [];
+    }
+    if (/FROM studio_preflight_requests WHERE quote_id/.test(t)) {
+      return [{ action: "full", goal: "g", platforms: ["instagram"], scope_tags: null, source_run_id: null, fact_version_id: "fv-1",
+        params_sha256: "p".repeat(64) }];
+    }
+    if (/FROM studio_worker_heartbeat/.test(t)) {
+      return [{ commit: S62_COMMIT, approved_facts_sha256: APPROVED_SHA, price_table_sha256: PRICE_SHA, beat: st.nowMs }];
+    }
+    if (/count\(\*\)::int AS n FROM studio_spend_ledger/.test(t)) return [{ n: 0 }];
+    if (/studio_spend_for_day/.test(t)) {
+      const total = this.committedReserves.reduce((sum, r) => sum + r.amountMicros, 0);
+      return [{ day: microsToNumeric(total), month: microsToNumeric(total), user_day: microsToNumeric(total) }];
+    }
+    if (/^INSERT INTO studio_runs/.test(t.trim())) return [{ id: `run-${tx}` }];
+    if (/^UPDATE studio_quotes SET consumed_at/.test(t.trim())) { pending.consumed.push(String(values[0])); return []; }
+    if (/^INSERT INTO studio_spend_ledger/.test(t.trim())) {
+      pending.reserves.push({ runId: String(values[0]), amountMicros: numericToMicros(String(values[1]))!, userId: st.userId });
+      return [];
+    }
+    return [];
+  }
+  /** A client of the pool: one transaction at a time, its writes applied at COMMIT. */
+  private client(): { query: (text: string, values?: unknown[]) => Promise<{ rows: unknown[]; rowCount: number }>; release: () => void } {
+    let tx: number | null = null;
+    let pending = { reserves: [] as ScriptedConfirmDb["committedReserves"], consumed: [] as string[] };
+    return {
+      query: async (text: string, values: unknown[] = []) => {
+        await new Promise<void>((settle) => setImmediate(settle));
+        if (text === "BEGIN") { tx = this.nextTx++; pending = { reserves: [], consumed: [] }; this.statements.push({ tx, text }); return { rows: [], rowCount: 0 }; }
+        if (text === "COMMIT" || text === "ROLLBACK") {
+          this.statements.push({ tx, text });
+          if (text === "COMMIT") {
+            this.committedReserves.push(...pending.reserves);
+            for (const q of pending.consumed) this.consumed.add(q);
+          }
+          if (tx !== null) this.unlock(tx);
+          tx = null;
+          return { rows: [], rowCount: 0 };
+        }
+        this.statements.push({ tx, text });
+        if (tx !== null && /FROM studio_settings WHERE singleton FOR UPDATE/.test(text.replace(/\s+/g, " "))) await this.lock(tx);
+        const rows = this.answer(tx, text, values, tx === null ? { reserves: this.committedReserves, consumed: [] } : pending);
+        if (tx === null && /^\s*UPDATE studio_quotes SET consumed_at/.test(text)) this.consumed.add(String(values[0]));
+        return { rows, rowCount: Math.max(rows.length, 1) };
+      },
+      release: () => {},
+    };
+  }
+  pool() {
+    return { connect: async () => this.client(), query: (text: string, values?: unknown[]) => this.client().query(text, values) };
+  }
+}
+
+{
+  // SA106-SA106a: the confirmation transaction's statements, and two confirmations against the same headroom.
+  const ceilings = { dailyMicros: 75_000_000, monthlyMicros: 300_000_000 };
+  const db = new ScriptedConfirmDb({ nowMs: Date.UTC(2026, 9, 5, 16), userId: "u-1", dailyCap: "30",
+    quotes: new Map([["q-1", { ceiling: "21.650000" }], ["q-2", { ceiling: "21.650000" }]]) });
+  const store = new PgWebStore(db.pool() as never, db.pool() as never);
+  const [a, b] = await Promise.all([
+    store.confirmQuote({ quoteId: "q-1", userId: "u-1", ceilings }), store.confirmQuote({ quoteId: "q-2", userId: "u-1", ceilings }),
+  ]);
+  const results = [a, b].map((r) => (r.ok ? "ok" : r.refusal)).sort();
+  check("SA106. two confirmations against the same headroom (a $30 daily cap, two $21.65 quotes), over a scripted database "
+    + "that grants the settings row's FOR UPDATE lock as PostgreSQL does: exactly one is confirmed and the other is refused by "
+    + "the cap, because the second reads the spend only after the first has committed its reservation",
+    results.join() === "cap_exceeded_daily,ok" && db.committedReserves.length === 1 && db.consumed.size === 1,
+    `${results.join()} ${db.committedReserves.length}`);
+
+  const one = new ScriptedConfirmDb({ nowMs: Date.UTC(2026, 9, 5, 16), userId: "u-1", dailyCap: "50",
+    quotes: new Map([["q-1", { ceiling: "21.650000" }]]) });
+  const confirmed = await new PgWebStore(one.pool() as never, one.pool() as never).confirmQuote({ quoteId: "q-1", userId: "u-1", ceilings });
+  const tag = (text: string) => {
+    const t = text.replace(/\s+/g, " ").trim();
+    return t === "BEGIN" || t === "COMMIT" || t === "ROLLBACK" ? t : /FROM studio_settings WHERE singleton FOR UPDATE/.test(t) ? "lock-settings"
+      : /^INSERT INTO studio_runs/.test(t) ? "run" : /^UPDATE studio_quotes SET consumed_at/.test(t) ? "consume"
+        : /^INSERT INTO studio_spend_ledger/.test(t) ? "reserve" : /^INSERT INTO studio_jobs/.test(t) ? "job"
+          : /^INSERT INTO studio_audit_log/.test(t) ? "audit" : "read";
+  };
+  const order = one.statements.map((s) => `${s.tx ?? "none"}:${tag(s.text)}`);
+  const writes = order.filter((o) => !o.endsWith(":read"));
+  const firstRead = order.findIndex((o) => o.endsWith(":read"));
+  check("SA106a. the confirmation is ONE transaction whose first statement takes SELECT … FOR UPDATE on the settings row, "
+    + "before anything is read; the run, the quote's consumption, the reserve entry, the paid job and the audit row are all "
+    + "written inside it, and committed together",
+    confirmed.ok && writes.join() === "1:BEGIN,1:lock-settings,1:run,1:consume,1:reserve,1:job,1:audit,1:COMMIT"
+      && order[1] === "1:lock-settings" && firstRead === 2 && one.statements.every((s) => s.tx === 1),
+    order.join());
+}
+
+{
+  // SA107: cancellation.
+  const s = await s62World();
+  const confirmQuote = async (jar: Jar) => {
+    const { quoteId } = await quoteFor(s, jar);
+    return /^\/runs\/([0-9a-f-]{36})$/.exec((await post(s.w, `/quotes/${quoteId}/confirm`, jar)).location ?? "")![1]!;
+  };
+  s.w.store.settings!.dailyCapMicros = 200_000_000;
+  const queued = await confirmQuote(s.runner);
+  const ownerCancels = await post(s.w, `/runs/${queued}/cancel`, s.owner);
+  const ledger = s.w.store.ledger.filter((l) => l.runId === queued);
+  const job = [...s.w.store.jobs.values()].find((j) => j.runId === queued)!;
+  const run = s.w.store.runs.get(queued)!;
+  check("SA107. a queued run is cancelled before it is claimed — its job cancelled, its run cancelled (job_cancelled) — and "
+    + "its WHOLE reservation released, booked to the reserve's day; the owner may cancel a runner's run",
+    ownerCancels.status === 303 && job.state === "cancelled" && run.state === "cancelled" && run.failure_class === "job_cancelled"
+      && ledger.map((l) => `${l.entry}:${l.amountMicros}:${l.day}`).join()
+        === `reserve:${CEILING}:${localDay(s.w.clock.now)},release:${CEILING}:${localDay(s.w.clock.now)}`
+      && s.w.store.spendMicros((l) => l.runId === queued) === 0,
+    `${ownerCancels.status} ${JSON.stringify(ledger)}`);
+
+  const running = await confirmQuote(s.runner);
+  const runningJob = [...s.w.store.jobs.values()].find((j) => j.runId === running)!;
+  runningJob.state = "running";
+  s.w.store.runs.get(running)!.state = "running";
+  const ledgerBefore = s.w.store.ledger.length;
+  const ownCancel = await post(s.w, `/runs/${running}/cancel`, s.runner);
+  check("SA107a. a running run's cancellation is requested — the worker sends no further request, keeps what completed and "
+    + "releases the rest (S3's check before every unit) — and the web writes no ledger entry itself; a runner may cancel "
+    + "their own run",
+    ownCancel.status === 303 && runningJob.cancelRequested && runningJob.state === "running" && s.w.store.ledger.length === ledgerBefore,
+    `${ownCancel.status}`);
+
+  const ownersRun = await confirmQuote(s.owner);
+  const before = JSON.stringify({ ledger: s.w.store.ledger, jobs: [...s.w.store.jobs.values()] });
+  const runnerCancelsOwners = await post(s.w, `/runs/${ownersRun}/cancel`, s.runner);
+  const viewerCancels = await post(s.w, `/runs/${ownersRun}/cancel`, s.viewer);
+  check("SA107b. a runner cannot cancel another user's run (403, not_your_run) and a viewer cannot cancel at all (403); "
+    + "nothing changes",
+    runnerCancelsOwners.status === 403 && runnerCancelsOwners.body.includes("<code>not_your_run</code>") && viewerCancels.status === 403
+      && JSON.stringify({ ledger: s.w.store.ledger, jobs: [...s.w.store.jobs.values()] }) === before
+      && s.w.store.runs.get(ownersRun)!.state === "queued",
+    `${runnerCancelsOwners.status} ${viewerCancels.status}`);
+  await s.w.close();
+}
+
+{
+  // SA108: fake runs.
+  const s = await s62World();
+  const quotesBefore = s.w.store.quotes.size;
+  const ownerFake = await post(s.w, "/new/fake", s.owner, newRunFields("Synthetic fake wiring goal"));
+  const runId = /^\/runs\/([0-9a-f-]{36})$/.exec(ownerFake.location ?? "")?.[1] ?? "";
+  const run = s.w.store.runs.get(runId);
+  const report = await request(s.w, `/runs/${runId}`, { jar: s.owner });
+  const runsBefore = s.w.store.runs.size;
+  const runnerFake = await post(s.w, "/new/fake", s.runner, newRunFields("Synthetic fake wiring goal"));
+  const page = await request(s.w, "/new", { jar: s.runner });
+  check("SA108. a fake run is owner only: the owner's creates a fake run and a fake job with no quote and no ledger entry, "
+    + "labelled \"FAKE — wiring test\" on its report; a runner's is refused (403) with nothing created, and the runner's new-run "
+    + "page offers no fake button",
+    ownerFake.status === 303 && run?.runner === "fake" && run.state === "queued" && run.reserved_usd === null
+      && [...s.w.store.jobs.values()].some((j) => j.runId === runId && j.kind === "fake") && s.w.store.quotes.size === quotesBefore
+      && s.w.store.ledger.length === 0 && report.body.includes("FAKE — wiring test") && report.body.includes('class="badge badge-fake">FAKE<')
+      && runnerFake.status === 403 && runnerFake.body.includes("<h1>Forbidden</h1>") && s.w.store.runs.size === runsBefore
+      && !page.body.includes("formaction=\"/new/fake\""),
+    `${ownerFake.status} ${runnerFake.status}`);
+  await s.w.close();
+}
+
+{
+  // SA109-SA110: the overrun acknowledgement and the spend panel.
+  const s = await s62World();
+  const overrunRun = s.w.store.addRun(s.runnerUser, { runner: "live", state: "failed", failure_class: "cost_ceiling_exceeded" });
+  const day = localDay(s.w.clock.now);
+  s.w.store.ledger.push({ entry: "reserve", runId: overrunRun.id, amountMicros: 21_650_000, day },
+    { entry: "overrun", runId: overrunRun.id, amountMicros: 1_250_000, day });
+  const runnerAck = await post(s.w, `/spend/overruns/${overrunRun.id}/acknowledge`, s.runner);
+  const panelLocked = await request(s.w, "/spend", { jar: s.viewer });
+  const ownerLocked = await request(s.w, "/spend", { jar: s.owner });
+  const ownerAck = await post(s.w, `/spend/overruns/${overrunRun.id}/acknowledge`, s.owner);
+  const ackRow = s.w.store.auditLog.at(-1);
+  const again = await post(s.w, `/spend/overruns/${overrunRun.id}/acknowledge`, s.owner);
+  check("SA109. acknowledging an overrun is owner only (a runner is refused, 403); the owner's writes S3's audit row "
+    + "(spend.overrun_acknowledged on the run) and unlocks confirmations; a second acknowledgement finds nothing (409)",
+    runnerAck.status === 403 && ownerAck.status === 303 && ackRow?.action === "spend.overrun_acknowledged"
+      && ackRow.targetType === "studio_runs" && ackRow.targetId === overrunRun.id && ackRow.actorUserId === s.w.owner.id
+      && s.w.store.unacknowledgedOverruns().length === 0 && again.status === 409
+      && panelLocked.body.includes("not acknowledged: every confirmation is locked"),
+    `${runnerAck.status} ${ownerAck.status} ${again.status}`);
+  const panel = await request(s.w, "/spend", { jar: s.viewer });
+  const ownerPanel = await request(s.w, "/spend", { jar: s.owner });
+  check("SA110. the spend panel is viewer-readable: today and this month (America/New_York) against each effective cap — the "
+    + "lower of the owner's cap and the deployment ceiling — per user, and every overrun with whether it was acknowledged; the "
+    + "acknowledge button is the owner's alone",
+    panel.status === 200 && panel.body.includes(`Today (${day})`) && panel.body.includes("$22.90") && panel.body.includes("$50.00")
+      && panel.body.includes("$75.00") && panel.body.includes("$300.00") && panel.body.includes("acknowledged")
+      && panel.body.includes(escapeHtml(s.runnerUser.display_name!)) && ownerPanel.status === 200
+      && ownerLocked.body.includes(`action="/spend/overruns/${overrunRun.id}/acknowledge"`) && !panelLocked.body.includes("/acknowledge\""),
+    `${panel.status}`);
+  await s.w.close();
+}
+
+{
+  // SA111: the America/New_York day, at both UTC offsets and a month boundary.
+  check("SA111. a cap's day is the America/New_York day, at both UTC offsets and across a month boundary: 03:59Z on 1 October "
+    + "is still 30 September (EDT), 04:59:59Z on 1 December is still 30 November (EST), and each day's month is its first",
+    localDay(Date.parse("2026-10-01T03:59:59Z")) === "2026-09-30" && localDay(Date.parse("2026-10-01T04:00:00Z")) === "2026-10-01"
+      && localDay(Date.parse("2026-12-01T04:59:59Z")) === "2026-11-30" && localDay(Date.parse("2026-12-01T05:00:00Z")) === "2026-12-01"
+      && monthOf("2026-09-30") === "2026-09-01" && monthOf("2026-10-01") === "2026-10-01");
+}
+
+{
+  // SA112: the purge of preflight requests.
+  const s = await s62World();
+  const ask = async () => requestIdOf(await post(s.w, "/new/price", s.runner, newRunFields()));
+  const refusedOld = await ask();
+  s.w.store.answerPreflight(refusedOld, { refused: { refusalClass: "params_mismatch", message: "m" } });
+  const quotedUnused = await ask();
+  s.w.store.answerPreflight(quotedUnused, { quote: { ceilingMicros: CEILING } });
+  const consumedOld = await ask();
+  const consumedQuote = s.w.store.answerPreflight(consumedOld, { quote: { ceilingMicros: CEILING } })!;
+  const confirmed = await post(s.w, `/quotes/${consumedQuote}/confirm`, s.runner);
+  const unanswered = await ask();
+  s.w.clock.now += 31 * 24 * 3_600_000;
+  // (The sessions have expired by now; a request made today is written as the route writes it.)
+  const { requestId: recent } = await s.w.store.createPreflightRequest(preflightRequest({ userId: s.runnerUser.id, action: "full",
+    goal: "recent", platforms: ["instagram"], scopeTags: null, sourceRunId: null, factVersionId: s.factVersion }));
+  const purged = await s.w.app.purge().catch(() => ({ loginAttempts: -1, sessions: -1, preflightRequests: -1 }));
+  check("SA112. the purge deletes preflight requests older than 30 days on which no consumed quote depends — refused, "
+    + "unanswered, or quoted but never confirmed — and keeps one whose quote was consumed and every request inside 30 days",
+    confirmed.status === 303 && purged.preflightRequests === 3 && !s.w.store.preflight.has(refusedOld) && !s.w.store.preflight.has(quotedUnused)
+      && !s.w.store.preflight.has(unanswered) && s.w.store.preflight.has(consumedOld) && s.w.store.preflight.has(recent)
+      && preflightPurgeable({ pastRetention: true, quoteConsumed: false }) && !preflightPurgeable({ pastRetention: true, quoteConsumed: true })
+      && !preflightPurgeable({ pastRetention: false, quoteConsumed: false }),
+    `${JSON.stringify(purged)}`);
+  await s.w.close();
+}
+
+{
+  // SA113: actions from a run's report.
+  const s = await s62World();
+  const succeeded = s.w.store.addRun(s.w.owner, { platforms: ["instagram", "facebook"], scope_tags: ["synthetic-tag-a"],
+    fact_version_id: s.factVersion, goal: "Synthetic source goal" });
+  const failed = s.w.store.addRun(s.w.owner, { state: "failed", platforms: ["instagram"], fact_version_id: s.factVersion });
+  for (const name of ["run-meta.json", "01-strategy-concept.json", "02-automotive-truth.json", "03-hook-story-script.json", "04-production-direction.json"]) {
+    s.w.store.addArtifact(failed.id, name, "{}");
+  }
+  const noVersion = s.w.store.addRun(s.w.owner, { platforms: ["instagram"], fact_version_id: null });
+  const asRunner = await request(s.w, `/runs/${succeeded.id}`, { jar: s.runner });
+  const asViewer = await request(s.w, `/runs/${succeeded.id}`, { jar: s.viewer });
+  const failedPage = await request(s.w, `/runs/${failed.id}`, { jar: s.runner });
+  const noVersionPage = await request(s.w, `/runs/${noVersion.id}`, { jar: s.runner });
+  const revise = await post(s.w, `/runs/${succeeded.id}/price`, s.runner, [["action", "revise"]]);
+  const row = s.w.store.preflight.get(requestIdOf(revise));
+  const notOffered = await post(s.w, `/runs/${succeeded.id}/price`, s.runner, [["action", "resume_packaging"]]);
+  const viewerAsks = await post(s.w, `/runs/${succeeded.id}/price`, s.viewer, [["action", "revise"]]);
+  check("SA113. a succeeded run's report offers Revise and Critic replay to a runner (none to a viewer); a run that failed "
+    + "at stage 5 offers Resume from packaging; a run with no fact version offers none; Revise asks a price for the source "
+    + "run's own platforms, scope and fact version, with no goal; an action not offered is refused (409), and a viewer's (403)",
+    asRunner.body.includes('value="revise"') && asRunner.body.includes('value="replay_critic"') && !asRunner.body.includes('value="resume_packaging"')
+      && !asViewer.body.includes('name="action"') && failedPage.body.includes('value="resume_packaging"')
+      && !noVersionPage.body.includes('name="action"') && revise.status === 303 && row?.action === "revise" && row.goal === null
+      && row.sourceRunId === succeeded.id && row.platforms.join() === "instagram,facebook" && row.scopeTags?.join() === "synthetic-tag-a"
+      && row.factVersionId === s.factVersion && row.paramsSha256 === preflightParamsSha256(row)
+      && notOffered.status === 409 && viewerAsks.status === 403,
+    `${revise.status} ${notOffered.status} ${viewerAsks.status}`);
+  await s.w.close();
+}
+
+{
+  // SA114: hostile text stays inert on every S6.2 page.
+  const s = await s62World();
+  const hostile = '<script>alert(1)</script>"\'><img src=x onerror=alert(2)>';
+  const asked = await post(s.w, "/new/price", s.runner, newRunFields(`${hostile}[goal]`));
+  const id = requestIdOf(asked);
+  const plan = { kind: "revision", startStage: `${hostile}[stage]`, stages: [{ stage: `${hostile}[stage]`, cap: 5, owned: 1, blocking: 1,
+    sent: [{ id: "f0", lens: `${hostile}[lens]`, severity: "blocking", category: "production_coherence", issue: `${hostile}[issue]`,
+      suggestedAction: `${hostile}[action]` }], dropped: [] }], ownerItems: [{ id: "f1", lens: "x", severity: "advisory", owner: "human_review",
+    category: "human_decision", issue: `${hostile}[owner-item]` }], notRerun: [] };
+  s.w.store.answerPreflight(id, { quote: { ceilingMicros: CEILING, breakdown: [{ item: `${hostile}[item]`, unit: "critic-panel",
+    ceilingUsd: `${hostile}[usd]`, lines: [{ label: `${hostile}[label]`, model: `${hostile}[model]`, maxTokens: `${hostile}[tokens]` }] }] } }, plan);
+  const quotePage = await request(s.w, `/preflights/${id}`, { jar: s.runner });
+  const refusedId = requestIdOf(await post(s.w, "/new/price", s.runner, newRunFields()));
+  s.w.store.answerPreflight(refusedId, { refused: { refusalClass: "stage_execution_error", message: `${hostile}[refusal]` } });
+  const refusalPage = await request(s.w, `/preflights/${refusedId}`, { jar: s.runner });
+  const inert = (html: string) => !html.includes(hostile) && !/<img\b/i.test(html) && (html.match(/<script\b/g) ?? []).length === 1;
+  const fields = ["goal", "stage", "lens", "issue", "action", "owner-item", "item", "usd", "label", "model", "tokens"];
+  check("SA114. hostile text stays inert on every S6.2 page: the goal, the revise plan's text, every quote line and a "
+    + "refusal's message are escaped text, never markup",
+    inert(quotePage.body) && inert(refusalPage.body) && fields.every((f) => quotePage.body.includes(`${escapeHtml(hostile)}[${f}]`))
+      && refusalPage.body.includes(`${escapeHtml(hostile)}[refusal]`),
+    fields.filter((f) => !quotePage.body.includes(`${escapeHtml(hostile)}[${f}]`)).join());
+  await s.w.close();
+}
+
+{
+  // SA115: logs and the cap's mutation-proof pure decisions.
+  const quoteSnap = (edit: (s: ConfirmSnapshot) => void = () => {}): ConfirmSnapshot => {
+    const now = Date.UTC(2026, 9, 5, 16);
+    const snap: ConfirmSnapshot = {
+      nowMs: now, user: { id: "u", role: "runner", status: "active", dailyCapMicros: null, updatedAtMs: now - 60_000 },
+      quote: { id: "q", userId: "u", action: "full", paramsSha256: "p", workerCommit: "c", approvedFactsSha256: "a", factVersionId: "fv",
+        priceTableSha256: "t", ceilingMicros: 21_650_000, createdAtMs: now - 1_000, expiresAtMs: now + 60_000, consumed: false },
+      request: { action: "full", paramsSha256: "p", factVersionId: "fv", sourceRunId: null }, sourceAvailable: false,
+      heartbeat: { commit: "c", approvedFactsSha256: "a", priceTableSha256: "t", beatAtMs: now }, currentFactVersionId: "fv",
+      settings: { dailyCapMicros: 50_000_000, monthlyCapMicros: 200_000_000 }, ceilings: { dailyMicros: 75_000_000, monthlyMicros: 300_000_000 },
+      spend: { dayMicros: 0, monthMicros: 0, userDayMicros: 0 }, unacknowledgedOverruns: 0,
+    };
+    edit(snap);
+    return snap;
+  };
+  const of = (s: ConfirmSnapshot) => { const d = decideConfirm(s); return d.ok ? "ok" : d.refusal; };
+  const edges: Array<[string, string]> = [
+    [of(quoteSnap()), "ok"],
+    [of(quoteSnap((s) => { s.spend.dayMicros = 50_000_000 - 21_650_000; })), "ok"],
+    [of(quoteSnap((s) => { s.spend.dayMicros = 50_000_000 - 21_650_000 + 1; })), "cap_exceeded_daily"],
+    [of(quoteSnap((s) => { s.spend.monthMicros = 200_000_000 - 21_650_000 + 1; })), "cap_exceeded_monthly"],
+    [of(quoteSnap((s) => { s.ceilings.dailyMicros = 21_650_000 - 1; })), "cap_exceeded_daily"],
+    [of(quoteSnap((s) => { s.ceilings.monthlyMicros = 0; })), "cap_exceeded_monthly"],
+    [of(quoteSnap((s) => { s.settings = null; })), "cap_exceeded_daily"],
+    [of(quoteSnap((s) => { s.user!.dailyCapMicros = 25_000_000; s.spend.userDayMicros = 3_350_001; })), "cap_exceeded_user_daily"],
+    [of(quoteSnap((s) => { s.user!.dailyCapMicros = 25_000_000; s.spend.userDayMicros = 3_350_000; })), "ok"],
+    [of(quoteSnap((s) => { s.request!.sourceRunId = "src"; s.sourceAvailable = false; })), "source_unavailable"],
+    [of(quoteSnap((s) => { s.request!.paramsSha256 = "other"; })), "quote_unmatched"],
+    [of(quoteSnap((s) => { s.nowMs = s.quote!.expiresAtMs; s.heartbeat!.beatAtMs = s.nowMs; })), "ok"],
+  ];
+  const wrong = edges.map(([got, want], i) => (got === want ? "" : `#${i} ${got}≠${want}`)).filter(Boolean);
+  check("SA115. the confirmation's cap arithmetic is exact at its edges: a ceiling that exactly fits what remains of the "
+    + "day's, the month's or the user's cap is confirmed and one micro-dollar more is refused; a deployment ceiling below "
+    + "the owner's cap, a zero ceiling and an unreadable settings row each refuse; a quote at its expiry instant is accepted",
+    wrong.length === 0, wrong.join("; "));
 }
 
 {

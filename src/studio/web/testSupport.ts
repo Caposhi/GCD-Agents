@@ -22,12 +22,19 @@ import { createHash, createHmac, generateKeyPairSync, randomBytes, type KeyObjec
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { SignJWT, exportJWK, type JWK, type JWTPayload } from "jose";
 
+import { microsToNumeric, numericToMicros } from "../db/runner.js";
+import {
+  decideCancel, decideConfirm, localDay, monthOf, PREFLIGHT_RETENTION_MS, preflightPurgeable, type DeploymentCeilings,
+  type PreflightRequestInput,
+} from "./actions.js";
 import type { OidcProvider } from "./oidc.js";
 import type {
   ArtifactMeta, FindingRow, RequestRow, RunFilters, RunLineage, RunListRow, RunRow, StoredArtifact,
 } from "./runs.js";
 import type { SessionRow, StudioUserRow } from "./sessions.js";
-import type { AuditEntry, WebHealth, WebStore } from "./store.js";
+import type {
+  ActionContext, AuditEntry, CancelResult, ConfirmHooks, ConfirmResult, PreflightView, PurgeResult, SpendView, WebHealth, WebStore,
+} from "./store.js";
 
 export const STUDIO_DOMAIN = ["germancardepot", "com"].join(".");
 /** A synthetic Studio address: `<local>.<random>` at the Studio's domain, assembled at run time. */
@@ -329,7 +336,7 @@ export class MemoryWebStore implements WebStore {
     this.auditLog.push(structuredClone(entry));
   }
 
-  async purge(attemptsExpiredBefore: Date, sessionsEndedBefore: Date): Promise<{ loginAttempts: number; sessions: number }> {
+  async purge(attemptsExpiredBefore: Date, sessionsEndedBefore: Date): Promise<PurgeResult> {
     let loginAttempts = 0;
     let sessions = 0;
     for (const [k, a] of this.attempts) {
@@ -342,7 +349,16 @@ export class MemoryWebStore implements WebStore {
         sessions += 1;
       }
     }
-    return { loginAttempts, sessions };
+    // S6.2: the preflight requests past their 30 days on which no consumed quote depends.
+    let preflightRequests = 0;
+    for (const [id, r] of this.preflight) {
+      const consumed = r.quoteId !== null && this.quotes.get(r.quoteId)?.consumedAtMs !== null;
+      if (preflightPurgeable({ pastRetention: r.createdAtMs <= this.clock() - PREFLIGHT_RETENTION_MS, quoteConsumed: consumed })) {
+        this.deletePreflight(id);
+        preflightRequests += 1;
+      }
+    }
+    return { loginAttempts, sessions, preflightRequests };
   }
 
   async health(): Promise<WebHealth> {
@@ -425,6 +441,253 @@ export class MemoryWebStore implements WebStore {
 
   async listRequests(runId: string): Promise<RequestRow[]> {
     return structuredClone(this.requests.get(runId) ?? []).sort((a, b) => a.seq - b.seq);
+  }
+
+  // --- S6.2: the actions, over memory, with the schema's own rules ---------------------------------
+
+  readonly factVersions = new Map<string, { id: string; sha256: string; recordCount: number; tagCounts: Record<string, number>;
+    uploadedAt: Date; status: "active" | "retired" }>();
+  settings: { dailyCapMicros: number; monthlyCapMicros: number; activeFactVersionId: string | null } | null =
+    { dailyCapMicros: 50_000_000, monthlyCapMicros: 200_000_000, activeFactVersionId: null };
+  heartbeat: { commit: string; approvedFactsSha256: string; priceTableSha256: string; tagCounts: Record<string, number>;
+    beatAtMs: number } | null = null;
+  readonly jobs = new Map<string, { id: string; runId: string | null; kind: "preflight" | "paid" | "fake"; state: string;
+    cancelRequested: boolean }>();
+  readonly preflight = new Map<string, PreflightRequestInput & { id: string; jobId: string; createdAtMs: number;
+    outcome: "quoted" | "refused" | null; refusalClass: string | null; refusalMessage: string | null; revisePlan: unknown;
+    quoteId: string | null }>();
+  readonly quotes = new Map<string, { id: string; userId: string; action: string; paramsSha256: string; workerCommit: string;
+    approvedFactsSha256: string; factVersionId: string; priceTableSha256: string; ceilingMicros: number; breakdown: unknown;
+    createdAtMs: number; expiresAtMs: number; consumedAtMs: number | null }>();
+  readonly ledger: Array<{ entry: "reserve" | "release" | "overrun"; runId: string; amountMicros: number; day: string }> = [];
+  /** The users rows' daily caps and update times (the S4 rows carry neither). */
+  readonly userCaps = new Map<string, number | null>();
+  readonly userUpdatedAt = new Map<string, number>();
+  /** Each live run's quote. */
+  readonly runQuote = new Map<string, string>();
+  private confirmTail: Promise<unknown> = Promise.resolve();
+
+  async actionContext(): Promise<ActionContext> {
+    const v = this.settings?.activeFactVersionId ? this.factVersions.get(this.settings.activeFactVersionId) : undefined;
+    return {
+      nowMs: this.clock(),
+      settings: this.settings ? { dailyCapMicros: this.settings.dailyCapMicros, monthlyCapMicros: this.settings.monthlyCapMicros } : null,
+      activeFactVersion: v && v.status === "active" ? { id: v.id, sha256: v.sha256, recordCount: v.recordCount, tagCounts: { ...v.tagCounts },
+        uploadedAt: v.uploadedAt } : null,
+      heartbeat: this.heartbeat ? { ...this.heartbeat, tagCounts: { ...this.heartbeat.tagCounts } } : null,
+    };
+  }
+
+  /** As 0003's trigger: an active owner or runner, a source that is not deleted, a fact version that exists. */
+  async createPreflightRequest(input: PreflightRequestInput): Promise<{ requestId: string; jobId: string }> {
+    this.calls.push("createPreflightRequest");
+    const user = this.users.get(input.userId);
+    if (!user || user.status !== "active" || !["owner", "runner"].includes(user.role)) {
+      throw new RefusedWrite("23514", "a preflight is requested only by an active owner or runner");
+    }
+    if (input.sourceRunId !== null && this.runs.get(input.sourceRunId)?.deleted_at !== null) {
+      throw new RefusedWrite("23514", "a deleted run cannot be a preflight's source");
+    }
+    if (!this.factVersions.has(input.factVersionId)) throw new RefusedWrite("23503", "fact version");
+    const jobId = crypto.randomUUID();
+    const requestId = crypto.randomUUID();
+    this.jobs.set(jobId, { id: jobId, runId: null, kind: "preflight", state: "queued", cancelRequested: false });
+    this.preflight.set(requestId, { ...structuredClone(input), id: requestId, jobId, createdAtMs: this.clock(), outcome: null,
+      refusalClass: null, refusalMessage: null, revisePlan: null, quoteId: null });
+    this.auditLog.push({ action: "preflight.request", actorUserId: input.userId, targetType: "studio_preflight_requests",
+      targetId: requestId, detail: { action: input.action } });
+    return { requestId, jobId };
+  }
+
+  /** Test-only: the worker's answer, as `writePreflightOutcome` writes it (a quote, or a refusal), and the job's end. */
+  answerPreflight(requestId: string, answer: { refused: { refusalClass: string; message: string } } | {
+    quote: { ceilingMicros: number; breakdown?: unknown; workerCommit?: string; approvedFactsSha256?: string; priceTableSha256?: string;
+      createdAtMs?: number; expiresAtMs?: number };
+  }, revisePlan: unknown = null): string | null {
+    const r = this.preflight.get(requestId)!;
+    if (r.outcome !== null) throw new RefusedWrite("23514", "written once");
+    this.jobs.get(r.jobId)!.state = "finished";
+    r.revisePlan = revisePlan;
+    if ("refused" in answer) {
+      Object.assign(r, { outcome: "refused", refusalClass: answer.refused.refusalClass, refusalMessage: answer.refused.message });
+      return null;
+    }
+    const hb = this.heartbeat;
+    const created = answer.quote.createdAtMs ?? this.clock();
+    const id = crypto.randomUUID();
+    this.quotes.set(id, {
+      id, userId: r.userId, action: r.action, paramsSha256: r.paramsSha256, factVersionId: r.factVersionId,
+      workerCommit: answer.quote.workerCommit ?? hb?.commit ?? "0".repeat(40),
+      approvedFactsSha256: answer.quote.approvedFactsSha256 ?? hb?.approvedFactsSha256 ?? "0".repeat(64),
+      priceTableSha256: answer.quote.priceTableSha256 ?? hb?.priceTableSha256 ?? "0".repeat(64),
+      ceilingMicros: answer.quote.ceilingMicros, breakdown: answer.quote.breakdown ?? [],
+      createdAtMs: created, expiresAtMs: answer.quote.expiresAtMs ?? created + 10 * 60_000, consumedAtMs: null,
+    });
+    Object.assign(r, { outcome: "quoted", quoteId: id });
+    return id;
+  }
+
+  async findPreflightRequest(id: string): Promise<PreflightView | null> {
+    const r = this.preflight.get(id);
+    if (!r) return null;
+    const q = r.quoteId === null ? undefined : this.quotes.get(r.quoteId);
+    const runId = q ? [...this.runQuote].find(([, quote]) => quote === q.id)?.[0] ?? null : null;
+    return {
+      id: r.id, jobId: r.jobId, jobState: this.jobs.get(r.jobId)!.state, userId: r.userId, action: r.action, goal: r.goal,
+      platforms: [...r.platforms], scopeTags: r.scopeTags ? [...r.scopeTags] : null, sourceRunId: r.sourceRunId,
+      factVersionId: r.factVersionId, createdAt: new Date(r.createdAtMs), outcome: r.outcome, refusalClass: r.refusalClass,
+      refusalMessage: r.refusalMessage, revisePlan: structuredClone(r.revisePlan),
+      quote: q ? { id: q.id, userId: q.userId, action: q.action, ceilingUsd: microsToNumeric(q.ceilingMicros), ceilingMicros: q.ceilingMicros,
+        breakdown: structuredClone(q.breakdown), createdAt: new Date(q.createdAtMs), expiresAt: new Date(q.expiresAtMs),
+        consumedAt: q.consumedAtMs === null ? null : new Date(q.consumedAtMs), runId } : null,
+    };
+  }
+
+  /** Σreserve − Σrelease + Σoverrun, as `studio_spend_for_day`, over the entries `match` keeps. */
+  spendMicros(match: (row: MemoryWebStore["ledger"][number]) => boolean): number {
+    return this.ledger.filter(match).reduce((sum, row) => sum + (row.entry === "release" ? -row.amountMicros : row.amountMicros), 0);
+  }
+
+  unacknowledgedOverruns(): string[] {
+    return this.ledger.filter((row) => row.entry === "overrun" && !this.auditLog.some((a) => a.action === "spend.overrun_acknowledged"
+      && a.targetType === "studio_runs" && a.targetId === row.runId
+      && [...this.users.values()].some((u) => u.id === a.actorUserId && u.role === "owner"))).map((row) => row.runId);
+  }
+
+  /** As the PostgreSQL store: serialized (the settings-row lock), decided by `decideConfirm`, then written together. */
+  async confirmQuote(input: { quoteId: string; userId: string; ceilings: DeploymentCeilings }, hooks: ConfirmHooks = {}): Promise<ConfirmResult> {
+    const next = this.confirmTail.then(async (): Promise<ConfirmResult> => {
+      const now = this.clock();
+      const user = this.users.get(input.userId);
+      const q = this.quotes.get(input.quoteId);
+      const r = q ? [...this.preflight.values()].find((x) => x.quoteId === q.id) : undefined;
+      const source = r?.sourceRunId ? this.runs.get(r.sourceRunId) : undefined;
+      const day = localDay(now);
+      const derived = r !== undefined && r.sourceRunId !== null;
+      const decision = decideConfirm({
+        nowMs: now,
+        user: user ? { id: user.id, role: user.role, status: user.status, dailyCapMicros: this.userCaps.get(user.id) ?? null,
+          updatedAtMs: this.userUpdatedAt.get(user.id) ?? 0 } : null,
+        quote: q ? { ...q, consumed: q.consumedAtMs !== null } : null,
+        request: r ? { action: r.action, paramsSha256: r.paramsSha256, factVersionId: r.factVersionId, sourceRunId: r.sourceRunId } : null,
+        sourceAvailable: source !== undefined && source.deleted_at === null,
+        heartbeat: this.heartbeat,
+        currentFactVersionId: derived ? (source && source.deleted_at === null ? source.fact_version_id : null)
+          : this.settings?.activeFactVersionId ?? null,
+        settings: this.settings,
+        ceilings: input.ceilings,
+        spend: {
+          dayMicros: this.spendMicros((row) => row.day === day),
+          monthMicros: this.spendMicros((row) => monthOf(row.day) === monthOf(day)),
+          userDayMicros: this.spendMicros((row) => row.day === day && this.runs.get(row.runId)?.requested_by === input.userId),
+        },
+        unacknowledgedOverruns: this.unacknowledgedOverruns().length,
+      });
+      if (!decision.ok) return decision;
+      const version = this.factVersions.get(q!.factVersionId);
+      const run = this.addRun(user!, {
+        kind: q!.action, state: "queued", runner: "live", goal: derived ? source!.goal : r!.goal, platforms: [...r!.platforms],
+        scope_tags: r!.scopeTags ? [...r!.scopeTags] : null, fact_version_id: q!.factVersionId, automotive_facts_sha256: version?.sha256 ?? null,
+        source_run_id: r!.sourceRunId, reserved_usd: microsToNumeric(q!.ceilingMicros), verdict: null, created_at: new Date(now),
+        started_at: null, finished_at: null,
+      });
+      q!.consumedAtMs = now;
+      this.runQuote.set(run.id, q!.id);
+      this.ledger.push({ entry: "reserve", runId: run.id, amountMicros: q!.ceilingMicros, day });
+      const jobId = crypto.randomUUID();
+      this.jobs.set(jobId, { id: jobId, runId: run.id, kind: "paid", state: "queued", cancelRequested: false });
+      this.auditLog.push({ action: "run.confirm", actorUserId: input.userId, targetType: "studio_runs", targetId: run.id,
+        detail: { kind: q!.action, quote: q!.id } });
+      await hooks.beforeCommit?.();
+      return { ok: true, runId: run.id };
+    });
+    this.confirmTail = next.catch(() => undefined);
+    return next;
+  }
+
+  /** As the PostgreSQL store: `decideCancel`, then the queued cancellation (with its release) or the running request. */
+  async cancelRun(input: { runId: string; user: { id: string; role: string; status: string } }): Promise<CancelResult> {
+    const run = this.runs.get(input.runId);
+    const job = [...this.jobs.values()].find((j) => j.runId === input.runId);
+    const plan = decideCancel(input.user, {
+      run: run ? { id: run.id, requestedBy: run.requested_by, state: run.state, runner: run.runner, kind: run.kind,
+        reservedMicros: numericToMicros(run.reserved_usd), deleted: run.deleted_at !== null } : null,
+      job: job ? { state: job.state, cancelRequested: job.cancelRequested } : null,
+    });
+    if (!plan.ok) return plan;
+    if (plan.kind === "queued") {
+      job!.state = "cancelled";
+      job!.cancelRequested = true;
+      Object.assign(run!, { state: "cancelled", failure_class: "job_cancelled", failure_message: "the job was cancelled before it was claimed",
+        finished_at: new Date(this.clock()), actual_usd: run!.runner === "live" ? "0.000000" : null });
+      if (plan.releaseMicros !== null) {
+        const reserve = this.ledger.find((row) => row.runId === run!.id && row.entry === "reserve")!;
+        this.ledger.push({ entry: "release", runId: run!.id, amountMicros: plan.releaseMicros, day: reserve.day });
+      }
+    } else {
+      job!.cancelRequested = true;
+    }
+    this.auditLog.push({ action: "run.cancel", actorUserId: input.user.id, targetType: "studio_runs", targetId: input.runId,
+      detail: { was: plan.kind } });
+    return { ok: true, kind: plan.kind };
+  }
+
+  /** As the runs trigger: a fake run is created only by an active owner. */
+  async createFakeRun(input: { ownerId: string; goal: string; platforms: string[]; scopeTags: string[] | null;
+    factVersionId: string | null }): Promise<{ runId: string; jobId: string }> {
+    const owner = this.users.get(input.ownerId);
+    if (!owner || owner.status !== "active" || owner.role !== "owner") throw new RefusedWrite("23514", "fake runs and imports are owner-only");
+    const version = input.factVersionId ? this.factVersions.get(input.factVersionId) : undefined;
+    const run = this.addRun(owner, { kind: "full", state: "queued", runner: "fake", goal: input.goal, platforms: [...input.platforms],
+      scope_tags: input.scopeTags ? [...input.scopeTags] : null, fact_version_id: version?.id ?? null,
+      automotive_facts_sha256: version?.sha256 ?? null, verdict: null, created_at: new Date(this.clock()), started_at: null, finished_at: null });
+    const jobId = crypto.randomUUID();
+    this.jobs.set(jobId, { id: jobId, runId: run.id, kind: "fake", state: "queued", cancelRequested: false });
+    this.auditLog.push({ action: "run.fake", actorUserId: owner.id, targetType: "studio_runs", targetId: run.id, detail: {} });
+    return { runId: run.id, jobId };
+  }
+
+  async acknowledgeOverrun(input: { runId: string; ownerId: string }): Promise<boolean> {
+    if (!this.unacknowledgedOverruns().includes(input.runId)) return false;
+    this.auditLog.push({ action: "spend.overrun_acknowledged", actorUserId: input.ownerId, targetType: "studio_runs",
+      targetId: input.runId, detail: {} });
+    return true;
+  }
+
+  async spendView(day: string): Promise<SpendView> {
+    const acknowledged = (runId: string) => !this.unacknowledgedOverruns().includes(runId);
+    return {
+      day, month: monthOf(day),
+      dayMicros: this.spendMicros((row) => row.day === day),
+      monthMicros: this.spendMicros((row) => monthOf(row.day) === monthOf(day)),
+      settings: this.settings ? { dailyCapMicros: this.settings.dailyCapMicros, monthlyCapMicros: this.settings.monthlyCapMicros } : null,
+      users: [...this.users.values()].map((u) => ({
+        id: u.id, name: u.display_name, role: u.role, status: u.status, dailyCapMicros: this.userCaps.get(u.id) ?? null,
+        dayMicros: this.spendMicros((row) => row.day === day && this.runs.get(row.runId)?.requested_by === u.id),
+        monthMicros: this.spendMicros((row) => monthOf(row.day) === monthOf(day) && this.runs.get(row.runId)?.requested_by === u.id),
+      })),
+      overruns: this.ledger.filter((row) => row.entry === "overrun").map((row) => ({ runId: row.runId, amountMicros: row.amountMicros,
+        day: row.day, requestedBy: this.runs.get(row.runId)?.requested_by ?? "", acknowledged: acknowledged(row.runId) })),
+    };
+  }
+
+  /** As 0003's DELETE rule: 30 days, and never one a consumed quote depends on. */
+  private deletePreflight(id: string): void {
+    const r = this.preflight.get(id)!;
+    if (r.quoteId !== null && this.quotes.get(r.quoteId)?.consumedAtMs !== null) {
+      throw new RefusedWrite("23514", "a preflight request whose quote was consumed is never deleted");
+    }
+    if (r.createdAtMs > this.clock() - PREFLIGHT_RETENTION_MS) throw new RefusedWrite("23514", "kept for 30 days");
+    this.preflight.delete(id);
+  }
+
+  /** Test-only: an active fact version, as the owner's upload (S7) and the settings row would make it. */
+  addFactVersion(tagCounts: Record<string, number> = {}, active = true): string {
+    const id = crypto.randomUUID();
+    this.factVersions.set(id, { id, sha256: createHash("sha256").update(id).digest("hex"), recordCount: 4, tagCounts,
+      uploadedAt: new Date(this.clock()), status: "active" });
+    if (active && this.settings) this.settings.activeFactVersionId = id;
+    return id;
   }
 
   /** Everything stored, as text: for proving no cookie value or token is ever kept. */

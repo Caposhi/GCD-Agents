@@ -437,3 +437,102 @@ export async function runStudioMigrations(
   log("[studio-migrate] done");
   return { applied: plan.pending, skipped: plan.applied };
 }
+
+// ---------------------------------------------------------------------------
+// Shared by the web and the worker since Content Studio S6.2
+// ---------------------------------------------------------------------------
+//
+// This module is the one both runtimes already import (S4 moved the shared
+// start-up rules here), and the only Studio module outside its own tree that
+// the web may reach (CS10). Everything below is pure: the canonical form of a
+// preflight request's parameters, the money arithmetic and deployment caps
+// the worker had alone until S6.2 (moved from `src/studio/worker/money.ts`
+// unchanged, which re-exports them), and the overrun lock's query (moved from
+// `src/studio/worker/spend.ts` unchanged, which re-exports it).
+
+/** The canonical parameter form's schema tag (migration 0003). */
+export const PREFLIGHT_PARAMS_SCHEMA = "gcd-studio-preflight-params/1";
+
+/** A preflight request's parameters, as `studio_preflight_requests` stores them. */
+export interface PreflightParams {
+  action: string;
+  /** Exactly as stored: no trimming, case folding or Unicode normalization. Null except for a full run. */
+  goal: string | null;
+  platforms: readonly string[];
+  /** Null is an unscoped run. */
+  scopeTags: readonly string[] | null;
+  /** As PostgreSQL prints a uuid (lower case, hyphenated); null for a full run. */
+  sourceRunId: string | null;
+  factVersionId: string;
+}
+
+/**
+ * Migration 0003's canonical form: the JSON text `JSON.stringify` produces for
+ * an object with exactly these seven keys, in this order, the two arrays sorted
+ * by JavaScript's default sort (UTF-16 code-unit order) and every absent value
+ * `null`.
+ */
+export function preflightParamsCanonical(params: PreflightParams): string {
+  return JSON.stringify({
+    schema: PREFLIGHT_PARAMS_SCHEMA,
+    action: params.action,
+    goal: params.goal ?? null,
+    platforms: [...params.platforms].sort(),
+    scopeTags: params.scopeTags === null || params.scopeTags === undefined ? null : [...params.scopeTags].sort(),
+    sourceRunId: params.sourceRunId ?? null,
+    factVersionId: params.factVersionId,
+  });
+}
+
+/**
+ * `params_sha256`: the lower-case hex SHA-256 of the canonical form's UTF-8
+ * bytes. The ONE function the web (which writes a request) and the worker
+ * (which recomputes it before answering) both call.
+ */
+export function preflightParamsSha256(params: PreflightParams): string {
+  return sha256Hex(Buffer.from(preflightParamsCanonical(params), "utf8"));
+}
+
+/** Money in whole micro-dollars (the schema's `numeric(12,6)` USD), so every comparison is exact integer arithmetic. */
+export const MICROS_PER_USD = 1_000_000;
+
+/** A PostgreSQL `numeric` as micro-dollars, exactly (at most six decimals). */
+export function numericToMicros(text: string | null | undefined): number | null {
+  if (text === null || text === undefined) return null;
+  const match = /^(-)?(\d+)(?:\.(\d{1,6})0*)?$/.exec(String(text).trim());
+  if (!match) throw new Error(`not a numeric(12,6) amount: ${JSON.stringify(text)}`);
+  const micros = Number(match[2]) * MICROS_PER_USD + Number((match[3] ?? "").padEnd(6, "0"));
+  return match[1] ? -micros : micros;
+}
+
+/** Micro-dollars as a `numeric(12,6)` literal. */
+export function microsToNumeric(micros: number): string {
+  if (!Number.isSafeInteger(micros)) throw new Error(`not a whole number of micro-dollars: ${micros}`);
+  const sign = micros < 0 ? "-" : "";
+  const abs = Math.abs(micros);
+  return `${sign}${Math.floor(abs / MICROS_PER_USD)}.${String(abs % MICROS_PER_USD).padStart(6, "0")}`;
+}
+
+/**
+ * A deployment-time cap (`STUDIO_MAX_DAILY_USD`, `STUDIO_MAX_MONTHLY_USD`) in
+ * micro-dollars. Missing, empty, negative, not a plain decimal, or more than
+ * six decimals: zero, which refuses every paid request (design §6.2). Read by
+ * the worker (since S3) and the web (since S6.2).
+ */
+export function parseCapMicros(raw: string | undefined): number {
+  if (typeof raw !== "string" || !/^\d{1,6}(?:\.\d{1,6})?$/.test(raw.trim())) return 0;
+  return numericToMicros(raw.trim()) ?? 0;
+}
+
+/** The audit action by which the owner acknowledges an overrun (design §6.2), unlocking confirmations. */
+export const OVERRUN_ACKNOWLEDGED = "spend.overrun_acknowledged";
+
+/**
+ * Overrun entries no owner has acknowledged. Read by the worker before every
+ * paid unit and, since S6.2, by the web's confirmation transaction.
+ */
+export const UNACKNOWLEDGED_OVERRUNS_SQL = `
+  SELECT count(*)::int AS n FROM studio_spend_ledger l
+   WHERE l.entry = 'overrun' AND NOT EXISTS (
+     SELECT 1 FROM studio_audit_log a JOIN studio_users u ON u.id = a.actor_user_id AND u.role = 'owner'
+      WHERE a.action = '${OVERRUN_ACKNOWLEDGED}' AND a.target_type = 'studio_runs' AND a.target_id = l.run_id::text)`;

@@ -14,6 +14,10 @@
 
 import pg from "pg";
 
+import { microsToNumeric, numericToMicros, OVERRUN_ACKNOWLEDGED, UNACKNOWLEDGED_OVERRUNS_SQL } from "../db/runner.js";
+import {
+  decideCancel, decideConfirm, localDay, preflightPurgeable, type DeploymentCeilings, type PreflightRequestInput, type Refusal,
+} from "./actions.js";
 import type {
   ArtifactMeta, FindingRow, RequestRow, RunFilters, RunLineage, RunListRow, RunRow, StoredArtifact,
 } from "./runs.js";
@@ -57,9 +61,10 @@ export interface WebStore {
   audit(entry: AuditEntry): Promise<void>;
   /**
    * Deletes login attempts that expired before `attemptsExpiredBefore`, and sessions that ended — expired (idle
-   * or absolute) or were revoked — before `sessionsEndedBefore`.
+   * or absolute) or were revoked — before `sessionsEndedBefore`; and (S6.2) preflight requests past their 30
+   * days on which no consumed quote depends (`preflightPurgeable`, design §4.7).
    */
-  purge(attemptsExpiredBefore: Date, sessionsEndedBefore: Date): Promise<{ loginAttempts: number; sessions: number }>;
+  purge(attemptsExpiredBefore: Date, sessionsEndedBefore: Date): Promise<PurgeResult>;
   health(): Promise<WebHealth>;
 
   // --- Content Studio S5: read-only. Every argument was validated by the caller (`runs.ts`); every query binds it.
@@ -73,7 +78,78 @@ export interface WebStore {
   /** The worker's rows (S5's derivation), in the panel's order. The web derives none of them. */
   listFindings(runId: string): Promise<FindingRow[]>;
   listRequests(runId: string): Promise<RequestRow[]>;
+
+  // --- Content Studio S6.2: the actions. The decisions are `actions.ts`'s; the store reads and writes.
+  /** The database's clock, the heartbeat, the active fact version and the owner's caps. */
+  actionContext(): Promise<ActionContext>;
+  /** §6.1 step 1: the preflight job and its request, in ONE transaction. */
+  createPreflightRequest(input: PreflightRequestInput): Promise<{ requestId: string; jobId: string }>;
+  findPreflightRequest(id: string): Promise<PreflightView | null>;
+  /** §6.1 step 4: `decideConfirm` under the settings-row lock, then the run, the consumption, the reservation and the job. */
+  confirmQuote(input: { quoteId: string; userId: string; ceilings: DeploymentCeilings }, hooks?: ConfirmHooks): Promise<ConfirmResult>;
+  /** §5.3: `decideCancel` under the job's and the run's row locks, then the cancellation. */
+  cancelRun(input: { runId: string; user: { id: string; role: string; status: string } }): Promise<CancelResult>;
+  /** §6.3: a fake run, owner only. */
+  createFakeRun(input: { ownerId: string; goal: string; platforms: string[]; scopeTags: string[] | null;
+    factVersionId: string | null }): Promise<{ runId: string; jobId: string }>;
+  acknowledgeOverrun(input: { runId: string; ownerId: string }): Promise<boolean>;
+  /** §6.4: spend for `day` (America/New_York) and its month, per user, and every overrun. */
+  spendView(day: string): Promise<SpendView>;
 }
+
+export interface PurgeResult { loginAttempts: number; sessions: number; preflightRequests: number }
+
+/** The worker's heartbeat row, as the web reads it (design §3.3, §4.6). */
+export interface HeartbeatRow {
+  commit: string;
+  approvedFactsSha256: string;
+  priceTableSha256: string;
+  /** Per tag, how many approved-facts records carry it (the worker computes them). */
+  tagCounts: Record<string, number>;
+  beatAtMs: number;
+}
+
+export interface FactVersionRow { id: string; sha256: string; recordCount: number; tagCounts: Record<string, number>; uploadedAt: Date }
+
+/** What every action screen reads: the database's clock, the heartbeat, the active fact version and the owner's caps. */
+export interface ActionContext {
+  nowMs: number;
+  heartbeat: HeartbeatRow | null;
+  activeFactVersion: FactVersionRow | null;
+  settings: { dailyCapMicros: number; monthlyCapMicros: number } | null;
+}
+
+export interface QuoteView {
+  id: string; userId: string; action: string; ceilingUsd: string; ceilingMicros: number; breakdown: unknown;
+  createdAt: Date; expiresAt: Date; consumedAt: Date | null; runId: string | null;
+}
+
+export interface PreflightView {
+  id: string; jobId: string; jobState: string; userId: string; action: string; goal: string | null; platforms: string[];
+  scopeTags: string[] | null; sourceRunId: string | null; factVersionId: string; createdAt: Date;
+  outcome: "quoted" | "refused" | null; refusalClass: string | null; refusalMessage: string | null; revisePlan: unknown;
+  quote: QuoteView | null;
+}
+
+export type ConfirmResult = { ok: true; runId: string } | ({ ok: false } & Refusal);
+export type CancelResult = { ok: true; kind: "queued" | "running" } | ({ ok: false } & Refusal);
+
+export interface SpendView {
+  day: string; month: string; dayMicros: number; monthMicros: number;
+  settings: { dailyCapMicros: number; monthlyCapMicros: number } | null;
+  users: Array<{ id: string; name: string | null; role: string; status: string; dailyCapMicros: number | null; dayMicros: number; monthMicros: number }>;
+  overruns: Array<{ runId: string; amountMicros: number; day: string; requestedBy: string; acknowledged: boolean }>;
+}
+
+/** Test-only seams of the confirmation transaction (the concurrency check holds a confirmation open). */
+export interface ConfirmHooks { beforeCommit?: () => Promise<void> }
+
+
+const countsOf = (value: unknown): Record<string, number> => {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+    .filter((entry): entry is [string, number] => typeof entry[1] === "number" && Number.isSafeInteger(entry[1]) && entry[1] >= 0));
+};
 
 const RUN_LIST_COLUMNS = `r.id::text AS id, r.kind, r.state, r.runner, r.goal, r.verdict, r.blocking_findings,
   r.advisory_findings, r.actual_usd::text AS actual_usd, r.import_tier, r.created_at, r.requested_by::text AS requested_by,
@@ -217,13 +293,28 @@ export class PgWebStore implements WebStore {
       [entry.actorUserId, entry.action, entry.targetType, entry.targetId, JSON.stringify(entry.detail)]);
   }
 
-  async purge(attemptsExpiredBefore: Date, sessionsEndedBefore: Date): Promise<{ loginAttempts: number; sessions: number }> {
+  async purge(attemptsExpiredBefore: Date, sessionsEndedBefore: Date): Promise<PurgeResult> {
     const attempts = await this.db.query("DELETE FROM studio_login_attempts WHERE expires_at <= $1", [attemptsExpiredBefore]);
     const sessions = await this.db.query(
       `DELETE FROM studio_sessions
         WHERE absolute_expires_at <= $1 OR idle_expires_at <= $1 OR (revoked_at IS NOT NULL AND revoked_at <= $1)`,
       [sessionsEndedBefore]);
-    return { loginAttempts: attempts.rowCount ?? 0, sessions: sessions.rowCount ?? 0 };
+    // S6.2 (design §4.7): preflight requests past their 30 days, by the database's own clock, on which no
+    // consumed quote depends. Migration 0003's trigger refuses any other deletion. A request whose quote was
+    // consumed is kept for ever, so the query leaves it out — otherwise a thousand of them would fill every
+    // pass's window — and `preflightPurgeable` decides each candidate again.
+    const candidates = (await this.db.query(
+      `SELECT r.id::text AS id, r.created_at <= now() - interval '30 days' AS past,
+              EXISTS (SELECT 1 FROM studio_quotes q WHERE q.id = r.quote_id AND q.consumed_at IS NOT NULL) AS consumed
+         FROM studio_preflight_requests r
+        WHERE r.created_at <= now() - interval '30 days'
+          AND NOT EXISTS (SELECT 1 FROM studio_quotes q WHERE q.id = r.quote_id AND q.consumed_at IS NOT NULL)
+        ORDER BY r.created_at, r.id LIMIT 1000`)).rows;
+    const ids = candidates.filter((c) => preflightPurgeable({ pastRetention: c.past === true, quoteConsumed: c.consumed === true }))
+      .map((c) => String(c.id));
+    const requests = ids.length
+      ? (await this.db.query("DELETE FROM studio_preflight_requests WHERE id = ANY($1::uuid[])", [ids])).rowCount ?? 0 : 0;
+    return { loginAttempts: attempts.rowCount ?? 0, sessions: sessions.rowCount ?? 0, preflightRequests: requests };
   }
 
   async listRuns(filters: Omit<RunFilters, "page">, limit: number, offset: number): Promise<RunListRow[]> {
@@ -313,6 +404,287 @@ export class PgWebStore implements WebStore {
     return {
       schemaVersion: rows[0]?.schema_version === null || rows[0]?.schema_version === undefined ? null : String(rows[0].schema_version),
       workerHeartbeatAgeSeconds: typeof age === "number" && Number.isFinite(age) ? Math.max(0, Math.round(age)) : null,
+    };
+  }
+
+  // --- Content Studio S6.2 -----------------------------------------------------------------------
+
+  /**
+   * `fn` in ONE transaction on one pooled client: committed when it asks to,
+   * rolled back when it refuses or throws. Inside `transaction()` (no pool) it
+   * runs in the caller's transaction.
+   */
+  private async atomically<T>(fn: (db: Queryable) => Promise<{ result: T; commit: boolean }>): Promise<T> {
+    if (!this.pool) return (await fn(this.db)).result;
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const { result, commit } = await fn(client);
+      await client.query(commit ? "COMMIT" : "ROLLBACK");
+      return result;
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+
+  /**
+   * §6.1 step 4, in ONE transaction that first takes `SELECT … FOR UPDATE` on
+   * the settings row, which serializes every confirmation: two confirmations
+   * against the same headroom cannot both pass the caps. Everything the
+   * decision reads is read after that lock; then the run, the quote's
+   * consumption, the reserve entry, the paid job and the audit row are
+   * written, and committed together — or nothing is.
+   */
+  async confirmQuote(input: { quoteId: string; userId: string; ceilings: DeploymentCeilings }, hooks: ConfirmHooks = {}):
+    Promise<ConfirmResult> {
+    return this.atomically<ConfirmResult>(async (db) => {
+      // 1. the lock that serializes every confirmation
+      const settings = (await db.query(
+        `SELECT daily_cap_usd::text AS daily, monthly_cap_usd::text AS monthly, active_fact_version_id::text AS active
+           FROM studio_settings WHERE singleton FOR UPDATE`)).rows[0];
+      const nowMs = Number((await db.query("SELECT (extract(epoch FROM now()) * 1000)::float8 AS now")).rows[0]!.now);
+      const user = (await db.query(
+        `SELECT id::text AS id, role, status, daily_cap_usd::text AS cap, (extract(epoch FROM updated_at) * 1000)::float8 AS updated
+           FROM studio_users WHERE id = $1::uuid`, [input.userId])).rows[0];
+      const quote = (await db.query(
+        `SELECT q.id::text AS id, q.user_id::text AS user_id, q.action, q.params_sha256, q.worker_commit, q.approved_facts_sha256,
+                q.fact_version_id::text AS fact_version_id, q.price_table_sha256, q.ceiling_usd::text AS ceiling,
+                (extract(epoch FROM q.created_at) * 1000)::float8 AS created, (extract(epoch FROM q.expires_at) * 1000)::float8 AS expires,
+                q.consumed_at IS NOT NULL AS consumed, v.sha256 AS fact_sha
+           FROM studio_quotes q LEFT JOIN studio_fact_versions v ON v.id = q.fact_version_id
+          WHERE q.id = $1::uuid FOR UPDATE OF q`, [input.quoteId])).rows[0];
+      const request = quote ? (await db.query(
+        `SELECT action, goal, platforms, scope_tags, source_run_id::text AS source_run_id, fact_version_id::text AS fact_version_id,
+                params_sha256 FROM studio_preflight_requests WHERE quote_id = $1::uuid`, [quote.id])).rows[0] : undefined;
+      const source = request?.source_run_id ? (await db.query(
+        `SELECT goal, fact_version_id::text AS fact_version_id, deleted_at IS NOT NULL AS deleted FROM studio_runs WHERE id = $1::uuid`,
+        [request.source_run_id])).rows[0] : undefined;
+      const beat = (await db.query(
+        `SELECT commit, approved_facts_sha256, price_table_sha256, (extract(epoch FROM beat_at) * 1000)::float8 AS beat
+           FROM studio_worker_heartbeat WHERE singleton`)).rows[0];
+      const overruns = (await db.query(UNACKNOWLEDGED_OVERRUNS_SQL)).rows[0]?.n;
+      const day = localDay(nowMs);
+      const spend = (await db.query(
+        `SELECT studio_spend_for_day($1::date)::text AS day, studio_spend_for_month($1::date)::text AS month,
+                (SELECT COALESCE(SUM(CASE l.entry WHEN 'release' THEN -l.amount_usd ELSE l.amount_usd END), 0)::text
+                   FROM studio_spend_ledger l JOIN studio_runs r ON r.id = l.run_id
+                  WHERE r.requested_by = $2::uuid AND l.day_local = $1::date) AS user_day`, [day, input.userId])).rows[0]!;
+      const derived = request !== undefined && request.source_run_id !== null;
+      const decision = decideConfirm({
+        nowMs,
+        user: user ? { id: user.id, role: user.role, status: user.status, dailyCapMicros: numericToMicros(user.cap),
+          updatedAtMs: Number(user.updated) } : null,
+        quote: quote ? { id: quote.id, userId: quote.user_id, action: quote.action, paramsSha256: quote.params_sha256,
+          workerCommit: quote.worker_commit, approvedFactsSha256: quote.approved_facts_sha256, factVersionId: quote.fact_version_id,
+          priceTableSha256: quote.price_table_sha256, ceilingMicros: numericToMicros(quote.ceiling)!, createdAtMs: Number(quote.created),
+          expiresAtMs: Number(quote.expires), consumed: quote.consumed === true } : null,
+        request: request ? { action: request.action, paramsSha256: request.params_sha256, factVersionId: request.fact_version_id,
+          sourceRunId: request.source_run_id } : null,
+        sourceAvailable: source !== undefined && source.deleted !== true,
+        heartbeat: beat ? { commit: beat.commit, approvedFactsSha256: beat.approved_facts_sha256,
+          priceTableSha256: beat.price_table_sha256, beatAtMs: Number(beat.beat) } : null,
+        currentFactVersionId: derived ? (source && source.deleted !== true ? source.fact_version_id : null) : (settings?.active ?? null),
+        settings: settings ? { dailyCapMicros: numericToMicros(settings.daily) ?? 0, monthlyCapMicros: numericToMicros(settings.monthly) ?? 0 } : null,
+        ceilings: input.ceilings,
+        spend: { dayMicros: numericToMicros(spend.day) ?? 0, monthMicros: numericToMicros(spend.month) ?? 0,
+          userDayMicros: numericToMicros(spend.user_day) ?? 0 },
+        unacknowledgedOverruns: typeof overruns === "number" ? overruns : 1,
+      });
+      if (!decision.ok) return { result: decision, commit: false };
+      // 2. the run, the quote's consumption, the reservation and the job — together
+      const runId = String((await db.query(
+        `INSERT INTO studio_runs (kind, requested_by, runner, goal, platforms, scope_tags, fact_version_id, automotive_facts_sha256,
+                                  source_run_id, quote_id, reserved_usd)
+         VALUES ($1, $2::uuid, 'live', $3, $4, $5, $6::uuid, $7, $8::uuid, $9::uuid, $10) RETURNING id::text AS id`,
+        [quote.action, input.userId, derived ? source.goal : request.goal, request.platforms, request.scope_tags,
+          quote.fact_version_id, quote.fact_sha, request.source_run_id, quote.id, quote.ceiling])).rows[0]!.id);
+      await db.query("UPDATE studio_quotes SET consumed_at = now() WHERE id = $1::uuid AND consumed_at IS NULL", [quote.id]);
+      await db.query("INSERT INTO studio_spend_ledger (entry, run_id, amount_usd) VALUES ('reserve', $1::uuid, $2)", [runId, quote.ceiling]);
+      await db.query("INSERT INTO studio_jobs (run_id, kind) VALUES ($1::uuid, 'paid')", [runId]);
+      await db.query(
+        `INSERT INTO studio_audit_log (actor_user_id, action, target_type, target_id, detail) VALUES ($1::uuid, 'run.confirm', 'studio_runs', $2, $3::jsonb)`,
+        [input.userId, runId, JSON.stringify({ kind: quote.action, quote: quote.id })]);
+      await hooks.beforeCommit?.();
+      return { result: { ok: true, runId }, commit: true };
+    });
+  }
+
+  /**
+   * Cancellation (design §5.3), in one transaction that locks the run's job,
+   * then its run — the order the worker's claim takes them — so a cancel and a
+   * claim cannot both win. A queued job is cancelled before it is claimed, its
+   * run ends `cancelled` and a live run's whole reservation is released; a
+   * running job's cancellation is requested, and the worker stops before its
+   * next request.
+   */
+  async cancelRun(input: { runId: string; user: { id: string; role: string; status: string } }): Promise<CancelResult> {
+    return this.atomically<CancelResult>(async (db) => {
+      const job = (await db.query(
+        `SELECT id::text AS id, state, cancel_requested_at IS NOT NULL AS cancel FROM studio_jobs WHERE run_id = $1::uuid FOR UPDATE`,
+        [input.runId])).rows[0];
+      const run = (await db.query(
+        `SELECT id::text AS id, requested_by::text AS requested_by, state, runner, kind, reserved_usd::text AS reserved,
+                deleted_at IS NOT NULL AS deleted FROM studio_runs WHERE id = $1::uuid FOR UPDATE`, [input.runId])).rows[0];
+      const plan = decideCancel(input.user, {
+        run: run ? { id: run.id, requestedBy: run.requested_by, state: run.state, runner: run.runner, kind: run.kind,
+          reservedMicros: numericToMicros(run.reserved), deleted: run.deleted === true } : null,
+        job: job ? { state: job.state, cancelRequested: job.cancel === true } : null,
+      });
+      if (!plan.ok) return { result: plan, commit: false };
+      if (plan.kind === "queued") {
+        await db.query("UPDATE studio_jobs SET state = 'cancelled', cancel_requested_at = now() WHERE id = $1::uuid", [job.id]);
+        await db.query(
+          `UPDATE studio_runs SET state = 'cancelled', failure_class = 'job_cancelled',
+                  failure_message = 'the job was cancelled before it was claimed', finished_at = now(),
+                  actual_usd = CASE WHEN runner = 'live' THEN 0 ELSE NULL END
+            WHERE id = $1::uuid`, [run.id]);
+        if (plan.releaseMicros !== null) {
+          await db.query("INSERT INTO studio_spend_ledger (entry, run_id, amount_usd) VALUES ('release', $1::uuid, $2)",
+            [run.id, microsToNumeric(plan.releaseMicros)]);
+        }
+      } else {
+        await db.query("UPDATE studio_jobs SET cancel_requested_at = now() WHERE id = $1::uuid", [job.id]);
+      }
+      await db.query(
+        `INSERT INTO studio_audit_log (actor_user_id, action, target_type, target_id, detail) VALUES ($1::uuid, 'run.cancel', 'studio_runs', $2, $3::jsonb)`,
+        [input.user.id, run.id, JSON.stringify({ was: plan.kind })]);
+      return { result: { ok: true, kind: plan.kind }, commit: true };
+    });
+  }
+
+  async actionContext(): Promise<ActionContext> {
+    const { rows } = await this.db.query(
+      `SELECT (extract(epoch FROM now()) * 1000)::float8 AS now,
+              s.daily_cap_usd::text AS daily, s.monthly_cap_usd::text AS monthly,
+              v.id::text AS v_id, v.sha256 AS v_sha, v.record_count AS v_records, v.tag_counts AS v_tags, v.uploaded_at AS v_at,
+              h.commit AS h_commit, h.approved_facts_sha256 AS h_approved, h.price_table_sha256 AS h_price,
+              h.approved_facts_tag_counts AS h_tags, (extract(epoch FROM h.beat_at) * 1000)::float8 AS h_beat
+         FROM (SELECT 1) one
+         LEFT JOIN studio_settings s ON s.singleton
+         LEFT JOIN studio_fact_versions v ON v.id = s.active_fact_version_id AND v.status = 'active'
+         LEFT JOIN studio_worker_heartbeat h ON h.singleton`);
+    const r = rows[0]!;
+    return {
+      nowMs: Number(r.now),
+      settings: r.daily === null ? null : { dailyCapMicros: numericToMicros(r.daily) ?? 0, monthlyCapMicros: numericToMicros(r.monthly) ?? 0 },
+      activeFactVersion: r.v_id === null ? null : { id: r.v_id, sha256: r.v_sha, recordCount: Number(r.v_records),
+        tagCounts: countsOf(r.v_tags), uploadedAt: r.v_at },
+      heartbeat: r.h_commit === null ? null : { commit: r.h_commit, approvedFactsSha256: r.h_approved, priceTableSha256: r.h_price,
+        tagCounts: countsOf(r.h_tags), beatAtMs: Number(r.h_beat) },
+    };
+  }
+
+  /** §6.1 step 1: the preflight job and its request, in ONE transaction, with an audit row of classes only. */
+  async createPreflightRequest(input: PreflightRequestInput): Promise<{ requestId: string; jobId: string }> {
+    return this.atomically(async (db) => {
+      const jobId = String((await db.query("INSERT INTO studio_jobs (kind) VALUES ('preflight') RETURNING id::text AS id")).rows[0]!.id);
+      const requestId = String((await db.query(
+        `INSERT INTO studio_preflight_requests (job_id, user_id, action, goal, platforms, scope_tags, source_run_id, fact_version_id,
+                                                params_sha256)
+         VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7::uuid, $8::uuid, $9) RETURNING id::text AS id`,
+        [jobId, input.userId, input.action, input.goal, input.platforms, input.scopeTags, input.sourceRunId, input.factVersionId,
+          input.paramsSha256])).rows[0]!.id);
+      await db.query(
+        `INSERT INTO studio_audit_log (actor_user_id, action, target_type, target_id, detail)
+         VALUES ($1::uuid, 'preflight.request', 'studio_preflight_requests', $2, $3::jsonb)`,
+        [input.userId, requestId, JSON.stringify({ action: input.action })]);
+      return { result: { requestId, jobId }, commit: true };
+    });
+  }
+
+  async findPreflightRequest(id: string): Promise<PreflightView | null> {
+    const { rows } = await this.db.query(
+      `SELECT r.id::text AS id, r.job_id::text AS job_id, j.state AS job_state, r.user_id::text AS user_id, r.action, r.goal, r.platforms,
+              r.scope_tags, r.source_run_id::text AS source_run_id, r.fact_version_id::text AS fact_version_id, r.created_at,
+              r.outcome, r.refusal_class, r.refusal_message, r.revise_plan,
+              q.id::text AS q_id, q.user_id::text AS q_user, q.action AS q_action, q.ceiling_usd::text AS q_ceiling, q.breakdown AS q_breakdown,
+              q.created_at AS q_created, q.expires_at AS q_expires, q.consumed_at AS q_consumed, run.id::text AS q_run
+         FROM studio_preflight_requests r JOIN studio_jobs j ON j.id = r.job_id
+         LEFT JOIN studio_quotes q ON q.id = r.quote_id
+         LEFT JOIN studio_runs run ON run.quote_id = q.id
+        WHERE r.id = $1::uuid`, [id]);
+    if (rows.length !== 1) return null;
+    const r = rows[0]!;
+    return {
+      id: r.id, jobId: r.job_id, jobState: r.job_state, userId: r.user_id, action: r.action, goal: r.goal, platforms: r.platforms,
+      scopeTags: r.scope_tags, sourceRunId: r.source_run_id, factVersionId: r.fact_version_id, createdAt: r.created_at,
+      outcome: r.outcome, refusalClass: r.refusal_class, refusalMessage: r.refusal_message, revisePlan: r.revise_plan,
+      quote: r.q_id === null ? null : {
+        id: r.q_id, userId: r.q_user, action: r.q_action, ceilingUsd: r.q_ceiling, ceilingMicros: numericToMicros(r.q_ceiling)!,
+        breakdown: r.q_breakdown, createdAt: r.q_created, expiresAt: r.q_expires, consumedAt: r.q_consumed, runId: r.q_run,
+      },
+    };
+  }
+
+  /** §6.3: a fake run — owner only (the schema's trigger refuses anyone else too), no quote, no reservation. */
+  async createFakeRun(input: { ownerId: string; goal: string; platforms: string[]; scopeTags: string[] | null;
+    factVersionId: string | null }): Promise<{ runId: string; jobId: string }> {
+    return this.atomically(async (db) => {
+      const runId = String((await db.query(
+        `INSERT INTO studio_runs (kind, requested_by, runner, goal, platforms, scope_tags, fact_version_id, automotive_facts_sha256)
+         SELECT 'full', $1::uuid, 'fake', $2, $3, $4, v.id, v.sha256
+           FROM (SELECT 1) one LEFT JOIN studio_fact_versions v ON v.id = $5::uuid
+         RETURNING id::text AS id`,
+        [input.ownerId, input.goal, input.platforms, input.scopeTags, input.factVersionId])).rows[0]!.id);
+      const jobId = String((await db.query("INSERT INTO studio_jobs (run_id, kind) VALUES ($1::uuid, 'fake') RETURNING id::text AS id", [runId])).rows[0]!.id);
+      await db.query(
+        `INSERT INTO studio_audit_log (actor_user_id, action, target_type, target_id, detail) VALUES ($1::uuid, 'run.fake', 'studio_runs', $2, '{}'::jsonb)`,
+        [input.ownerId, runId]);
+      return { result: { runId, jobId }, commit: true };
+    });
+  }
+
+  /**
+   * §6.2: the owner acknowledges one run's overrun, with the audit row S3
+   * defined (`spend.overrun_acknowledged`); once every overrun is acknowledged,
+   * confirmations are unlocked. False when the run has no unacknowledged overrun.
+   */
+  async acknowledgeOverrun(input: { runId: string; ownerId: string }): Promise<boolean> {
+    return this.atomically(async (db) => {
+      const open = (await db.query(
+        `SELECT 1 FROM studio_spend_ledger l WHERE l.run_id = $1::uuid AND l.entry = 'overrun' AND NOT EXISTS (
+           SELECT 1 FROM studio_audit_log a JOIN studio_users u ON u.id = a.actor_user_id AND u.role = 'owner'
+            WHERE a.action = '${OVERRUN_ACKNOWLEDGED}' AND a.target_type = 'studio_runs' AND a.target_id = l.run_id::text)`,
+        [input.runId])).rows.length === 1;
+      if (!open) return { result: false, commit: false };
+      await db.query(
+        `INSERT INTO studio_audit_log (actor_user_id, action, target_type, target_id, detail)
+         VALUES ($1::uuid, '${OVERRUN_ACKNOWLEDGED}', 'studio_runs', $2, '{}'::jsonb)`, [input.ownerId, input.runId]);
+      return { result: true, commit: true };
+    });
+  }
+
+  /** §6.4: the day's and the month's spend, per user, and every overrun — the ledger formula, by the schema's own functions. */
+  async spendView(day: string): Promise<SpendView> {
+    const totals = (await this.db.query(
+      `SELECT studio_spend_for_day($1::date)::text AS day, studio_spend_for_month($1::date)::text AS month,
+              studio_month_of($1::date)::text AS month_start,
+              (SELECT daily_cap_usd::text FROM studio_settings WHERE singleton) AS daily,
+              (SELECT monthly_cap_usd::text FROM studio_settings WHERE singleton) AS monthly`, [day])).rows[0]!;
+    const users = (await this.db.query(
+      `SELECT u.id::text AS id, u.display_name, u.role, u.status, u.daily_cap_usd::text AS cap,
+              COALESCE(SUM(CASE l.entry WHEN 'release' THEN -l.amount_usd ELSE l.amount_usd END) FILTER (WHERE l.day_local = $1::date), 0)::text AS day,
+              COALESCE(SUM(CASE l.entry WHEN 'release' THEN -l.amount_usd ELSE l.amount_usd END)
+                FILTER (WHERE l.month_local = studio_month_of($1::date)), 0)::text AS month
+         FROM studio_users u LEFT JOIN studio_runs r ON r.requested_by = u.id LEFT JOIN studio_spend_ledger l ON l.run_id = r.id
+        GROUP BY u.id ORDER BY u.role, u.display_name NULLS LAST, u.id`, [day])).rows;
+    const overruns = (await this.db.query(
+      `SELECT l.run_id::text AS run_id, l.amount_usd::text AS amount, l.day_local::text AS day, r.requested_by::text AS requested_by,
+              EXISTS (SELECT 1 FROM studio_audit_log a JOIN studio_users o ON o.id = a.actor_user_id AND o.role = 'owner'
+                       WHERE a.action = '${OVERRUN_ACKNOWLEDGED}' AND a.target_type = 'studio_runs' AND a.target_id = l.run_id::text) AS acknowledged
+         FROM studio_spend_ledger l JOIN studio_runs r ON r.id = l.run_id WHERE l.entry = 'overrun'
+        ORDER BY l.day_local DESC, l.created_at DESC`)).rows;
+    return {
+      day, month: totals.month_start, dayMicros: numericToMicros(totals.day) ?? 0, monthMicros: numericToMicros(totals.month) ?? 0,
+      settings: totals.daily === null ? null : { dailyCapMicros: numericToMicros(totals.daily) ?? 0, monthlyCapMicros: numericToMicros(totals.monthly) ?? 0 },
+      users: users.map((u) => ({ id: u.id, name: u.display_name, role: u.role, status: u.status, dailyCapMicros: numericToMicros(u.cap),
+        dayMicros: numericToMicros(u.day) ?? 0, monthMicros: numericToMicros(u.month) ?? 0 })),
+      overruns: overruns.map((o) => ({ runId: o.run_id, amountMicros: numericToMicros(o.amount)!, day: o.day, requestedBy: o.requested_by,
+        acknowledged: o.acknowledged === true })),
     };
   }
 }
