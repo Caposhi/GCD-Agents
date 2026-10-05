@@ -95,7 +95,7 @@ These are not interchangeable and must not be collapsed into "done". `MERGED` in
 | `M656` | a cap's day is booked in UTC | web | `SA111` |
 | `M657` | the purge deletes a request whose quote was consumed | web | `SA112` |
 
-The harness runs only the offline suites, so `M642` is proven by the offline lock model (`SA106`, `SA106a`); applied by hand over PostgreSQL 16.14 it also fails `SAP20` (both confirmations succeed). **657 mutations in all (655 prohibited, 2 coordinated-authority), over 63 captured paths** (two new: the web's `actions.ts` and the worker's `preflight.ts`).
+The harness runs only the offline suites, so `M642` is proven by the offline lock model (`SA106`, `SA106a`); applied by hand over PostgreSQL 16.14 it also fails `SAP20` (both confirmations succeed). **657 mutations in all (655 prohibited, 2 coordinated-authority), over 63 captured paths** (two new: the web's `actions.ts` and the worker's `preflight.ts`). **Two existing mutations are re-pointed, ids, edits, suites and expected checks unchanged:** S3's cap-parser mutation, at `src/studio/db/runner.ts` where the parser moved; and S5's `M623` (the FAKE badge dropped, `SA74`), at the badge line's new text — S6.2 gives the badge a `title` of "FAKE — wiring test". `M623`'s stale site was found by the first full shard run on this PR's first commit (shard 2/4 refused it, and `M-inc-restore` counted 75 of 76); re-pointed, it fails `SA74` by name. Every other mutation's site was checked to occur exactly once.
 
 **Migrations / schema impact:** none. S6.2 writes the tables S2 and 0003 defined, under their triggers.
 

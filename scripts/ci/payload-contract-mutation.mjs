@@ -406,8 +406,10 @@
  * deleting a request whose quote was consumed (`SA112`). The deployment-cap
  * parser moved from the worker's money module to the S2 runner module so the
  * web can share it; its mutation now targets `src/studio/db/runner.ts` with the
- * same edit, suite and expected check. They add two captured paths, the web's
- * actions module and the worker's preflight module: sixty-three in all.
+ * same edit, suite and expected check. S5's FAKE-badge mutation is re-pointed
+ * at the badge's new text (S6.2 gives it a title), its edit and expected check
+ * unchanged. They add two captured paths, the web's actions module and the
+ * worker's preflight module: sixty-three in all.
  *
  * It is offline and deterministic: no network, no database, no provider, no
  * credential. The mutations run in parallel on up to MAX_WORKERS workers (the
@@ -5666,8 +5668,8 @@ const CONTENT_STUDIO_S5_MUTATIONS = [
   {
     name: "a fake run loses its FAKE badge",
     file: STUDIO_WEB_VIEWS,
-    from: "const fakeBadge = (runner: string) => (runner === \"fake\" ? ' <span class=\"badge badge-fake\">FAKE</span>' : \"\");",
-    to: "const fakeBadge = (runner: string) => (runner === \"never\" ? ' <span class=\"badge badge-fake\">FAKE</span>' : \"\");",
+    from: "const fakeBadge = (runner: string) => (runner === \"fake\" ? ' <span title=\"FAKE — wiring test\" class=\"badge badge-fake\">FAKE</span>' : \"\");",
+    to: "const fakeBadge = (runner: string) => (runner === \"never\" ? ' <span title=\"FAKE — wiring test\" class=\"badge badge-fake\">FAKE</span>' : \"\");",
     expect: ["SA74."],
     suite: STUDIO_WEB_SUITE,
   },
