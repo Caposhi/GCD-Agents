@@ -423,8 +423,11 @@
  * three expected-migrations mutations (`M630`–`M632`) are re-pointed at the
  * list's new last entry, 0004, with the same edit (the list losing its last
  * entry, keeping its declared tuple type), the same suites and the same
- * expected checks. One captured path is added, migration 0004 itself (the
- * runner and the worker's jobs module already are): sixty-four in all.
+ * expected checks; and S3's two claim mutations, `M582` (a claim waiting on a
+ * locked job) and `M584` (a claim taking an expired job), are re-pointed at the
+ * claim's new lines, which now bind the kinds, with the same edits, suite and
+ * expected check (`SW12`). One captured path is added, migration 0004 itself
+ * (the runner and the worker's jobs module already are): sixty-four in all.
  *
  * It is offline and deterministic: no network, no database, no provider, no
  * credential. The mutations run in parallel on up to MAX_WORKERS workers (the
@@ -5344,10 +5347,12 @@ const CONTENT_STUDIO_S3_WORKER_MUTATIONS = [
     suite: STUDIO_WORKER_SUITE,
   },
   {
+    // Re-pointed by Content Studio S7.1 at the claim's new last line (it now binds
+    // CLAIMED_JOB_KINDS): the same edit, suite and expected check.
     name: "a claim waits on a locked job instead of skipping it",
     file: STUDIO_WORKER_JOBS,
-    from: "        LIMIT 1 FOR UPDATE SKIP LOCKED`)).rows[0];",
-    to: "        LIMIT 1 FOR UPDATE`)).rows[0];",
+    from: "        LIMIT 1 FOR UPDATE SKIP LOCKED`, [[...CLAIMED_JOB_KINDS]])).rows[0];",
+    to: "        LIMIT 1 FOR UPDATE`, [[...CLAIMED_JOB_KINDS]])).rows[0];",
     expect: ["SW12."],
     suite: STUDIO_WORKER_SUITE,
   },
@@ -5360,10 +5365,12 @@ const CONTENT_STUDIO_S3_WORKER_MUTATIONS = [
     suite: STUDIO_WORKER_SUITE,
   },
   {
+    // Re-pointed by Content Studio S7.1 at the claim's new WHERE line (it now
+    // filters on CLAIMED_JOB_KINDS): the same edit, suite and expected check.
     name: "a claim takes an expired job",
     file: STUDIO_WORKER_JOBS,
-    from: "        WHERE state = 'queued' AND expires_at > now() AND cancel_requested_at IS NULL",
-    to: "        WHERE state = 'queued' AND cancel_requested_at IS NULL",
+    from: "        WHERE state = 'queued' AND kind = ANY ($1::text[]) AND expires_at > now() AND cancel_requested_at IS NULL",
+    to: "        WHERE state = 'queued' AND kind = ANY ($1::text[]) AND cancel_requested_at IS NULL",
     expect: ["SW12."],
     suite: STUDIO_WORKER_SUITE,
   },

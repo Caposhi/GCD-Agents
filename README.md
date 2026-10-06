@@ -376,7 +376,7 @@ database beside the disposable-PostgreSQL check `SAP20`.)* *(`MERGED` through PR
 *(Content Studio S7.1, `IMPLEMENTED`: 661 mutations over 64 captured paths; `M658`–`M661` break the
 worker's claim of only the kinds it runs (`SW12a`, `SW26`) and migration 0004's import file names and
 job kinds against the code they must match (`SW25`, `SW26`); `M630`–`M632` are re-pointed at the
-expected-migrations list's new last entry, 0004. Migration 0004's invariants are SQL and are proven by
+expected-migrations list's new last entry, 0004, and `M582`, `M584` at the claim's new lines. Migration 0004's invariants are SQL and are proven by
 the disposable-PostgreSQL refusals instead.)*
 
 This is repository-content authority only. It cannot prevent a reviewer-approved coordinated
