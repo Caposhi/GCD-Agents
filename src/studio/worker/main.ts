@@ -9,14 +9,14 @@
  * content-run library and the live `src/harness/config.ts` the stage modules
  * load — imported. So a refused start reads no other variable, and a running
  * worker's `config.ts` can see no forbidden one, because every forbidden name
- * (including, until S6, `ANTHROPIC_API_KEY`) has been refused.
+ * (including, until S6b, `ANTHROPIC_API_KEY`) has been refused.
  *
  * It reads: the names of every variable present (for the refusal),
  * `STUDIO_DATABASE_URL`, `STUDIO_MAX_DAILY_USD`, `STUDIO_MAX_MONTHLY_USD`, and
  * Render's `RENDER_GIT_COMMIT`. It never reads `DATABASE_URL`'s value.
  *
  * It passes no paid stage runner: a job naming the `live` runner is refused
- * before any work (`execute.ts`). Live runs are enabled in S6.
+ * before any work (`execute.ts`). Live runs are enabled in S6b.
  */
 
 import { dirname, resolve } from "node:path";

@@ -21,6 +21,14 @@
  *   then validated by its handler — a run id as a UUID, a file name by the
  *   schema's artifact-name shape — so anything else is a 404, as an unknown or
  *   deleted run is. Every S5 route is a GET and changes nothing.
+ * - **Content Studio S6.2's actions** (design §6.1–§6.4, §8.3, §8.4): the new-run
+ *   form and its price request, a derived action's price request from a
+ *   report, the preflight's answer and its quote, the confirmation, the
+ *   cancellation, the owner's fake run and overrun acknowledgement, and the
+ *   spend panel. Every action is a POST under S4's Origin and CSRF checks, and
+ *   is checked server-side against the live users row: by the route's minimum
+ *   role here, and again in the decision (`actions.ts`) and by the schema's
+ *   triggers. **The web never computes a price**; a quote is the worker's.
  */
 
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -45,6 +53,13 @@ import {
 } from "./runs.js";
 import { STATIC_ASSETS, STATIC_CACHE_CONTROL } from "./static.js";
 import { listPolls, REPORT_ARTIFACTS, reportBody, reportPolls, runsListBody, shell } from "./views.js";
+import {
+  localDay, offeredTags, parseNewRun, preflightRequest, sourceActions, workerOnline, type PaidAction,
+} from "./actions.js";
+import {
+  newRunBody, preflightBody, PREFLIGHT_POLL_SECONDS, refusalBody, reportActions, spendBody,
+} from "./actionViews.js";
+import { stoppedAt } from "./runs.js";
 
 export const STUDIO_WEB_SERVICE = "gcd-studio-web";
 
@@ -61,6 +76,12 @@ export const SECURITY_HEADERS: Readonly<Record<string, string>> = Object.freeze(
 
 /** The largest POST body read, in bytes. */
 export const MAX_FORM_BYTES = 4_096;
+/**
+ * Content Studio S6.2: the new-run form's own bound. A goal of 2,000 characters
+ * can be 8,000 UTF-8 bytes, three times that once form-encoded, beside the
+ * platforms and the scope tags; every other route keeps MAX_FORM_BYTES.
+ */
+export const NEW_RUN_MAX_FORM_BYTES = 65_536;
 
 /** One structured log line's fields: ids, classes and counts only. */
 export type WebLog = (event: string, fields?: Record<string, string | number | boolean | null>) => void;
@@ -76,6 +97,8 @@ export interface RouteContext {
   sessionCookie: string | null;
   /** The route's `:name` segments, percent-decoded, not yet validated (each handler validates its own). */
   params: Readonly<Record<string, string>>;
+  /** A POST's form, read (bounded) and its CSRF token checked before the handler runs; null for a GET. */
+  form: URLSearchParams | null;
 }
 
 export interface RouteDeclaration {
@@ -85,12 +108,14 @@ export interface RouteDeclaration {
   minRole: MinRole;
   /** False for routes that never read a session (`/healthz`). */
   session?: boolean;
+  /** A POST's own body bound, in bytes, where it is not MAX_FORM_BYTES (S6.2: the new-run form). */
+  maxFormBytes?: number;
 }
 export interface Route extends RouteDeclaration {
   handle(ctx: RouteContext): Promise<void>;
 }
 
-/** The route table: every route the service ships, each with its minimum role (S4's five, then S5's five). */
+/** The route table: every route the service ships, each with its minimum role (S4's five, S5's five, then S6.2's nine). */
 export const STUDIO_ROUTE_TABLE: readonly RouteDeclaration[] = Object.freeze([
   { method: "GET", path: "/", minRole: "public" },
   { method: "GET", path: "/healthz", minRole: "public", session: false },
@@ -102,6 +127,15 @@ export const STUDIO_ROUTE_TABLE: readonly RouteDeclaration[] = Object.freeze([
   { method: "GET", path: "/runs/:id/files/:name", minRole: "viewer" },
   { method: "GET", path: STATIC_ASSETS.css.path, minRole: "viewer" },
   { method: "GET", path: STATIC_ASSETS.js.path, minRole: "viewer" },
+  { method: "GET", path: "/new", minRole: "runner" },
+  { method: "POST", path: "/new/price", minRole: "runner", maxFormBytes: NEW_RUN_MAX_FORM_BYTES },
+  { method: "POST", path: "/new/fake", minRole: "owner", maxFormBytes: NEW_RUN_MAX_FORM_BYTES },
+  { method: "POST", path: "/runs/:id/price", minRole: "runner" },
+  { method: "POST", path: "/runs/:id/cancel", minRole: "runner" },
+  { method: "GET", path: "/preflights/:id", minRole: "runner" },
+  { method: "POST", path: "/quotes/:id/confirm", minRole: "runner" },
+  { method: "GET", path: "/spend", minRole: "viewer" },
+  { method: "POST", path: "/spend/overruns/:id/acknowledge", minRole: "owner" },
 ] as const);
 
 /**
@@ -150,7 +184,7 @@ export interface StudioWebApp {
   handle(req: IncomingMessage, res: ServerResponse): Promise<void>;
   readonly oidc: OidcProvider;
   readonly routes: readonly Route[];
-  purge(): Promise<{ loginAttempts: number; sessions: number }>;
+  purge(): Promise<{ loginAttempts: number; sessions: number; preflightRequests: number }>;
 }
 
 // --- Responses -----------------------------------------------------------------
@@ -214,13 +248,13 @@ const signedInPage = (res: ServerResponse, user: StudioUserRow, csrfToken: strin
 /** The direct peer: forwarding headers are spoofable and are not trusted (as on the live API). */
 const clientAddress = (req: IncomingMessage): string => req.socket.remoteAddress ?? "unknown";
 
-function readForm(req: IncomingMessage): Promise<URLSearchParams | null> {
+function readForm(req: IncomingMessage, limit: number = MAX_FORM_BYTES): Promise<URLSearchParams | null> {
   return new Promise((settle) => {
     const chunks: Buffer[] = [];
     let size = 0;
     req.on("data", (chunk: Buffer) => {
       size += chunk.length;
-      if (size > MAX_FORM_BYTES) { settle(null); req.destroy(); return; }
+      if (size > limit) { settle(null); req.destroy(); return; }
       chunks.push(chunk);
     });
     req.on("end", () => settle(new URLSearchParams(Buffer.concat(chunks).toString("utf8"))));
@@ -237,6 +271,10 @@ const isRefusedWrite = (error: unknown): boolean => {
   const code = (error as { code?: unknown })?.code;
   return code === "23514" || code === "23505";
 };
+
+/** S6.2: a write the schema refused — a check, a uniqueness, or a row it references that is missing. */
+const isRefusedActionWrite = (error: unknown): boolean =>
+  isRefusedWrite(error) || (error as { code?: unknown })?.code === "23503";
 
 // --- The app -------------------------------------------------------------------
 
@@ -266,6 +304,27 @@ export function createStudioWebApp(options: StudioWebOptions): StudioWebApp {
       log("audit.failed", { action: "auth.sign_in_refused", error_class: errorClass(error) });
     }
     notAuthorizedPage(ctx.res);
+  };
+
+  /** A refused action: its class and message (escaped), and the class alone in the log. */
+  const refused = (ctx: RouteContext, status: number, title: string, refusal: { refusal: string; message: string }, back: string) =>
+    htmlPage(ctx.res, status, shell({
+      title, user: ctx.user!, csrfToken: csrfTokenFor(ctx.sessionCookie!), poll: false, body: refusalBody(title, refusal, back),
+    }));
+
+  /** §6.1 step 1: the preflight job and its request, in one transaction; then the page that waits for the answer. */
+  const askPrice = async (ctx: RouteContext, request: ReturnType<typeof preflightRequest>) => {
+    let created: { requestId: string; jobId: string };
+    try {
+      created = await store.createPreflightRequest(request);
+    } catch (error) {
+      if (!isRefusedActionWrite(error)) throw error;
+      log("preflight.request_refused", { user: ctx.user!.id, action: request.action });
+      return refused(ctx, 409, "Not requested", { refusal: "request_refused",
+        message: "the database refused this request: your account, the source run or the fact version may have changed" }, "/new");
+    }
+    log("preflight.request", { user: ctx.user!.id, request: created.requestId, action: request.action });
+    redirect(ctx.res, 303, `/preflights/${created.requestId}`);
   };
 
   const handlers: Record<string, (ctx: RouteContext) => Promise<void>> = {
@@ -413,9 +472,18 @@ export function createStudioWebApp(options: StudioWebOptions): StudioWebApp {
         const stored = meta.byte_length > MAX_DISPLAY_ARTIFACT_BYTES ? null : await store.readArtifact(run.id, name);
         content.set(name, (stored ? verifiedBytes(stored) : null) ?? Buffer.alloc(0));
       }
+      // S6.2: what this user may do from here — a derived action (revise, critic replay, resume) for an owner or
+      // runner, and Cancel for an owner or the run's own runner — each re-checked by its POST route.
+      const user = ctx.user!;
+      const acts = user.role === "owner" || user.role === "runner";
+      const actions = reportActions({
+        runId: run.id, csrfToken: csrfTokenFor(ctx.sessionCookie!), fake: run.runner === "fake",
+        actions: acts ? sourceActions(run, stoppedAt(run.kind, artifacts.map((a) => a.name), requests)) : [],
+        cancellable: acts && (user.role === "owner" || run.requested_by === user.id) && (run.state === "queued" || run.state === "running"),
+      });
       htmlPage(ctx.res, 200, shell({
-        title: "Run report", user: ctx.user!, csrfToken: csrfTokenFor(ctx.sessionCookie!), poll: reportPolls(run),
-        body: reportBody({ run, lineage, artifacts, content, findings, requests, group }),
+        title: "Run report", user, csrfToken: csrfTokenFor(ctx.sessionCookie!), poll: reportPolls(run),
+        body: reportBody({ run, lineage, artifacts, content, findings, requests, group, actions }),
       }));
     },
 
@@ -441,6 +509,138 @@ export function createStudioWebApp(options: StudioWebOptions): StudioWebApp {
 
     [`GET ${STATIC_ASSETS.css.path}`]: async ({ res }) => staticFile(res, STATIC_ASSETS.css),
     [`GET ${STATIC_ASSETS.js.path}`]: async ({ res }) => staticFile(res, STATIC_ASSETS.js),
+
+    // --- Content Studio S6.2: the actions ---------------------------------------------------------
+
+    "GET /new": async (ctx) => {
+      const context = await store.actionContext();
+      htmlPage(ctx.res, 200, shell({
+        title: "New run", user: ctx.user!, csrfToken: csrfTokenFor(ctx.sessionCookie!), poll: false,
+        body: newRunBody({
+          csrfToken: csrfTokenFor(ctx.sessionCookie!), isOwner: ctx.user!.role === "owner",
+          activeFactVersion: context.activeFactVersion,
+          tags: offeredTags(context.heartbeat?.tagCounts, context.activeFactVersion?.tagCounts),
+          workerOnline: workerOnline(context.nowMs, context.heartbeat?.beatAtMs),
+        }),
+      }));
+    },
+
+    "POST /new/price": async (ctx) => {
+      const user = ctx.user!;
+      const context = await store.actionContext();
+      const version = context.activeFactVersion;
+      // No fact version, no price (S7 adds the upload): nothing is written.
+      if (!version) return refused(ctx, 409, "No price offered", { refusal: "no_fact_version",
+        message: "no fact version is active, so no price can be offered" }, "/new");
+      const tags = offeredTags(context.heartbeat?.tagCounts, version.tagCounts);
+      const parsed = parseNewRun(ctx.form!, new Set(tags.map((t) => t.tag)));
+      if (!parsed.ok) return refused(ctx, 400, "Not a valid request", parsed, "/new");
+      return askPrice(ctx, preflightRequest({
+        userId: user.id, action: "full", goal: parsed.goal, platforms: parsed.platforms, scopeTags: parsed.scopeTags,
+        sourceRunId: null, factVersionId: version.id,
+      }));
+    },
+
+    "POST /new/fake": async (ctx) => {
+      const context = await store.actionContext();
+      const tags = offeredTags(context.heartbeat?.tagCounts, context.activeFactVersion?.tagCounts);
+      const parsed = parseNewRun(ctx.form!, new Set(tags.map((t) => t.tag)));
+      if (!parsed.ok) return refused(ctx, 400, "Not a valid request", parsed, "/new");
+      let created: { runId: string; jobId: string };
+      try {
+        created = await store.createFakeRun({ ownerId: ctx.user!.id, goal: parsed.goal, platforms: parsed.platforms,
+          scopeTags: parsed.scopeTags, factVersionId: context.activeFactVersion?.id ?? null });
+      } catch (error) {
+        if (!isRefusedActionWrite(error)) throw error;
+        return refused(ctx, 403, "Refused", { refusal: "not_permitted", message: "fake runs are owner-only" }, "/new");
+      }
+      log("run.fake", { user: ctx.user!.id, run: created.runId });
+      redirect(ctx.res, 303, `/runs/${created.runId}`);
+    },
+
+    "POST /runs/:id/price": async (ctx) => {
+      const id = ctx.params.id!;
+      const run = UUID_SHAPE.test(id) ? await store.findRun(id) : null;
+      if (!runVisible(run)) return notFound(ctx.res);
+      const action = ctx.form!.getAll("action");
+      const [artifacts, requests] = await Promise.all([store.listArtifacts(run.id), store.listRequests(run.id)]);
+      const offered = sourceActions(run, stoppedAt(run.kind, artifacts.map((a) => a.name), requests));
+      if (action.length !== 1 || !offered.includes(action[0] as PaidAction)) {
+        return refused(ctx, 409, "Not offered", { refusal: "action_not_offered",
+          message: "this run does not offer that action" }, `/runs/${run.id}`);
+      }
+      return askPrice(ctx, preflightRequest({
+        userId: ctx.user!.id, action: action[0] as PaidAction, goal: null, platforms: [...run.platforms!],
+        scopeTags: run.scope_tags === null ? null : [...run.scope_tags].sort(), sourceRunId: run.id,
+        factVersionId: run.fact_version_id!,
+      }));
+    },
+
+    "GET /preflights/:id": async (ctx) => {
+      const id = ctx.params.id!;
+      const view = UUID_SHAPE.test(id) ? await store.findPreflightRequest(id) : null;
+      const user = ctx.user!;
+      // A request, its refusal and its quote are shown to its user and to an owner; to anyone else it does not exist.
+      if (!view || (view.userId !== user.id && user.role !== "owner")) return notFound(ctx.res);
+      const [context, spend] = await Promise.all([store.actionContext(), store.spendView(localDay(ctx.now))]);
+      const source = view.sourceRunId ? await store.findRun(view.sourceRunId) : null;
+      const mineRow = spend.users.find((u) => u.id === view.userId);
+      const pending = view.outcome === null && (view.jobState === "queued" || view.jobState === "running");
+      htmlPage(ctx.res, 200, shell({
+        title: "Price", user, csrfToken: csrfTokenFor(ctx.sessionCookie!), poll: false, pollSeconds: pending ? PREFLIGHT_POLL_SECONDS : undefined,
+        body: preflightBody({
+          view, csrfToken: csrfTokenFor(ctx.sessionCookie!), mine: view.userId === user.id, nowMs: context.nowMs,
+          workerOnline: workerOnline(context.nowMs, context.heartbeat?.beatAtMs), sourceGoal: source?.goal ?? null,
+          capsLeft: { ceilings: config.ceilings, spend, userDayMicros: mineRow?.dayMicros ?? 0,
+            userDailyCapMicros: mineRow?.dailyCapMicros ?? null },
+        }),
+      }));
+    },
+
+    "POST /quotes/:id/confirm": async (ctx) => {
+      const id = ctx.params.id!;
+      if (!UUID_SHAPE.test(id)) return notFound(ctx.res);
+      const result = await store.confirmQuote({ quoteId: id, userId: ctx.user!.id, ceilings: config.ceilings });
+      if (!result.ok) {
+        log("quote.confirm_refused", { user: ctx.user!.id, refusal: result.refusal });
+        return refused(ctx, result.refusal === "no_quote" ? 404 : 409, "Not confirmed", result, "/new");
+      }
+      log("run.confirm", { user: ctx.user!.id, run: result.runId });
+      redirect(ctx.res, 303, `/runs/${result.runId}`);
+    },
+
+    "POST /runs/:id/cancel": async (ctx) => {
+      const id = ctx.params.id!;
+      if (!UUID_SHAPE.test(id)) return notFound(ctx.res);
+      const user = ctx.user!;
+      const result = await store.cancelRun({ runId: id, user: { id: user.id, role: user.role, status: user.status } });
+      if (!result.ok) {
+        log("run.cancel_refused", { user: user.id, refusal: result.refusal });
+        if (result.refusal === "no_run") return notFound(ctx.res);
+        return refused(ctx, result.refusal === "not_your_run" ? 403 : 409, "Not cancelled", result, `/runs/${id}`);
+      }
+      log("run.cancel", { user: user.id, run: id, was: result.kind });
+      redirect(ctx.res, 303, `/runs/${id}`);
+    },
+
+    "GET /spend": async (ctx) => {
+      const view = await store.spendView(localDay(ctx.now));
+      htmlPage(ctx.res, 200, shell({
+        title: "Spend", user: ctx.user!, csrfToken: csrfTokenFor(ctx.sessionCookie!), poll: false,
+        body: spendBody({ view, ceilings: config.ceilings, csrfToken: csrfTokenFor(ctx.sessionCookie!), isOwner: ctx.user!.role === "owner" }),
+      }));
+    },
+
+    "POST /spend/overruns/:id/acknowledge": async (ctx) => {
+      const id = ctx.params.id!;
+      if (!UUID_SHAPE.test(id)) return notFound(ctx.res);
+      if (!(await store.acknowledgeOverrun({ runId: id, ownerId: ctx.user!.id }))) {
+        return refused(ctx, 409, "Nothing to acknowledge", { refusal: "no_open_overrun",
+          message: "this run has no overrun waiting for acknowledgement" }, "/spend");
+      }
+      log("spend.overrun_acknowledged", { user: ctx.user!.id, run: id });
+      redirect(ctx.res, 303, "/spend");
+    },
 
     "POST /auth/logout": async (ctx) => {
       const user = ctx.user!;
@@ -501,8 +701,9 @@ export function createStudioWebApp(options: StudioWebOptions): StudioWebApp {
       return user ? page(res, 403, "Forbidden", "<h1>Forbidden</h1>")
         : page(res, 401, "Sign in", "<h1>Sign in required</h1><p><a href=\"/auth/login\">Sign in with Google</a></p>");
     }
+    let form: URLSearchParams | null = null;
     if (req.method === "POST") {
-      const form = await readForm(req);
+      form = await readForm(req, route.maxFormBytes ?? MAX_FORM_BYTES);
       if (form === null) return page(res, 413, "Too large", "<h1>Request too large</h1>");
       const presented = form.get("csrf") ?? req.headers["x-csrf-token"];
       if (csrfHash === null || !csrfMatches(presented, csrfHash)) {
@@ -510,7 +711,7 @@ export function createStudioWebApp(options: StudioWebOptions): StudioWebApp {
         return page(res, 403, "Forbidden", "<h1>Forbidden</h1>");
       }
     }
-    await route.handle({ req, res, url, now, user, sessionCookie, params: matchRoute(route.path, url.pathname)! });
+    await route.handle({ req, res, url, now, user, sessionCookie, form, params: matchRoute(route.path, url.pathname)! });
   };
 
   return {
@@ -529,7 +730,7 @@ export function createStudioWebApp(options: StudioWebOptions): StudioWebApp {
     async purge() {
       const now = clock();
       const result = await store.purge(new Date(now - LOGIN_ATTEMPT_RETENTION_MS), new Date(now - SESSION_RETENTION_MS));
-      log("purge", { login_attempts: result.loginAttempts, sessions: result.sessions });
+      log("purge", { login_attempts: result.loginAttempts, sessions: result.sessions, preflight_requests: result.preflightRequests });
       return result;
     },
   };

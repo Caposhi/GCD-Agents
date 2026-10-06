@@ -382,6 +382,35 @@
  * `SP303`–`SP373`, `SWP18`, `SAP15`), as S2's were, not by this harness. No
  * captured path is added (the runner module already is one): sixty-one in all.
  *
+ * Content Studio S6.2's group, `M634`–`M657`, covers the run and revise
+ * actions with caps, on fake runners only. Two run the Studio runner's own
+ * suite: the canonical preflight parameter form losing its platform sort or its
+ * key order (`SM7`, `SM7a`), against a fixed vector. Five run the Studio
+ * worker's offline suite: params_sha256 not recomputed (`SW18`), a model with no
+ * price row priced (`SW20`), the quote and the request's outcome committed in
+ * separate transactions (`SW22`), a revise plan that is not planRevision's
+ * (`SW23`) and a live job treated as runnable without a paid runner (`SW24`).
+ * Seventeen run the Studio web's offline suite: a quote's expiry, owner or
+ * single use skipped (`SA104c`, `SA104b`, `SA104`); its fingerprints not
+ * compared with the heartbeat, or a stale heartbeat accepted (`SA104d`–`SA104f`,
+ * `SA104h`); the settings row no longer locked FOR UPDATE, or the quote
+ * consumed outside the transaction that creates its run (`SA106`, `SA106a`, over
+ * a scripted database that models PostgreSQL's row lock, beside the
+ * disposable-PostgreSQL check `SAP20`, which this harness does not run); the
+ * daily cap inverted, the deployment ceiling ignored, an unparsable ceiling
+ * unlimited, a runner's own cap ignored, or the overrun lock ignored
+ * (`SA103`, `SA104k`, `SA104n`, `SA105`, `SA115`, `SA104m`, `SA104o`); a
+ * queued cancellation not releasing its reservation (`SA107`); a runner
+ * cancelling another user's run (`SA107b`); a runner starting a fake run
+ * (`SA108`, `SA58`); a cap's day booked in UTC (`SA111`); and the purge
+ * deleting a request whose quote was consumed (`SA112`). The deployment-cap
+ * parser moved from the worker's money module to the S2 runner module so the
+ * web can share it; its mutation now targets `src/studio/db/runner.ts` with the
+ * same edit, suite and expected check. S5's FAKE-badge mutation is re-pointed
+ * at the badge's new text (S6.2 gives it a title), its edit and expected check
+ * unchanged. They add two captured paths, the web's actions module and the
+ * worker's preflight module: sixty-three in all.
+ *
  * It is offline and deterministic: no network, no database, no provider, no
  * credential. The mutations run in parallel on up to MAX_WORKERS workers (the
  * runner's available parallelism, capped), each worker in its OWN disposable
@@ -517,6 +546,9 @@ const STUDIO_WEB_VIEWS = "src/studio/web/views.ts";
 const STUDIO_WEB_RUNS = "src/studio/web/runs.ts";
 const STUDIO_WEB_DOWNLOADS = "src/studio/web/downloads.ts";
 const STUDIO_WORKER_FINDINGS = "src/studio/worker/findings.ts";
+// Content Studio S6.2: the worker's free preflight and the web's run and revise actions.
+const STUDIO_WORKER_PREFLIGHT = "src/studio/worker/preflight.ts";
+const STUDIO_WEB_ACTIONS = "src/studio/web/actions.ts";
 const PROVIDER_TEXT_LEAF = "src/harness/agents/providerText.ts";
 const CONTENT_INTELLIGENCE_SUITE = "dist/harness/contentIntelligence.selftest.js";
 const STUDIO_DB_SUITE = "dist/studio/db/migrate.offline.selftest.js";
@@ -5070,7 +5102,8 @@ const CONTENT_STUDIO_S3_WORKER_MUTATIONS = [
   },
   {
     name: "a missing or unreadable deployment cap becomes a default instead of zero",
-    file: STUDIO_WORKER_MONEY,
+    // S6.2: parseCapMicros moved, unchanged, into the S2 runner module (the web reads the caps too); same edit, same checks.
+    file: STUDIO_DB_RUNNER,
     from: "  if (typeof raw !== \"string\" || !/^\\d{1,6}(?:\\.\\d{1,6})?$/.test(raw.trim())) return 0;",
     to: "  if (typeof raw !== \"string\" || !/^\\d{1,6}(?:\\.\\d{1,6})?$/.test(raw.trim())) return 75_000_000;",
     expect: ["SW2."],
@@ -5241,7 +5274,7 @@ const CONTENT_STUDIO_S3_WORKER_MUTATIONS = [
   {
     name: "the worker's runtime builds a provider runner when it was given none",
     file: STUDIO_WORKER_EXECUTE,
-    from: "        if (!paid) throw new WorkerStop(\"live_runs_not_enabled\", \"live runs are not enabled in this worker (Content Studio S6)\");",
+    from: "        if (!paid) throw new WorkerStop(\"live_runs_not_enabled\", \"live runs are not enabled in this worker (until Content Studio S6b)\");",
     to: "        if (!paid) return base.stageExecution.createAnthropicStageRunner();",
     expect: ["SW8."],
     suite: STUDIO_WORKER_SUITE,
@@ -5635,8 +5668,8 @@ const CONTENT_STUDIO_S5_MUTATIONS = [
   {
     name: "a fake run loses its FAKE badge",
     file: STUDIO_WEB_VIEWS,
-    from: "const fakeBadge = (runner: string) => (runner === \"fake\" ? ' <span class=\"badge badge-fake\">FAKE</span>' : \"\");",
-    to: "const fakeBadge = (runner: string) => (runner === \"never\" ? ' <span class=\"badge badge-fake\">FAKE</span>' : \"\");",
+    from: "const fakeBadge = (runner: string) => (runner === \"fake\" ? ' <span title=\"FAKE — wiring test\" class=\"badge badge-fake\">FAKE</span>' : \"\");",
+    to: "const fakeBadge = (runner: string) => (runner === \"never\" ? ' <span title=\"FAKE — wiring test\" class=\"badge badge-fake\">FAKE</span>' : \"\");",
     expect: ["SA74."],
     suite: STUDIO_WEB_SUITE,
   },
@@ -5730,6 +5763,207 @@ const CONTENT_STUDIO_S6_1_MUTATIONS = [
   },
 ];
 
+// Content Studio S6.2: the run and revise actions with caps, fake runners only.
+// Each runs the suite that owns the behaviour and fails a named check. The
+// settings-row lock and the consumption's transaction are proven offline over
+// a scripted database that models PostgreSQL's row lock (SA106, SA106a), beside
+// the disposable-PostgreSQL concurrency check (SAP20), which this harness does
+// not run.
+const CONTENT_STUDIO_S6_2_MUTATIONS = [
+  {
+    name: "the canonical parameter form skips sorting the platforms",
+    file: STUDIO_DB_RUNNER,
+    from: "    platforms: [...params.platforms].sort(),",
+    to: "    platforms: [...params.platforms],",
+    expect: ["SM7.", "SM7a."],
+    suite: STUDIO_DB_SUITE,
+  },
+  {
+    name: "the canonical parameter form reorders its keys",
+    file: STUDIO_DB_RUNNER,
+    from: "    scopeTags: params.scopeTags === null || params.scopeTags === undefined ? null : [...params.scopeTags].sort(),\n    sourceRunId: params.sourceRunId ?? null,",
+    to: "    sourceRunId: params.sourceRunId ?? null,\n    scopeTags: params.scopeTags === null || params.scopeTags === undefined ? null : [...params.scopeTags].sort(),",
+    expect: ["SM7."],
+    suite: STUDIO_DB_SUITE,
+  },
+  {
+    name: "the worker does not recompute params_sha256",
+    file: STUDIO_WORKER_PREFLIGHT,
+    from: "  if (recomputed !== r.paramsSha256) {",
+    to: "  if (recomputed !== r.paramsSha256 && Date.now() < 0) {",
+    expect: ["SW18."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "a confirmation skips the quote's expiry",
+    file: STUDIO_WEB_ACTIONS,
+    from: "  if (!(s.nowMs <= q.expiresAtMs)) return no(",
+    to: "  if (!(s.nowMs <= q.expiresAtMs) && Date.now() < 0) return no(",
+    expect: ["SA104c."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "a confirmation does not check the quote's owner",
+    file: STUDIO_WEB_ACTIONS,
+    from: "  if (q.userId !== u.id) return no(",
+    to: "  if (q.userId !== u.id && Date.now() < 0) return no(",
+    expect: ["SA104b."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "a quote may be confirmed twice",
+    file: STUDIO_WEB_ACTIONS,
+    from: "  if (q.consumed) return no(",
+    to: "  if (q.consumed && Date.now() < 0) return no(",
+    expect: ["SA104."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "a confirmation skips comparing the quote's fingerprints with the heartbeat",
+    file: STUDIO_WEB_ACTIONS,
+    from: "  if (q.workerCommit !== hb.commit || q.approvedFactsSha256 !== hb.approvedFactsSha256 || q.priceTableSha256 !== hb.priceTableSha256) {",
+    to: "  if (Date.now() < 0 && (q.workerCommit !== hb.commit || q.approvedFactsSha256 !== hb.approvedFactsSha256 || q.priceTableSha256 !== hb.priceTableSha256)) {",
+    expect: ["SA104d.", "SA104e.", "SA104f."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "a confirmation skips the stale-heartbeat check",
+    file: STUDIO_WEB_ACTIONS,
+    from: "  if (!hb || !(s.nowMs - hb.beatAtMs <= WORKER_OFFLINE_MS)) {",
+    to: "  if (!hb) {",
+    expect: ["SA104h."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "the confirmation no longer locks the settings row FOR UPDATE",
+    file: STUDIO_WEB_STORE,
+    from: "           FROM studio_settings WHERE singleton FOR UPDATE`)).rows[0];",
+    to: "           FROM studio_settings WHERE singleton`)).rows[0];",
+    expect: ["SA106.", "SA106a."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "the daily cap comparison is inverted",
+    file: STUDIO_WEB_ACTIONS,
+    from: "  if (!(s.spend.dayMicros + q.ceilingMicros <= caps.dailyMicros)) {",
+    to: "  if (s.spend.dayMicros + q.ceilingMicros <= caps.dailyMicros) {",
+    expect: ["SA103.", "SA104k."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "the deployment ceiling no longer bounds the owner's daily cap",
+    file: STUDIO_WEB_ACTIONS,
+    from: "    dailyMicros: Math.min(ceilings.dailyMicros, settings?.dailyCapMicros ?? 0),",
+    to: "    dailyMicros: settings?.dailyCapMicros ?? 0,",
+    expect: ["SA104n.", "SA105.", "SA115."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "an unparsable deployment ceiling is treated as unlimited by the web",
+    file: STUDIO_WEB_STARTUP,
+    from: "    dailyMicros: parseCapMicros(env.maxDailyUsd),",
+    to: "    dailyMicros: parseCapMicros(env.maxDailyUsd) || Number.MAX_SAFE_INTEGER,",
+    expect: ["SA105."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "a confirmation ignores the runner's own daily cap",
+    file: STUDIO_WEB_ACTIONS,
+    from: "  if (caps.userDailyMicros !== null && !(s.spend.userDayMicros + q.ceilingMicros <= caps.userDailyMicros)) {",
+    to: "  if (Date.now() < 0 && caps.userDailyMicros !== null && !(s.spend.userDayMicros + q.ceilingMicros <= caps.userDailyMicros)) {",
+    expect: ["SA104m.", "SA115."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "a confirmation ignores the overrun lock",
+    file: STUDIO_WEB_ACTIONS,
+    from: "  if (s.unacknowledgedOverruns > 0) {",
+    to: "  if (s.unacknowledgedOverruns > 0 && Date.now() < 0) {",
+    expect: ["SA104o."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "the quote is consumed outside the transaction that creates its run",
+    file: STUDIO_WEB_STORE,
+    from: "      await db.query(\"UPDATE studio_quotes SET consumed_at = now() WHERE id = $1::uuid AND consumed_at IS NULL\", [quote.id]);",
+    to: "      await this.db.query(\"UPDATE studio_quotes SET consumed_at = now() WHERE id = $1::uuid AND consumed_at IS NULL\", [quote.id]);",
+    expect: ["SA106a."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "the quote and the request's outcome are committed in separate transactions",
+    file: STUDIO_WORKER_PREFLIGHT,
+    from: "          JSON.stringify(outcome.items)])).rows[0]!.id);",
+    to: "          JSON.stringify(outcome.items)])).rows[0]!.id);\n      await client.query(\"COMMIT\");\n      await client.query(\"BEGIN\");",
+    expect: ["SW22."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "a queued cancellation does not release the reservation",
+    file: STUDIO_WEB_ACTIONS,
+    from: "    return { ok: true, kind: \"queued\", releaseMicros: live ? run.reservedMicros : null };",
+    to: "    return { ok: true, kind: \"queued\", releaseMicros: null };",
+    expect: ["SA107."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "a runner may cancel another user's run",
+    file: STUDIO_WEB_ACTIONS,
+    from: "  if (user.role !== \"owner\" && run.requestedBy !== user.id) return no(",
+    to: "  if (user.role !== \"owner\" && run.requestedBy !== user.id && Date.now() < 0) return no(",
+    expect: ["SA107b."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "a runner may start a fake run",
+    file: STUDIO_WEB_APP,
+    from: "  { method: \"POST\", path: \"/new/fake\", minRole: \"owner\", maxFormBytes: NEW_RUN_MAX_FORM_BYTES },",
+    to: "  { method: \"POST\", path: \"/new/fake\", minRole: \"runner\", maxFormBytes: NEW_RUN_MAX_FORM_BYTES },",
+    expect: ["SA108.", "SA58."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "the worker treats a live job as runnable without a paid runner",
+    file: STUDIO_WORKER_EXECUTE,
+    from: "    worker: { paidRunner: ctx.paidStageRunner !== undefined, commit: ctx.commit,",
+    to: "    worker: { paidRunner: true, commit: ctx.commit,",
+    expect: ["SW24."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "the preflight prices a model with no price row",
+    file: STUDIO_WORKER_PREFLIGHT,
+    from: "  if (lines.some((line) => typeof line.costUsd !== \"number\" || !Number.isFinite(line.costUsd) || !(line.costUsd > 0))) return null;",
+    to: "  if (lines.some((line) => typeof line.costUsd === \"number\" && !(line.costUsd > 0))) return null;",
+    expect: ["SW20."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "the revise plan is not planRevision's",
+    file: STUDIO_WORKER_PREFLIGHT,
+    from: "  const revisePlan = kind === \"revise\" ? asPlan(plan) : null;",
+    to: "  const revisePlan = kind === \"revise\" ? asPlan({ kind: \"revision\", stages: [], ownerItems: [], notRerun: [] }) : null;",
+    expect: ["SW23."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "a cap's day is booked in UTC",
+    file: STUDIO_WEB_ACTIONS,
+    from: "const NY_DAY = new Intl.DateTimeFormat(\"en-CA\", { timeZone: \"America/New_York\", year: \"numeric\", month: \"2-digit\", day: \"2-digit\" });",
+    to: "const NY_DAY = new Intl.DateTimeFormat(\"en-CA\", { timeZone: \"UTC\", year: \"numeric\", month: \"2-digit\", day: \"2-digit\" });",
+    expect: ["SA111."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "the purge deletes a request whose quote was consumed",
+    file: STUDIO_WEB_ACTIONS,
+    from: "  row.pastRetention && !row.quoteConsumed;",
+    to: "  row.pastRetention;",
+    expect: ["SA112."],
+    suite: STUDIO_WEB_SUITE,
+  },
+];
+
 // Every group, in order. MUTATIONS is their concatenation; the groups exist
 // only so `M-inc-sample` can spread its sample across them.
 const MUTATION_GROUPS = [
@@ -5743,7 +5977,7 @@ const MUTATION_GROUPS = [
   ["Content Studio S1", CONTENT_STUDIO_S1_MUTATIONS], ["Content Studio S2", CONTENT_STUDIO_S2_MUTATIONS],
   ["Content Studio S3 context", CONTENT_STUDIO_S3_CONTEXT_MUTATIONS], ["Content Studio S3 worker", CONTENT_STUDIO_S3_WORKER_MUTATIONS],
   ["Content Studio S4", CONTENT_STUDIO_S4_MUTATIONS], ["Content Studio S5", CONTENT_STUDIO_S5_MUTATIONS],
-  ["Content Studio S6.1", CONTENT_STUDIO_S6_1_MUTATIONS],
+  ["Content Studio S6.1", CONTENT_STUDIO_S6_1_MUTATIONS], ["Content Studio S6.2", CONTENT_STUDIO_S6_2_MUTATIONS],
 ];
 const MUTATIONS = MUTATION_GROUPS.flatMap(([, group]) => group);
 

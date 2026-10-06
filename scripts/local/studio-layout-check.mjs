@@ -2,7 +2,8 @@
 /**
  * Content Studio S5 — the phone-layout check (docs/CONTENT_STUDIO_DESIGN.md §8,
  * §10's S5 row: "phone-width layout checked in a headless Chromium at 375 px,
- * with no horizontal scroll").
+ * with no horizontal scroll"), extended in S6.2 to the new-run, quote and
+ * spend pages.
  *
  * LOCAL ONLY; not part of CI (an accepted limitation recorded in docs/TESTING.md).
  * It needs a build (`npm run build`) and a Chromium binary: the preinstalled one
@@ -16,7 +17,13 @@
  *  - launches Chromium headless and drives it over the DevTools protocol with
  *    Node's built-in WebSocket (no Playwright, no Puppeteer), sending the
  *    session cookie as a request header;
- *  - at 375 px (a phone) it asserts, on the runs list and on the run report,
+ *  - S6.2: signed in as a synthetic owner too, it serves the new-run page, a
+ *    quoted full run's page (a breakdown with long model labels), a quoted
+ *    revise's page (planRevision's plan for the fixture critic), the spend
+ *    panel with an unacknowledged overrun, and the run report with its action
+ *    buttons;
+ *  - at 375 px (a phone) it asserts, on every one of those pages and on the
+ *    runs list and the run report,
  *    that `document.scrollingElement.scrollWidth <= 375` (no horizontal scroll),
  *    that every visible link, button, select and summary is at least 44 px in
  *    both directions, that "Needs your decision" comes before the captions, and
@@ -51,6 +58,8 @@ const { createStudioWebApp } = await dist("studio/web/app.js");
 const { MemoryWebStore, syntheticEmail, syntheticRunArtifacts } = await dist("studio/web/testSupport.js");
 const { csrfTokenFor, csrfTokenHash, newSessionTimes, randomToken, SESSION_COOKIE, sessionIdHash } = await dist("studio/web/sessions.js");
 const { providerTextWithContact } = await dist("harness/agents/providerText.js");
+const { localDay, preflightRequest } = await dist("studio/web/actions.js");
+const { planRevision } = await dist("harness/agents/revision.js");
 
 // --- The fixture app --------------------------------------------------------------------------------
 
@@ -88,10 +97,37 @@ const contacts = JSON.parse(files["05b-contact-lines.json"]).packages;
 const expectedCopies = pkgs.flatMap((p, i) => (p.platform === "google_business_profile" ? [p.caption]
   : [providerTextWithContact(p.caption, p.hashtags, contacts[i].contact), p.caption]));
 
+// S6.2: the owner's session, a fact version, a fresh heartbeat, two quoted price requests and a spend ledger.
+const ownerCookie = randomToken();
+await store.createSession({ idHash: sessionIdHash(ownerCookie), userId: owner.id, csrfHash: csrfTokenHash(csrfTokenFor(ownerCookie)),
+  ...newSessionTimes(Date.now()) });
+const factVersion = store.addFactVersion({ brakes: 3, [LONG.slice(0, 80)]: 2, "synthetic-tag-with-a-long-name-for-the-list": 1 });
+store.heartbeat = { commit: "0".repeat(40), approvedFactsSha256: "a".repeat(64), priceTableSha256: "b".repeat(64),
+  tagCounts: { brakes: 1 }, beatAtMs: Date.now() };
+const LONG_MODEL = "synthetic-model-with-a-long-identifier-for-the-breakdown-table";
+const breakdown = [
+  ...["strategy-concept", "automotive-truth", "hook-story-script", "production-direction", "packaging-adaptation"].map((stage) => ({
+    item: stage, unit: "request", ceilingUsd: "0.640000", lines: [{ label: stage, model: LONG_MODEL, maxTokens: 64000, costUsd: 0.64 }] })),
+  { item: "final-critic", unit: "critic-panel", ceilingUsd: "18.450000", lines: ["evidence-fidelity", "platform-and-local", "voice-and-craft",
+    "production-coherence"].map((lens) => ({ label: `final-critic:${lens}`, model: LONG_MODEL, maxTokens: 32000, costUsd: 4.6125 })) },
+];
+const full = await store.createPreflightRequest(preflightRequest({ userId: owner.id, action: "full",
+  goal: `A long new-run goal ${LONG}`, platforms: ["instagram", "facebook", "google_business_profile"], scopeTags: ["brakes"],
+  sourceRunId: null, factVersionId: factVersion }));
+store.answerPreflight(full.requestId, { quote: { ceilingMicros: 21_650_000, breakdown } });
+const plan = JSON.parse(JSON.stringify(planRevision(JSON.parse(files["06-final-critic.json"]).output)));
+const revise = await store.createPreflightRequest(preflightRequest({ userId: owner.id, action: "revise", goal: null,
+  platforms: ["instagram", "facebook", "google_business_profile"], scopeTags: null, sourceRunId: run.id, factVersionId: factVersion }));
+store.answerPreflight(revise.requestId, { quote: { ceilingMicros: 9_150_000, breakdown: breakdown.slice(4) } }, plan);
+const today = localDay(Date.now());
+store.ledger.push({ entry: "reserve", runId: run.id, amountMicros: 21_650_000, day: today },
+  { entry: "release", runId: run.id, amountMicros: 20_415_433, day: today },
+  { entry: "overrun", runId: run.id, amountMicros: 1_234_567, day: today });
+
 const app = createStudioWebApp({
   store, commit: "0".repeat(40), log: () => {},
   config: { publicOrigin: "https://studio.test", allowedHd: "germancardepot.com", clientId: "layout.apps.test", clientSecret: "layout-secret",
-    bootstrapOwnerEmail: null },
+    bootstrapOwnerEmail: null, ceilings: { dailyMicros: 75_000_000, monthlyMicros: 300_000_000 } },
 });
 const server = createServer((req, res) => { void app.handle(req, res); });
 await new Promise((settle) => server.listen(0, "127.0.0.1", settle));
@@ -184,6 +220,7 @@ async function visit(path, width) {
         targets,
         small: targets.filter((t) => t.width < ${MIN_TAP} || t.height < ${MIN_TAP}),
         copies: [...document.querySelectorAll("button.copy")].map((b) => b.getAttribute("data-copy")),
+        text: document.body.innerText,
         stylesheetLoaded: [...document.styleSheets].some((s) => (s.href || "").includes("/static/studio.css")),
         decisionsTop: top("section.decisions"), captionsTop: top("section.captions"), findingsTop: top("section.findings"),
       };
@@ -203,7 +240,24 @@ try {
   results.reportPhone = await visit(`/runs/${run.id}`, PHONE);
   results.reportLens = await visit(`/runs/${run.id}?group=lens`, PHONE);
   results.reportDesktop = await visit(`/runs/${run.id}`, DESKTOP);
-  for (const key of ["listPhone", "reportPhone", "reportLens"]) {
+  await cdp("Network.setExtraHTTPHeaders", { headers: { cookie: `${SESSION_COOKIE}=${ownerCookie}` } });
+  results.newRunPhone = await visit("/new", PHONE);
+  results.quotePhone = await visit(`/preflights/${full.requestId}`, PHONE);
+  results.revisePhone = await visit(`/preflights/${revise.requestId}`, PHONE);
+  results.spendPhone = await visit("/spend", PHONE);
+  results.ownerReportPhone = await visit(`/runs/${run.id}`, PHONE);
+  const S62_PAGES = {
+    newRunPhone: ["Check and get a price", "Start FAKE — wiring test"],
+    quotePhone: ["Confirm", "$21.65"],
+    revisePhone: ["Confirm", "$9.15"],
+    spendPhone: ["Overruns", "Acknowledge"],
+    ownerReportPhone: ["Revise"],
+  };
+  for (const [key, words] of Object.entries(S62_PAGES)) {
+    assert(`${key}: the page rendered what it is for (${words.join(", ")})`, words.every((w) => results[key].text.includes(w)),
+      results[key].text.slice(0, 400));
+  }
+  for (const key of ["listPhone", "reportPhone", "reportLens", ...Object.keys(S62_PAGES)]) {
     const r = results[key];
     console.log(`${key}: scrollWidth ${r.scrollWidth} (client ${r.clientWidth}), ${r.targets.length} tap targets, smallest `
       + `${Math.min(...r.targets.map((t) => t.height))}x${Math.min(...r.targets.map((t) => t.width))} px, stylesheet ${r.stylesheetLoaded}`);

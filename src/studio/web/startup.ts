@@ -13,8 +13,8 @@
  */
 
 import {
-  decideRuntimeIdentity, decideRuntimeSchemaVersion, forbiddenNamesPresent, resolveStudioDatabaseUrl, type LedgerRow,
-  type RuntimeRefusal, type StudioIdentityProbe,
+  decideRuntimeIdentity, decideRuntimeSchemaVersion, forbiddenNamesPresent, parseCapMicros, resolveStudioDatabaseUrl,
+  type LedgerRow, type RuntimeRefusal, type StudioIdentityProbe,
 } from "../db/runner.js";
 
 /** A refusal to start: the web service connects to nothing, or stops before it listens. */
@@ -54,6 +54,20 @@ export interface WebEnvironment {
   port: string | undefined;
   /** `RENDER_GIT_COMMIT`: the commit `/healthz` reports. */
   commit: string | undefined;
+  /** Content Studio S6.2: the deployment ceilings a confirmation is bounded by (design §6.2). */
+  maxDailyUsd: string | undefined;
+  maxMonthlyUsd: string | undefined;
+}
+
+/**
+ * The deployment ceilings (`STUDIO_MAX_DAILY_USD`, `STUDIO_MAX_MONTHLY_USD`) in
+ * micro-dollars, parsed by the worker's own `parseCapMicros` (S2 runner module):
+ * missing, empty, unreadable or unparsable is ZERO, which refuses every
+ * confirmation (fail closed). They bound the owner's caps; they never raise them.
+ */
+export interface DeploymentCeilings {
+  dailyMicros: number;
+  monthlyMicros: number;
 }
 
 /** The configuration the web service runs with. Every URL it makes is derived from `publicOrigin`. */
@@ -64,6 +78,8 @@ export interface WebConfig {
   clientSecret: string;
   /** Lower-cased; null when unset, which refuses the bootstrap (design §7.2). Ignored once an owner exists. */
   bootstrapOwnerEmail: string | null;
+  /** Content Studio S6.2: the deployment ceilings every confirmation is checked against. */
+  ceilings: DeploymentCeilings;
 }
 
 export interface WebStartup {
@@ -71,6 +87,8 @@ export interface WebStartup {
   port: number;
   commit: string;
   config: WebConfig;
+  /** Ceilings that were missing or unreadable, and so are zero (every confirmation is refused). */
+  zeroCaps: string[];
 }
 
 /** The forbidden variables present, by name, in name order. */
@@ -140,6 +158,10 @@ export function decideWebStartup(env: WebEnvironment): WebStartup {
     refuse("commit-missing", "RENDER_GIT_COMMIT must be the full 40-character lowercase commit SHA this service runs.");
   }
   const bootstrap = env.bootstrapOwnerEmail?.trim().toLowerCase() ?? "";
+  const ceilings: DeploymentCeilings = {
+    dailyMicros: parseCapMicros(env.maxDailyUsd),
+    monthlyMicros: parseCapMicros(env.maxMonthlyUsd),
+  };
   return {
     connectionString,
     port,
@@ -150,7 +172,12 @@ export function decideWebStartup(env: WebEnvironment): WebStartup {
       clientId,
       clientSecret,
       bootstrapOwnerEmail: bootstrap === "" ? null : bootstrap,
+      ceilings,
     },
+    zeroCaps: [
+      ...(ceilings.dailyMicros === 0 ? ["STUDIO_MAX_DAILY_USD"] : []),
+      ...(ceilings.monthlyMicros === 0 ? ["STUDIO_MAX_MONTHLY_USD"] : []),
+    ],
   };
 }
 

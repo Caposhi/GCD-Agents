@@ -1,7 +1,8 @@
 /**
  * The Studio's two static files, served from code (docs/CONTENT_STUDIO_DESIGN.md
  * §8): `/static/studio.css`, the only styles any page uses, and
- * `/static/studio.js`, the one small script — the Copy buttons. Content Studio S5.
+ * `/static/studio.js`, the one small script — the Copy buttons (S5) and the
+ * new-run form's scope upper bound (S6.2). Content Studio S5.
  *
  * No page carries an inline script or an inline style, so S4's CSP
  * (`script-src 'self'`, and `default-src 'self'` for styles) is unchanged. Each
@@ -76,6 +77,28 @@ h3{font-size:1rem;margin:1rem 0 .25rem}
 table{border-collapse:collapse;font-size:.9rem}
 th,td{border-bottom:1px solid var(--line);padding:.35rem .5rem;text-align:left;white-space:nowrap}
 .files li{margin:.25rem 0}
+.action-form{display:flex;flex-direction:column;gap:.75rem;max-width:44rem}
+.action-form textarea{font:inherit;width:100%;max-width:100%;padding:.5rem;border:1px solid var(--line);border-radius:.4rem}
+.field{font-weight:600}
+fieldset{border:1px solid var(--line);border-radius:.5rem;padding:.5rem .75rem;margin:0;min-width:0}
+legend{font-weight:600;padding:0 .25rem}
+.check{display:flex;flex-wrap:wrap;align-items:center;gap:.4rem;min-height:44px}
+.check input{width:44px;height:44px;margin:0}
+.buttons{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center}
+.buttons form{margin:0}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button.danger{border-color:var(--bad);color:var(--bad)}
+button.fake{border-color:var(--warn);color:var(--warn)}
+.banner-warn{border-left-color:var(--warn)}
+.banner-bad{border-left-color:var(--bad)}
+.banner-fake{border-left-color:var(--warn);background:#fde7c7}
+.refusal{border-left:4px solid var(--bad);padding-left:.75rem}
+.plan ul,.lines,.overruns{padding-left:1.1rem}
+.lines{margin:.25rem 0 0;font-size:.85rem;white-space:normal}
+td .lines li{white-space:normal}
+.total{font-size:1.1rem}
+.confirm{margin:1rem 0}
+.overruns form{display:inline-block;margin-left:.5rem}
 @media (max-width:699.98px){
 main{padding:.75rem}
 .facts{grid-template-columns:1fr}
@@ -100,6 +123,19 @@ document.addEventListener("click", function (event) {
   };
   if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(false); });
   else done(false);
+});
+// The new-run form (Content Studio S6.2): the scope's UPPER BOUND, the sum of the ticked tags' counts. Tags
+// overlap, so it can only over-count; the worker's free check enforces the pack's record cap exactly.
+document.addEventListener("change", function (event) {
+  var target = event.target;
+  if (!target || target.name !== "tag") return;
+  var out = document.querySelector("[data-scope-bound]");
+  if (!out) return;
+  var boxes = document.querySelectorAll("input[name=tag]:checked");
+  var sum = 0;
+  for (var i = 0; i < boxes.length; i++) sum += Number(boxes[i].getAttribute("data-count")) || 0;
+  out.textContent = boxes.length ? "At most " + sum + " records carry the chosen tags (an upper bound), plus the always-included contact and identity records."
+    : "No tags chosen: an unscoped run, with every record.";
 });
 `;
 

@@ -11,6 +11,7 @@
  */
 
 import type { WorkerCaps } from "./startup.js";
+import { UNACKNOWLEDGED_OVERRUNS_SQL } from "../db/runner.js";
 import { numericToMicros } from "./money.js";
 
 /** Every way a paid unit is refused; each is the run's `failure_class`. */
@@ -123,21 +124,19 @@ export function planSettlement(reservedMicros: number, chargedMicros: number): S
   return null;
 }
 
-/** The audit action by which the owner acknowledges an overrun (design §6.2), unlocking confirmations. */
-export const OVERRUN_ACKNOWLEDGED = "spend.overrun_acknowledged";
-
-/** Overrun entries no owner has acknowledged. Shared by the worker's unit check and, in S6, the confirmation. */
-export const UNACKNOWLEDGED_OVERRUNS_SQL = `
-  SELECT count(*)::int AS n FROM studio_spend_ledger l
-   WHERE l.entry = 'overrun' AND NOT EXISTS (
-     SELECT 1 FROM studio_audit_log a JOIN studio_users u ON u.id = a.actor_user_id AND u.role = 'owner'
-      WHERE a.action = '${OVERRUN_ACKNOWLEDGED}' AND a.target_type = 'studio_runs' AND a.target_id = l.run_id::text)`;
+/**
+ * The overrun acknowledgement's audit action and the query for overruns no
+ * owner has acknowledged: moved, unchanged, into the S2 runner module by
+ * Content Studio S6.2, because the web's confirmation transaction reads them
+ * too; re-exported here by their S3 names.
+ */
+export { OVERRUN_ACKNOWLEDGED, UNACKNOWLEDGED_OVERRUNS_SQL } from "../db/runner.js";
 
 export interface SqlClient {
   query(text: string, values?: unknown[]): Promise<{ rows: Array<Record<string, any>>; rowCount?: number | null }>;
 }
 
-/** Whether new confirmations are locked by an unacknowledged overrun. S6's confirmation transaction calls this. */
+/** Whether new confirmations are locked by an unacknowledged overrun (the web's confirmation reads the same query). */
 export async function confirmationsLocked(client: SqlClient): Promise<boolean> {
   return ((await client.query(UNACKNOWLEDGED_OVERRUNS_SQL)).rows[0]?.n ?? 1) !== 0;
 }

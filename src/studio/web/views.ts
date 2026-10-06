@@ -9,8 +9,9 @@
  *   artifact names (`encodeURIComponent`, after the schema's own name shape).
  * - **No inline script and no inline style.** The page links `/static/studio.css`
  *   and `/static/studio.js`, both served from code; S4's CSP is unchanged.
- * - **Nothing here changes state.** There is no form but S4's sign-out, and
- *   no Resume, Revise or Delete control (actions are S6).
+ * - **Nothing here changes state.** Its only forms are S4's sign-out and, since
+ *   S6.2, the report's action buttons (`actionViews.ts`), each a POST to a
+ *   route that checks the Origin, the token, the role and the live users row.
  */
 
 import { escapeHtml } from "./html.js";
@@ -46,7 +47,7 @@ const isoNy = (value: Date | null): string => {
 const usd = (value: string | null): string => (value === null ? "—" : `$${escapeHtml(value)}`);
 const label = (map: Readonly<Record<string, string>>, value: string): string =>
   escapeHtml(Object.hasOwn(map, value) ? map[value]! : value);
-const fakeBadge = (runner: string) => (runner === "fake" ? ' <span class="badge badge-fake">FAKE</span>' : "");
+const fakeBadge = (runner: string) => (runner === "fake" ? ' <span title="FAKE — wiring test" class="badge badge-fake">FAKE</span>' : "");
 const tierBadge = (tier: string | null) =>
   (tier === "archived_unverified" ? ' <span class="badge badge-unverified">not revalidated</span>' : "");
 const runLink = (id: string, text: string) => `<a href="/runs/${encodeURIComponent(id)}">${text}</a>`;
@@ -59,15 +60,22 @@ export function fingerprint(value: string | null): string {
 }
 
 /** The page shell shared by the S5 screens: the stylesheet and the one static script, never inline. */
-export function shell(input: { title: string; user: StudioUserRow; csrfToken: string; body: string; poll: boolean }): string {
+export function shell(input: {
+  title: string; user: StudioUserRow; csrfToken: string; body: string; poll: boolean;
+  /** S6.2: a page that polls on its own interval (a preflight waiting for its answer). */
+  pollSeconds?: number;
+}): string {
+  const poll = input.pollSeconds ?? (input.poll ? POLL_SECONDS : null);
   return "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">"
     + "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
-    + (input.poll ? `<meta http-equiv="refresh" content="${POLL_SECONDS}">` : "")
+    + (poll !== null ? `<meta http-equiv="refresh" content="${poll}">` : "")
     + `<title>${escapeHtml(input.title)} — Content Studio</title>`
     + `<link rel="stylesheet" href="${STATIC_ASSETS.css.href}">`
     + `<script src="${STATIC_ASSETS.js.href}" defer></script>`
     + "</head><body>"
-    + "<header class=\"top\"><a class=\"brand\" href=\"/\">Content Studio</a><nav><a href=\"/runs\">Runs</a></nav>"
+    + "<header class=\"top\"><a class=\"brand\" href=\"/\">Content Studio</a><nav><a href=\"/runs\">Runs</a>"
+    + (input.user.role === "owner" || input.user.role === "runner" ? "<a href=\"/new\">New run</a>" : "")
+    + "<a href=\"/spend\">Spend</a></nav>"
     + `<span class="who">${escapeHtml(input.user.display_name ?? "(no display name)")} · ${escapeHtml(input.user.role)}</span>`
     + `<form method="post" action="/auth/logout"><input type="hidden" name="csrf" value="${escapeAttribute(input.csrfToken)}">`
     + "<button type=\"submit\">Sign out</button></form></header>"
@@ -135,6 +143,8 @@ export interface ReportInput {
   findings: readonly FindingRow[];
   requests: readonly RequestRow[];
   group: "owner" | "lens";
+  /** S6.2: the report's action buttons, already rendered (`reportActions`), shown below the header. */
+  actions?: string;
 }
 
 /** The artifacts the report reads to render itself. */
@@ -293,7 +303,7 @@ export function reportBody(input: ReportInput): string {
     + "</section>";
 
   // Design order: header, captions, script, shot list, findings, needs your decision, cost, files.
-  return `<article class="report">${header(run, lineage, names, requests)}<div class="sections">`
+  return `<article class="report">${header(run, lineage, names, requests)}${input.actions ?? ""}<div class="sections">`
     + captionSection + scriptSection + shotSection + findingsSection + decisionSection + costSection + filesSection
     + "</div></article>";
 }

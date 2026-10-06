@@ -13,8 +13,10 @@
  * touched; every database it creates is dropped, after every pool and worker
  * connection it opened has closed.
  *
- * Every check is `SWP…`, in four groups: `startup`, `queue`, `paid` and
- * `identical`.
+ * Every check is `SWP…`, in groups: `startup`, `queue`, `paid`, `identical`,
+ * `findings` and (Content Studio S6.2) `actions` — the free preflight answered
+ * by the worker, the confirmation through the web's own store, and the paid
+ * path behind it with the counting fake runner.
  */
 
 import { execFile, spawn, type ChildProcess } from "node:child_process";
@@ -23,6 +25,7 @@ import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, syml
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 import pg from "pg";
 
 import * as lib from "../../harness/contentRun/index.js";
@@ -35,11 +38,13 @@ import { studioOwnershipKey } from "./session.js";
 import { confirmationsLocked, OVERRUN_ACKNOWLEDGED } from "./spend.js";
 import { fakeTranscript, replayRunner, syntheticFactsBytes, type ReplayCall } from "./testSupport.js";
 import { startWorker, type WorkerHandle, type WorkerOptions } from "./worker.js";
+import { localDay, preflightRequest } from "../web/actions.js";
+import { PgWebStore } from "../web/store.js";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
-const GROUPS = ["startup", "queue", "paid", "identical", "findings"] as const;
+const GROUPS = ["startup", "queue", "paid", "identical", "findings", "actions"] as const;
 type Group = typeof GROUPS[number];
-const counts: Record<Group, number> = { startup: 0, queue: 0, paid: 0, identical: 0, findings: 0 };
+const counts: Record<Group, number> = { startup: 0, queue: 0, paid: 0, identical: 0, findings: 0, actions: 0 };
 let failures = 0;
 function check(group: Group, name: string, cond: boolean, detail = ""): void {
   console.log(`${cond ? "PASS" : "FAIL"}  [${group}] ${name}${cond || !detail ? "" : ` — ${detail}`}`);
@@ -704,7 +709,7 @@ async function paidGroup(dbs: Databases): Promise<void> {
       [[q1.jobId, q2.jobId, pre]])).rows.map((r) => r.target_id);
     const preState = (await st.pool.query("SELECT state FROM studio_jobs WHERE id = $1", [pre])).rows[0].state;
     check("paid", "SWP11. a queued free preflight job is claimed before queued paid and fake jobs created earlier (and, "
-      + "until S6 builds the preflight, closed at once); then the rest in creation order",
+      + "when it carries no preflight request, closed at once); then the rest in creation order",
       claimOrder.join() === [pre, q1.jobId, q2.jobId].join() && preState === "finished",
       claimOrder.join());
 
@@ -907,6 +912,285 @@ async function findingsGroup(dbs: Databases): Promise<void> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// actions (Content Studio S6.2): the preflight, the confirmation and the paid path end to end
+// ---------------------------------------------------------------------------
+
+async function actionsGroup(dbs: Databases): Promise<void> {
+  const st = await studio(dbs, "actions");
+  const web = new PgWebStore(st.pool, st.pool);
+  const WIDE = { dailyMicros: 1_000_000_000, monthlyMicros: 10_000_000_000 };
+  const PLATFORMS = ["instagram", "facebook", "google_business_profile"];
+  const rt = lib.loadRuntime();
+  let worker: WorkerHandle | undefined;
+  try {
+    await st.pool.query("UPDATE studio_settings SET active_fact_version_id = $1, daily_cap_usd = 1000, monthly_cap_usd = 10000, updated_by = $2",
+      [st.factVersion, st.owner]);
+    const ask = (userId: string, edit: Partial<Parameters<typeof preflightRequest>[0]> = {}) => web.createPreflightRequest(preflightRequest({
+      userId, action: "full", goal: GOAL, platforms: PLATFORMS, scopeTags: null, sourceRunId: null, factVersionId: st.factVersion, ...edit,
+    }));
+    const answered = (requestId: string) => waitFor(`preflight ${requestId}`, async () => {
+      const v = await web.findPreflightRequest(requestId);
+      return v && v.outcome !== null ? v : undefined;
+    });
+    const confirm = async (userId: string, edit: Partial<Parameters<typeof preflightRequest>[0]> = {}) => {
+      const view = await answered((await ask(userId, edit)).requestId);
+      if (view.outcome !== "quoted") throw new Error(`not quoted: ${view.refusalClass}`);
+      return { view, result: await web.confirmQuote({ quoteId: view.quote!.id, userId, ceilings: WIDE }) };
+    };
+    const factoryBefore = realFactoryCalls;
+
+    // SWP19: the free preflight, answered by the worker, quoted.
+    worker = inProcess(st);
+    await worker.ready;
+    const asked = await ask(st.runner);
+    const view = await answered(asked.requestId);
+    const quote = (await st.pool.query(
+      `SELECT q.*, q.ceiling_usd::text AS ceiling, q.fact_version_id::text AS fv, q.user_id::text AS uid,
+              extract(epoch FROM q.expires_at - q.created_at)::int AS ttl, r.params_sha256 AS request_sha, j.state AS job
+         FROM studio_quotes q JOIN studio_preflight_requests r ON r.quote_id = q.id JOIN studio_jobs j ON j.id = r.job_id
+        WHERE r.id = $1`, [asked.requestId])).rows[0];
+    const expectedLines = lib.computeCostCeiling(rt, lib.allStagePolicies(rt)).lines;
+    const items = (quote?.breakdown ?? []) as Array<{ unit: string; lines: unknown[] }>;
+    check("actions", "SWP19. the worker answers a price request written by the web's store with its free preflight: one quote "
+      + "bound to the requester, the action, the request's params_sha256, the worker's commit, the approved-facts sha256, the "
+      + "fact version and the price table, expiring 10 minutes after it was made, its breakdown computeCostCeiling's lines "
+      + "with the critic panel one item; the request names it, the job is finished, no request row exists and the provider "
+      + "factory was never called",
+      view.outcome === "quoted" && quote?.uid === st.runner && quote.action === "full" && quote.params_sha256 === quote.request_sha
+        && quote.worker_commit === COMMIT && quote.approved_facts_sha256 === approvedSha && quote.fv === st.factVersion
+        && quote.price_table_sha256 === lib.priceTableSha256() && quote.ttl === 600 && quote.job === "finished"
+        && numericToMicros(quote.ceiling) === fullCeiling.micros
+        && isDeepStrictEqual(items.flatMap((i) => i.lines), JSON.parse(JSON.stringify(expectedLines)))
+        && items.filter((i) => i.unit === "critic-panel").length === 1 && items.length === 6
+        && (await st.pool.query("SELECT count(*)::int AS n FROM studio_run_requests")).rows[0].n === 0 && realFactoryCalls === factoryBefore,
+      `${view.outcome} uid=${quote?.uid === st.runner} sha=${quote?.params_sha256 === quote?.request_sha} commit=${quote?.worker_commit} `
+        + `facts=${quote?.approved_facts_sha256 === approvedSha} fv=${quote?.fv === st.factVersion} prices=${quote?.price_table_sha256 === lib.priceTableSha256()} `
+        + `ttl=${quote?.ttl} job=${quote?.job} ceiling=${quote?.ceiling}/${microsToNumeric(fullCeiling.micros)} items=${items.length} `
+        + `lines=${isDeepStrictEqual(items.flatMap((i) => i.lines), JSON.parse(JSON.stringify(expectedLines)))}`);
+
+    // SWP19a: refusals stored with their class and message; a params mismatch; no quote.
+    const mismatch = (await st.pool.query(
+      `WITH j AS (INSERT INTO studio_jobs (kind) VALUES ('preflight') RETURNING id)
+       INSERT INTO studio_preflight_requests (job_id, user_id, action, goal, platforms, fact_version_id, params_sha256)
+       SELECT j.id, $1, 'full', $2, $3, $4, $5 FROM j RETURNING id::text AS id`,
+      [st.runner, GOAL, PLATFORMS, st.factVersion, "0".repeat(64)])).rows[0].id as string;
+    const scoped = await ask(st.runner, { scopeTags: ["no-record-carries-this-tag"] });
+    const [m, sc] = [await answered(mismatch), await answered(scoped.requestId)];
+    const quotesAfter = (await st.pool.query("SELECT count(*)::int AS n FROM studio_quotes")).rows[0].n;
+    check("actions", "SWP19a. a request whose params_sha256 does not match its parameters is refused (params_mismatch), and one "
+      + "the library's free checks refuse (an evidence class no record in its scope supplies) is refused with the library's "
+      + "own message — each stored with its class and message, with no quote and no request",
+      m.outcome === "refused" && m.refusalClass === "params_mismatch" && (m.refusalMessage ?? "").length > 0
+        && sc.outcome === "refused" && /evidence pack cannot satisfy/.test(sc.refusalMessage ?? "") && quotesAfter === 1
+        && (await st.pool.query("SELECT count(*)::int AS n FROM studio_run_requests")).rows[0].n === 0,
+      `${m.refusalClass} ${sc.refusalClass}`);
+    await worker.stop();
+
+    // SWP19b: an unknown model price, on a worker whose runtime resolves the critic to a model with no price row.
+    const base = countedRuntime();
+    const resolve0 = base.modelPolicy.resolveModelPolicy;
+    worker = inProcess(st, { runtime: { ...base, modelPolicy: { ...base.modelPolicy,
+      resolveModelPolicy: ((policy: Parameters<typeof resolve0>[0]) => (policy === "critic"
+        ? { ...resolve0(policy), model: "claude-unpriced-test-model" } : resolve0(policy))) as typeof resolve0 } } as ContentRunRuntime });
+    await worker.ready;
+    const unpriced = await answered((await ask(st.runner)).requestId);
+    check("actions", "SWP19b. a model with no price row makes no quote: the worker refuses the request as unpriced_request, "
+      + "naming the model, and writes no quote",
+      unpriced.outcome === "refused" && unpriced.refusalClass === "unpriced_request" && /claude-unpriced-test-model/.test(unpriced.refusalMessage ?? "")
+        && unpriced.quote === null && (await st.pool.query("SELECT count(*)::int AS n FROM studio_quotes")).rows[0].n === 1,
+      `${unpriced.refusalClass}`);
+    await worker.stop();
+
+    // SWP20: a fake run (owner only, through the web's store), then a revise of it: planRevision's plan.
+    worker = inProcess(st);
+    await worker.ready;
+    const fake = await web.createFakeRun({ ownerId: st.owner, goal: GOAL, platforms: PLATFORMS, scopeTags: null, factVersionId: st.factVersion });
+    const fakeEnd = await terminal(st, fake.runId);
+    const revise = await answered((await ask(st.runner, { action: "revise", goal: null, sourceRunId: fake.runId })).requestId);
+    const critic = JSON.parse(String((await st.pool.query(
+      "SELECT content FROM studio_run_artifacts WHERE run_id = $1 AND name = '06-final-critic.json'", [fake.runId])).rows[0].content)).output;
+    const plan = JSON.parse(JSON.stringify(rt.revision.planRevision(critic)));
+    check("actions", "SWP20. the owner's fake run (no quote, no reservation) succeeds on the worker; a revise of it is quoted "
+      + "with planRevision's plan, stored with the outcome, and its lines are computeCostCeiling's for the round",
+      fakeEnd.state === "succeeded" && revise.outcome === "quoted" && isDeepStrictEqual(revise.revisePlan, plan)
+        && plan.kind === "revision"
+        && (await ledgerOf(st, fake.runId)) === "",
+      `${fakeEnd.state} ${revise.outcome} ${revise.refusalClass} plan=${isDeepStrictEqual(revise.revisePlan, plan)} ${plan.kind} ledger=${await ledgerOf(st, fake.runId)}`);
+    await worker.stop();
+
+    // SWP21: confirmed, then run on the injected counting fake paid runner: requests charged, reconciled, released.
+    const transcript = await fakeTranscript(REPO_ROOT, GOAL);
+    const counting = replayRunner(transcript);
+    worker = inProcess(st, { paidStageRunner: counting });
+    await worker.ready;
+    const paid = await confirm(st.runner);
+    const runId = paid.result.ok ? paid.result.runId : "";
+    const ended = await terminal(st, runId);
+    const rows = await requestsOf(st, runId);
+    const charged = rows.reduce((t, r) => t + numericToMicros(r.charged)!, 0);
+    check("actions", "SWP21. a quote confirmed through the web's store runs on the injected counting fake paid runner: every "
+      + "request is charged (nine rows, nine runner calls), the run is reconciled to its charged cost and the unused "
+      + "reservation released; the real provider factory is never called",
+      paid.result.ok && ended.state === "succeeded" && rows.length === 9 && counting.calls.length === 9
+        && rows.every((r) => r.outcome === "succeeded") && ended.actual === microsToNumeric(charged)
+        && (await ledgerOf(st, runId)) === `release:${microsToNumeric(fullCeiling.micros - charged)},reserve:${microsToNumeric(fullCeiling.micros)}`
+        && realFactoryCalls === factoryBefore,
+      `${JSON.stringify(ended)} ${rows.length} ${counting.calls.length} ${await ledgerOf(st, runId)}`);
+    await worker.stop();
+
+    // SWP22: cancelling a running run: no request after the cancel, completed costs kept, the rest released.
+    let cancelResult = "";
+    const cancelling = replayRunner(transcript, { during: async (call) => {
+      if (call.index !== 1) return;
+      const run = (await st.pool.query("SELECT id::text AS id FROM studio_runs WHERE state = 'running' AND runner = 'live'")).rows[0];
+      const r = await web.cancelRun({ runId: run.id, user: { id: st.owner, role: "owner", status: "active" } });
+      cancelResult = r.ok ? r.kind : r.refusal;
+    } });
+    worker = inProcess(st, { paidStageRunner: cancelling });
+    await worker.ready;
+    const toCancel = await confirm(st.runner);
+    const cancelledId = toCancel.result.ok ? toCancel.result.runId : "";
+    const cancelEnd = await terminal(st, cancelledId);
+    const cancelRows = await requestsOf(st, cancelledId);
+    const kept = cancelRows.reduce((t, r) => t + numericToMicros(r.charged)!, 0);
+    check("actions", "SWP22. the owner cancels a running run through the web's store during its second request: no further "
+      + "request is sent, both completed requests stay charged, the run is cancelled and the rest of its reservation released",
+      cancelResult === "running" && cancelEnd.state === "cancelled" && cancelling.calls.length === 2 && cancelRows.length === 2
+        && (await ledgerOf(st, cancelledId)) === `release:${microsToNumeric(fullCeiling.micros - kept)},reserve:${microsToNumeric(fullCeiling.micros)}`,
+      `${cancelResult} ${JSON.stringify(cancelEnd)} ${cancelling.calls.length} ${cancelRows.length}`);
+    await worker.stop();
+
+    // SWP23: a queued run cancelled before any claim; a runner cannot cancel another's.
+    const queued = await (async () => {
+      worker = inProcess(st);
+      await worker.ready;
+      const view = await answered((await ask(st.runner)).requestId);
+      await worker.stop();
+      const result = await web.confirmQuote({ quoteId: view.quote!.id, userId: st.runner, ceilings: WIDE });
+      return result.ok ? result.runId : "";
+    })();
+    const otherRunner = (await st.pool.query("INSERT INTO studio_users (email, role, created_by) VALUES ($1, 'runner', $2) RETURNING id::text AS id",
+      [`runner2.${randomBytes(3).toString("hex")}@germancardepot.com`, st.owner])).rows[0].id as string;
+    const refusedCancel = await web.cancelRun({ runId: queued, user: { id: otherRunner, role: "runner", status: "active" } });
+    const ownCancel = await web.cancelRun({ runId: queued, user: { id: st.runner, role: "runner", status: "active" } });
+    worker = inProcess(st, { paidStageRunner: replayRunner(transcript) });
+    await worker.ready;
+    await sleep(500);
+    const claims = (await st.pool.query(
+      "SELECT count(*)::int AS n FROM studio_audit_log a JOIN studio_jobs j ON j.id::text = a.target_id WHERE a.action = 'job.claim' AND j.run_id = $1",
+      [queued])).rows[0].n;
+    check("actions", "SWP23. a runner cannot cancel another user's run (not_your_run); the requester's own cancellation of a "
+      + "queued run cancels it before any claim — the worker, started afterwards, never claims it — and releases its whole "
+      + "reservation",
+      !refusedCancel.ok && refusedCancel.refusal === "not_your_run" && ownCancel.ok && ownCancel.kind === "queued" && claims === 0
+        && (await runRow(st, queued)).state === "cancelled"
+        && (await ledgerOf(st, queued)) === `release:${microsToNumeric(fullCeiling.micros)},reserve:${microsToNumeric(fullCeiling.micros)}`,
+      `${JSON.stringify(refusedCancel)} ${JSON.stringify(ownCancel)} ${claims}`);
+    await worker.stop();
+
+    // SWP24: an overrun fails the run and locks confirmations until the owner acknowledges it.
+    const overrunning = replayRunner(transcript, { costUsd: (call) => (call.index === 0 ? 50 : 0.01) });
+    worker = inProcess(st, { paidStageRunner: overrunning });
+    await worker.ready;
+    const over = await confirm(st.runner);
+    const overId = over.result.ok ? over.result.runId : "";
+    const overEnd = await terminal(st, overId);
+    const overCalls = overrunning.calls.length;
+    const lockedView = await answered((await ask(st.runner)).requestId);
+    const locked = await web.confirmQuote({ quoteId: lockedView.quote!.id, userId: st.runner, ceilings: WIDE });
+    const ack = await web.acknowledgeOverrun({ runId: overId, ownerId: st.owner });
+    await worker.stop();
+    worker = inProcess(st, { paidStageRunner: replayRunner(transcript) });
+    await worker.ready;
+    const unlocked = await web.confirmQuote({ quoteId: lockedView.quote!.id, userId: st.runner, ceilings: WIDE });
+    const unlockedEnd = unlocked.ok ? await terminal(st, unlocked.runId) : undefined;
+    check("actions", "SWP24. a run whose charged cost passes its reservation stops (one request, then no more), fails as "
+      + "cost_ceiling_exceeded with an overrun entry; every confirmation is then refused (confirmations_locked) until the "
+      + "owner acknowledges it through the web's store, after which the next confirmation runs",
+      overEnd.state === "failed" && overEnd.failure_class === "cost_ceiling_exceeded" && overCalls === 1
+        && (await ledgerOf(st, overId)).startsWith("overrun:") && !locked.ok && locked.refusal === "confirmations_locked"
+        && ack && unlocked.ok && unlockedEnd?.state === "succeeded",
+      `${JSON.stringify(overEnd)} ${overCalls} ${JSON.stringify(locked)} ${ack} ${JSON.stringify(unlocked)} ${unlockedEnd?.state}`);
+    await worker.stop();
+
+    // SWP25: the day and month a run's entries are booked to: its reserve's, in America/New_York.
+    const planted = async (day: string) => paidJob(st, {
+      reserve: false, disable: [["studio_spend_ledger", "studio_spend_ledger_before_insert"]],
+      after: async (c, ids) => {
+        await c.query(
+          `INSERT INTO studio_spend_ledger (entry, run_id, amount_usd, day_local, month_local, created_at)
+           SELECT 'reserve', $1, $2, $3::date, studio_month_of($3::date),
+                  (($3::date + 1)::timestamp - interval '1 minute') AT TIME ZONE 'America/New_York'`,
+          [ids.runId, microsToNumeric(fullCeiling.micros), day]);
+      },
+    });
+    const today = String((await st.pool.query("SELECT studio_local_day(now())::text AS d")).rows[0].d);
+    const yesterday = String((await st.pool.query("SELECT (studio_local_day(now()) - 1)::text AS d")).rows[0].d);
+    const lastOfPreviousMonth = String((await st.pool.query("SELECT (studio_month_of(studio_local_day(now())) - 1)::text AS d")).rows[0].d);
+    const late = await planted(yesterday);
+    const monthEnd = await planted(lastOfPreviousMonth);
+    worker = inProcess(st, { paidStageRunner: replayRunner(transcript) });
+    await worker.ready;
+    await terminal(st, late.runId);
+    await terminal(st, monthEnd.runId);
+    const booked = async (runId: string) => (await st.pool.query(
+      `SELECT entry, day_local::text AS day, month_local::text AS month, studio_local_day(created_at)::text AS written
+         FROM studio_spend_ledger WHERE run_id = $1 ORDER BY entry`, [runId])).rows;
+    const lateRows = await booked(late.runId);
+    const monthRows = await booked(monthEnd.runId);
+    const todaySpend = await web.spendView(today);
+    const lateNet = numericToMicros((await st.pool.query(
+      "SELECT sum(CASE entry WHEN 'release' THEN -amount_usd ELSE amount_usd END)::text AS s FROM studio_spend_ledger WHERE run_id = $1",
+      [late.runId])).rows[0].s)!;
+    const yesterdaySpend = await web.spendView(yesterday);
+    const yesterdayBefore = numericToMicros((await st.pool.query(
+      `SELECT COALESCE(sum(CASE entry WHEN 'release' THEN -amount_usd ELSE amount_usd END), 0)::text AS s FROM studio_spend_ledger
+        WHERE day_local = $1::date AND run_id NOT IN ($2::uuid, $3::uuid)`, [yesterday, late.runId, monthEnd.runId])).rows[0].s)!;
+    check("actions", "SWP25. a run reserved at 23:59 America/New_York and finished after midnight books every entry to its "
+      + "reserve's day — its release is written today and booked to yesterday — and one reserved on the last day of the "
+      + "previous month books its release to that month; the web's spend for today leaves both out, and its spend for yesterday "
+      + "counts the late run's net",
+      lateRows.map((r) => `${r.entry}:${r.day}`).join() === `release:${yesterday},reserve:${yesterday}`
+        && lateRows.find((r) => r.entry === "release")?.written === today
+        && monthRows.map((r) => `${r.entry}:${r.month}`).join()
+          === `release:${lastOfPreviousMonth.slice(0, 8)}01,reserve:${lastOfPreviousMonth.slice(0, 8)}01`
+        && todaySpend.day === today && localDay(Date.now()) === today
+        && (yesterday === lastOfPreviousMonth ? true : yesterdaySpend.dayMicros === yesterdayBefore + lateNet),
+      `${JSON.stringify(lateRows)} ${JSON.stringify(monthRows)} ${yesterdaySpend.dayMicros} ${yesterdayBefore} ${lateNet}`);
+    await worker.stop();
+    worker = undefined;
+
+    // SWP26: the production entry point: no paid runner; a confirmed live run refused, its reservation released.
+    const child = childWorker(st.url);
+    await waitFor("the child worker to be ready", async () => has(child, "[studio-worker] ready"), 60_000);
+    const childAnswer = await answered((await ask(st.runner)).requestId);
+    const childRun = await web.confirmQuote({ quoteId: childAnswer.quote!.id, userId: st.runner, ceilings: WIDE });
+    const childId = childRun.ok ? childRun.runId : "";
+    const childEnd = childRun.ok ? await terminal(st, childId) : { state: `not confirmed: ${childRun.refusal}`, failure_class: null };
+    child.process.kill("SIGTERM");
+    await child.exited;
+    const keyed = spawn(process.execPath, [resolve(REPO_ROOT, "dist/studio/worker/main.js")], {
+      env: { PATH: process.env.PATH ?? "", STUDIO_DATABASE_URL: st.url, STUDIO_MAX_DAILY_USD: "75", STUDIO_MAX_MONTHLY_USD: "300",
+        RENDER_GIT_COMMIT: COMMIT, ANTHROPIC_API_KEY: "" }, stdio: ["ignore", "pipe", "pipe"] });
+    let keyedErr = "";
+    keyed.stderr!.on("data", (c: Buffer) => { keyedErr += c.toString("utf8"); });
+    const keyedCode = await new Promise<number | null>((settle) => keyed.once("exit", settle));
+    check("actions", "SWP26. on the production wiring — npm run start:studio-worker, which builds no paid runner — the worker "
+      + "answers a price request, and the run confirmed from its quote is refused before any work as live_runs_not_enabled, "
+      + "its whole reservation released and no request made; beside ANTHROPIC_API_KEY (even empty) the entry point still "
+      + "refuses to start",
+      childAnswer.outcome === "quoted" && childRun.ok && childEnd.state === "refused" && childEnd.failure_class === "live_runs_not_enabled"
+        && childRun.ok && (await requestsOf(st, childId)).length === 0
+        && (await ledgerOf(st, childId)) === `release:${microsToNumeric(fullCeiling.micros)},reserve:${microsToNumeric(fullCeiling.micros)}`
+        && keyedCode === 1 && /refused \(forbidden-variable\)/.test(keyedErr) && /ANTHROPIC_API_KEY/.test(keyedErr),
+      `${childAnswer.outcome} ${JSON.stringify(childEnd)} ${keyedCode} ${keyedErr.trim()}`);
+  } finally {
+    await worker?.stop();
+    await st.close();
+  }
+}
+
 async function main(): Promise<void> {
   const admin = adminUrl();
   const adminPool = openPool("admin", { connectionString: admin, max: 3, connectionTimeoutMillis: 10_000 });
@@ -929,6 +1213,7 @@ async function main(): Promise<void> {
     await paidGroup(dbs);
     await identicalGroup(dbs);
     await findingsGroup(dbs);
+    await actionsGroup(dbs);
   } finally {
     for (const name of [...dbs.created]) await dbs.drop(name).catch((e) => console.error(`[studio-worker-postgres] drop ${name}: ${(e as Error).message}`));
     await closePool(adminPool);

@@ -3,9 +3,16 @@
  * `numeric(12,6)` USD), so every comparison is exact integer arithmetic and no
  * floating-point sum can make a ceiling that fits look as if it did not, or the
  * reverse.
+ *
+ * Content Studio S6.2 moved `MICROS_PER_USD`, `numericToMicros`,
+ * `microsToNumeric` and `parseCapMicros`, unchanged, into the S2 runner module,
+ * which the web also reads (its deployment ceilings); they are re-exported
+ * here by their S3 names.
  */
 
-export const MICROS_PER_USD = 1_000_000;
+import { MICROS_PER_USD } from "../db/runner.js";
+
+export { MICROS_PER_USD, microsToNumeric, numericToMicros, parseCapMicros } from "../db/runner.js";
 
 /**
  * A ceiling in micro-dollars, rounded UP: a request's ceiling, and so a
@@ -23,31 +30,4 @@ export function ceilingMicros(usd: number): number {
 export function measuredMicros(usd: unknown): number | null {
   if (typeof usd !== "number" || !Number.isFinite(usd) || usd < 0) return null;
   return Math.round(usd * MICROS_PER_USD);
-}
-
-/** A PostgreSQL `numeric` as micro-dollars, exactly (at most six decimals). */
-export function numericToMicros(text: string | null | undefined): number | null {
-  if (text === null || text === undefined) return null;
-  const match = /^(-)?(\d+)(?:\.(\d{1,6})0*)?$/.exec(String(text).trim());
-  if (!match) throw new Error(`not a numeric(12,6) amount: ${JSON.stringify(text)}`);
-  const micros = Number(match[2]) * MICROS_PER_USD + Number((match[3] ?? "").padEnd(6, "0"));
-  return match[1] ? -micros : micros;
-}
-
-/** Micro-dollars as a `numeric(12,6)` literal. */
-export function microsToNumeric(micros: number): string {
-  if (!Number.isSafeInteger(micros)) throw new Error(`not a whole number of micro-dollars: ${micros}`);
-  const sign = micros < 0 ? "-" : "";
-  const abs = Math.abs(micros);
-  return `${sign}${Math.floor(abs / MICROS_PER_USD)}.${String(abs % MICROS_PER_USD).padStart(6, "0")}`;
-}
-
-/**
- * A deployment-time cap (`STUDIO_MAX_DAILY_USD`, `STUDIO_MAX_MONTHLY_USD`) in
- * micro-dollars. Missing, empty, negative, not a plain decimal, or more than
- * six decimals: zero, which refuses every paid request (design §6.2).
- */
-export function parseCapMicros(raw: string | undefined): number {
-  if (typeof raw !== "string" || !/^\d{1,6}(?:\.\d{1,6})?$/.test(raw.trim())) return 0;
-  return numericToMicros(raw.trim()) ?? 0;
 }

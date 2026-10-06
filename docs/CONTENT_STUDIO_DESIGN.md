@@ -848,6 +848,23 @@ Nothing below is built; P2 needs its own authorization.**
 `--revise-once`'s second prompt becomes a second quote. The revision round is priced after round 1
 from the requests it will actually make, as the CLI does today (**VERIFIED**).
 
+*(Dated note, Content Studio S6.2, 2026-10-05 — `IMPLEMENTED`, not merged; fake runners only. A
+discrepancy and how it was resolved, with the owner's acceptance of the plan: step 3's "its
+fingerprints … differ from the worker's current heartbeat" cannot include the **fact version**,
+because the heartbeat (§3.3, S3) carries none. S6.2 compares the quote's worker commit,
+approved-facts sha256 and price-table sha256 with the heartbeat, and its fact version with the
+**current** fact version — the active one for a full run, the source run's pinned one for a revise,
+replay or resume (`quote_stale` either way). Read alongside, as implemented: "the user's role or
+status changed" is checked as the live role and status **and** "the users row changed after the
+quote was made" (its `updated_at`), which is stricter; a confirmation also refuses a stale heartbeat
+(older than two minutes), an unacknowledged overrun (§6.2) and a missing source run. §8.3's
+**Check** and **Get price** are one button, "Check and get a price", since the free preflight is what
+writes the quote; the scope's record count is shown as an **upper bound** and the worker's
+preflight enforces the 64-record cap exactly. The preflight runs the action's own library path,
+stopped at its `PaidActionConsent`, so the quote's lines are `computeCostCeiling`'s and the free
+checks are the CLI's own. Cancellation (§5.3): an owner may cancel any run, a runner only their own.
+Fake runs are full runs only. See [Roadmap](ROADMAP.md).)*
+
 ### 6.2 Daily and monthly caps — enforced before every paid call
 
 **PROPOSED.** Spend is capped at three levels:
@@ -1322,6 +1339,15 @@ no Studio code path can spend money.** (4) The audit-log-as-channel workaround i
 users and caps settings screens are not assigned by the S6 row, which assigns the caps'
 enforcement; they remain unassigned (the seeded settings row already holds the owner's caps of
 2026-09-29).)*
+
+*(Dated note, 2026-10-05: S6.1 is `MERGED` through PR #110 at `a22ffd9…`, not deployed; 0003 has
+been applied only to disposable test databases. **S6.2 is `IMPLEMENTED`, not merged**, with fake
+runners only and no migration; its deviations are in the dated note at §6.1. **§8.7's users and
+caps settings screens are not in S6.2 and stay open, for S7 or later.** The next PR is S7. The
+`deploy-production` run for S6.1's merge never ran its gate (no GitHub hosted runner on either
+attempt; the release job skipped); the owner recorded a one-time exception, and the run for S6.2's
+merge must reach the disabled-automation refusal with its release job skipped — a **BLOCKING**
+follow-up in [Roadmap](ROADMAP.md) and [Status](STATUS.md).)*
 
 **Documents each PR must update**, beyond [Roadmap](ROADMAP.md), [Status](STATUS.md) and the root
 [README](../README.md), under [`AGENTS.md`](../AGENTS.md)'s binding rule. This change adds only a labelled planned note to

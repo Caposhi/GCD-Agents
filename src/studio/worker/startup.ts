@@ -38,7 +38,7 @@ const refuse = (reason: string, message: string): never => {
  */
 export { FORBIDDEN_PREFIXES, FORBIDDEN_VARIABLES, STUDIO_EXPECTED_MIGRATIONS, STUDIO_SCHEMA_VERSION } from "../db/runner.js";
 /**
- * Refused in S3 only: live runs are enabled in S6, so until then the worker
+ * Refused until S6b: live runs are enabled in S6b, so until then the worker
  * holds no provider key at all — and the live `config.ts`, which the stage
  * modules load, never sees one.
  */
@@ -85,7 +85,7 @@ export function decideWorkerStartup(env: WorkerEnvironment): WorkerStartup {
   if (forbidden.length) {
     refuse("forbidden-variable",
       `forbidden variable(s) present: ${forbidden.join(", ")}. The Studio worker refuses to start beside any live `
-      + "credential, the live database's variable or (until S6) a provider key, whatever the value.");
+      + "credential, the live database's variable or (until S6b) a provider key, whatever the value.");
   }
   let connectionString: string;
   try {

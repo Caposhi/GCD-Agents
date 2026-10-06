@@ -13,6 +13,7 @@
  */
 
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { resolve } from "node:path";
@@ -25,6 +26,9 @@ import {
   decideStudioIdentity,
   LIVE_SCHEMA_TABLES,
   planStudioMigrations,
+  PREFLIGHT_PARAMS_SCHEMA,
+  preflightParamsCanonical,
+  preflightParamsSha256,
   readStudioMigrationFiles,
   resolveStudioDatabaseUrl,
   runStudioMigrations,
@@ -235,7 +239,8 @@ async function main(): Promise<void> {
   const workerReads = [...worker.matchAll(/process\.env\.([A-Za-z_][A-Za-z0-9_]*)/g)].map((match) => match[0]);
   // Since S4 the web service's entry point is the third (design §3.2), held to its own exact list the same
   // way: the names present, STUDIO_DATABASE_URL, the origin, the hd, the client id and secret, the bootstrap
-  // email, PORT and RENDER_GIT_COMMIT — never DATABASE_URL, a provider key, a cap or a computed name.
+  // email, PORT and RENDER_GIT_COMMIT — and, since S6.2, the two deployment ceilings — never DATABASE_URL, a
+  // provider key or a computed name.
   const WEB_ENTRY = "src/studio/web/main.ts";
   const web = (studioSources.get(WEB_ENTRY) ?? "").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
   const webReads = [...web.matchAll(/process\.env\.([A-Za-z_][A-Za-z0-9_]*)/g)].map((match) => match[0]);
@@ -245,8 +250,9 @@ async function main(): Promise<void> {
     + "(`process.env.DATABASE_URL !== undefined`, never its value), in the dot form; the worker's entry point "
     + "(S3) reads exactly the names present, STUDIO_DATABASE_URL, the two caps and RENDER_GIT_COMMIT, in the dot "
     + "form, and never DATABASE_URL; the web's entry point (S4) reads exactly the names present, STUDIO_DATABASE_URL, "
-    + "STUDIO_PUBLIC_ORIGIN, STUDIO_ALLOWED_HD, the client id and secret, STUDIO_BOOTSTRAP_OWNER_EMAIL, PORT and "
-    + "RENDER_GIT_COMMIT, in the dot form, and never DATABASE_URL; no other Studio runtime module reads the environment; and no Studio module "
+    + "STUDIO_PUBLIC_ORIGIN, STUDIO_ALLOWED_HD, the client id and secret, STUDIO_BOOTSTRAP_OWNER_EMAIL, PORT, "
+    + "RENDER_GIT_COMMIT and (S6.2) the two caps STUDIO_MAX_DAILY_USD and STUDIO_MAX_MONTHLY_USD, in the dot form, and "
+    + "never DATABASE_URL; no other Studio runtime module reads the environment; and no Studio module "
     + "imports the live runtime (config, state or migrate)"
     + (otherReads.length ? ` — ${otherReads.join(", ")}` : ""),
   JSON.stringify(entryReads.sort()) === JSON.stringify(["process.env.DATABASE_URL", "process.env.STUDIO_DATABASE_URL"])
@@ -261,9 +267,10 @@ async function main(): Promise<void> {
     && !/process\.env\[|process\[|\benv\s*\[|DATABASE_URL/.test(worker.replace(/STUDIO_DATABASE_URL/g, ""))
     && JSON.stringify(webReads.sort()) === JSON.stringify(["process.env.PORT", "process.env.RENDER_GIT_COMMIT",
       "process.env.STUDIO_ALLOWED_HD", "process.env.STUDIO_BOOTSTRAP_OWNER_EMAIL", "process.env.STUDIO_DATABASE_URL",
-      "process.env.STUDIO_GOOGLE_CLIENT_ID", "process.env.STUDIO_GOOGLE_CLIENT_SECRET", "process.env.STUDIO_PUBLIC_ORIGIN"])
+      "process.env.STUDIO_GOOGLE_CLIENT_ID", "process.env.STUDIO_GOOGLE_CLIENT_SECRET", "process.env.STUDIO_MAX_DAILY_USD",
+      "process.env.STUDIO_MAX_MONTHLY_USD", "process.env.STUDIO_PUBLIC_ORIGIN"])
     && (web.match(/process\.env\b(?!\.)/g) ?? []).length === 1 && /names:\s*Object\.keys\(process\.env\),/.test(web)
-    && !/process\.env\[|process\[|\benv\s*\[|DATABASE_URL|ANTHROPIC|STUDIO_MAX_/.test(web.replace(/STUDIO_DATABASE_URL/g, ""))
+    && !/process\.env\[|process\[|\benv\s*\[|DATABASE_URL|ANTHROPIC/.test(web.replace(/STUDIO_DATABASE_URL/g, ""))
     && otherReads.length === 0
     && [...studioSources.values()].every((text) =>
       !/from\s+["'][^"']*harness\/(?:config|state)\.js["']/.test(text)
@@ -446,6 +453,63 @@ async function main(): Promise<void> {
     + "unchanged, and .env.example declares STUDIO_DATABASE_URL as a local gcd_studio placeholder",
   scripts["studio:migrate"] === "node dist/studio/db/migrate.js" && scripts.migrate === "node dist/state/migrate.js"
     && /^STUDIO_DATABASE_URL=postgresql:\/\/[a-z_]+:[a-z_]+@localhost:5432\/gcd_studio$/m.test(envExample));
+
+  // --- SM7 (Content Studio S6.2): migration 0003's canonical parameter form, computed by ONE function ----------
+  // A fixed vector, written here by hand: the inputs, the canonical text and the expected hex. The goal keeps a
+  // non-ASCII character exactly; the platforms and the scope arrive unsorted.
+  const VECTOR_FULL = {
+    action: "full", goal: "Brake service, explained plainly — für Kunden", platforms: ["instagram", "facebook"],
+    scopeTags: ["brakes", "audi"], sourceRunId: null, factVersionId: "0b8f2a4e-6c1d-4f3a-9e7b-2d5c8a1f0e93",
+  };
+  const VECTOR_FULL_TEXT = '{"schema":"gcd-studio-preflight-params/1","action":"full","goal":"Brake service, explained plainly — für Kunden",'
+    + '"platforms":["facebook","instagram"],"scopeTags":["audi","brakes"],"sourceRunId":null,"factVersionId":"0b8f2a4e-6c1d-4f3a-9e7b-2d5c8a1f0e93"}';
+  const VECTOR_FULL_HEX = "e9a3cc1c2efc996768a55a85fee05e9045cfc8998e481f890b3860bf6759cb0d";
+  const VECTOR_REVISE = {
+    action: "revise", goal: null, platforms: ["instagram", "google_business_profile"], scopeTags: null,
+    sourceRunId: "5f0c7d2e-1a3b-4c5d-8e9f-0a1b2c3d4e5f", factVersionId: "0b8f2a4e-6c1d-4f3a-9e7b-2d5c8a1f0e93",
+  };
+  const VECTOR_REVISE_HEX = "e6a1111d40ce8546f779adadf37ab03757fd32003b536271ccc0a8d9e71e9b85";
+  check("SM7. the canonical parameter form matches a fixed vector written by hand: the full run's inputs give exactly the "
+    + "canonical text (seven keys in 0003's order, the two arrays sorted, absent values null, the goal byte for byte) and "
+    + `the hex ${VECTOR_FULL_HEX}; a revise with no goal and no scope gives ${VECTOR_REVISE_HEX}`,
+    PREFLIGHT_PARAMS_SCHEMA === "gcd-studio-preflight-params/1"
+      && preflightParamsCanonical(VECTOR_FULL) === VECTOR_FULL_TEXT
+      && preflightParamsSha256(VECTOR_FULL) === VECTOR_FULL_HEX
+      && createHash("sha256").update(Buffer.from(VECTOR_FULL_TEXT, "utf8")).digest("hex") === VECTOR_FULL_HEX
+      && preflightParamsSha256(VECTOR_REVISE) === VECTOR_REVISE_HEX
+      && Object.keys(JSON.parse(preflightParamsCanonical(VECTOR_REVISE))).join()
+        === "schema,action,goal,platforms,scopeTags,sourceRunId,factVersionId");
+
+  const base = preflightParamsSha256(VECTOR_FULL);
+  const changed = [
+    { ...VECTOR_FULL, action: "replay_critic" }, { ...VECTOR_FULL, goal: `${VECTOR_FULL.goal} ` },
+    { ...VECTOR_FULL, goal: VECTOR_FULL.goal.normalize("NFD") }, { ...VECTOR_FULL, platforms: ["instagram"] },
+    { ...VECTOR_FULL, platforms: ["instagram", "facebook", "google_business_profile"] }, { ...VECTOR_FULL, scopeTags: ["brakes"] },
+    { ...VECTOR_FULL, scopeTags: null }, { ...VECTOR_FULL, scopeTags: ["brakes", "Audi"] },
+    { ...VECTOR_FULL, sourceRunId: "5f0c7d2e-1a3b-4c5d-8e9f-0a1b2c3d4e5f" },
+    { ...VECTOR_FULL, factVersionId: "0b8f2a4e-6c1d-4f3a-9e7b-2d5c8a1f0e94" },
+  ].map((p) => preflightParamsSha256(p));
+  check("SM7a. a reordered platforms or scope-tag list hashes the same, and any changed parameter hashes differently: the "
+    + "action, a goal with a trailing space or another Unicode form, fewer or more platforms, another scope, no scope, a tag's "
+    + "case, a source run and a fact version",
+    preflightParamsSha256({ ...VECTOR_FULL, platforms: ["facebook", "instagram"], scopeTags: ["audi", "brakes"] }) === base
+      && changed.every((hash) => hash !== base && /^[0-9a-f]{64}$/.test(hash)) && new Set(changed).size === changed.length);
+
+  // SM7b: the web and the worker both call this one function, and no other formula exists.
+  const studioRuntime = [...studioSources].filter(([path]) => !path.endsWith(".selftest.ts") && !path.endsWith("/testSupport.ts"));
+  const callers = studioRuntime.filter(([, text]) => /\bpreflightParamsSha256\b/.test(text)).map(([path]) => path).sort();
+  const tagHolders = studioRuntime.filter(([, text]) => text.includes(PREFLIGHT_PARAMS_SCHEMA)).map(([path]) => path);
+  const importsFromRunner = (text: string) => /import\s*\{[^}]*\bpreflightParamsSha256\b[^}]*\}\s*from\s*"\.\.\/db\/runner\.js"/.test(text);
+  check("SM7b. the web and the worker compute params_sha256 with this one function and no other formula: exactly the web's "
+    + "actions.ts and the worker's preflight.ts call preflightParamsSha256, each importing it from the S2 runner module; the "
+    + "canonical form's schema tag appears in no other Studio runtime module; and neither caller hashes anything itself",
+    callers.join() === ["src/studio/db/runner.ts", "src/studio/web/actions.ts", "src/studio/worker/preflight.ts"].join()
+      && importsFromRunner(studioSources.get("src/studio/web/actions.ts") ?? "")
+      && importsFromRunner(studioSources.get("src/studio/worker/preflight.ts") ?? "")
+      && tagHolders.join() === "src/studio/db/runner.ts"
+      && !/createHash|sha256Hex/.test(studioSources.get("src/studio/web/actions.ts") ?? "createHash")
+      && !/createHash|sha256Hex/.test(studioSources.get("src/studio/worker/preflight.ts") ?? "createHash"),
+    );
 
   console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURE(S)`);
   process.exit(failures === 0 ? 0 : 1);

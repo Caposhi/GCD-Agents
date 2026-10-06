@@ -17,11 +17,12 @@
  * from the ledger. Only then are the unit's `started` request rows, each with
  * its own ceiling, committed — before the request is sent.
  *
- * **Fake runner only in S3.** A job whose run names the `live` runner is
- * refused before any work unless the worker was given a paid stage runner,
+ * **Fake runner only (S3, and S6.2).** A job whose run names the `live` runner
+ * is refused before any work unless the worker was given a paid stage runner,
  * and `start:studio-worker` gives none (`main.ts`): live runs are enabled in
- * S6. The runtime the library receives replaces `createAnthropicStageRunner`,
- * so no worker path can build the provider runner either. The disposable
+ * S6b (owner decision of 2026-10-05). The runtime the library receives
+ * replaces `createAnthropicStageRunner`, so no worker path can build the
+ * provider runner either. The disposable
  * PostgreSQL suite gives a counting fake runner in its place, which is how the
  * paid path's checks are proven with no provider.
  */
@@ -36,6 +37,7 @@ import type {
 import { ceilingMicros, microsToNumeric } from "./money.js";
 import { rebuildFindings } from "./findings.js";
 import { audit, terminalize, type ClaimedJob, type Terminal, type Terminalized } from "./jobs.js";
+import { runPreflight } from "./preflight.js";
 import { DbRunSink, dbRunOutputs, dbRunSource } from "./runSink.js";
 import type { WorkerSession } from "./session.js";
 import { decidePaidUnit, readPaidUnitSnapshot, type PaidRefusal, type SqlClient } from "./spend.js";
@@ -70,11 +72,11 @@ export class WorkerStop extends Error {
   }
 }
 
-/** The run kinds the library runs, and the paid-action kind each is. */
-const ACTIONS = {
+/** The run kinds the library runs, and the paid-action kind each is (the preflight's too, since S6.2). */
+export const ACTIONS = {
   full: "full-run", replay_critic: "critic-replay", resume_packaging: "resume", revise: "revision",
 } as const;
-type RunKind = keyof typeof ACTIONS;
+export type RunKind = keyof typeof ACTIONS;
 
 /** The automotive facts as the CLI's default path records them, so a run's metadata is the CLI's byte for byte. */
 export const AUTOMOTIVE_FACTS_DISPLAY_PATH = "config/automotive-facts.local.json";
@@ -103,7 +105,7 @@ export function decideBeforeWork(b: BeforeWork): { failureClass: string; message
   }
   if (b.run.runner !== "live") return null;
   if (!b.worker.paidRunner) {
-    return { failureClass: "live_runs_not_enabled", message: "live runs are not enabled in this worker (Content Studio S6); nothing was run" };
+    return { failureClass: "live_runs_not_enabled", message: "live runs are not enabled in this worker (until Content Studio S6b); nothing was run" };
   }
   const q = b.quote;
   if (!q || q.workerCommit !== b.worker.commit || q.approvedFactsSha256 !== b.worker.approvedFactsSha256
@@ -127,7 +129,7 @@ export function workerRuntime(base: ContentRunRuntime, paid: PaidStageRunner | u
     stageExecution: {
       ...base.stageExecution,
       createAnthropicStageRunner: () => {
-        if (!paid) throw new WorkerStop("live_runs_not_enabled", "live runs are not enabled in this worker (Content Studio S6)");
+        if (!paid) throw new WorkerStop("live_runs_not_enabled", "live runs are not enabled in this worker (until Content Studio S6b)");
         return paid;
       },
     } as ContentRunRuntime["stageExecution"],
@@ -175,20 +177,23 @@ function fingerprintsFrom(written: ReadonlyMap<string, Buffer>): { approved: str
 export async function executeJob(ctx: WorkerJobContext, job: ClaimedJob): Promise<Terminal["runState"] | "preflight"> {
   const { session } = ctx;
   if (job.kind === "preflight") {
-    // The free preflight and its quote are S6's (design §6.1). It is claimed
-    // first and closed at once, so nothing waits behind it.
-    await session.tx(async (client) => {
-      if (job.runId !== null) {
-        await terminalize(client, job.runId, job.jobId, {
-          runState: "refused", jobState: "finished", failureClass: "preflight_not_built",
-          failureMessage: "the free preflight and its quote are built in Content Studio S6",
+    if (job.runId !== null) {
+      // A preflight job never carries a run (design §6.1: it runs before any run exists). One that does is
+      // refused with its run, never answered.
+      await session.tx(async (client) => {
+        await terminalize(client, job.runId!, job.jobId, {
+          runState: "refused", jobState: "finished", failureClass: "preflight_with_run",
+          failureMessage: "a preflight job never carries a run; nothing was checked or priced",
         });
-      } else {
-        await client.query("UPDATE studio_jobs SET state = 'finished' WHERE id = $1", [job.jobId]);
-      }
-      await audit(client, "job.preflight_refused", "studio_jobs", job.jobId, { reason: "preflight_not_built" });
-    });
-    ctx.log("job.finished", { job: job.jobId, kind: job.kind, outcome: "preflight_not_built" });
+        await audit(client, "job.preflight_refused", "studio_jobs", job.jobId, { reason: "preflight_with_run" });
+      });
+      ctx.log("job.finished", { job: job.jobId, kind: job.kind, outcome: "preflight_with_run" });
+      return "preflight";
+    }
+    // Content Studio S6.2: the free preflight (`preflight.ts`), which makes no request. It is claimed first,
+    // so nothing waits behind it. Classes only are logged, never a parameter or a refusal's message.
+    const answered = await runPreflight(ctx, job);
+    ctx.log("job.finished", { job: job.jobId, kind: job.kind, outcome: answered.outcome, refusal_class: answered.refusalClass });
     return "preflight";
   }
   const runId = job.runId!;
@@ -202,7 +207,7 @@ export async function executeJob(ctx: WorkerJobContext, job: ClaimedJob): Promis
     ctx.log("job.finished", { job: job.jobId, run: runId, state: ended.runState, failure_class: failureClass });
     return ended.runState;
   };
-  // --- before any work: live runs are S6's; and a paid job's quote must name this worker exactly -------
+  // --- before any work: live runs are S6b's; and a paid job's quote must name this worker exactly ------
   const quote = run?.quote_id ? (await session.query(
     "SELECT worker_commit, approved_facts_sha256, fact_version_id, price_table_sha256 FROM studio_quotes WHERE id = $1",
     [run.quote_id])).rows[0] : undefined;
