@@ -329,6 +329,7 @@ export const STUDIO_EXPECTED_MIGRATIONS = [
   "0001_studio_identity_and_tripwire.sql",
   "0002_studio_schema.sql",
   "0003_studio_preflight_requests.sql",
+  "0004_studio_fact_checks_and_imports.sql",
 ] as const;
 export const STUDIO_SCHEMA_VERSION = STUDIO_EXPECTED_MIGRATIONS[STUDIO_EXPECTED_MIGRATIONS.length - 1]!;
 

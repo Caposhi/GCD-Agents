@@ -310,15 +310,15 @@ async function main(): Promise<void> {
     + "sha256 of its exact bytes, and plans cleanly from an empty ledger",
   JSON.stringify(repositoryFiles.map((file) => file.name))
       === JSON.stringify(["0001_studio_identity_and_tripwire.sql", "0002_studio_schema.sql",
-        "0003_studio_preflight_requests.sql"])
+        "0003_studio_preflight_requests.sql", "0004_studio_fact_checks_and_imports.sql"])
     && repositoryFiles.every((file) => file.sha256
       === sha256Hex(readFileSync(resolve(root, STUDIO_MIGRATIONS_DIRECTORY, file.name))))
     && planStudioMigrations(repositoryFiles, []).pending.length === repositoryFiles.length);
-  check("SM3c. every runtime's expected migrations are exactly the repository's files, 0001, 0002 and 0003, in order, "
-    + "and the schema version they expect is 0003_studio_preflight_requests.sql",
+  check("SM3c. every runtime's expected migrations are exactly the repository's files, 0001, 0002, 0003 and 0004, in "
+    + "order, and the schema version they expect is 0004_studio_fact_checks_and_imports.sql",
   JSON.stringify([...STUDIO_EXPECTED_MIGRATIONS]) === JSON.stringify(repositoryFiles.map((file) => file.name))
-    && STUDIO_EXPECTED_MIGRATIONS.length === 3 && STUDIO_SCHEMA_VERSION === "0003_studio_preflight_requests.sql"
-    && planStudioMigrations(repositoryFiles, repositoryFiles.slice(0, 2)).pending.join(",") === STUDIO_SCHEMA_VERSION);
+    && STUDIO_EXPECTED_MIGRATIONS.length === 4 && STUDIO_SCHEMA_VERSION === "0004_studio_fact_checks_and_imports.sql"
+    && planStudioMigrations(repositoryFiles, repositoryFiles.slice(0, 3)).pending.join(",") === STUDIO_SCHEMA_VERSION);
 
   // --- SM4: the identity decision ---------------------------------------------
   check("SM4. the identity decision refuses any database not named gcd_studio",

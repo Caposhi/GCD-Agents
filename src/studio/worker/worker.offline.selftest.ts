@@ -29,7 +29,7 @@ import { preflightRequest } from "../web/actions.js";
 import { CRITIC_ARTIFACT, deriveFindings } from "./findings.js";
 import { providerTextWithContact } from "../../harness/agents/providerText.js";
 import { readCaptions, readScript, readShotList } from "../web/runs.js";
-import { claimNextJob, recoverInterruptedRuns, sweepQueuedJobs, terminalize } from "./jobs.js";
+import { CLAIMED_JOB_KINDS, claimNextJob, recoverInterruptedRuns, sweepQueuedJobs, terminalize } from "./jobs.js";
 import { ceilingMicros, measuredMicros, microsToNumeric, numericToMicros, parseCapMicros } from "./money.js";
 import { DbRunSink, REWRITTEN_ARTIFACTS } from "./runSink.js";
 import { LIVE_WORKER_OWNERSHIP_KEY, STUDIO_WORKER_OWNERSHIP_NAMESPACE, studioOwnershipKey, type WorkerSession } from "./session.js";
@@ -198,19 +198,24 @@ async function startupChecks(): Promise<void> {
       && refusalOf(() => decideWorkerIdentity(probe({ identityRows: [] }) as never)) === "identity-mismatch"
       && refusalOf(() => decideWorkerIdentity(probe({ ledger: null, identityRows: null, studioTables: [], migrationsTable: "absent" }) as never))
         === "not-migrated");
-  const extraFile = { name: "0004_later.sql", sha256: "f".repeat(64) };
+  const extraFile = { name: "0005_later.sql", sha256: "f".repeat(64) };
   check(`SW3a. the worker refuses any schema version but ${STUDIO_SCHEMA_VERSION}: a migration missing from the ledger, an `
     + "extra one recorded or on disk, or a recorded file whose bytes changed",
-    decideSchemaVersion(ledger, files) === STUDIO_SCHEMA_VERSION && STUDIO_SCHEMA_VERSION === "0003_studio_preflight_requests.sql"
+    decideSchemaVersion(ledger, files) === STUDIO_SCHEMA_VERSION && STUDIO_SCHEMA_VERSION === "0004_studio_fact_checks_and_imports.sql"
       && refusalOf(() => decideSchemaVersion(ledger.slice(0, 1), files)) === "schema-version"
       && refusalOf(() => decideSchemaVersion(ledger.slice(0, 2), files)) === "schema-version"
+      && refusalOf(() => decideSchemaVersion(ledger.slice(0, 3), files)) === "schema-version"
       && refusalOf(() => decideSchemaVersion(ledger.slice(0, 2), files.slice(0, 2))) === "schema-version"
       && refusalOf(() => decideSchemaVersion(null, files)) === "schema-version"
       && refusalOf(() => decideSchemaVersion([...ledger, extraFile], [...files, extraFile])) === "schema-version"
       && refusalOf(() => decideSchemaVersion([...ledger, extraFile], files)) === "schema-version"
       && refusalOf(() => decideSchemaVersion(ledger, [...files, extraFile])) === "schema-version"
-      && refusalOf(() => decideSchemaVersion([ledger[0]!, { ...ledger[1]!, sha256: "0".repeat(64) }, ledger[2]!], files)) === "migration-changed"
-      && refusalOf(() => decideSchemaVersion([ledger[0]!, ledger[1]!, { ...ledger[2]!, sha256: "0".repeat(64) }], files)) === "migration-changed"
+      && refusalOf(() => decideSchemaVersion([ledger[0]!, { ...ledger[1]!, sha256: "0".repeat(64) }, ledger[2]!, ledger[3]!], files))
+        === "migration-changed"
+      && refusalOf(() => decideSchemaVersion([ledger[0]!, ledger[1]!, { ...ledger[2]!, sha256: "0".repeat(64) }, ledger[3]!], files))
+        === "migration-changed"
+      && refusalOf(() => decideSchemaVersion([ledger[0]!, ledger[1]!, ledger[2]!, { ...ledger[3]!, sha256: "0".repeat(64) }], files))
+        === "migration-changed"
       && JSON.stringify(readdirSync(resolve(REPO_ROOT, "studio/migrations")).filter((n) => n.endsWith(".sql")).sort())
         === JSON.stringify([...STUDIO_EXPECTED_MIGRATIONS]));
 
@@ -584,6 +589,50 @@ async function queueStatementChecks(): Promise<void> {
       && swept.expired === 1 && swept.cancelled === 1
       && runUpdates(sweep).join() === "cancelled:job_expired,cancelled:job_cancelled" && jobUpdates(sweep).join() === "expired,cancelled",
     `${lostResult} ${runUpdates(rec)} ${jobUpdates(rec)} ${runUpdates(sweep)} ${jobUpdates(sweep)}`);
+
+  // Content Studio S7.1: the claim takes only the kinds this worker runs; migration 0004's kinds are S7.2's.
+  const claimValues = ok.statements[ok.index(/FROM studio_jobs/)]?.values ?? [];
+  const newKinds = scripted([held(true), [/WHERE state = 'queued' AND \(expires_at <= now\(\)/, () => [
+    { id: "f1", run_id: null, expired: true }, { id: "i1", run_id: "r9", expired: true }]],
+  [/SELECT runner, kind, state, reserved_usd/, () => [{ runner: "live", kind: "imported", state: "queued", reserved: null }]],
+  [/SUM\(charged_usd\)/, () => [{ charged: "0" }]]]);
+  const sweptNew = await sweepQueuedJobs(newKinds.session);
+  const sweepSelect = newKinds.statements[newKinds.index(/WHERE state = 'queued' AND \(expires_at <= now\(\)/)]?.text ?? "";
+  check("SW12a. the worker claims only preflight, paid and fake jobs (CLAIMED_JOB_KINDS, bound as the claim's one parameter): "
+    + "migration 0004's fact_check and import jobs are Content Studio S7.2's and are never claimed here; the sweep, which "
+    + "filters on no kind, expires them like any queued job past its expiry — a fact_check job alone, an import with its run "
+    + "cancelled (job_expired)",
+    /AND kind = ANY \(\$1::text\[\]\)/.test(select)
+      && JSON.stringify(claimValues) === JSON.stringify([["preflight", "paid", "fake"]])
+      && JSON.stringify([...CLAIMED_JOB_KINDS]) === JSON.stringify(["preflight", "paid", "fake"])
+      && !/\bkind\b/.test(sweepSelect) && sweptNew.expired === 2
+      && JSON.stringify(newKinds.statements.filter((x) => /UPDATE studio_jobs SET state = \$2/.test(x.text)).map((x) => x.values))
+        === JSON.stringify([["f1", "expired"], ["i1", "expired"]])
+      && runUpdates(newKinds).join() === "cancelled:job_expired",
+    `${select} ${JSON.stringify(claimValues)} ${runUpdates(newKinds)}`);
+}
+
+/**
+ * Content Studio S7.1: migration 0004's closed sets, against the code they must match (offline drift checks).
+ */
+function migration0004Checks(): void {
+  const sql = readFileSync(resolve(REPO_ROOT, "studio/migrations/0004_studio_fact_checks_and_imports.sql"), "utf8");
+  const quoted = (text: string | undefined) => [...(text ?? "").matchAll(/'([^']*)'/g)].map((m) => m[1]!);
+  const importNames = quoted(/IF NEW\.name <> ALL \(ARRAY\[([^\]]*)\]\) THEN/.exec(sql)?.[1]);
+  const libraryNames = [...new Set(Object.values(lib.RUN_ARTIFACT_NAMES).flat())].sort();
+  check("SW25. migration 0004's import file names are exactly the library's RUN_ARTIFACT_NAMES (every kind of run, and the "
+    + "failure file), each once — sixteen, inside design §8.6's twenty",
+    importNames.length === new Set(importNames).size && JSON.stringify([...importNames].sort()) === JSON.stringify(libraryNames)
+      && importNames.length === 16,
+    `${importNames.length}: ${[...importNames].sort().join(",")} vs ${libraryNames.join(",")}`);
+  const jobKinds = quoted(/CONSTRAINT studio_jobs_kind\s+CHECK \(kind IN \(([^)]*)\)\)/.exec(sql)?.[1]);
+  const deferred = ["fact_check", "import"];
+  check("SW26. migration 0004's job kinds are exactly the kinds this worker claims (CLAIMED_JOB_KINDS) plus S7.2's two, "
+    + "fact_check and import, which it never claims; no kind is both, and none is missing",
+    jobKinds.length === new Set(jobKinds).size
+      && JSON.stringify([...jobKinds].sort()) === JSON.stringify([...CLAIMED_JOB_KINDS, ...deferred].sort())
+      && deferred.every((kind) => !(CLAIMED_JOB_KINDS as readonly string[]).includes(kind)),
+    jobKinds.join(","));
 }
 
 
@@ -991,6 +1040,7 @@ async function main(): Promise<void> {
   await startupChecks();
   beforeWorkChecks();
   await queueStatementChecks();
+  migration0004Checks();
   spendChecks();
   await gateChecks();
   await fakeOnlyChecks();
