@@ -502,6 +502,16 @@ exactly as it does today.
 The approved-facts file is **not** uploaded. It is `config/approved-facts.json` at the worker's
 deployed commit, recorded by sha256 as the CLI already does.
 
+*(Dated note, owner decisions of 2026-10-06, Content Studio S7.1 — an addition to this section;
+`IMPLEMENTED`, not merged. Studio migration `0004_studio_fact_checks_and_imports.sql` enforces:
+a version is created only while the worker's fact check of the staged bytes is running; a status
+change is **owner-only and audited**, and **a retired version may be restored** (owner decision 4);
+the version the settings point at cannot be retired, and the pointer names only a version that is
+not retired. Every `studio_settings` update, and every status change, is refused unless the
+transaction declares its actor — `SET LOCAL studio.actor` to an active owner's id — and records
+that same id (`updated_by`, `status_changed_by`), so an edit can never inherit the previous
+editor. See [Data model](DATA_MODEL.md#content-studio-schema--the-separate-gcd_studio-database).)*
+
 ### 4.5 Imported legacy runs
 
 **PROPOSED.** An import is a `studio_runs` row with `kind = imported`, its artifacts, and an
@@ -516,6 +526,16 @@ deployed commit, recorded by sha256 as the CLI already does.
   contact-in-overlay check. It is kept so the owner can see every run, and it is shown with a
   prominent "not revalidated" banner and the refusal reason. **It can never be the source of a
   paid action.**
+
+*(Dated note, owner decisions of 2026-10-06, Content Studio S7.1 — an addition to this section;
+`IMPLEMENTED`, not merged. Migration 0004 makes the tier the outcome of the import's own
+revalidation: an import is created with an `import` job and its files; `verified` is written only
+while that job is running, only on a succeeded import carrying every fingerprint, its fact version
+and the worker's commit; `archived_unverified` always carries its reason; and an import that ends
+any other way — its job expired, cancelled or interrupted — is `archived_unverified`, fail closed.
+A verified import ends `succeeded`. **Owner decision 3: a fake run can never be the source of a
+paid action** — neither a Studio fake run nor an import of a fake CLI run; a fake run's own fake
+children (owner-only, free) are unchanged.)*
 
 ### 4.6 Audit log, quotes and the spend ledger
 
@@ -1172,6 +1192,19 @@ Both create a child run, and the source run is never modified.
 Only the owner can download a version's bytes. Other users see its sha256, date, uploader and tag
 counts.
 
+*(Dated note, owner decisions of 2026-10-06, Content Studio S7.1 — `IMPLEMENTED`, not merged; the
+upload itself is **S7.2's**. Migration 0004 gives the upload a `fact_check` job and a
+`studio_fact_checks` row, written by the web beside the staged bytes. The worker writes the outcome
+once, while the job is running: `accepted`, with the version created from the staged bytes, or
+`refused`, with the loader's own message; either way with the unknown field names as a warning, and
+in the same transaction it deletes the staging row, so the outcome outlives it. The plan for S7.2,
+accepted by the owner (§8 items 2–4 of the S7 analysis): the dry run refuses on any loader error or
+invalid record — every record is validated before the pack's cap — but a file over the 64-record
+cap is a **warning** (an unscoped run will be refused), not a refusal; the loader's known field set
+is exported from the library with an offline equality check, and unknown top-level keys besides
+`facts` are listed too; and a version's `tag_counts` count the uploaded records only, because the
+new-run screen adds the heartbeat's approved-facts counts.)*
+
 ### 8.6 Import of existing `local-output` runs
 
 The owner picks one run folder from `local-output/content-intelligence/` in the browser. The page
@@ -1196,6 +1229,19 @@ the import is `verified`. Otherwise it is `archived_unverified`, with the refusa
 ([§4.5](#45-imported-legacy-runs)). A revised folder keeps its lineage when its source was imported
 first.
 
+*(Dated note, owner decisions of 2026-10-06, Content Studio S7.1 — `IMPLEMENTED`, not merged; the
+import and the whole-run download (§8.2 item 8) are **S7.2's**. Migration 0004 enforces the
+bounds in the database too: an import holds only the CLI's sixteen known file names (so at most
+sixteen files) and at most 10 MiB of stored bytes, written before its revalidation starts, and an
+import may now name its source. The plan for S7.2, accepted by the owner (§8 items 7–10 of the S7
+analysis): the import's goal, platforms and scope come from `verifySourceRun`'s verified result,
+and only bounded values are kept for an archived one; lineage is proven from the folder's bytes — a
+revised folder's `run-meta.json` and `round-1-06-final-critic.json` are byte copies of its
+source's — and recorded only when exactly one non-deleted import matches, the child pinning its
+source's fact version (upload the facts before importing); only complete folders can verify, so
+replay folders and failed runs are always archived; and **"10 MB" is the posted JSON document's
+bound, 10 MiB, checked before parsing**, with 0004's limit on the stored bytes as a backstop.)*
+
 ### 8.7 Users and caps settings (owner only)
 
 - **Users:** add by email, set the role (`owner`, `runner` or `viewer`), set a per-user daily cap,
@@ -1203,6 +1249,17 @@ first.
 - **Caps:** daily and monthly caps, shown beside the deployment ceilings that bound them.
 - **Other settings:** the active fact version, a read-only view of the audit log, and
   `scheduled_runs_enabled`. That setting stays unavailable while the cron resource does not exist.
+
+*(Dated note, owner decisions of 2026-10-06, Content Studio S7.1 — `IMPLEMENTED`, not merged; the
+screens are **S7.3's**. Migration 0004 makes every user edit and every settings change the
+transaction's declared actor's (`SET LOCAL studio.actor`), recorded in `updated_by` and audited in
+the same transaction (`user.update`, `user.create`, `user.bootstrap`; `settings.update` as before),
+never with an email address or a name. **Owner decision 5: the users screen offers no email edit**
+— `google_sub` is the bound identity. The plan for S7.3, accepted by the owner (§8 items 11–13 of
+the S7 analysis): a runner with no `daily_cap_usd` cannot confirm (refused as a missing cap, which
+is zero, §6.2), in the web and in the worker; the owner's own unset cap stays no per-user cap; and
+the overrun acknowledgement no longer depends on the acknowledger's current role, so a later role
+change cannot silently re-lock confirmations.)*
 
 ---
 
@@ -1348,6 +1405,17 @@ caps settings screens are not in S6.2 and stay open, for S7 or later.** The next
 attempt; the release job skipped); the owner recorded a one-time exception, and the run for S6.2's
 merge must reach the disabled-automation refusal with its release job skipped — a **BLOCKING**
 follow-up in [Roadmap](ROADMAP.md) and [Status](STATUS.md).)*
+
+*(Dated note, owner decisions of 2026-10-06 — the S7 row is split. S6.2 is `MERGED` through PR #111
+at `4eca3b3…`, not deployed; its `deploy-production` run (76) reached the disabled-automation
+refusal with its release job skipped, discharging the BLOCKING follow-up above. **S7 becomes three
+PRs:** **S7.1** — Studio migration `0004_studio_fact_checks_and_imports.sql` and its database tests,
+and the worker's claim restricted to `preflight`, `paid` and `fake` jobs (`IMPLEMENTED`, not
+merged); **S7.2** — fact upload and versions, legacy import, and the whole-run download deferred
+from S5; **S7.3** — the §8.7 users-and-caps screens, with the rule that a runner with no
+`daily_cap_usd` cannot confirm. The owner also decided that a fake run can never be a paid
+action's source, that a retired fact version may be restored, and that the users screen offers no
+email edit; 0004 enforces the first two in the database. See [Roadmap](ROADMAP.md).)*
 
 **Documents each PR must update**, beyond [Roadmap](ROADMAP.md), [Status](STATUS.md) and the root
 [README](../README.md), under [`AGENTS.md`](../AGENTS.md)'s binding rule. This change adds only a labelled planned note to

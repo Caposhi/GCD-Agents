@@ -131,6 +131,26 @@ async function migrate(url: string, directory = resolve(REPO_ROOT, "studio/migra
 
 interface Web { app: StudioWebApp; base: string; close(): Promise<void> }
 
+/**
+ * One owner-managed statement in its own transaction, declaring `actor` as the transaction's actor
+ * (`SET LOCAL studio.actor`, Studio migration 0004).
+ */
+async function asActor(pool: pg.Pool, actor: string, sql: string, params: unknown[] = []): Promise<void> {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(actor)) throw new Error("asActor: not a user id");
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(`SET LOCAL studio.actor = '${actor}'`);
+    await client.query(sql, params);
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 async function web(pool: pg.Pool, issuer: FakeIssuer, bootstrapOwnerEmail: string | null = null, store?: PgWebStore): Promise<Web> {
   const app = createStudioWebApp({
     store: store ?? new PgWebStore(pool, pool), log, oidc: issuer.provider, commit: COMMIT,
@@ -216,7 +236,8 @@ async function main(): Promise<void> {
       const unmigrated = await runEntryPoint(url, String(await freePort()), 20_000);
       check("SAP2. the web refuses an unmigrated gcd_studio (not-migrated) before it listens",
         unmigrated.code === 1 && /refused \(not-migrated\)/.test(unmigrated.stderr) && !unmigrated.ready, unmigrated.stderr.trim());
-      // SAP15 (Content Studio S6.1): migrated to 0002 alone, the web refuses; SAP3 then shows 0003 accepted.
+      // SAP15 (Content Studio S6.1, S7.1): migrated to 0002 alone, then to 0003 alone, the web refuses; SAP3 then
+      // shows 0004 accepted.
       const only0002 = mkdtempSync(join(tmpdir(), "gcd-studio-web-0002-"));
       try {
         for (const name of STUDIO_EXPECTED_MIGRATIONS.slice(0, 2)) {
@@ -227,10 +248,22 @@ async function main(): Promise<void> {
         rmSync(only0002, { recursive: true, force: true });
       }
       const older = await runEntryPoint(url, String(await freePort()), 20_000);
-      check("SAP15. the web refuses, through its entry point, a gcd_studio migrated to 0002 alone — exit 1, refused "
-        + `(schema-version), before it listens; once 0003 is applied on top it starts (SAP3, schema ${STUDIO_SCHEMA_VERSION})`,
+      const only0003 = mkdtempSync(join(tmpdir(), "gcd-studio-web-0003-"));
+      try {
+        for (const name of STUDIO_EXPECTED_MIGRATIONS.slice(0, 3)) {
+          copyFileSync(resolve(REPO_ROOT, "studio/migrations", name), join(only0003, name));
+        }
+        await migrate(url, only0003);
+      } finally {
+        rmSync(only0003, { recursive: true, force: true });
+      }
+      const at0003 = await runEntryPoint(url, String(await freePort()), 20_000);
+      check("SAP15. the web refuses, through its entry point, a gcd_studio migrated to 0002 alone, and the same database at "
+        + "0003 alone — exit 1, refused (schema-version), before it listens; once 0004 is applied on top it starts (SAP3, "
+        + `schema ${STUDIO_SCHEMA_VERSION})`,
         older.code === 1 && /refused \(schema-version\)/.test(older.stderr) && !older.ready
-          && STUDIO_SCHEMA_VERSION === "0003_studio_preflight_requests.sql", older.stderr.trim());
+          && at0003.code === 1 && /refused \(schema-version\)/.test(at0003.stderr) && !at0003.ready
+          && STUDIO_SCHEMA_VERSION === "0004_studio_fact_checks_and_imports.sql", `${older.stderr.trim()} | ${at0003.stderr.trim()}`);
       await migrate(url);
       const pool = openPool("web", { connectionString: url, max: 6 });
       try {
@@ -304,11 +337,11 @@ async function suite(pool: pg.Pool, url: string, issuer: FakeIssuer): Promise<vo
     const doc = JSON.parse(health?.body ?? "{}") as Record<string, unknown>;
     const attempts = Number((await pool.query("SELECT count(*) AS n FROM studio_login_attempts")).rows[0].n);
     check("SAP3. `npm run start:studio-web`, executed against the migrated gcd_studio: it starts, /healthz reports "
-      + "gcd-studio-web, the commit, postgres, schema 0003 and no heartbeat yet, with the security headers; and its "
+      + "gcd-studio-web, the commit, postgres, schema 0004 and no heartbeat yet, with the security headers; and its "
       + "/auth/login redirects to Google's authorization endpoint — the entry point passes Google's constants — after "
       + "storing one login attempt",
       run.ready && health?.status === 200 && doc.service === "gcd-studio-web" && doc.commit === COMMIT && doc.state === "postgres"
-        && doc.schema_version === "0003_studio_preflight_requests.sql" && doc.worker_heartbeat_age_seconds === null
+        && doc.schema_version === "0004_studio_fact_checks_and_imports.sql" && doc.worker_heartbeat_age_seconds === null
         && health.headers.get("content-security-policy")?.startsWith("default-src 'self'") === true
         && login?.status === 302 && login.location!.startsWith(`${GOOGLE_OIDC.authorizationEndpoint}?`)
         && new URL(login.location!).searchParams.get("redirect_uri") === `${ORIGIN}/auth/callback` && attempts === 1,
@@ -405,10 +438,10 @@ async function suite(pool: pg.Pool, url: string, issuer: FakeIssuer): Promise<vo
 
     // SAP7: disabling a user revokes their sessions in the same transaction; the next request is signed out.
     const before = (await get(w.base, "/", jar)).body.includes("Signed in as");
-    await pool.query("UPDATE studio_users SET status = 'disabled' WHERE id = $1", [viewer.id]);
+    await asActor(pool, owner.id, "UPDATE studio_users SET status = 'disabled', updated_by = $2 WHERE id = $1", [viewer.id, owner.id]);
     const revoked = (await pool.query("SELECT revoked_at FROM studio_sessions WHERE id_hash = $1", [sessionIdHash(cookie)])).rows[0];
     const after = await get(w.base, "/", jar);
-    await pool.query("UPDATE studio_users SET status = 'active' WHERE id = $1", [viewer.id]);
+    await asActor(pool, owner.id, "UPDATE studio_users SET status = 'active', updated_by = $2 WHERE id = $1", [viewer.id, owner.id]);
     const reEnabled = await get(w.base, "/", (() => { const j = new Jar(); j.values.set(SESSION_COOKIE, cookie); return j; })());
     check("SAP7. disabling a user revokes their sessions in the same transaction (the schema's trigger): the next request "
       + "is signed out, and re-enabling the user does not revive the session",
@@ -635,11 +668,18 @@ async function suite(pool: pg.Pool, url: string, issuer: FakeIssuer): Promise<vo
     const factSha = createHash("sha256").update(facts).digest("hex");
     await pool.query("INSERT INTO studio_fact_uploads (content, sha256, byte_length, uploaded_by) VALUES ($1, $2, $3, $4)",
       [facts, factSha, facts.length, owner.id]);
+    // Since Studio migration 0004 a version is created only by the running fact check of its staged bytes.
+    const check0004 = (await pool.query("INSERT INTO studio_jobs (kind) VALUES ('fact_check') RETURNING id::text AS id")).rows[0].id as string;
+    await pool.query("INSERT INTO studio_fact_checks (job_id, requested_by, sha256, byte_length) VALUES ($1, $2, $3, $4)",
+      [check0004, owner.id, factSha, facts.length]);
+    await pool.query("UPDATE studio_jobs SET state = 'running' WHERE id = $1", [check0004]);
     const factVersion = (await pool.query(
       `INSERT INTO studio_fact_versions (sha256, content, byte_length, record_count, tag_counts, uploaded_by)
        VALUES ($1, $2, $3, 0, '{"synthetic-tag":2}', $4) RETURNING id::text AS id`, [factSha, facts, facts.length, owner.id])).rows[0].id as string;
+    await pool.query("UPDATE studio_fact_checks SET outcome = 'accepted' WHERE job_id = $1", [check0004]);
+    await pool.query("UPDATE studio_jobs SET state = 'finished' WHERE id = $1", [check0004]);
     await pool.query("DELETE FROM studio_fact_uploads");
-    await pool.query("UPDATE studio_settings SET active_fact_version_id = $1, updated_by = $2", [factVersion, owner.id]);
+    await asActor(pool, owner.id, "UPDATE studio_settings SET active_fact_version_id = $1, updated_by = $2", [factVersion, owner.id]);
     const beat = () => pool.query(
       `INSERT INTO studio_worker_heartbeat (singleton, commit, schema_version, approved_facts_sha256, approved_facts_tag_counts, price_table_sha256, beat_at)
        VALUES (true, $1, $2, $3, '{"synthetic-approved":3}', $4, now())
@@ -704,7 +744,7 @@ async function suite(pool: pg.Pool, url: string, issuer: FakeIssuer): Promise<vo
       platforms: ["instagram"], scopeTags: null, sourceRunId: null, factVersionId: factVersion })).then(() => "written", (e) => String(e.code));
     const viewerRefused = await direct(viewer.id);
     const disabledUser = await addUser("runner", "s62-disabled");
-    await pool.query("UPDATE studio_users SET status = 'disabled' WHERE id = $1", [disabledUser.id]);
+    await asActor(pool, owner.id, "UPDATE studio_users SET status = 'disabled', updated_by = $2 WHERE id = $1", [disabledUser.id, owner.id]);
     const disabledRefused = await direct(disabledUser.id);
     const jobsAfter = (await pool.query("SELECT count(*)::int AS n FROM studio_jobs")).rows[0].n;
     check("SAP16. over PostgreSQL a runner's price request writes its preflight job and its request in ONE transaction, with "
@@ -771,7 +811,7 @@ async function suite(pool: pg.Pool, url: string, issuer: FakeIssuer): Promise<vo
       cases19.join());
 
     // SAP20: two confirmations against the same headroom, over PostgreSQL.
-    await pool.query("UPDATE studio_settings SET daily_cap_usd = $1, updated_by = $2", [
+    await asActor(pool, owner.id, "UPDATE studio_settings SET daily_cap_usd = $1, updated_by = $2", [
       (Number((await pool.query("SELECT studio_spend_for_day(studio_local_day(now()))::text AS s")).rows[0].s) + 30).toFixed(6), owner.id]);
     const [q1, q2] = [await answer(await ask(jarA)), await answer(await ask(jarB))];
     let release!: () => void;
@@ -787,7 +827,7 @@ async function suite(pool: pg.Pool, url: string, issuer: FakeIssuer): Promise<vo
       + "cap; exactly one is confirmed",
       secondEarly === "waiting" && r1.ok && !r2.ok && r2.refusal === "cap_exceeded_daily",
       `${secondEarly} ${JSON.stringify(r1)} ${JSON.stringify(r2)}`);
-    await pool.query("UPDATE studio_settings SET daily_cap_usd = 1000, monthly_cap_usd = 10000, updated_by = $1", [owner.id]);
+    await asActor(pool, owner.id, "UPDATE studio_settings SET daily_cap_usd = 1000, monthly_cap_usd = 10000, updated_by = $1", [owner.id]);
 
     // SAP21: cancellation.
     const toCancel = r1.ok ? r1.runId : "";

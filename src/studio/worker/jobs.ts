@@ -5,7 +5,10 @@
  *
  * - **Claim.** `FOR UPDATE SKIP LOCKED`, inside a transaction that first
  *   proves this backend holds the ownership lock. Free `preflight` jobs are
- *   taken before `paid` and `fake` ones; within a kind, oldest first.
+ *   taken before `paid` and `fake` ones; within a kind, oldest first. Only
+ *   those three kinds are claimed (`CLAIMED_JOB_KINDS`): migration 0004's
+ *   `fact_check` and `import` jobs are Content Studio S7.2's, never claimed
+ *   here; the sweep below expires them, like any queued job past its expiry.
  * - **No retries.** A job is claimed only from `queued`, and nothing ever
  *   returns one to `queued` (the schema refuses it too).
  * - **Expiry and queued cancellation.** A queued job past `expires_at` is never
@@ -23,9 +26,12 @@ import { holdsOwnership } from "./session.js";
 import type { WorkerSession } from "./session.js";
 import { planSettlement, type Settlement, type SqlClient } from "./spend.js";
 
+/** The job kinds this worker claims. 0004's `fact_check` and `import` kinds are S7.2's: the sweep expires them. */
+export const CLAIMED_JOB_KINDS = ["preflight", "paid", "fake"] as const;
+
 export interface ClaimedJob {
   jobId: string;
-  kind: "preflight" | "paid" | "fake";
+  kind: (typeof CLAIMED_JOB_KINDS)[number];
   runId: string | null;
 }
 
@@ -35,9 +41,9 @@ export async function claimNextJob(session: WorkerSession, commit: string): Prom
     if (!(await holdsOwnership(client))) throw new Error("ownership_lost: this session no longer holds the Studio worker lock");
     const job = (await client.query(
       `SELECT id, kind, run_id FROM studio_jobs
-        WHERE state = 'queued' AND expires_at > now() AND cancel_requested_at IS NULL
+        WHERE state = 'queued' AND kind = ANY ($1::text[]) AND expires_at > now() AND cancel_requested_at IS NULL
         ORDER BY (kind = 'preflight') DESC, created_at, id
-        LIMIT 1 FOR UPDATE SKIP LOCKED`)).rows[0];
+        LIMIT 1 FOR UPDATE SKIP LOCKED`, [[...CLAIMED_JOB_KINDS]])).rows[0];
     if (!job) return null;
     if (job.run_id !== null) {
       const run = (await client.query("SELECT state FROM studio_runs WHERE id = $1 FOR UPDATE", [job.run_id])).rows[0];

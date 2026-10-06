@@ -153,6 +153,26 @@ async function migrate(url: string, directory = resolve(REPO_ROOT, "studio/migra
   }
 }
 
+/**
+ * One owner-managed statement in its own transaction, declaring `actor` as the transaction's actor
+ * (`SET LOCAL studio.actor`, Studio migration 0004).
+ */
+async function asActor(pool: pg.Pool, actor: string, sql: string, params: unknown[] = []): Promise<void> {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(actor)) throw new Error("asActor: not a user id");
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(`SET LOCAL studio.actor = '${actor}'`);
+    await client.query(sql, params);
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 async function studio(dbs: Databases, label: string, { migrated = true } = {}): Promise<Studio> {
   const url = await dbs.create(STUDIO_DATABASE_NAME);
   if (migrated) await migrate(url);
@@ -169,9 +189,16 @@ async function studio(dbs: Databases, label: string, { migrated = true } = {}): 
       [`runner.${randomBytes(3).toString("hex")}@germancardepot.com`, owner])).rows[0].id;
     await pool.query("INSERT INTO studio_fact_uploads (content, sha256, byte_length, uploaded_by) VALUES ($1, $2, $3, $4)",
       [facts, factSha, facts.length, owner]);
+    // Since Studio migration 0004 a version is created only by the running fact check of its staged bytes.
+    const check = (await pool.query("INSERT INTO studio_jobs (kind) VALUES ('fact_check') RETURNING id")).rows[0].id;
+    await pool.query("INSERT INTO studio_fact_checks (job_id, requested_by, sha256, byte_length) VALUES ($1, $2, $3, $4)",
+      [check, owner, factSha, facts.length]);
+    await pool.query("UPDATE studio_jobs SET state = 'running' WHERE id = $1", [check]);
     factVersion = (await pool.query(
       `INSERT INTO studio_fact_versions (sha256, content, byte_length, record_count, tag_counts, uploaded_by)
        VALUES ($1, $2, $3, 4, '{}', $4) RETURNING id`, [factSha, facts, facts.length, owner])).rows[0].id;
+    await pool.query("UPDATE studio_fact_checks SET outcome = 'accepted' WHERE job_id = $1", [check]);
+    await pool.query("UPDATE studio_jobs SET state = 'finished' WHERE id = $1", [check]);
     await pool.query("DELETE FROM studio_fact_uploads");
   }
   return {
@@ -372,7 +399,7 @@ async function startupGroup(dbs: Databases): Promise<void> {
     await st.close();
   }
 
-  // Content Studio S6.1: a database migrated to 0002 alone, then to 0003.
+  // Content Studio S6.1: a database migrated to 0002 alone, then (S7.1) to 0003 alone, then to 0004.
   const older = await studio(dbs, "schema-0002", { migrated: false });
   const only0002 = mkdtempSync(join(tmpdir(), "gcd-studio-0002-"));
   try {
@@ -382,6 +409,10 @@ async function startupGroup(dbs: Databases): Promise<void> {
     await migrate(older.url, only0002);
     const ledgerBefore = (await older.pool.query("SELECT name FROM studio_schema_migrations ORDER BY name")).rows.map((r) => r.name);
     const refused = await refusalOf(inProcess(older));
+    cpSync(resolve(REPO_ROOT, "studio/migrations", STUDIO_EXPECTED_MIGRATIONS[2]), join(only0002, STUDIO_EXPECTED_MIGRATIONS[2]));
+    await migrate(older.url, only0002);
+    const ledgerAt0003 = (await older.pool.query("SELECT name FROM studio_schema_migrations ORDER BY name")).rows.map((r) => r.name);
+    const refused0003 = await refusalOf(inProcess(older));
     const beatsBefore = (await older.pool.query("SELECT count(*)::int AS n FROM studio_worker_heartbeat")).rows[0].n;
     const heldBefore = await holders(older.pool);
     await migrate(older.url);
@@ -389,13 +420,14 @@ async function startupGroup(dbs: Databases): Promise<void> {
     const accepted = await worker.ready.then(() => true, () => false);
     const beat = (await older.pool.query("SELECT schema_version FROM studio_worker_heartbeat")).rows[0];
     await worker.stop();
-    check("startup", "SWP18. a database migrated to 0002 alone is refused at start-up (schema-version) — before ownership, "
-      + "writing no heartbeat — and the same database, once 0003 is applied on top, is accepted: the worker becomes "
-      + `ready and its heartbeat names ${STUDIO_SCHEMA_VERSION}`,
+    check("startup", "SWP18. a database migrated to 0002 alone is refused at start-up (schema-version), and so is the "
+      + "same database at 0003 alone — before ownership, writing no heartbeat — and once 0004 is applied on top it is "
+      + `accepted: the worker becomes ready and its heartbeat names ${STUDIO_SCHEMA_VERSION}`,
       JSON.stringify(ledgerBefore) === JSON.stringify(STUDIO_EXPECTED_MIGRATIONS.slice(0, 2)) && refused === "schema-version"
+        && JSON.stringify(ledgerAt0003) === JSON.stringify(STUDIO_EXPECTED_MIGRATIONS.slice(0, 3)) && refused0003 === "schema-version"
         && beatsBefore === 0 && heldBefore === 0 && accepted && beat?.schema_version === STUDIO_SCHEMA_VERSION
-        && STUDIO_SCHEMA_VERSION === "0003_studio_preflight_requests.sql",
-      `${JSON.stringify(ledgerBefore)} ${refused} ${beatsBefore} ${heldBefore} ${accepted} ${beat?.schema_version}`);
+        && STUDIO_SCHEMA_VERSION === "0004_studio_fact_checks_and_imports.sql",
+      `${JSON.stringify(ledgerBefore)} ${refused} ${JSON.stringify(ledgerAt0003)} ${refused0003} ${beatsBefore} ${heldBefore} ${accepted} ${beat?.schema_version}`);
   } finally {
     rmSync(only0002, { recursive: true, force: true });
     await older.close();
@@ -473,6 +505,48 @@ async function queueGroup(dbs: Databases): Promise<void> {
         && !killedNames.includes("summary.md") && killedNames.every((n) => n === "run-meta.json") && reclaims === 1
         && recovery.includes(killed!.runId) && afterRow.state === "succeeded",
       `${JSON.stringify(killedRow)} ${killedJob} ${killedNames} ${reclaims} ${recovery}`);
+
+    // SWP27 (Content Studio S7.1): migration 0004's fact_check and import jobs are S7.2's; this worker never claims
+    // them, and its sweep expires them. Both are queued with a two-second expiry, then a fake job behind them.
+    const client = await st.pool.connect();
+    let factCheckJob = "";
+    let importRun = "";
+    let importJob = "";
+    try {
+      await client.query("BEGIN");
+      factCheckJob = (await client.query(
+        "INSERT INTO studio_jobs (kind, expires_at) VALUES ('fact_check', now() + interval '2 seconds') RETURNING id")).rows[0].id;
+      importRun = (await client.query(
+        "INSERT INTO studio_runs (kind, requested_by, runner, fact_version_id) VALUES ('imported', $1, 'live', $2) RETURNING id",
+        [st.owner, st.factVersion])).rows[0].id;
+      importJob = (await client.query(
+        "INSERT INTO studio_jobs (run_id, kind, expires_at) VALUES ($1, 'import', now() + interval '2 seconds') RETURNING id",
+        [importRun])).rows[0].id;
+      const meta = Buffer.from("{}", "utf8");
+      await client.query("INSERT INTO studio_run_artifacts (run_id, name, content, sha256, byte_length) VALUES ($1, 'run-meta.json', $2, $3, $4)",
+        [importRun, meta, createHash("sha256").update(meta).digest("hex"), meta.length]);
+      await client.query("COMMIT");
+    } finally {
+      client.release();
+    }
+    const behind = await fakeJob(st);
+    const behindRow = await terminal(st, behind.runId);
+    const jobsOf = async () => (await st.pool.query(
+      "SELECT id, state, claimed_at IS NULL AS unclaimed FROM studio_jobs WHERE id = ANY ($1::uuid[]) ORDER BY kind",
+      [[factCheckJob, importJob]])).rows;
+    const expired = await waitFor("the sweep to expire S7.2's jobs",
+      async () => { const rows = await jobsOf(); return rows.every((r) => r.state === "expired") ? rows : undefined; }, 30_000);
+    const imported = await runRow(st, importRun);
+    const tier = (await st.pool.query("SELECT import_tier FROM studio_runs WHERE id = $1", [importRun])).rows[0].import_tier;
+    const claimedNew = (await st.pool.query("SELECT count(*)::int AS n FROM studio_audit_log WHERE action = 'job.claim' AND target_id = ANY ($1::text[])",
+      [[factCheckJob, importJob]])).rows[0].n;
+    check("queue", "SWP27. the worker never claims migration 0004's fact_check or import jobs (S7.2's): a fake job queued "
+      + "behind them runs, while they stay unclaimed until the sweep expires them — the import's run cancelled "
+      + "(job_expired) and, by 0004, archived_unverified",
+      behindRow.state === "succeeded" && expired.length === 2 && expired.every((r) => r.unclaimed === true) && claimedNew === 0
+        && imported.state === "cancelled" && imported.failure_class === "job_expired" && tier === "archived_unverified"
+        && !standby.output.some((l) => l.startsWith("[studio-worker] job.claimed") && (l.includes(factCheckJob) || l.includes(importJob))),
+      `${behindRow.state} ${JSON.stringify(expired)} ${claimedNew} ${JSON.stringify(imported)} ${tier}`);
   } finally {
     for (const child of children) { child.process.kill("SIGKILL"); await child.exited; }
     await st.close();
@@ -495,7 +569,7 @@ async function paidGroup(dbs: Databases): Promise<void> {
     await worker.ready;
   };
   try {
-    await st.pool.query("UPDATE studio_settings SET daily_cap_usd = 1000, monthly_cap_usd = 10000, updated_by = $1", [st.owner]);
+    await asActor(st.pool, st.owner, "UPDATE studio_settings SET daily_cap_usd = 1000, monthly_cap_usd = 10000, updated_by = $1", [st.owner]);
     await worker.ready;
     const lines = lib.computeCostCeiling(lib.loadRuntime(), lib.allStagePolicies(lib.loadRuntime())).lines;
     const ceil = lines.map((l) => ceilingMicros(l.costUsd!));
@@ -583,14 +657,15 @@ async function paidGroup(dbs: Databases): Promise<void> {
       } }, "0:refused:reservation_settled:0:0"),
       await attempt("expired", { expiresInMs: 1, after: async (c) => { await c.query("SELECT pg_sleep(0.05)"); } }, "0:cancelled:job_expired:0:0"),
       await attempt("wrong user (requester demoted)", { requestedBy: "runner", after: async (c) => {
-        await c.query("UPDATE studio_users SET role = 'viewer' WHERE id = $1", [st.runner]);
+        await c.query(`SET LOCAL studio.actor = '${st.owner}'`);
+        await c.query("UPDATE studio_users SET role = 'viewer', updated_by = $2 WHERE id = $1", [st.runner, st.owner]);
       } }, "0:refused:requester_not_permitted:0:0"),
       await attempt("wrong user (another user's quote)", { requestedBy: "runner", quoteUser: "owner",
         disable: [["studio_runs", "studio_runs_before_insert"]] }, "0:refused:quote_mismatch:0:0"),
       await attempt("exhausted", { ceilingMicros: 1_000_000 }, "0:refused:reservation_exhausted:0:0"),
       await attempt("version skew", { workerCommit: hex("another worker").slice(0, 40) }, "0:refused:version_skew:0:0"),
     ];
-    await st.pool.query("UPDATE studio_users SET role = 'runner' WHERE id = $1", [st.runner]);
+    await asActor(st.pool, st.owner, "UPDATE studio_users SET role = 'runner', updated_by = $2 WHERE id = $1", [st.runner, st.owner]);
     // Caps: a worker whose deployment ceilings are missing (zero) refuses every paid request.
     await restart({ caps: { dailyMicros: 0, monthlyMicros: 0 } });
     wants.push(await attempt("caps missing (zero)", {}, "0:refused:cap_exceeded_daily:0:0"));
@@ -745,7 +820,7 @@ async function paidGroup(dbs: Databases): Promise<void> {
     const beat2 = (await st.pool.query("SELECT beat_at::text AS at FROM studio_worker_heartbeat")).rows[0];
     check("paid", "SWP12. the worker writes the singleton heartbeat — its commit, the schema version, the approved-facts "
       + "sha256 and tag counts, and the price table's sha256 — and keeps it fresh on its interval",
-      beat1.commit === COMMIT && beat1.schema_version === "0003_studio_preflight_requests.sql" && beat1.approved_facts_sha256 === approvedSha
+      beat1.commit === COMMIT && beat1.schema_version === "0004_studio_fact_checks_and_imports.sql" && beat1.approved_facts_sha256 === approvedSha
         && beat1.price_table_sha256 === lib.priceTableSha256() && Object.keys(beat1.approved_facts_tag_counts).length > 0
         && beat2.at > beat1.at);
     check("paid", "SWP13. fake runner only: across every worker in this suite the real provider runner factory was "
@@ -924,7 +999,8 @@ async function actionsGroup(dbs: Databases): Promise<void> {
   const rt = lib.loadRuntime();
   let worker: WorkerHandle | undefined;
   try {
-    await st.pool.query("UPDATE studio_settings SET active_fact_version_id = $1, daily_cap_usd = 1000, monthly_cap_usd = 10000, updated_by = $2",
+    await asActor(st.pool, st.owner,
+      "UPDATE studio_settings SET active_fact_version_id = $1, daily_cap_usd = 1000, monthly_cap_usd = 10000, updated_by = $2",
       [st.factVersion, st.owner]);
     const ask = (userId: string, edit: Partial<Parameters<typeof preflightRequest>[0]> = {}) => web.createPreflightRequest(preflightRequest({
       userId, action: "full", goal: GOAL, platforms: PLATFORMS, scopeTags: null, sourceRunId: null, factVersionId: st.factVersion, ...edit,

@@ -75,7 +75,8 @@ const mail = (local: string) => `${local}@${DOMAIN}`;
 const hex = (seed: string) => createHash("sha256").update(seed).digest("hex");
 const commit = (seed: string) => hex(seed).slice(0, 40);
 const repoRoot = process.cwd();
-const EXPECTED_FILES = ["0001_studio_identity_and_tripwire.sql", "0002_studio_schema.sql", "0003_studio_preflight_requests.sql"];
+const EXPECTED_FILES = ["0001_studio_identity_and_tripwire.sql", "0002_studio_schema.sql", "0003_studio_preflight_requests.sql",
+  "0004_studio_fact_checks_and_imports.sql"];
 
 // ---------------------------------------------------------------------------
 // Environment and disposable databases
@@ -521,8 +522,8 @@ async function upgradeFromSchema0002(dbs: Databases): Promise<void> {
     const files = await readStudioMigrationFiles(resolve(repoRoot, STUDIO_MIGRATIONS_DIRECTORY));
     const ledger = (await pool.query("SELECT name, sha256 FROM studio_schema_migrations ORDER BY name")).rows;
     check("runner", "SP16. migration 0003 applies on top of a database migrated to 0002 alone, with rows in it: the "
-      + "runner skips 0001 and 0002 (their recorded sha256 values unchanged), applies 0003 alone, records its sha256, and "
-      + "leaves the 0002-era rows as they were",
+      + "runner skips 0001 and 0002 (their recorded sha256 values unchanged), applies 0003 (and, since S7.1, 0004 after it), "
+      + "records each sha256, and leaves the 0002-era rows as they were",
     older.code === 0 && JSON.stringify(ledgerAt0002.map((row) => row.name)) === JSON.stringify(EXPECTED_FILES.slice(0, 2))
       && upgrade.code === 0
       && EXPECTED_FILES.slice(0, 2).every((name) => upgrade.stdout.includes(`[studio-migrate] skip ${name}`))
@@ -534,6 +535,92 @@ async function upgradeFromSchema0002(dbs: Databases): Promise<void> {
     const before = await snapshot(pool);
     const again = await studioRunner(url);
     check("runner", "SP17. after that upgrade a further run is idempotent: every file skipped with a matching sha256, "
+      + "and the schema, ledger and identity byte-for-byte unchanged",
+    again.code === 0 && EXPECTED_FILES.every((name) => again.stdout.includes(`[studio-migrate] skip ${name}`))
+      && !again.stdout.includes("[studio-migrate] applied") && before === await snapshot(pool), again.stderr);
+  } finally {
+    await closePool(pool);
+    await rm(olderRoot, { recursive: true, force: true });
+    await dbs.drop(STUDIO_DATABASE_NAME);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Content Studio S7.1: migration 0004 applied on top of a populated database at 0003
+// ---------------------------------------------------------------------------
+
+async function upgradeFromSchema0003(dbs: Databases): Promise<void> {
+  const url = await dbs.create(STUDIO_DATABASE_NAME);
+  const pool = openPool("Studio gcd_studio at 0003", { connectionString: url, max: 2 });
+  const olderRoot = await mkdtemp(join(tmpdir(), "gcd-studio-0003-"));
+  try {
+    await mkdir(join(olderRoot, STUDIO_MIGRATIONS_DIRECTORY), { recursive: true });
+    for (const name of EXPECTED_FILES.slice(0, 3)) {
+      await cp(resolve(repoRoot, STUDIO_MIGRATIONS_DIRECTORY, name), join(olderRoot, STUDIO_MIGRATIONS_DIRECTORY, name));
+    }
+    const older = await studioRunner(url, olderRoot);
+    const ledgerAt0003 = (await pool.query("SELECT name, sha256 FROM studio_schema_migrations ORDER BY name")).rows;
+    // Rows a 0003-era Studio would hold, written as 0003 allows: the bootstrap owner and a runner; a fact version from
+    // the staged bytes (directly, as 0003 permits) and the settings pointing at it (with no transaction actor); a
+    // succeeded fake run with a file; an archived import with its reason; a queued preflight job and its request.
+    const one = async (sql: string, params: unknown[] = []) => (await pool.query(sql, params)).rows[0] ?? {};
+    const owner = String((await one("INSERT INTO studio_users (email, role, google_sub) VALUES ($1, 'owner', 'sub-upgrade3-owner') RETURNING id",
+      [mail("upgrade3.owner")])).id);
+    await pool.query("INSERT INTO studio_users (email, role, created_by, daily_cap_usd) VALUES ($1, 'runner', $2, 25)", [mail("upgrade3.runner"), owner]);
+    const facts = Buffer.from(JSON.stringify({ facts: [{ id: "synthetic-upgrade-3" }] }), "utf8");
+    const factSha = createHash("sha256").update(facts).digest("hex");
+    await pool.query("INSERT INTO studio_fact_uploads (content, sha256, byte_length, uploaded_by) VALUES ($1, $2, $3, $4)",
+      [facts, factSha, facts.length, owner]);
+    const version = String((await one(`INSERT INTO studio_fact_versions (sha256, content, byte_length, record_count, tag_counts, uploaded_by)
+                                       VALUES ($1, $2, $3, 1, '{"oil": 1}', $4) RETURNING id`, [factSha, facts, facts.length, owner])).id);
+    await pool.query("DELETE FROM studio_fact_uploads");
+    await pool.query("UPDATE studio_settings SET active_fact_version_id = $1, updated_by = $2", [version, owner]);
+    const fake = String((await one(`INSERT INTO studio_runs (kind, requested_by, runner, goal, fact_version_id, automotive_facts_sha256)
+                                    VALUES ('full', $1, 'fake', 'synthetic upgrade goal', $2, $3) RETURNING id`, [owner, version, factSha])).id);
+    const summary = Buffer.from("# synthetic summary\n", "utf8");
+    await pool.query("INSERT INTO studio_run_artifacts (run_id, name, content, sha256, byte_length) VALUES ($1, 'summary.md', $2, $3, $4)",
+      [fake, summary, createHash("sha256").update(summary).digest("hex"), summary.length]);
+    await pool.query("UPDATE studio_runs SET state = 'running', started_at = now() WHERE id = $1", [fake]);
+    await pool.query("UPDATE studio_runs SET state = 'succeeded', finished_at = now(), verdict = 'provisional_pass' WHERE id = $1", [fake]);
+    const imported = String((await one("INSERT INTO studio_runs (kind, requested_by, runner) VALUES ('imported', $1, 'live') RETURNING id", [owner])).id);
+    await pool.query(`UPDATE studio_runs SET state = 'succeeded', finished_at = now(), import_tier = 'archived_unverified',
+                             failure_class = 'approved_facts_changed', failure_message = 'synthetic refusal' WHERE id = $1`, [imported]);
+    const job = String((await one("INSERT INTO studio_jobs (kind) VALUES ('preflight') RETURNING id")).id);
+    await pool.query(`INSERT INTO studio_preflight_requests (job_id, user_id, action, goal, platforms, fact_version_id, params_sha256)
+                      VALUES ($1, $2, 'full', 'synthetic upgrade goal', $3, $4, $5)`,
+    [job, owner, ["instagram", "facebook", "google_business_profile"], version, hex("upgrade-params")]);
+    const rows = async () => JSON.stringify([
+      (await pool.query("SELECT id, email, role, status, daily_cap_usd, created_by FROM studio_users ORDER BY id")).rows,
+      (await pool.query("SELECT id, sha256, status FROM studio_fact_versions ORDER BY id")).rows,
+      (await pool.query("SELECT active_fact_version_id, daily_cap_usd, monthly_cap_usd, updated_by FROM studio_settings")).rows,
+      (await pool.query("SELECT id, kind, state, runner, import_tier, failure_class, source_run_id FROM studio_runs ORDER BY id")).rows,
+      (await pool.query("SELECT run_id, name, sha256 FROM studio_run_artifacts ORDER BY run_id, name")).rows,
+      (await pool.query("SELECT id, kind, state, run_id, created_at::text FROM studio_jobs ORDER BY id")).rows,
+      (await pool.query("SELECT id, job_id, outcome FROM studio_preflight_requests ORDER BY id")).rows,
+    ]);
+    const rowsBefore = await rows();
+    const upgrade = await studioRunner(url);
+    const files = await readStudioMigrationFiles(resolve(repoRoot, STUDIO_MIGRATIONS_DIRECTORY));
+    const ledger = (await pool.query("SELECT name, sha256 FROM studio_schema_migrations ORDER BY name")).rows;
+    const added = await one(`SELECT to_regclass('public.studio_fact_checks') IS NOT NULL AS checks,
+                                    (SELECT count(*) FROM studio_users WHERE updated_by IS NOT NULL) AS stamped,
+                                    (SELECT count(*) FROM studio_fact_versions WHERE status_changed_by IS NOT NULL) AS changed`);
+    check("runner", "SP18. migration 0004 applies on top of a populated database at 0003 — users, a fact version, the "
+      + "settings pointing at it, a finished fake run with a file, an archived import with its reason, a queued preflight "
+      + "job and its request: the runner skips 0001-0003 (their recorded sha256 values unchanged), applies 0004 alone, "
+      + "records its sha256, every existing row satisfies 0004's new CHECKs, and the 0003-era rows are as they were (the "
+      + "new actor columns empty)",
+    older.code === 0 && JSON.stringify(ledgerAt0003.map((row) => row.name)) === JSON.stringify(EXPECTED_FILES.slice(0, 3))
+      && upgrade.code === 0
+      && EXPECTED_FILES.slice(0, 3).every((name) => upgrade.stdout.includes(`[studio-migrate] skip ${name}`))
+      && upgrade.stdout.includes(`[studio-migrate] applied ${EXPECTED_FILES[3]}`)
+      && JSON.stringify(ledger) === JSON.stringify(files.map((file) => ({ name: file.name, sha256: file.sha256 })))
+      && JSON.stringify(ledger.slice(0, 3)) === JSON.stringify(ledgerAt0003)
+      && added.checks === true && added.stamped === "0" && added.changed === "0"
+      && rowsBefore === await rows(), `${older.stderr} ${upgrade.stderr} ${JSON.stringify(added)}`);
+    const before = await snapshot(pool);
+    const again = await studioRunner(url);
+    check("runner", "SP19. after that upgrade a further run is idempotent: every file skipped with a matching sha256, "
       + "and the schema, ledger and identity byte-for-byte unchanged",
     again.code === 0 && EXPECTED_FILES.every((name) => again.stdout.includes(`[studio-migrate] skip ${name}`))
       && !again.stdout.includes("[studio-migrate] applied") && before === await snapshot(pool), again.stderr);
@@ -568,6 +655,16 @@ async function invariants(pool: pg.Pool): Promise<void> {
   const insertUser = (client: pg.PoolClient, email: string, role: string, createdBy: string | null, sub: string | null) =>
     client.query("INSERT INTO studio_users (email, role, created_by, google_sub) VALUES ($1, $2, $3, $4) RETURNING id",
       [email, role, createdBy, sub]);
+  /** Content Studio S7.1 (migration 0004): an owner-managed change declares its actor for its transaction. */
+  const actAs = (client: pg.PoolClient, actor: string) => {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(actor)) throw new Error("actAs: not a user id");
+    return client.query(`SET LOCAL studio.actor = '${actor}'`);
+  };
+  /** One owner-managed statement in its own transaction, as `actor`; throws if it is refused. */
+  const asActor = async (actor: string, sql: string, params: unknown[] = []) => {
+    const message = await tx(pool, async (c) => { await actAs(c, actor); await c.query(sql, params); });
+    if (message) throw new Error(`fixture refused: ${message}`);
+  };
 
   // ---- §4.1 users ----------------------------------------------------------
   await refuses("before any owner exists, a viewer cannot be created", /only the bootstrap owner/,
@@ -610,26 +707,37 @@ async function invariants(pool: pg.Pool): Promise<void> {
     (c) => c.query("UPDATE studio_users SET google_sub = 'sub-viewer-2' WHERE id = $1", [viewer]));
   await refuses("a google_sub cleared once set", /google_sub never changes/,
     (c) => c.query("UPDATE studio_users SET google_sub = NULL WHERE id = $1", [viewer]));
-  await accepts("one of two owners is demoted",
-    (c) => c.query("UPDATE studio_users SET role = 'runner' WHERE id = $1", [owner2]));
-  await refuses("the last active owner demoted", /last active owner/,
-    (c) => c.query("UPDATE studio_users SET role = 'viewer' WHERE id = $1", [owner]));
-  await refuses("the last active owner disabled", /last active owner/,
-    (c) => c.query("UPDATE studio_users SET status = 'disabled' WHERE id = $1", [owner]));
+  await accepts("one of two owners is demoted", async (c) => {
+    await actAs(c, owner);
+    await c.query("UPDATE studio_users SET role = 'runner', updated_by = $2 WHERE id = $1", [owner2, owner]);
+  });
+  await refuses("the last active owner demoted", /last active owner/, async (c) => {
+    await actAs(c, owner);
+    await c.query("UPDATE studio_users SET role = 'viewer', updated_by = $1 WHERE id = $1", [owner]);
+  });
+  await refuses("the last active owner disabled", /last active owner/, async (c) => {
+    await actAs(c, owner);
+    await c.query("UPDATE studio_users SET status = 'disabled', updated_by = $1 WHERE id = $1", [owner]);
+  });
   await refuses("the last active owner deleted", /last active owner/, async (c) => {
     // A fresh owner nothing references, left as the only active owner, then deleted.
     const lone = String((await insertUser(c, mail("lone.owner"), "owner", owner, "sub-lone")).rows[0]?.id);
-    await c.query("UPDATE studio_users SET role = 'viewer' WHERE id = $1", [owner]);
+    await actAs(c, owner);
+    await c.query("UPDATE studio_users SET role = 'viewer', updated_by = $1 WHERE id = $1", [owner]);
     await c.query("DELETE FROM studio_users WHERE id = $1", [lone]);
   });
   await refuses("both of two owners demoted in one statement", /last active owner/, async (c) => {
-    await c.query("UPDATE studio_users SET role = 'owner' WHERE id = $1", [owner2]);
-    await c.query("UPDATE studio_users SET role = 'viewer' WHERE role = 'owner'");
+    await actAs(c, owner);
+    await c.query("UPDATE studio_users SET role = 'owner', updated_by = $2 WHERE id = $1", [owner2, owner]);
+    // Migration 0004: the demoting statement's actor is owner2, whose row this transaction just rewrote, so the
+    // statement reaches it last; every row's actor check therefore passes and the last-owner trigger refuses.
+    await actAs(c, owner2);
+    await c.query("UPDATE studio_users SET role = 'viewer', updated_by = $1 WHERE role = 'owner'", [owner2]);
   });
   await refuses("studio_users truncated", /immutable/, (c) => c.query("TRUNCATE studio_users CASCADE"));
 
   // Two concurrent demotions of the two remaining owners: one must fail.
-  await pool.query("UPDATE studio_users SET role = 'owner' WHERE id = $1", [owner2]);
+  await asActor(owner, "UPDATE studio_users SET role = 'owner', updated_by = $2 WHERE id = $1", [owner2, owner]);
   {
     const a = await pool.connect();
     const b = await pool.connect();
@@ -637,8 +745,11 @@ async function invariants(pool: pg.Pool): Promise<void> {
     try {
       await a.query("BEGIN");
       await b.query("BEGIN");
-      await a.query("UPDATE studio_users SET role = 'viewer' WHERE id = $1", [owner]);
-      const bUpdate = b.query("UPDATE studio_users SET role = 'viewer' WHERE id = $1", [owner2])
+      // Each owner demotes itself, as its transaction's actor (migration 0004).
+      await actAs(a, owner);
+      await actAs(b, owner2);
+      await a.query("UPDATE studio_users SET role = 'viewer', updated_by = $1 WHERE id = $1", [owner]);
+      const bUpdate = b.query("UPDATE studio_users SET role = 'viewer', updated_by = $1 WHERE id = $1", [owner2])
         .then(() => "", (error: Error) => error.message);
       await new Promise((settle) => setTimeout(settle, 200));
       await a.query("COMMIT");
@@ -651,8 +762,8 @@ async function invariants(pool: pg.Pool): Promise<void> {
     const owners = await one("SELECT count(*) AS n FROM studio_users WHERE role = 'owner' AND status = 'active'");
     holds("two concurrent transactions each demoting one of the last two owners: the second waits, then is refused, "
       + "and one active owner remains", /last active owner/.test(bError) && owners.n === "1", bError);
-    await pool.query("UPDATE studio_users SET role = 'owner' WHERE id = $1", [owner]);
-    await pool.query("UPDATE studio_users SET role = 'runner' WHERE id = $1", [owner2]);
+    await asActor(owner2, "UPDATE studio_users SET role = 'owner', updated_by = $2 WHERE id = $1", [owner, owner2]);
+    await asActor(owner, "UPDATE studio_users SET role = 'runner', updated_by = $2 WHERE id = $1", [owner2, owner]);
   }
 
   // ---- §4.1 login attempts ---------------------------------------------------
@@ -707,7 +818,8 @@ async function invariants(pool: pg.Pool): Promise<void> {
   {
     let revokedInside = false;
     const message = await tx(pool, async (c) => {
-      await c.query("UPDATE studio_users SET status = 'disabled' WHERE id = $1", [viewer]);
+      await actAs(c, owner);
+      await c.query("UPDATE studio_users SET status = 'disabled', updated_by = $2 WHERE id = $1", [viewer, owner]);
       revokedInside = (await c.query("SELECT revoked_at IS NOT NULL AS revoked FROM studio_sessions WHERE id_hash = $1",
         [viewerSession])).rows[0]?.revoked === true;
     });
@@ -719,13 +831,26 @@ async function invariants(pool: pg.Pool): Promise<void> {
     (c) => c.query("UPDATE studio_sessions SET revoked_at = NULL WHERE id_hash = $1", [viewerSession]));
   await refuses("a session for a disabled user", /only for an active user/,
     (c) => insertSession(c, viewer, hex("sess-disabled")));
-  await pool.query("UPDATE studio_users SET status = 'active' WHERE id = $1", [viewer]);
+  await asActor(owner, "UPDATE studio_users SET status = 'active', updated_by = $2 WHERE id = $1", [viewer, owner]);
 
   // ---- §8.5 staging, §4.4 fact versions ---------------------------------------
   const factBytes = Buffer.from(JSON.stringify({ facts: [{ id: "synthetic-fixture-1" }] }), "utf8");
-  const stage = (c: pg.PoolClient, by: string, bytes: Buffer, sha = hex(bytes.toString("latin1"))) =>
-    c.query("INSERT INTO studio_fact_uploads (content, sha256, byte_length, uploaded_by) VALUES ($1, $2, $3, $4)",
+  // Since migration 0004 a version is created only while the fact check of its staged bytes is running: the
+  // staging fixture also writes that check (as S7.2's web will) and starts its job (as the worker will).
+  const stage = async (c: pg.PoolClient, by: string, bytes: Buffer, sha = hex(bytes.toString("latin1"))) => {
+    await c.query("INSERT INTO studio_fact_uploads (content, sha256, byte_length, uploaded_by) VALUES ($1, $2, $3, $4)",
       [bytes, sha, bytes.length, by]);
+    const job = String((await c.query("INSERT INTO studio_jobs (kind) VALUES ('fact_check') RETURNING id")).rows[0]?.id);
+    await c.query("INSERT INTO studio_fact_checks (job_id, requested_by, sha256, byte_length) VALUES ($1, $2, $3, $4)",
+      [job, by, sha, bytes.length]);
+    await c.query("UPDATE studio_jobs SET state = 'running' WHERE id = $1", [job]);
+  };
+  /** The worker's accepted outcome for the running check of `sha`, and its job's end. */
+  const accepted = async (c: pg.PoolClient, sha: string) => {
+    const job = String((await c.query(
+      "UPDATE studio_fact_checks SET outcome = 'accepted' WHERE sha256 = $1 AND outcome IS NULL RETURNING job_id", [sha])).rows[0]?.job_id);
+    await c.query("UPDATE studio_jobs SET state = 'finished' WHERE id = $1", [job]);
+  };
   const shaOf = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
   await refuses("a fact upload staged by a runner (owner only)", /only an active owner/,
     (c) => stage(c, runner, factBytes, shaOf(factBytes)));
@@ -751,6 +876,7 @@ async function invariants(pool: pg.Pool): Promise<void> {
     factVersion = String((await c.query(
       `INSERT INTO studio_fact_versions (sha256, content, byte_length, record_count, tag_counts, uploaded_by)
        VALUES ($1, $2, $3, 1, '{"oil": 1}', $4) RETURNING id`, [shaOf(factBytes), factBytes, factBytes.length, owner])).rows[0]?.id);
+    await accepted(c, shaOf(factBytes));
     await c.query("DELETE FROM studio_fact_uploads");
   });
   for (const [column, value] of [["content", "'\\x00'::bytea"], ["sha256", `'${hex("x")}'`], ["record_count", "2"],
@@ -781,6 +907,7 @@ async function invariants(pool: pg.Pool): Promise<void> {
     const auditBefore = Number((await one("SELECT count(*) AS n FROM studio_audit_log WHERE action = 'settings.update'")).n);
     let inside = -1;
     const message = await tx(pool, async (c) => {
+      await actAs(c, owner);
       await c.query("UPDATE studio_settings SET daily_cap_usd = 45, active_fact_version_id = $2, updated_by = $1",
         [owner, factVersion]);
       inside = Number((await c.query(
@@ -792,6 +919,7 @@ async function invariants(pool: pg.Pool): Promise<void> {
         && (row.detail as { before?: { daily_cap_usd?: number }; after?: { daily_cap_usd?: number } })?.before?.daily_cap_usd === 50
         && (row.detail as { after?: { daily_cap_usd?: number } })?.after?.daily_cap_usd === 45, message);
     const rolledBack = await tx(pool, async (c) => {
+      await actAs(c, owner);
       await c.query("UPDATE studio_settings SET daily_cap_usd = 44, updated_by = $1", [owner]);
       throw new Error("deliberate rollback");
     });
@@ -801,9 +929,11 @@ async function invariants(pool: pg.Pool): Promise<void> {
         && Number((await one("SELECT count(*) AS n FROM studio_audit_log WHERE action = 'settings.update'")).n)
           === auditBefore + 1);
   }
-  await refuses("the active fact version deleted while the settings point at it", /foreign key constraint|only a retired/,
-    async (c) => {
-      await c.query("UPDATE studio_fact_versions SET status = 'retired' WHERE id = $1", [factVersion]);
+  // Since migration 0004 the version the settings point at cannot even be retired, so it cannot be deleted.
+  await refuses("the active fact version retired (to be deleted) while the settings point at it",
+    /retired only after the settings point elsewhere/, async (c) => {
+      await actAs(c, owner);
+      await c.query("UPDATE studio_fact_versions SET status = 'retired', status_changed_by = $2 WHERE id = $1", [factVersion, owner]);
       await c.query("DELETE FROM studio_fact_versions WHERE id = $1", [factVersion]);
     });
 
@@ -887,6 +1017,16 @@ async function invariants(pool: pg.Pool): Promise<void> {
   await refuses("an expired quote consumed", /expired quote cannot be consumed/, (c) => confirm(c, expiredQuote, runner));
   await accepts("an unconsumed quote deleted (purge)", (c) => c.query("DELETE FROM studio_quotes WHERE id = $1", [expiredQuote]));
 
+  /** An import's import job and one known file, as S7.2's import transaction writes them (migration 0004). */
+  const importFiles = async (c: pg.PoolClient, id: string, names = ["run-meta.json"]) => {
+    await c.query("INSERT INTO studio_jobs (run_id, kind) VALUES ($1, 'import')", [id]);
+    for (const name of names) {
+      const bytes = Buffer.from(`{"synthetic":"${name}"}`, "utf8");
+      await c.query("INSERT INTO studio_run_artifacts (run_id, name, content, sha256, byte_length) VALUES ($1, $2, $3, $4, $5)",
+        [id, name, bytes, shaOf(bytes), bytes.length]);
+    }
+  };
+
   // Who may create which run.
   const fakeRun = async (c: pg.PoolClient, user: string, kind = "full", source: string | null = null, fact: string | null = factVersion) =>
     String((await c.query(
@@ -931,14 +1071,26 @@ async function invariants(pool: pg.Pool): Promise<void> {
     importVerified = String((await c.query(
       "INSERT INTO studio_runs (kind, requested_by, runner, fact_version_id) VALUES ('imported', $1, 'live', $2) RETURNING id",
       [owner, factVersion])).rows[0]?.id);
+    // Since migration 0004 an import is created with its import job and its files (checked at commit).
+    for (const id of [importUnverified, importVerified]) await importFiles(c, id);
   });
-  await refuses("an import with a parent", /studio_runs_lineage_shape/, (c) => c.query(
-    "INSERT INTO studio_runs (kind, source_run_id, requested_by, runner, fact_version_id) VALUES ('imported', $1, $2, 'live', $3)",
-    [fakeA, owner, factVersion]));
+  // Until migration 0004 an import could have no parent at all; since 0004 it may (§8.6 lineage, proven below,
+  // SP374 on), and the parent-less shape this check held is replaced by the import's own commit-time rule.
+  await refuses("an import created without its import job and files (checked at commit)", /import's job is created/,
+    (c) => c.query(
+      "INSERT INTO studio_runs (kind, source_run_id, requested_by, runner, fact_version_id) VALUES ('imported', $1, $2, 'live', $3)",
+      [fakeA, owner, factVersion]));
   await refuses("an import tier on a run that is not an import", /import_tier_only_on_imports/,
     (c) => c.query("UPDATE studio_runs SET import_tier = 'verified' WHERE id = $1", [fakeA]));
-  await pool.query("UPDATE studio_runs SET import_tier = 'archived_unverified', state = 'succeeded' WHERE id = $1", [importUnverified]);
-  await pool.query("UPDATE studio_runs SET import_tier = 'verified', state = 'succeeded' WHERE id = $1", [importVerified]);
+  // As S7.2's worker will end them (migration 0004): archived with its reason; verified by its running import job,
+  // with every fingerprint and the worker's commit.
+  await pool.query(`UPDATE studio_runs SET import_tier = 'archived_unverified', state = 'succeeded', failure_class = 'approved_facts_changed',
+                     failure_message = 'synthetic refusal' WHERE id = $1`, [importUnverified]);
+  await pool.query("UPDATE studio_jobs SET state = 'running' WHERE run_id = $1", [importVerified]);
+  await pool.query(`UPDATE studio_runs SET import_tier = 'verified', state = 'succeeded', code_commit = $2, approved_facts_sha256 = $3,
+                     evidence_pack_sha256 = $4, automotive_facts_sha256 = $5 WHERE id = $1`,
+  [importVerified, commit("worker"), hex("approved"), hex("pack"), shaOf(factBytes)]);
+  await pool.query("UPDATE studio_jobs SET state = 'finished' WHERE run_id = $1", [importVerified]);
   const reviseQuote = await quote(runner, "revise");
   await refuses("an archived_unverified import as the source of a paid revise", /not verified can never be a paid/,
     (c) => confirm(c, reviseQuote, runner, { kind: "revise", source: importUnverified }));
@@ -1193,8 +1345,8 @@ async function invariants(pool: pg.Pool): Promise<void> {
     (await one("SELECT count(*) AS n FROM studio_spend_ledger")).n !== "0");
 
   // Fact versions: the restrictive references, then an unreferenced retired version.
-  await pool.query("UPDATE studio_settings SET active_fact_version_id = NULL, updated_by = $1", [owner]);
-  await pool.query("UPDATE studio_fact_versions SET status = 'retired' WHERE id = $1", [factVersion]);
+  await asActor(owner, "UPDATE studio_settings SET active_fact_version_id = NULL, updated_by = $1", [owner]);
+  await asActor(owner, "UPDATE studio_fact_versions SET status = 'retired', status_changed_by = $2 WHERE id = $1", [factVersion, owner]);
   await refuses("a fact version deleted while runs and quotes reference it (restrictive foreign keys)", /foreign key constraint/,
     (c) => c.query("DELETE FROM studio_fact_versions WHERE id = $1", [factVersion]));
   const spare = Buffer.from('{"facts":[]}', "utf8");
@@ -1204,6 +1356,7 @@ async function invariants(pool: pg.Pool): Promise<void> {
     spareVersion = String((await c.query(
       `INSERT INTO studio_fact_versions (sha256, content, byte_length, record_count, tag_counts, uploaded_by, status)
        VALUES ($1, $2, $3, 0, '{}', $4, 'retired') RETURNING id`, [shaOf(spare), spare, spare.length, owner])).rows[0]?.id);
+    await accepted(c, shaOf(spare));
     await c.query("DELETE FROM studio_fact_uploads");
     await c.query("DELETE FROM studio_fact_versions WHERE id = $1", [spareVersion]);
   });
@@ -1246,9 +1399,11 @@ async function invariants(pool: pg.Pool): Promise<void> {
     factVersion2 = String((await c.query(
       `INSERT INTO studio_fact_versions (sha256, content, byte_length, record_count, tag_counts, uploaded_by)
        VALUES ($1, $2, $3, 1, '{"oil": 1}', $4) RETURNING id`, [shaOf(factBytes2), factBytes2, factBytes2.length, owner])).rows[0]?.id);
+    await accepted(c, shaOf(factBytes2));
     await c.query("DELETE FROM studio_fact_uploads");
     disabledRunner = String((await insertUser(c, mail("disabled.runner"), "runner", owner, null)).rows[0]?.id);
-    await c.query("UPDATE studio_users SET status = 'disabled' WHERE id = $1", [disabledRunner]);
+    await actAs(c, owner);
+    await c.query("UPDATE studio_users SET status = 'disabled', updated_by = $2 WHERE id = $1", [disabledRunner, owner]);
   });
   const ALL_PLATFORMS = ["instagram", "facebook", "google_business_profile"];
   const pfParams = (seed: string) => hex(`preflight-params-${seed}`);
@@ -1489,6 +1644,418 @@ async function invariants(pool: pg.Pool): Promise<void> {
       const id = await pfRequest(c, { action: "revise", params: pfParams("no-revision-no-plan") });
       await refused(c, id, "no_revisable_blocking_finding", "no blocking finding is revisable");
     });
+
+  // ---- Content Studio S7.1: migration 0004 -----------------------------------------------
+  // Owner decisions of 2026-10-06. Fixtures: a third owner (a second active owner beside `owner`; owner2 is
+  // a runner by now), and the settings, fact versions, users and runs above as they stand.
+  let owner3 = "";
+  await accepts("S7.1 fixture: a second active owner", async (c) => {
+    owner3 = String((await insertUser(c, mail("owner3.fixture"), "owner", owner, "sub-owner3")).rows[0]?.id);
+  });
+
+  // The transaction's actor: every studio_settings update.
+  await refuses("a settings change with no actor declared for its transaction", /needs its transaction's actor/,
+    (c) => c.query("UPDATE studio_settings SET daily_cap_usd = 46, updated_by = $1", [owner]));
+  await refuses("a settings change whose declared actor is not an owner", /actor is not an active owner/, async (c) => {
+    await actAs(c, runner);
+    await c.query("UPDATE studio_settings SET daily_cap_usd = 46, updated_by = $1", [owner]);
+  });
+  await refuses("a settings change recording an actor other than the declared one", /must record the transaction's actor/,
+    async (c) => {
+      await actAs(c, owner);
+      await c.query("UPDATE studio_settings SET daily_cap_usd = 46, updated_by = $1", [owner3]);
+    });
+  await refuses("a settings change inheriting the previous editor's updated_by, under another declared owner",
+    /must record the transaction's actor/, async (c) => {
+      await actAs(c, owner3);
+      await c.query("UPDATE studio_settings SET daily_cap_usd = 46");
+    });
+  await refuses("a settings change inheriting the previous editor's updated_by, with no actor declared",
+    /needs its transaction's actor/, (c) => c.query("UPDATE studio_settings SET daily_cap_usd = 46"));
+  await refuses("a settings change whose declared actor is not a user id", /needs its transaction's actor/, async (c) => {
+    await c.query("SET LOCAL studio.actor = 'not-a-user-id'");
+    await c.query("UPDATE studio_settings SET daily_cap_usd = 46, updated_by = $1", [owner]);
+  });
+  {
+    const client = await pool.connect();
+    let after: unknown = "unread";
+    try {
+      await client.query("BEGIN");
+      await actAs(client, owner);
+      await client.query("COMMIT");
+      after = (await client.query("SELECT current_setting('studio.actor', true) AS actor")).rows[0]?.actor;
+    } finally {
+      client.release();
+    }
+    holds("the declared actor ends with its transaction (SET LOCAL): the same connection's next transaction has none",
+      after === null || after === "", String(after));
+  }
+  await accepts("an owner's settings change as its transaction's declared actor", async (c) => {
+    await actAs(c, owner3);
+    await c.query("UPDATE studio_settings SET daily_cap_usd = 46, updated_by = $1", [owner3]);
+  });
+  holds("its audit row names that actor", (await one(
+    "SELECT actor_user_id::text AS actor FROM studio_audit_log WHERE action = 'settings.update' ORDER BY at DESC, id LIMIT 1")).actor === owner3);
+
+  // The transaction's actor: a user's email, display_name, role, status or daily_cap_usd.
+  await refuses("a user's role changed with no actor declared", /needs its transaction's actor/,
+    (c) => c.query("UPDATE studio_users SET role = 'viewer', updated_by = $2 WHERE id = $1", [runner, owner]));
+  await refuses("a user's daily cap changed with a declared actor that is not an owner", /actor is not an active owner/,
+    async (c) => {
+      await actAs(c, runner);
+      await c.query("UPDATE studio_users SET daily_cap_usd = 100, updated_by = $1 WHERE id = $1", [runner]);
+    });
+  await refuses("a user's status changed recording an actor other than the declared one", /must record the transaction's actor/,
+    async (c) => {
+      await actAs(c, owner);
+      await c.query("UPDATE studio_users SET status = 'disabled', updated_by = $2 WHERE id = $1", [viewer, owner3]);
+    });
+  await refuses("a user's display name changed inheriting the previous editor's updated_by, under another declared owner",
+    /must record the transaction's actor/, async (c) => {
+      await actAs(c, owner3);
+      await c.query("UPDATE studio_users SET display_name = 'Synthetic Fixture' WHERE id = $1", [runner]);
+    });
+  await refuses("a user's email changed with no actor declared", /needs its transaction's actor/,
+    (c) => c.query("UPDATE studio_users SET email = $2, updated_by = $3 WHERE id = $1", [viewer, mail("viewer.renamed"), owner]));
+  await refuses("a user's updated_by rewritten with no owner-managed change", /changes only with an owner's edit/, async (c) => {
+    await actAs(c, owner3);
+    await c.query("UPDATE studio_users SET updated_by = $2 WHERE id = $1", [viewer, owner3]);
+  });
+  await accepts("an owner sets a runner's daily cap as the declared actor", async (c) => {
+    await actAs(c, owner3);
+    await c.query("UPDATE studio_users SET daily_cap_usd = 25, updated_by = $2 WHERE id = $1", [runner, owner3]);
+  });
+  {
+    const row = await one(`SELECT actor_user_id::text AS actor, detail FROM studio_audit_log
+                            WHERE action = 'user.update' AND target_id = $1 ORDER BY at DESC, id LIMIT 1`, [runner]);
+    const detail = row.detail as { after?: { daily_cap_usd?: number }; email_changed?: boolean } | undefined;
+    holds("the edit is audited as user.update by its actor, with before and after and no email address or name",
+      row.actor === owner3 && detail?.after?.daily_cap_usd === 25 && detail?.email_changed === false
+        && !JSON.stringify(row.detail).includes("@") && !JSON.stringify(row.detail).includes("Synthetic"), JSON.stringify(row));
+  }
+  let signIn = "";
+  await accepts("an owner adds a viewer (no Google subject yet)", async (c) => {
+    signIn = String((await insertUser(c, mail("signin.fixture"), "viewer", owner, null)).rows[0]?.id);
+  });
+  holds("a new user's updated_by is its creator, and its creation is audited as user.create by its creator",
+    (await one("SELECT updated_by::text AS by FROM studio_users WHERE id = $1", [signIn])).by === owner
+      && (await one("SELECT count(*) AS n FROM studio_audit_log WHERE action = 'user.create' AND target_id = $1 AND actor_user_id = $2",
+        [signIn, owner])).n === "1");
+  holds("the bootstrap owner's creation is audited as user.bootstrap, with no actor",
+    (await one("SELECT count(*) AS n FROM studio_audit_log WHERE action = 'user.bootstrap' AND target_id = $1 AND actor_user_id IS NULL",
+      [owner])).n === "1");
+  {
+    const before = (await one("SELECT count(*) AS n FROM studio_audit_log")).n;
+    const message = await tx(pool, (c) => c.query("UPDATE studio_users SET google_sub = 'sub-signin' WHERE id = $1", [signIn]));
+    holds("a sign-in binds google_sub with no actor declared, and writes no user.update row",
+      message === "" && (await one("SELECT count(*) AS n FROM studio_audit_log")).n === before, message);
+  }
+
+  // The transaction's actor: a fact version's status (retiring, or restoring a retired version).
+  await refuses("a fact version restored with no actor declared", /needs its transaction's actor/,
+    (c) => c.query("UPDATE studio_fact_versions SET status = 'active', status_changed_by = $2 WHERE id = $1", [factVersion, owner]));
+  await refuses("a fact version restored by a declared actor that is not an owner", /actor is not an active owner/, async (c) => {
+    await actAs(c, runner);
+    await c.query("UPDATE studio_fact_versions SET status = 'active', status_changed_by = $2 WHERE id = $1", [factVersion, runner]);
+  });
+  await refuses("a fact version restored recording an actor other than the declared one", /must record the transaction's actor/,
+    async (c) => {
+      await actAs(c, owner3);
+      await c.query("UPDATE studio_fact_versions SET status = 'active', status_changed_by = $2 WHERE id = $1", [factVersion, owner]);
+    });
+  await refuses("a fact version restored inheriting its previous status_changed_by, under another declared owner",
+    /must record the transaction's actor/, async (c) => {
+      await actAs(c, owner3);
+      await c.query("UPDATE studio_fact_versions SET status = 'active' WHERE id = $1", [factVersion]);
+    });
+  await accepts("the owner restores a retired fact version (owner decision of 2026-10-06), as the declared actor", async (c) => {
+    await actAs(c, owner3);
+    await c.query("UPDATE studio_fact_versions SET status = 'active', status_changed_by = $2 WHERE id = $1", [factVersion, owner3]);
+  });
+  {
+    const row = await one(`SELECT actor_user_id::text AS actor, detail FROM studio_audit_log
+                            WHERE action = 'fact_version.status' AND target_id = $1 ORDER BY at DESC, id LIMIT 1`, [factVersion]);
+    const detail = row.detail as { before?: string; after?: string; sha256?: string } | undefined;
+    const version = await one("SELECT status_changed_by::text AS by, status_changed_at IS NOT NULL AS at FROM studio_fact_versions WHERE id = $1",
+      [factVersion]);
+    holds("the restoration is audited as fact_version.status by its actor (retired → active), and stamped on the version",
+      row.actor === owner3 && detail?.before === "retired" && detail?.after === "active" && detail?.sha256 === shaOf(factBytes)
+        && version.by === owner3 && version.at === true, JSON.stringify(row));
+  }
+  await refuses("a fact version's status_changed_by rewritten with no status change", /recorded only with the change/,
+    async (c) => {
+      await actAs(c, owner);
+      await c.query("UPDATE studio_fact_versions SET status_changed_by = $2 WHERE id = $1", [factVersion, owner]);
+    });
+  await asActor(owner, "UPDATE studio_settings SET active_fact_version_id = $2, updated_by = $1", [owner, factVersion2]);
+  await refuses("the version the settings point at retired", /retired only after the settings point elsewhere/, async (c) => {
+    await actAs(c, owner);
+    await c.query("UPDATE studio_fact_versions SET status = 'retired', status_changed_by = $2 WHERE id = $1", [factVersion2, owner]);
+  });
+  await asActor(owner, "UPDATE studio_fact_versions SET status = 'retired', status_changed_by = $2 WHERE id = $1", [factVersion, owner]);
+  await refuses("the settings pointed at a retired version", /point only at a fact version that is not retired/, async (c) => {
+    await actAs(c, owner);
+    await c.query("UPDATE studio_settings SET active_fact_version_id = $2, updated_by = $1", [owner, factVersion]);
+  });
+  await asActor(owner, "UPDATE studio_fact_versions SET status = 'active', status_changed_by = $2 WHERE id = $1", [factVersion, owner]);
+  {
+    // A retirement and a concurrent repointing at the same version: never both committed.
+    const a = await pool.connect();
+    const b = await pool.connect();
+    let bMessage = "";
+    try {
+      await a.query("BEGIN");
+      await b.query("BEGIN");
+      await actAs(a, owner);
+      await actAs(b, owner3);
+      await a.query("UPDATE studio_fact_versions SET status = 'retired', status_changed_by = $2 WHERE id = $1", [factVersion, owner]);
+      const repoint = b.query("UPDATE studio_settings SET active_fact_version_id = $2, updated_by = $1", [owner3, factVersion])
+        .then(() => "", (error: Error) => error.message);
+      await new Promise((settle) => setTimeout(settle, 200));
+      await a.query("COMMIT");
+      bMessage = await repoint;
+      await b.query(bMessage ? "ROLLBACK" : "COMMIT");
+    } finally {
+      a.release();
+      b.release();
+    }
+    const state = await one(`SELECT v.status, s.active_fact_version_id = v.id AS pointed
+                               FROM studio_fact_versions v, studio_settings s WHERE v.id = $1`, [factVersion]);
+    holds("a retirement and a concurrent repointing at the same version never both commit: the repointing waits, then is refused",
+      state.status === "retired" && state.pointed === false && /not retired/.test(bMessage), `${bMessage} ${JSON.stringify(state)}`);
+  }
+
+  // §8.5 the fact check.
+  const factBytes3 = Buffer.from(JSON.stringify({ facts: [{ id: "synthetic-fixture-3" }] }), "utf8");
+  const sha3 = shaOf(factBytes3);
+  const fcJob = async (c: pg.PoolClient) =>
+    String((await c.query("INSERT INTO studio_jobs (kind) VALUES ('fact_check') RETURNING id")).rows[0]?.id);
+  const fcRow = async (c: pg.PoolClient, job: string, by = owner, sha = sha3, length = factBytes3.length) =>
+    String((await c.query("INSERT INTO studio_fact_checks (job_id, requested_by, sha256, byte_length) VALUES ($1, $2, $3, $4) RETURNING id",
+      [job, by, sha, length])).rows[0]?.id);
+  const putStaged = (c: pg.PoolClient, bytes: Buffer) =>
+    c.query("INSERT INTO studio_fact_uploads (content, sha256, byte_length, uploaded_by) VALUES ($1, $2, $3, $4)",
+      [bytes, shaOf(bytes), bytes.length, owner]);
+  const insertVersion = (c: pg.PoolClient, bytes: Buffer, extra = "", extraValues: unknown[] = []) => c.query(
+    `INSERT INTO studio_fact_versions (sha256, content, byte_length, record_count, tag_counts, uploaded_by${extra ? `, ${extra}` : ""})
+     VALUES ($1, $2, $3, 1, '{"oil": 1}', $4${extraValues.map((_, i) => `, $${5 + i}`).join("")}) RETURNING id`,
+    [shaOf(bytes), bytes, bytes.length, owner, ...extraValues]);
+  // A fact_check job with a run is refused by the job trigger first (no run's runner matches it); the CHECK holds
+  // on its own too, with the triggers off.
+  await refuses("a fact_check job that carries a run", /an import job an import/,
+    (c) => c.query("INSERT INTO studio_jobs (kind, run_id) VALUES ('fact_check', $1)", [paidRun]));
+  await refuses("a fact_check job that carries a run, even with the job trigger off", /studio_jobs_run_required/, async (c) => {
+    await c.query("SET LOCAL session_replication_role = replica");
+    await c.query("INSERT INTO studio_jobs (kind, run_id, expires_at) VALUES ('fact_check', $1, now() + interval '1 hour')", [paidRun]);
+  });
+  await refuses("an import job with no run", /studio_jobs_run_required/,
+    (c) => c.query("INSERT INTO studio_jobs (kind) VALUES ('import')"));
+  await refuses("a job of a kind no Studio code knows", /studio_jobs_kind/,
+    (c) => c.query("INSERT INTO studio_jobs (kind) VALUES ('upload')"));
+  await accepts("the owner stages bytes", (c) => putStaged(c, factBytes3));
+  await refuses("a fact check written for a preflight job", /belongs to a fact_check job/, async (c) => {
+    const job = String((await c.query("INSERT INTO studio_jobs (kind) VALUES ('preflight') RETURNING id")).rows[0]?.id);
+    await fcRow(c, job);
+  });
+  await refuses("a fact check requested by a runner", /only an active owner may request a fact check/,
+    async (c) => fcRow(c, await fcJob(c), runner));
+  await refuses("a fact check for bytes that are not the staged ones", /bytes its owner staged/,
+    async (c) => fcRow(c, await fcJob(c), owner, hex("other-bytes"), 9));
+  await refuses("a fact check by another owner than the one who staged the bytes", /bytes its owner staged/,
+    async (c) => fcRow(c, await fcJob(c), owner3));
+  await refuses("a fact check created with an outcome", /created without an outcome/, async (c) => {
+    await c.query(`INSERT INTO studio_fact_checks (job_id, requested_by, sha256, byte_length, outcome, outcome_at)
+                   VALUES ($1, $2, $3, $4, 'accepted', now())`, [await fcJob(c), owner, sha3, factBytes3.length]);
+  });
+  let check3 = "";
+  let job3 = "";
+  await accepts("the web's staging transaction writes the fact_check job and its check", async (c) => {
+    job3 = await fcJob(c);
+    check3 = await fcRow(c, job3);
+  });
+  await refuses("a fact version created while its check's job is only queued", /running fact check of its staged bytes/,
+    (c) => insertVersion(c, factBytes3));
+  await refuses("a fact check's outcome written while its job is queued", /written by its running job/,
+    (c) => c.query("UPDATE studio_fact_checks SET outcome = 'refused', refusal_class = 'x', refusal_message = 'm' WHERE id = $1", [check3]));
+  await pool.query("UPDATE studio_jobs SET state = 'running' WHERE id = $1", [job3]);
+  await refuses("a fact check accepted with no version of its bytes", /names a fact version of its bytes/,
+    (c) => c.query("UPDATE studio_fact_checks SET outcome = 'accepted' WHERE id = $1", [check3]));
+  await refuses("a fact check refused with no message", /studio_fact_checks_outcome_shape/,
+    (c) => c.query("UPDATE studio_fact_checks SET outcome = 'refused', refusal_class = 'syntax_error' WHERE id = $1", [check3]));
+  await refuses("an empty unknown-field list", /studio_fact_checks_unknown_fields/, (c) => c.query(
+    "UPDATE studio_fact_checks SET outcome = 'refused', refusal_class = 'x', refusal_message = 'm', unknown_fields = '{}' WHERE id = $1",
+    [check3]));
+  await refuses("an unknown-field list naming a field twice", /studio_fact_checks_unknown_fields/, (c) => c.query(
+    "UPDATE studio_fact_checks SET outcome = 'refused', refusal_class = 'x', refusal_message = 'm', unknown_fields = $2 WHERE id = $1",
+    [check3, ["vin", "vin"]]));
+  await refuses("a fact check's request changed", /request never changes/,
+    (c) => c.query("UPDATE studio_fact_checks SET requested_by = $2 WHERE id = $1", [check3, owner3]));
+  await refuses("a fact version created recording a status change", /created with no status change/,
+    (c) => insertVersion(c, factBytes3, "status_changed_by, status_changed_at", [owner, new Date()]));
+  let version3 = "";
+  await accepts("the worker's accepted outcome, in one transaction: the version, the outcome with its warnings, the staging row "
+    + "deleted, the job finished", async (c) => {
+    version3 = String((await insertVersion(c, factBytes3)).rows[0]?.id);
+    await c.query("UPDATE studio_fact_checks SET outcome = 'accepted', unknown_fields = $2 WHERE id = $1", [check3, ["customerName", "vin"]]);
+    await c.query("DELETE FROM studio_fact_uploads");
+    await c.query("UPDATE studio_jobs SET state = 'finished' WHERE id = $1", [job3]);
+  });
+  holds("the outcome outlives the staging row: the check keeps its warnings, the database stamps its time, and the staging row is gone",
+    (await one("SELECT outcome, unknown_fields, outcome_at IS NOT NULL AS at FROM studio_fact_checks WHERE id = $1", [check3])).at === true
+      && JSON.stringify((await one("SELECT unknown_fields FROM studio_fact_checks WHERE id = $1", [check3])).unknown_fields)
+        === JSON.stringify(["customerName", "vin"])
+      && (await one("SELECT count(*) AS n FROM studio_fact_uploads")).n === "0" && version3 !== "");
+  await refuses("a fact check's outcome rewritten", /written once and never changes/,
+    (c) => c.query("UPDATE studio_fact_checks SET unknown_fields = $2 WHERE id = $1", [check3, ["other"]]));
+  await refuses("a fact check deleted inside 30 days", /kept for 30 days/,
+    (c) => c.query("DELETE FROM studio_fact_checks WHERE id = $1", [check3]));
+  await refuses("the fact checks truncated", /immutable/, (c) => c.query("TRUNCATE studio_fact_checks"));
+  const badBytes = Buffer.from("not json at all", "utf8");
+  await accepts("the worker's refused outcome, in one transaction: the loader's message kept, the staging row deleted", async (c) => {
+    await putStaged(c, badBytes);
+    const job = await fcJob(c);
+    const id = await fcRow(c, job, owner, shaOf(badBytes), badBytes.length);
+    await c.query("UPDATE studio_jobs SET state = 'running' WHERE id = $1", [job]);
+    await c.query("UPDATE studio_fact_checks SET outcome = 'refused', refusal_class = 'syntax_error', refusal_message = $2 WHERE id = $1",
+      [id, "Unexpected token 'o', \"not json at all\" is not valid JSON"]);
+    await c.query("DELETE FROM studio_fact_uploads");
+    await c.query("UPDATE studio_jobs SET state = 'finished' WHERE id = $1", [job]);
+  });
+  holds("nothing of a refused upload reaches studio_fact_versions",
+    (await one("SELECT count(*) AS n FROM studio_fact_versions WHERE sha256 = $1", [shaOf(badBytes)])).n === "0");
+
+  // §8.6 imports: the job kinds.
+  const importRun = async (c: pg.PoolClient, o: { runner?: string; source?: string | null; fact?: string | null } = {}) =>
+    String((await c.query(
+      "INSERT INTO studio_runs (kind, requested_by, runner, fact_version_id, source_run_id) VALUES ('imported', $1, $2, $3, $4) RETURNING id",
+      [owner, o.runner ?? "live", o.fact === undefined ? factVersion2 : o.fact, o.source ?? null])).rows[0]?.id);
+  await refuses("an import job for a Studio run", /an import job an import/, async (c) => {
+    await c.query("INSERT INTO studio_jobs (run_id, kind) VALUES ($1, 'import')", [await fakeRun(c, owner)]);
+  });
+  await refuses("a fake job for a fake import", /an import job an import/, async (c) => {
+    await c.query("INSERT INTO studio_jobs (run_id, kind) VALUES ($1, 'fake')", [await importRun(c, { runner: "fake" })]);
+  });
+  await refuses("a preflight job carrying an import", /an import job an import/, async (c) => {
+    await c.query("INSERT INTO studio_jobs (run_id, kind) VALUES ($1, 'preflight')", [await importRun(c)]);
+  });
+  await refuses("an import with its job but no file (checked at commit)", /files are written in the transaction/,
+    async (c) => importFiles(c, await importRun(c), []));
+  await refuses("an import holding a file name the CLI never writes", /only the CLI's known file names/,
+    async (c) => importFiles(c, await importRun(c), ["index.html"]));
+  await refuses("an import holding the same known file twice", /studio_run_artifacts_pkey/,
+    async (c) => importFiles(c, await importRun(c), ["summary.md", "summary.md"]));
+  await refuses("an import over 10 MiB of files", /at most 10 MiB/, async (c) => {
+    const id = await importRun(c);
+    await importFiles(c, id, []);
+    for (const name of ["run-meta.json", "summary.md", "06-final-critic.json"]) {
+      const bytes = Buffer.alloc(4 * 1024 * 1024, 0x20);
+      await c.query("INSERT INTO studio_run_artifacts (run_id, name, content, sha256, byte_length) VALUES ($1, $2, $3, $4, $5)",
+        [id, name, bytes, shaOf(bytes), bytes.length]);
+    }
+  });
+
+  // §4.5 imports: the tier, written only at the end.
+  let importA = "";
+  await accepts("an import: its run, its import job and its known files in one transaction", async (c) => {
+    importA = await importRun(c);
+    await importFiles(c, importA, ["run-meta.json", "06-final-critic.json", "summary.md"]);
+  });
+  await refuses("a tier written on a queued import", /studio_runs_import_tier_when_finished/, (c) => c.query(
+    "UPDATE studio_runs SET import_tier = 'archived_unverified', failure_class = 'x', failure_message = 'y' WHERE id = $1", [importA]));
+  const verify = (c: pg.PoolClient, id: string, state = "succeeded") => c.query(
+    `UPDATE studio_runs SET state = $2, finished_at = now(), import_tier = 'verified', approved_facts_sha256 = $3,
+            automotive_facts_sha256 = $4, evidence_pack_sha256 = $5 WHERE id = $1`,
+    [id, state, hex("approved"), shaOf(factBytes2), hex("pack")]);
+  await refuses("an import verified while its import job is only queued", /verified only by its running import job/, async (c) => {
+    await c.query("UPDATE studio_runs SET code_commit = $2 WHERE id = $1", [importA, commit("worker")]);
+    await verify(c, importA);
+  });
+  // The worker's claim, as jobs.ts writes it.
+  await pool.query("UPDATE studio_jobs SET state = 'running', worker_commit = $2 WHERE run_id = $1", [importA, commit("worker")]);
+  await pool.query("UPDATE studio_runs SET state = 'running', started_at = now(), code_commit = $2 WHERE id = $1", [importA, commit("worker")]);
+  await refuses("a file added to an import once its revalidation has started", /before its revalidation starts/, async (c) => {
+    const bytes = Buffer.from("x", "utf8");
+    await c.query("INSERT INTO studio_run_artifacts (run_id, name, content, sha256, byte_length) VALUES ($1, 'field-measurements.md', $2, $3, 1)",
+      [importA, bytes, shaOf(bytes)]);
+  });
+  await refuses("an import verified without its fingerprints", /studio_runs_verified_import/,
+    (c) => c.query("UPDATE studio_runs SET state = 'succeeded', import_tier = 'verified' WHERE id = $1", [importA]));
+  await refuses("an import verified while it failed", /studio_runs_verified_import/, (c) => verify(c, importA, "failed"));
+  await refuses("an import archived_unverified with no reason", /studio_runs_unverified_import_reason/,
+    (c) => c.query("UPDATE studio_runs SET state = 'succeeded', import_tier = 'archived_unverified' WHERE id = $1", [importA]));
+  await refuses("an import tier outside the two", /studio_runs_import_tier/,
+    (c) => c.query("UPDATE studio_runs SET state = 'succeeded', import_tier = 'maybe' WHERE id = $1", [importA]));
+  await refuses("a finished import with no tier, even with the tier trigger off", /studio_runs_finished_import_has_tier/, async (c) => {
+    await c.query("SET LOCAL session_replication_role = replica");
+    await c.query("UPDATE studio_runs SET state = 'succeeded' WHERE id = $1", [importA]);
+  });
+  await accepts("the worker verifies the import: run succeeded, verified, every fingerprint; then its job finished", async (c) => {
+    await verify(c, importA);
+    await c.query("UPDATE studio_jobs SET state = 'finished' WHERE run_id = $1", [importA]);
+  });
+  await refuses("a verified import's tier changed", /terminal state succeeded never changes/,
+    (c) => c.query("UPDATE studio_runs SET import_tier = 'archived_unverified' WHERE id = $1", [importA]));
+  let importB = "";
+  await accepts("a second import", async (c) => { importB = await importRun(c); await importFiles(c, importB); });
+  await pool.query("UPDATE studio_jobs SET state = 'running' WHERE run_id = $1", [importB]);
+  await pool.query("UPDATE studio_runs SET state = 'running', started_at = now() WHERE id = $1", [importB]);
+  await accepts("restart recovery ends it interrupted with its reason and no tier, as jobs.ts does today", (c) => c.query(
+    `UPDATE studio_runs SET state = 'interrupted', finished_at = now(), failure_class = 'worker_restart',
+            failure_message = 'the worker restarted' WHERE id = $1`, [importB]));
+  holds("it is archived_unverified, fail closed, keeping its reason",
+    JSON.stringify(await one("SELECT import_tier, failure_class FROM studio_runs WHERE id = $1", [importB]))
+      === JSON.stringify({ import_tier: "archived_unverified", failure_class: "worker_restart" }));
+  let importC = "";
+  await accepts("a third import, ended by the sweep with no failure class at all", async (c) => {
+    importC = await importRun(c);
+    await importFiles(c, importC);
+  });
+  await pool.query("UPDATE studio_runs SET state = 'cancelled', finished_at = now() WHERE id = $1", [importC]);
+  holds("an import that ends with no tier and no reason is archived_unverified as not_revalidated",
+    JSON.stringify(await one("SELECT import_tier, failure_class, failure_message FROM studio_runs WHERE id = $1", [importC]))
+      === JSON.stringify({ import_tier: "archived_unverified", failure_class: "not_revalidated",
+        failure_message: "this import ended without being revalidated" }));
+
+  // §8.6 lineage: an import may name its source.
+  let importChild = "";
+  await accepts("a revised folder imported with its imported, archived (live) source as its parent", async (c) => {
+    importChild = await importRun(c, { source: importB });
+    await importFiles(c, importChild, ["run-meta.json", "round-1-06-final-critic.json"]);
+  });
+  holds("the child records its source", (await one("SELECT source_run_id::text AS s FROM studio_runs WHERE id = $1", [importChild])).s === importB);
+  await refuses("an imported child whose source does not exist", /must name an existing run/,
+    async (c) => importFiles(c, await importRun(c, { source: "00000000-0000-4000-8000-00000000abcd" })));
+  await refuses("an imported child pinning another fact version than its source", /pin its source run's fact version/,
+    async (c) => importFiles(c, await importRun(c, { source: importB, fact: factVersion })));
+  await refuses("an imported child of a deleted run", /deleted run cannot be a source/,
+    async (c) => importFiles(c, await importRun(c, { source: childA, fact: factVersion })));
+  const archivedSourceQuote = await quote(runner, "revise");
+  await refuses("a paid revise of the archived import (0002's rule, unchanged)", /not verified can never be a paid/,
+    (c) => confirm(c, archivedSourceQuote, runner, { kind: "revise", source: importB, fact: factVersion2 }));
+
+  // Owner decision of 2026-10-06: a fake run is never a paid action's source.
+  const fakeReviseQuote = await quote(runner, "revise");
+  const fakeReplayQuote = await quote(runner, "replay_critic");
+  const fakeResumeQuote = await quote(runner, "resume_packaging");
+  await refuses("a paid revise whose source is a fake Studio run", /a fake run can never be a paid action's source/,
+    (c) => confirm(c, fakeReviseQuote, runner, { kind: "revise", source: fakeA }));
+  await refuses("a paid critic replay whose source is a fake Studio run", /a fake run can never be a paid action's source/,
+    (c) => confirm(c, fakeReplayQuote, runner, { kind: "replay_critic", source: fakeA }));
+  let fakeImport = "";
+  await accepts("a verified import of a fake CLI run (owner-only)", async (c) => {
+    fakeImport = await importRun(c, { runner: "fake" });
+    await importFiles(c, fakeImport);
+  });
+  await pool.query("UPDATE studio_jobs SET state = 'running' WHERE run_id = $1", [fakeImport]);
+  await pool.query("UPDATE studio_runs SET state = 'running', started_at = now(), code_commit = $2 WHERE id = $1", [fakeImport, commit("worker")]);
+  {
+    const message = await tx(pool, (c) => verify(c, fakeImport));
+    if (message) throw new Error(`fixture refused: ${message}`);
+  }
+  await refuses("a paid resume whose source is a verified import of a fake run", /a fake run can never be a paid action's source/,
+    (c) => confirm(c, fakeResumeQuote, runner, { kind: "resume_packaging", source: fakeImport, fact: factVersion2 }));
+  await accepts("a fake run's own fake child — a fake revise of a fake run, owner-only and free — is still allowed",
+    (c) => fakeRun(c, owner, "revise", fakeA));
 }
 
 async function main(): Promise<void> {
@@ -1506,6 +2073,7 @@ async function main(): Promise<void> {
     await runnerAndCross(dbs);
     await studioDatabase(dbs);
     await upgradeFromSchema0002(dbs);
+    await upgradeFromSchema0003(dbs);
   } finally {
     const leftovers = [...dbs.created];
     for (const name of leftovers) await dbs.drop(name).catch((error) => console.error(`[studio-postgres] drop ${name}: ${(error as Error).message}`));

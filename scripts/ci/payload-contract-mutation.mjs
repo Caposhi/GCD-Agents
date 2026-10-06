@@ -411,6 +411,21 @@
  * unchanged. They add two captured paths, the web's actions module and the
  * worker's preflight module: sixty-three in all.
  *
+ * Content Studio S7.1's group, `M658`–`M661`, covers Studio migration 0004's two
+ * TypeScript changes and its two closed sets. All four run the Studio worker's
+ * offline suite: the claim taking every job kind, so 0004's fact_check and
+ * import jobs (S7.2's) would be claimed (`SW12a`); the claimed kinds widened to
+ * the import job (`SW12a`, `SW26`); 0004's import file names losing one the
+ * library writes (`SW25`); and 0004's job kinds gaining one that neither the
+ * worker claims nor S7.2 owns (`SW26`). The SQL invariants themselves are proven
+ * by the disposable-PostgreSQL refusals (`SP18`, `SP19`, `SP374`–`SP465`,
+ * `SWP18`, `SWP27`, `SAP15`), as S2's and S6.1's were, not by this harness. S6.1's
+ * three expected-migrations mutations (`M630`–`M632`) are re-pointed at the
+ * list's new last entry, 0004, with the same edit (the list losing its last
+ * entry, keeping its declared tuple type), the same suites and the same
+ * expected checks. One captured path is added, migration 0004 itself (the
+ * runner and the worker's jobs module already are): sixty-four in all.
+ *
  * It is offline and deterministic: no network, no database, no provider, no
  * credential. The mutations run in parallel on up to MAX_WORKERS workers (the
  * runner's available parallelism, capped), each worker in its OWN disposable
@@ -549,6 +564,7 @@ const STUDIO_WORKER_FINDINGS = "src/studio/worker/findings.ts";
 // Content Studio S6.2: the worker's free preflight and the web's run and revise actions.
 const STUDIO_WORKER_PREFLIGHT = "src/studio/worker/preflight.ts";
 const STUDIO_WEB_ACTIONS = "src/studio/web/actions.ts";
+const STUDIO_MIGRATION_0004 = "studio/migrations/0004_studio_fact_checks_and_imports.sql";
 const PROVIDER_TEXT_LEAF = "src/harness/agents/providerText.ts";
 const CONTENT_INTELLIGENCE_SUITE = "dist/harness/contentIntelligence.selftest.js";
 const STUDIO_DB_SUITE = "dist/studio/db/migrate.offline.selftest.js";
@@ -5730,26 +5746,28 @@ const CONTENT_STUDIO_S6_1_MUTATIONS = [
   {
     // The list keeps its declared tuple type (a cast), so the tree still
     // compiles and the break is the value at run time, as the checks see it.
-    name: "the worker's expected migrations lose 0003",
+    // Re-pointed by Content Studio S7.1 at the list's new last entry, 0004:
+    // the same edit (the list loses its last entry), suites and checks.
+    name: "the worker's expected migrations lose their last (0004; until S7.1, 0003)",
     file: STUDIO_DB_RUNNER,
-    from: "  \"0003_studio_preflight_requests.sql\",\n] as const;",
-    to: "] as unknown as readonly [\"0001_studio_identity_and_tripwire.sql\", \"0002_studio_schema.sql\", \"0003_studio_preflight_requests.sql\"];",
+    from: "  \"0004_studio_fact_checks_and_imports.sql\",\n] as const;",
+    to: "] as unknown as readonly [\"0001_studio_identity_and_tripwire.sql\", \"0002_studio_schema.sql\", \"0003_studio_preflight_requests.sql\", \"0004_studio_fact_checks_and_imports.sql\"];",
     expect: ["SW3a."],
     suite: STUDIO_WORKER_SUITE,
   },
   {
-    name: "the web's expected migrations lose 0003",
+    name: "the web's expected migrations lose their last (0004; until S7.1, 0003)",
     file: STUDIO_DB_RUNNER,
-    from: "  \"0003_studio_preflight_requests.sql\",\n] as const;",
-    to: "] as unknown as readonly [\"0001_studio_identity_and_tripwire.sql\", \"0002_studio_schema.sql\", \"0003_studio_preflight_requests.sql\"];",
+    from: "  \"0004_studio_fact_checks_and_imports.sql\",\n] as const;",
+    to: "] as unknown as readonly [\"0001_studio_identity_and_tripwire.sql\", \"0002_studio_schema.sql\", \"0003_studio_preflight_requests.sql\", \"0004_studio_fact_checks_and_imports.sql\"];",
     expect: ["SA7."],
     suite: STUDIO_WEB_SUITE,
   },
   {
-    name: "the runner's expected migrations lose 0003",
+    name: "the runner's expected migrations lose their last (0004; until S7.1, 0003)",
     file: STUDIO_DB_RUNNER,
-    from: "  \"0003_studio_preflight_requests.sql\",\n] as const;",
-    to: "] as unknown as readonly [\"0001_studio_identity_and_tripwire.sql\", \"0002_studio_schema.sql\", \"0003_studio_preflight_requests.sql\"];",
+    from: "  \"0004_studio_fact_checks_and_imports.sql\",\n] as const;",
+    to: "] as unknown as readonly [\"0001_studio_identity_and_tripwire.sql\", \"0002_studio_schema.sql\", \"0003_studio_preflight_requests.sql\", \"0004_studio_fact_checks_and_imports.sql\"];",
     expect: ["SM3c."],
     suite: STUDIO_DB_SUITE,
   },
@@ -5964,6 +5982,45 @@ const CONTENT_STUDIO_S6_2_MUTATIONS = [
   },
 ];
 
+// Content Studio S7.1: migration 0004's TypeScript changes (the claim's kinds) and
+// its closed sets, against the code they must match. 0004's invariants are proven
+// by the disposable-PostgreSQL refusals, not here.
+const CONTENT_STUDIO_S7_1_MUTATIONS = [
+  {
+    name: "the worker's claim takes every job kind, so 0004's fact_check and import jobs would be claimed",
+    file: STUDIO_WORKER_JOBS,
+    from: "WHERE state = 'queued' AND kind = ANY ($1::text[]) AND expires_at > now() AND cancel_requested_at IS NULL",
+    to: "WHERE state = 'queued' AND $1::text[] IS NOT NULL AND expires_at > now() AND cancel_requested_at IS NULL",
+    expect: ["SW12a."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    // The constant keeps its declared tuple type (a cast), so the tree still compiles.
+    name: "the worker's claimed kinds widened to S7.2's import job",
+    file: STUDIO_WORKER_JOBS,
+    from: "export const CLAIMED_JOB_KINDS = [\"preflight\", \"paid\", \"fake\"] as const;",
+    to: "export const CLAIMED_JOB_KINDS = [\"preflight\", \"paid\", \"fake\", \"import\"] as unknown as readonly [\"preflight\", \"paid\", \"fake\"];",
+    expect: ["SW12a.", "SW26."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "migration 0004's import file names lose one the library writes (rejected-responses.json)",
+    file: STUDIO_MIGRATION_0004,
+    from: "       'field-measurements.md', 'rejected-responses.json']) THEN",
+    to: "       'field-measurements.md']) THEN",
+    expect: ["SW25."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "migration 0004's job kinds gain one that neither the worker claims nor S7.2 owns",
+    file: STUDIO_MIGRATION_0004,
+    from: "  CHECK (kind IN ('preflight', 'paid', 'fake', 'fact_check', 'import'));",
+    to: "  CHECK (kind IN ('preflight', 'paid', 'fake', 'fact_check', 'import', 'upload'));",
+    expect: ["SW26."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+];
+
 // Every group, in order. MUTATIONS is their concatenation; the groups exist
 // only so `M-inc-sample` can spread its sample across them.
 const MUTATION_GROUPS = [
@@ -5978,6 +6035,7 @@ const MUTATION_GROUPS = [
   ["Content Studio S3 context", CONTENT_STUDIO_S3_CONTEXT_MUTATIONS], ["Content Studio S3 worker", CONTENT_STUDIO_S3_WORKER_MUTATIONS],
   ["Content Studio S4", CONTENT_STUDIO_S4_MUTATIONS], ["Content Studio S5", CONTENT_STUDIO_S5_MUTATIONS],
   ["Content Studio S6.1", CONTENT_STUDIO_S6_1_MUTATIONS], ["Content Studio S6.2", CONTENT_STUDIO_S6_2_MUTATIONS],
+  ["Content Studio S7.1", CONTENT_STUDIO_S7_1_MUTATIONS],
 ];
 const MUTATIONS = MUTATION_GROUPS.flatMap(([, group]) => group);
 

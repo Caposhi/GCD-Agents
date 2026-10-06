@@ -338,7 +338,8 @@ const env = (extra: Partial<WebEnvironment> = {}): WebEnvironment => ({
     runs.map((r) => r.stderr.trim()).join(" | "));
 
   // (e) the database identity and the schema version: the worker's check.
-  const files = ["0001_studio_identity_and_tripwire.sql", "0002_studio_schema.sql", "0003_studio_preflight_requests.sql"]
+  const files = ["0001_studio_identity_and_tripwire.sql", "0002_studio_schema.sql", "0003_studio_preflight_requests.sql",
+    "0004_studio_fact_checks_and_imports.sql"]
     .map((name) => ({ name, sha256: createHash("sha256").update(name).digest("hex") }));
   const ledger = files.map(({ name, sha256 }) => ({ name, sha256 }));
   const probe = (extra: Record<string, unknown> = {}) => ({
@@ -346,8 +347,8 @@ const env = (extra: Partial<WebEnvironment> = {}): WebEnvironment => ({
     identityRows: [{ database_name: "gcd_studio", marker: "gcd-studio:database-identity:v1" }], ledger, ...extra,
   });
   check("SA7. (e) the web makes the worker's database check: it refuses another database name, a live table, a live "
-    + "ledger, a missing identity row or nothing migrated, and any schema version but 0003_studio_preflight_requests.sql "
-    + "(a 0002-only ledger among them)",
+    + "ledger, a missing identity row or nothing migrated, and any schema version but 0004_studio_fact_checks_and_imports.sql "
+    + "(a 0002-only and a 0003-only ledger among them)",
     refusalOf(() => decideWebIdentity(probe() as never)) === "accepted"
       && refusalOf(() => decideWebIdentity(probe({ currentDatabase: "gcd_social" }) as never)) === "wrong-database"
       && refusalOf(() => decideWebIdentity(probe({ liveTables: ["public.approval_queue"] }) as never)) === "live-schema"
@@ -356,13 +357,18 @@ const env = (extra: Partial<WebEnvironment> = {}): WebEnvironment => ({
       && refusalOf(() => decideWebIdentity(probe({ ledger: null, identityRows: null, studioTables: [], migrationsTable: "absent" }) as never))
         === "not-migrated"
       && refusalOf(() => decideWebSchemaVersion(ledger, files)) === "accepted"
-      && decideWebSchemaVersion(ledger, files) === "0003_studio_preflight_requests.sql"
+      && decideWebSchemaVersion(ledger, files) === "0004_studio_fact_checks_and_imports.sql"
       && refusalOf(() => decideWebSchemaVersion(ledger.slice(0, 1), files)) === "schema-version"
       && refusalOf(() => decideWebSchemaVersion(ledger.slice(0, 2), files)) === "schema-version"
+      && refusalOf(() => decideWebSchemaVersion(ledger.slice(0, 3), files)) === "schema-version"
       && refusalOf(() => decideWebSchemaVersion(ledger.slice(0, 2), files.slice(0, 2))) === "schema-version"
       && refusalOf(() => decideWebSchemaVersion(null, files)) === "schema-version"
-      && refusalOf(() => decideWebSchemaVersion([ledger[0]!, { ...ledger[1]!, sha256: "0".repeat(64) }, ledger[2]!], files)) === "migration-changed"
-      && refusalOf(() => decideWebSchemaVersion([ledger[0]!, ledger[1]!, { ...ledger[2]!, sha256: "0".repeat(64) }], files)) === "migration-changed");
+      && refusalOf(() => decideWebSchemaVersion([ledger[0]!, { ...ledger[1]!, sha256: "0".repeat(64) }, ledger[2]!, ledger[3]!], files))
+        === "migration-changed"
+      && refusalOf(() => decideWebSchemaVersion([ledger[0]!, ledger[1]!, { ...ledger[2]!, sha256: "0".repeat(64) }, ledger[3]!], files))
+        === "migration-changed"
+      && refusalOf(() => decideWebSchemaVersion([ledger[0]!, ledger[1]!, ledger[2]!, { ...ledger[3]!, sha256: "0".repeat(64) }], files))
+        === "migration-changed");
 
   // The entry point, read: it reads only its variables, decides first, and passes no provider.
   const strip = (text: string) => text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
@@ -878,7 +884,7 @@ const undeclaredRole: Route = { method: "GET", path: "/test/undeclared-role", mi
     JSON.stringify(Object.keys(health).sort()) === JSON.stringify(["commit", "schema_version", "service", "state",
       "worker_heartbeat_age_seconds"])
       && health.service === "gcd-studio-web" && health.commit === COMMIT && health.state === "postgres"
-      && health.schema_version === "0003_studio_preflight_requests.sql" && health.worker_heartbeat_age_seconds === 42
+      && health.schema_version === "0004_studio_fact_checks_and_imports.sql" && health.worker_heartbeat_age_seconds === 42
       && down.state === "unavailable" && !/@|owner|viewer|runner|display|email|usd|cost|run_id/i.test(body));
 }
 
