@@ -237,11 +237,16 @@ export function parseNewRun(form: URLSearchParams, offeredTags: ReadonlySet<stri
   };
 }
 
-/** The derived actions a source run's report offers, by the run as stored (the worker's preflight proves the rest). */
+/**
+ * The derived actions a source run's report offers, by the run as stored (the worker's preflight proves the rest).
+ * Content Studio S7.2: none on a fake run — a Studio fake run, or an import of a fake CLI run — which can never be a
+ * paid action's source (owner decision of 2026-10-06); its price route refuses it by name (`fake_source`).
+ */
 export function sourceActions(run: {
-  kind: string; state: string; deleted_at: Date | null; import_tier: string | null; fact_version_id: string | null;
+  kind: string; state: string; runner: string; deleted_at: Date | null; import_tier: string | null; fact_version_id: string | null;
   platforms: string[] | null; scope_tags: string[] | null;
 }, stoppedAtStage: string | null): PaidAction[] {
+  if (run.runner === "fake") return [];
   if (run.deleted_at !== null || run.fact_version_id === null || !run.platforms?.length) return [];
   if (run.scope_tags !== null && run.scope_tags.length === 0) return [];
   if (run.kind === "imported" && run.import_tier !== "verified") return [];

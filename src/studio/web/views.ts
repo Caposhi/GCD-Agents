@@ -75,7 +75,7 @@ export function shell(input: {
     + "</head><body>"
     + "<header class=\"top\"><a class=\"brand\" href=\"/\">Content Studio</a><nav><a href=\"/runs\">Runs</a>"
     + (input.user.role === "owner" || input.user.role === "runner" ? "<a href=\"/new\">New run</a>" : "")
-    + "<a href=\"/spend\">Spend</a></nav>"
+    + "<a href=\"/spend\">Spend</a><a href=\"/facts\">Facts</a></nav>"
     + `<span class="who">${escapeHtml(input.user.display_name ?? "(no display name)")} · ${escapeHtml(input.user.role)}</span>`
     + `<form method="post" action="/auth/logout"><input type="hidden" name="csrf" value="${escapeAttribute(input.csrfToken)}">`
     + "<button type=\"submit\">Sign out</button></form></header>"
@@ -145,6 +145,8 @@ export interface ReportInput {
   group: "owner" | "lens";
   /** S6.2: the report's action buttons, already rendered (`reportActions`), shown below the header. */
   actions?: string;
+  /** S7.2: an import's own section (`importSection`), already rendered, shown below the header. */
+  importInfo?: string;
 }
 
 /** The artifacts the report reads to render itself. */
@@ -299,11 +301,13 @@ export function reportBody(input: ReportInput): string {
       ? `<ul>${artifacts.map((a) => `<li><a href="/runs/${encodeURIComponent(run.id)}/files/${encodeURIComponent(a.name)}">`
         + `${escapeHtml(a.name)}</a> <span class="meta">${a.byte_length} bytes</span> ${fingerprint(a.sha256)}</li>`).join("")}</ul>`
       : "<p class=\"note\">This run saved no files.</p>")
-    + "<p class=\"note\">Every file downloads as an attachment, exactly as stored. The whole-run bundle is not offered yet (S7).</p>"
+    + "<p class=\"note\">Every file downloads as an attachment, exactly as stored.</p>"
+    + (artifacts.length ? `<p><a href="/runs/${encodeURIComponent(run.id)}/bundle">Download the whole run</a> <span class="meta">one JSON `
+      + "bundle in the import's format: it re-imports byte for byte</span></p>" : "")
     + "</section>";
 
   // Design order: header, captions, script, shot list, findings, needs your decision, cost, files.
-  return `<article class="report">${header(run, lineage, names, requests)}${input.actions ?? ""}<div class="sections">`
+  return `<article class="report">${header(run, lineage, names, requests)}${input.importInfo ?? ""}${input.actions ?? ""}<div class="sections">`
     + captionSection + scriptSection + shotSection + findingsSection + decisionSection + costSection + filesSection
     + "</div></article>";
 }

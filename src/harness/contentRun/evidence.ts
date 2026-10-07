@@ -36,6 +36,17 @@ export function factFileAt(path: string, displayPath: string = path): FactFile {
 type AutomotiveRecord = Record<string, unknown> & { id: unknown; kind: "verified_automotive_fact"; tags: unknown };
 
 /**
+ * Every field of an entry `parseAutomotiveFacts` reads; any other field is
+ * ignored by the loader (Content Studio S7.2, design §8.5, §9.4: the Studio's
+ * fact check lists the others to the owner by name, never refusing them). The
+ * offline suite holds this set equal to what the function reads.
+ */
+export const AUTOMOTIVE_FACT_FIELDS: readonly string[] = Object.freeze([
+  "id", "claim", "subject", "attribute", "tags", "sourceType", "sourceRef", "provenance", "confidence", "observedAt",
+  "reviewedAt", "reviewedBy", "reviewBy", "expiresAt", "createdAt", "lifecycle",
+]);
+
+/**
  * Parse an operator-supplied automotive facts file.
  *
  * This file is never committed with real content (see .gitignore) and this

@@ -537,3 +537,23 @@ export const UNACKNOWLEDGED_OVERRUNS_SQL = `
    WHERE l.entry = 'overrun' AND NOT EXISTS (
      SELECT 1 FROM studio_audit_log a JOIN studio_users u ON u.id = a.actor_user_id AND u.role = 'owner'
       WHERE a.action = '${OVERRUN_ACKNOWLEDGED}' AND a.target_type = 'studio_runs' AND a.target_id = l.run_id::text)`;
+
+// ---------------------------------------------------------------------------
+// Shared by the web and the worker since Content Studio S7.2
+// ---------------------------------------------------------------------------
+
+/**
+ * The file names an import may hold and a whole-run bundle carries: the CLI's
+ * known files (design §8.6). The web may not load the library, so it reads
+ * this copy; the worker's offline suite holds it equal to the library's
+ * `RUN_ARTIFACT_NAMES` and to migration 0004's list (`SW25`, `SW27`).
+ */
+export const STUDIO_IMPORT_FILE_NAMES: readonly string[] = Object.freeze([
+  "01-strategy-concept.json", "02-automotive-truth.json", "03-hook-story-script.json", "04-production-direction.json",
+  "05-packaging-adaptation.json", "05b-contact-lines.json", "06-final-critic.json", "field-measurements.json",
+  "field-measurements.md", "rejected-responses.json", "replay-meta.json", "resume-meta.json", "revision-meta.json",
+  "round-1-06-final-critic.json", "run-meta.json", "summary.md",
+]);
+
+/** A fact upload's bound (design §8.5's 1 MB; `studio_fact_uploads_bounded`). */
+export const FACT_UPLOAD_MAX_BYTES = 1_048_576;

@@ -29,6 +29,16 @@
  *   is checked server-side against the live users row: by the route's minimum
  *   role here, and again in the decision (`actions.ts`) and by the schema's
  *   triggers. **The web never computes a price**; a quote is the worker's.
+ * - **Content Studio S7.2's fact versions and imports** (design §8.2 item 8,
+ *   §8.5, §8.6): the versions list (viewer), the owner's upload, its check's
+ *   result, activation, retirement and restoration, a version's bytes, the
+ *   owner's import of a CLI run folder, and the whole-run bundle (viewer). The
+ *   upload and the import post ONE JSON document, which the static script
+ *   puts in the form's one `document` field (so the script makes no request
+ *   itself, and S4's form token and Origin check apply unchanged); each route
+ *   declares its own body bound, enforced while reading, and the document's
+ *   own bound is checked before it is parsed (`bundle.ts`). Every owner edit
+ *   runs in one transaction that declares its actor (`declareActor`, `store.ts`).
  */
 
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -60,6 +70,12 @@ import {
   newRunBody, preflightBody, PREFLIGHT_POLL_SECONDS, refusalBody, reportActions, spendBody,
 } from "./actionViews.js";
 import { stoppedAt } from "./runs.js";
+import {
+  baseName, decodeFactUpload, decodeRunBundle, documentField, encodeRunBundle, FACT_UPLOAD_MAX_FORM_BYTES, IMPORT_MAX_FORM_BYTES,
+  importRunner, lineageKey,
+} from "./bundle.js";
+import { checkBody, FACT_CHECK_POLL_SECONDS, importBody, importSection, uploadBody, versionsBody } from "./factViews.js";
+import { STUDIO_IMPORT_FILE_NAMES } from "../db/runner.js";
 
 export const STUDIO_WEB_SERVICE = "gcd-studio-web";
 
@@ -108,14 +124,14 @@ export interface RouteDeclaration {
   minRole: MinRole;
   /** False for routes that never read a session (`/healthz`). */
   session?: boolean;
-  /** A POST's own body bound, in bytes, where it is not MAX_FORM_BYTES (S6.2: the new-run form). */
+  /** A POST's own body bound, in bytes, where it is not MAX_FORM_BYTES (S6.2: the new-run form; S7.2: the upload and the import). */
   maxFormBytes?: number;
 }
 export interface Route extends RouteDeclaration {
   handle(ctx: RouteContext): Promise<void>;
 }
 
-/** The route table: every route the service ships, each with its minimum role (S4's five, S5's five, then S6.2's nine). */
+/** The route table: every route the service ships, each with its minimum role (S4's five, S5's five, S6.2's nine, then S7.2's eleven). */
 export const STUDIO_ROUTE_TABLE: readonly RouteDeclaration[] = Object.freeze([
   { method: "GET", path: "/", minRole: "public" },
   { method: "GET", path: "/healthz", minRole: "public", session: false },
@@ -136,6 +152,17 @@ export const STUDIO_ROUTE_TABLE: readonly RouteDeclaration[] = Object.freeze([
   { method: "POST", path: "/quotes/:id/confirm", minRole: "runner" },
   { method: "GET", path: "/spend", minRole: "viewer" },
   { method: "POST", path: "/spend/overruns/:id/acknowledge", minRole: "owner" },
+  { method: "GET", path: "/facts", minRole: "viewer" },
+  { method: "GET", path: "/facts/upload", minRole: "owner" },
+  { method: "POST", path: "/facts/upload", minRole: "owner", maxFormBytes: FACT_UPLOAD_MAX_FORM_BYTES },
+  { method: "GET", path: "/facts/checks/:id", minRole: "owner" },
+  { method: "POST", path: "/facts/versions/:id/activate", minRole: "owner" },
+  { method: "POST", path: "/facts/versions/:id/retire", minRole: "owner" },
+  { method: "POST", path: "/facts/versions/:id/restore", minRole: "owner" },
+  { method: "GET", path: "/facts/versions/:id/file", minRole: "owner" },
+  { method: "GET", path: "/imports/new", minRole: "owner" },
+  { method: "POST", path: "/imports", minRole: "owner", maxFormBytes: IMPORT_MAX_FORM_BYTES },
+  { method: "GET", path: "/runs/:id/bundle", minRole: "viewer" },
 ] as const);
 
 /**
@@ -184,7 +211,7 @@ export interface StudioWebApp {
   handle(req: IncomingMessage, res: ServerResponse): Promise<void>;
   readonly oidc: OidcProvider;
   readonly routes: readonly Route[];
-  purge(): Promise<{ loginAttempts: number; sessions: number; preflightRequests: number }>;
+  purge(): Promise<{ loginAttempts: number; sessions: number; preflightRequests: number; factChecks: number }>;
 }
 
 // --- Responses -----------------------------------------------------------------
@@ -325,6 +352,28 @@ export function createStudioWebApp(options: StudioWebOptions): StudioWebApp {
     }
     log("preflight.request", { user: ctx.user!.id, request: created.requestId, action: request.action });
     redirect(ctx.res, 303, `/preflights/${created.requestId}`);
+  };
+
+  /** S7.2: activate, retire or restore a version — one owner edit each, refused with its reason (the schema refuses too). */
+  const versionEdit = async (ctx: RouteContext, verb: "activate" | "retire" | "restore") => {
+    const id = ctx.params.id!;
+    if (!UUID_SHAPE.test(id)) return notFound(ctx.res);
+    const ownerId = ctx.user!.id;
+    let result;
+    try {
+      result = verb === "activate" ? await store.activateFactVersion({ ownerId, versionId: id })
+        : await store.setFactVersionStatus({ ownerId, versionId: id, status: verb === "retire" ? "retired" : "active" });
+    } catch (error) {
+      if (!isRefusedActionWrite(error)) throw error;
+      result = { ok: false as const, refusal: "edit_refused",
+        message: "the database refused this change: the active version is retired only after another is made active" };
+    }
+    if (!result.ok) {
+      log("facts.version_refused", { user: ownerId, version: id, verb, refusal: result.refusal });
+      return refused(ctx, 409, "Not changed", result, "/facts");
+    }
+    log("facts.version", { user: ownerId, version: id, verb });
+    redirect(ctx.res, 303, "/facts");
   };
 
   const handlers: Record<string, (ctx: RouteContext) => Promise<void>> = {
@@ -481,9 +530,29 @@ export function createStudioWebApp(options: StudioWebOptions): StudioWebApp {
         actions: acts ? sourceActions(run, stoppedAt(run.kind, artifacts.map((a) => a.name), requests)) : [],
         cancellable: acts && (user.role === "owner" || run.requested_by === user.id) && (run.state === "queued" || run.state === "running"),
       });
+      // S7.2: an import's tier and reason, and the files its metadata recorded, by base name only.
+      let importInfo: string | undefined;
+      if (run.kind === "imported") {
+        const recorded: Array<[string, string]> = [];
+        for (const [name, fields] of [["run-meta.json", [["approvedFacts", "Approved facts file"], ["automotiveFacts", "Automotive facts file"]]],
+          ["revision-meta.json", [["sourceRunDir", "Revised from folder"]]]] as const) {
+          const meta = artifacts.find((a) => a.name === name);
+          const stored = meta && meta.byte_length <= MAX_DISPLAY_ARTIFACT_BYTES ? await store.readArtifact(run.id, name) : null;
+          const bytes = stored ? verifiedBytes(stored) : null;
+          let parsed: Record<string, unknown> | null = null;
+          try { parsed = bytes ? JSON.parse(bytes.toString("utf8")) : null; } catch { parsed = null; }
+          for (const [field, label] of fields) {
+            const value = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>)[field] : undefined;
+            const base = baseName(value !== null && typeof value === "object" ? (value as Record<string, unknown>).path : value);
+            if (base) recorded.push([label, base]);
+          }
+        }
+        importInfo = importSection({ tier: run.import_tier, state: run.state, failureClass: run.failure_class,
+          failureMessage: run.failure_message, recordedFiles: recorded });
+      }
       htmlPage(ctx.res, 200, shell({
         title: "Run report", user, csrfToken: csrfTokenFor(ctx.sessionCookie!), poll: reportPolls(run),
-        body: reportBody({ run, lineage, artifacts, content, findings, requests, group, actions }),
+        body: reportBody({ run, lineage, artifacts, content, findings, requests, group, actions, importInfo }),
       }));
     },
 
@@ -562,6 +631,12 @@ export function createStudioWebApp(options: StudioWebOptions): StudioWebApp {
       const id = ctx.params.id!;
       const run = UUID_SHAPE.test(id) ? await store.findRun(id) : null;
       if (!runVisible(run)) return notFound(ctx.res);
+      // S7.2 (owner decision of 2026-10-06; migration 0004 refuses the confirmation): refused by name, before anything is written.
+      if (run.runner === "fake") {
+        log("preflight.request_refused", { user: ctx.user!.id, refusal: "fake_source" });
+        return refused(ctx, 409, "Not offered", { refusal: "fake_source",
+          message: "a fake run can never be the source of a paid action" }, `/runs/${run.id}`);
+      }
       const action = ctx.form!.getAll("action");
       const [artifacts, requests] = await Promise.all([store.listArtifacts(run.id), store.listRequests(run.id)]);
       const offered = sourceActions(run, stoppedAt(run.kind, artifacts.map((a) => a.name), requests));
@@ -640,6 +715,136 @@ export function createStudioWebApp(options: StudioWebOptions): StudioWebApp {
       }
       log("spend.overrun_acknowledged", { user: ctx.user!.id, run: id });
       redirect(ctx.res, 303, "/spend");
+    },
+
+    // --- Content Studio S7.2: fact versions, the fact check, imports and the whole-run bundle -----------
+
+    "GET /facts": async (ctx) => {
+      const versions = await store.listFactVersions();
+      htmlPage(ctx.res, 200, shell({
+        title: "Fact versions", user: ctx.user!, csrfToken: csrfTokenFor(ctx.sessionCookie!), poll: false,
+        body: versionsBody({ versions, isOwner: ctx.user!.role === "owner", csrfToken: csrfTokenFor(ctx.sessionCookie!) }),
+      }));
+    },
+
+    "GET /facts/upload": async (ctx) => {
+      htmlPage(ctx.res, 200, shell({
+        title: "Upload facts", user: ctx.user!, csrfToken: csrfTokenFor(ctx.sessionCookie!), poll: false,
+        body: uploadBody({ csrfToken: csrfTokenFor(ctx.sessionCookie!) }),
+      }));
+    },
+
+    "POST /facts/upload": async (ctx) => {
+      const document = documentField(ctx.form!);
+      const decoded = document.ok ? decodeFactUpload(document.value) : document;
+      if (!decoded.ok) {
+        log("facts.upload_refused", { user: ctx.user!.id, refusal: decoded.refusal });
+        return refused(ctx, decoded.refusal === "too_large" ? 413 : 400, "Not uploaded", decoded, "/facts/upload");
+      }
+      let staged;
+      try {
+        staged = await store.stageFactUpload({ ownerId: ctx.user!.id, content: decoded.value.content, sha256: decoded.value.sha256 });
+      } catch (error) {
+        if (!isRefusedActionWrite(error)) throw error;
+        log("facts.upload_refused", { user: ctx.user!.id, refusal: "upload_refused" });
+        return refused(ctx, 409, "Not uploaded", { refusal: "upload_refused",
+          message: "the database refused this upload: your account may no longer be an active owner" }, "/facts/upload");
+      }
+      if (!staged.ok) {
+        log("facts.upload_refused", { user: ctx.user!.id, refusal: staged.refusal });
+        return refused(ctx, 409, "Not uploaded", staged, "/facts/upload");
+      }
+      log("facts.upload", { user: ctx.user!.id, check: staged.checkId, bytes: decoded.value.content.length });
+      redirect(ctx.res, 303, `/facts/checks/${staged.checkId}`);
+    },
+
+    "GET /facts/checks/:id": async (ctx) => {
+      const id = ctx.params.id!;
+      const view = UUID_SHAPE.test(id) ? await store.findFactCheck(id) : null;
+      if (!view) return notFound(ctx.res);
+      const pending = view.outcome === null && (view.jobState === "queued" || view.jobState === "running");
+      htmlPage(ctx.res, 200, shell({
+        title: "Fact check", user: ctx.user!, csrfToken: csrfTokenFor(ctx.sessionCookie!), poll: false,
+        pollSeconds: pending ? FACT_CHECK_POLL_SECONDS : undefined, body: checkBody({ view }),
+      }));
+    },
+
+    "POST /facts/versions/:id/activate": async (ctx) => versionEdit(ctx, "activate"),
+    "POST /facts/versions/:id/retire": async (ctx) => versionEdit(ctx, "retire"),
+    "POST /facts/versions/:id/restore": async (ctx) => versionEdit(ctx, "restore"),
+
+    "GET /facts/versions/:id/file": async (ctx) => {
+      const id = ctx.params.id!;
+      const version = UUID_SHAPE.test(id) ? await store.readFactVersion(id) : null;
+      if (!version) return notFound(ctx.res);
+      const name = `automotive-facts-${version.sha256.slice(0, 12)}.json`;
+      if (!verifiedBytes({ name, content: version.content, sha256: version.sha256, byte_length: version.content.length })) {
+        log("download.refused", { version: id, reason: "sha256-mismatch" });
+        return page(ctx.res, 500, "Integrity check failed",
+          "<h1>This file failed its integrity check</h1><p>It does not match its stored sha256, so it was not served.</p>");
+      }
+      for (const header of ctx.res.getHeaderNames()) ctx.res.removeHeader(header);
+      for (const [header, value] of Object.entries(downloadHeaders(name, version.content.length))) ctx.res.setHeader(header, value);
+      ctx.res.statusCode = 200;
+      log("facts.download", { user: ctx.user!.id, version: id, bytes: version.content.length });
+      ctx.res.end(version.content);
+    },
+
+    "GET /imports/new": async (ctx) => {
+      htmlPage(ctx.res, 200, shell({
+        title: "Import a run", user: ctx.user!, csrfToken: csrfTokenFor(ctx.sessionCookie!), poll: false,
+        body: importBody({ csrfToken: csrfTokenFor(ctx.sessionCookie!), knownNames: STUDIO_IMPORT_FILE_NAMES }),
+      }));
+    },
+
+    "POST /imports": async (ctx) => {
+      const document = documentField(ctx.form!);
+      const decoded = document.ok ? decodeRunBundle(document.value) : document;
+      if (!decoded.ok) {
+        log("import.refused", { user: ctx.user!.id, refusal: decoded.refusal });
+        return refused(ctx, decoded.refusal === "too_large" ? 413 : 400, "Not imported", decoded, "/imports/new");
+      }
+      let created;
+      try {
+        created = await store.createImport({ ownerId: ctx.user!.id, runner: importRunner(decoded.value), files: decoded.value,
+          lineage: lineageKey(decoded.value) });
+      } catch (error) {
+        if (!isRefusedActionWrite(error)) throw error;
+        log("import.refused", { user: ctx.user!.id, refusal: "import_refused" });
+        return refused(ctx, 409, "Not imported", { refusal: "import_refused",
+          message: "the database refused this import: your account may no longer be an active owner, or its files exceed the import's bounds" },
+        "/imports/new");
+      }
+      log("import.create", { user: ctx.user!.id, run: created.runId, files: decoded.value.length, lineage: created.sourceRunId !== null });
+      redirect(ctx.res, 303, `/runs/${created.runId}`);
+    },
+
+    "GET /runs/:id/bundle": async (ctx) => {
+      const id = ctx.params.id!;
+      const run = UUID_SHAPE.test(id) ? await store.findRun(id) : null;
+      if (!runVisible(run)) return notFound(ctx.res);
+      const files: Array<{ name: string; content: Buffer }> = [];
+      for (const meta of await store.listArtifacts(run.id)) {
+        const stored = await store.readArtifact(run.id, meta.name);
+        const bytes = stored ? verifiedBytes(stored) : null;
+        if (!bytes) {
+          log("download.refused", { run: run.id, reason: "sha256-mismatch" });
+          return page(ctx.res, 500, "Integrity check failed",
+            "<h1>A file failed its integrity check</h1><p>It does not match its stored sha256, so no bundle was served.</p>");
+        }
+        files.push({ name: meta.name, content: bytes });
+      }
+      const bundle = encodeRunBundle(files);
+      if (!bundle.ok) {
+        log("download.refused", { run: run.id, reason: bundle.refusal });
+        return refused(ctx, 409, "No bundle", bundle, `/runs/${run.id}`);
+      }
+      const name = `run-${run.id}.json`;
+      for (const header of ctx.res.getHeaderNames()) ctx.res.removeHeader(header);
+      for (const [header, value] of Object.entries(downloadHeaders(name, bundle.value.length))) ctx.res.setHeader(header, value);
+      ctx.res.statusCode = 200;
+      log("download.bundle", { run: run.id, files: files.length, bytes: bundle.value.length });
+      ctx.res.end(bundle.value);
     },
 
     "POST /auth/logout": async (ctx) => {
@@ -730,7 +935,8 @@ export function createStudioWebApp(options: StudioWebOptions): StudioWebApp {
     async purge() {
       const now = clock();
       const result = await store.purge(new Date(now - LOGIN_ATTEMPT_RETENTION_MS), new Date(now - SESSION_RETENTION_MS));
-      log("purge", { login_attempts: result.loginAttempts, sessions: result.sessions, preflight_requests: result.preflightRequests });
+      log("purge", { login_attempts: result.loginAttempts, sessions: result.sessions, preflight_requests: result.preflightRequests,
+        fact_checks: result.factChecks });
       return result;
     },
   };

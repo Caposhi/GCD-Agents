@@ -36,6 +36,8 @@ import type {
 } from "../../harness/contentRun/index.js";
 import { ceilingMicros, microsToNumeric } from "./money.js";
 import { rebuildFindings } from "./findings.js";
+import { runFactCheck } from "./factCheck.js";
+import { runImport } from "./importRun.js";
 import { audit, terminalize, type ClaimedJob, type Terminal, type Terminalized } from "./jobs.js";
 import { runPreflight } from "./preflight.js";
 import { DbRunSink, dbRunOutputs, dbRunSource } from "./runSink.js";
@@ -174,7 +176,9 @@ function fingerprintsFrom(written: ReadonlyMap<string, Buffer>): { approved: str
 }
 
 /** Run one claimed job to a terminal state. Never throws for a run's own failure; only for a lost session. */
-export async function executeJob(ctx: WorkerJobContext, job: ClaimedJob): Promise<Terminal["runState"] | "preflight"> {
+export async function executeJob(
+  ctx: WorkerJobContext, job: ClaimedJob,
+): Promise<Terminal["runState"] | "preflight" | "fact_check" | "import"> {
   const { session } = ctx;
   if (job.kind === "preflight") {
     if (job.runId !== null) {
@@ -195,6 +199,18 @@ export async function executeJob(ctx: WorkerJobContext, job: ClaimedJob): Promis
     const answered = await runPreflight(ctx, job);
     ctx.log("job.finished", { job: job.jobId, kind: job.kind, outcome: answered.outcome, refusal_class: answered.refusalClass });
     return "preflight";
+  }
+  if (job.kind === "fact_check") {
+    // Content Studio S7.2: the fact check (`factCheck.ts`), free and claimed first. Classes and counts only are logged.
+    const answered = await runFactCheck(ctx, job);
+    ctx.log("job.finished", { job: job.jobId, kind: job.kind, outcome: answered.outcome, refusal_class: answered.refusalClass });
+    return "fact_check";
+  }
+  if (job.kind === "import") {
+    // Content Studio S7.2: an import's revalidation (`importRun.ts`), free and claimed first; its tier is logged, never a reason.
+    const tier = await runImport(ctx, job, ctx.log);
+    ctx.log("job.finished", { job: job.jobId, kind: job.kind, run: job.runId, outcome: tier });
+    return "import";
   }
   const runId = job.runId!;
   const run = (await session.query(

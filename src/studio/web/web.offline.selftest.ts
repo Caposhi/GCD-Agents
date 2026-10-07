@@ -16,7 +16,7 @@
 
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { createServer as createHttpServer, type Server } from "node:http";
 import { createServer as createNetServer } from "node:net";
 import { dirname, join, resolve } from "node:path";
@@ -58,6 +58,13 @@ import {
   RUN_STATES, type FindingRow,
 } from "./runs.js";
 import { STATIC_ASSETS } from "./static.js";
+import {
+  BUNDLE_TOO_LARGE, decideLineage, decodeFactUpload, decodeRunBundle, documentField, encodeRunBundle, FACT_UPLOAD_MAX_DOCUMENT_BYTES,
+  FACT_UPLOAD_MAX_FORM_BYTES, IMPORT_MAX_DOCUMENT_BYTES, IMPORT_MAX_FILES, importRunner, RUN_BUNDLE_SCHEMA,
+} from "./bundle.js";
+import { sourceActions } from "./actions.js";
+import { downloadHeaders } from "./downloads.js";
+import { FACT_UPLOAD_MAX_BYTES, STUDIO_IMPORT_FILE_NAMES } from "../db/runner.js";
 import {
   CANNOT_DISPLAY, COPY_BANNER, FINGERPRINT_SHORT_CHARS, GOAL_PREVIEW_CHARS, GROUP_ORDERS, REQUIREMENT_UNVERIFIED,
 } from "./views.js";
@@ -906,7 +913,11 @@ const undeclaredRole: Route = { method: "GET", path: "/test/undeclared-role", mi
         // Content Studio S6.2's actions: every POST runner or owner; the screens runner, and the spend panel viewer.
         "GET /new runner", "POST /new/price runner", "POST /new/fake owner", "POST /runs/:id/price runner",
         "POST /runs/:id/cancel runner", "GET /preflights/:id runner", "POST /quotes/:id/confirm runner", "GET /spend viewer",
-        "POST /spend/overruns/:id/acknowledge owner"].join()
+        "POST /spend/overruns/:id/acknowledge owner",
+        // Content Studio S7.2: the versions list and the whole-run bundle viewer; every fact and import edit owner.
+        "GET /facts viewer", "GET /facts/upload owner", "POST /facts/upload owner", "GET /facts/checks/:id owner",
+        "POST /facts/versions/:id/activate owner", "POST /facts/versions/:id/retire owner", "POST /facts/versions/:id/restore owner",
+        "GET /facts/versions/:id/file owner", "GET /imports/new owner", "POST /imports owner", "GET /runs/:id/bundle viewer"].join()
       && w.app.routes.length === STUDIO_ROUTE_TABLE.length + 2,
     undeclared.map((r) => r.status).join());
   const viewer = new Jar();
@@ -2106,13 +2117,14 @@ class ScriptedConfirmDb {
 {
   // SA113: actions from a run's report.
   const s = await s62World();
-  const succeeded = s.w.store.addRun(s.w.owner, { platforms: ["instagram", "facebook"], scope_tags: ["synthetic-tag-a"],
+  // (Live source runs: since Content Studio S7.2 a fake run offers no derived action — SA116.)
+  const succeeded = s.w.store.addRun(s.w.owner, { runner: "live", platforms: ["instagram", "facebook"], scope_tags: ["synthetic-tag-a"],
     fact_version_id: s.factVersion, goal: "Synthetic source goal" });
-  const failed = s.w.store.addRun(s.w.owner, { state: "failed", platforms: ["instagram"], fact_version_id: s.factVersion });
+  const failed = s.w.store.addRun(s.w.owner, { runner: "live", state: "failed", platforms: ["instagram"], fact_version_id: s.factVersion });
   for (const name of ["run-meta.json", "01-strategy-concept.json", "02-automotive-truth.json", "03-hook-story-script.json", "04-production-direction.json"]) {
     s.w.store.addArtifact(failed.id, name, "{}");
   }
-  const noVersion = s.w.store.addRun(s.w.owner, { platforms: ["instagram"], fact_version_id: null });
+  const noVersion = s.w.store.addRun(s.w.owner, { runner: "live", platforms: ["instagram"], fact_version_id: null });
   const asRunner = await request(s.w, `/runs/${succeeded.id}`, { jar: s.runner });
   const asViewer = await request(s.w, `/runs/${succeeded.id}`, { jar: s.viewer });
   const failedPage = await request(s.w, `/runs/${failed.id}`, { jar: s.runner });
@@ -2196,6 +2208,452 @@ class ScriptedConfirmDb {
     + "day's, the month's or the user's cap is confirmed and one micro-dollar more is refused; a deployment ceiling below "
     + "the owner's cap, a zero ceiling and an unreadable settings row each refuse; a quote at its expiry instant is accepted",
     wrong.length === 0, wrong.join("; "));
+}
+
+// =====================================================================================================
+// Content Studio S7.2: fact versions, the fact check, imports, the whole-run bundle and the fake source
+// (design §8.2 item 8, §8.5, §8.6, §9.1)
+// =====================================================================================================
+
+const sha256Of = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
+const bundleText = (files: Array<[string, Buffer]>, edit: (entry: Record<string, string>, i: number) => void = () => {}) =>
+  JSON.stringify({ schema: RUN_BUNDLE_SCHEMA, files: files.map(([name, content], i) => {
+    const entry: Record<string, string> = { name, sha256: sha256Of(content), base64: content.toString("base64") };
+    edit(entry, i);
+    return entry;
+  }) });
+const uploadText = (bytes: Buffer, sha = sha256Of(bytes)) => JSON.stringify({ sha256: sha, base64: bytes.toString("base64") });
+/** A synthetic run folder: run-meta.json with its runner, and stage files whose bytes are awkward on purpose. */
+const s72Folder = (runner = "live", extra: Record<string, string> = {}): Array<[string, Buffer]> => [
+  ["run-meta.json", Buffer.from(JSON.stringify({ schema: "gcd-content-run-meta/1", goal: "Synthetic S7.2 goal", runner,
+    approvedFacts: { path: "/Users/synthetic-owner/private/config/approved-facts.json", sha256: "a".repeat(64) },
+    automotiveFacts: { path: "/Users/synthetic-owner/private/automotive-facts.local.json", present: true, sha256: "b".repeat(64) }, ...extra }), "utf8")],
+  ["01-strategy-concept.json", Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from("{\r\n  \"output\": {}\r\n}\r\n")])],
+  ["summary.md", Buffer.from([0x23, 0x20, 0xff, 0xfe, 0x0a])],
+];
+const sendDocument = (w: World, path: string, jar: Jar, document: string) => post(w, path, jar, [["document", document]]);
+
+{
+  // SA116: a fake source is refused by name before any quote; the report offers no derived action on a fake run.
+  const s = await s62World();
+  const fakeRun = s.w.store.addRun(s.w.owner, { runner: "fake", platforms: ["instagram"], fact_version_id: s.factVersion });
+  const fakeImport = s.w.store.addRun(s.w.owner, { kind: "imported", runner: "fake", import_tier: "verified", platforms: ["instagram"],
+    fact_version_id: s.factVersion });
+  const liveRun = s.w.store.addRun(s.w.owner, { runner: "live", platforms: ["instagram"], fact_version_id: s.factVersion });
+  const pages = await Promise.all([fakeRun, fakeImport].map((r) => request(s.w, `/runs/${r.id}`, { jar: s.owner })));
+  const before = { preflight: s.w.store.preflight.size, jobs: s.w.store.jobs.size, calls: s.w.store.calls.filter((c) => c === "createPreflightRequest").length };
+  const asks = [
+    await post(s.w, `/runs/${fakeRun.id}/price`, s.owner, [["action", "revise"]]),
+    await post(s.w, `/runs/${fakeRun.id}/price`, s.runner, [["action", "replay_critic"]]),
+    await post(s.w, `/runs/${fakeImport.id}/price`, s.owner, [["action", "revise"]]),
+  ];
+  const after = { preflight: s.w.store.preflight.size, jobs: s.w.store.jobs.size, calls: s.w.store.calls.filter((c) => c === "createPreflightRequest").length };
+  const livePage = await request(s.w, `/runs/${liveRun.id}`, { jar: s.runner });
+  check("SA116. a fake run — a Studio fake run, or an import of a fake CLI run, verified or not — offers no Revise or "
+    + "Critic replay on its report, and its price request is refused BY NAME (409, fake_source) before anything is written: "
+    + "no preflight request, no job, the store never asked; a live run still offers them",
+    pages.every((p) => p.status === 200 && !p.body.includes('name="action"'))
+      && asks.every((r) => r.status === 409 && r.body.includes("<code>fake_source</code>")) && JSON.stringify(before) === JSON.stringify(after)
+      && sourceActions({ ...liveRun, runner: "fake" }, null).length === 0 && sourceActions(liveRun, null).join() === "revise,replay_critic"
+      && livePage.body.includes('value="revise"'),
+    `${asks.map((r) => r.status).join()} ${JSON.stringify(before)} ${JSON.stringify(after)}`);
+  await s.w.close();
+}
+
+{
+  // SA117-SA119: the codecs, pure.
+  const folder = s72Folder();
+  const ok = decodeRunBundle(Buffer.from(bundleText(folder)));
+  const refusalOfBundle = (text: string | Buffer) => { const d = decodeRunBundle(Buffer.isBuffer(text) ? text : Buffer.from(text)); return d.ok ? "accepted" : d.refusal; };
+  const overGarbage = Buffer.alloc(IMPORT_MAX_DOCUMENT_BYTES + 1, 0x7b);
+  const overJson = Buffer.from(bundleText([["run-meta.json", Buffer.alloc(Math.ceil(IMPORT_MAX_DOCUMENT_BYTES * 0.76), 0x41)]]));
+  const twentyOne = JSON.stringify({ schema: RUN_BUNDLE_SCHEMA, files: Array.from({ length: IMPORT_MAX_FILES + 1 },
+    (_, i) => ({ name: STUDIO_IMPORT_FILE_NAMES[i % 16], sha256: sha256Of("x"), base64: "eA==" })) });
+  const cases: Array<[string, string]> = [
+    ["accepted", ok.ok && ok.value.every((f, i) => f.name === folder[i]![0] && f.content.equals(folder[i]![1])) ? "accepted" : "wrong"],
+    ["sha_mismatch", refusalOfBundle(bundleText(folder, (e, i) => { if (i === 1) e.sha256 = sha256Of("other"); }))],
+    ["sha_mismatch", refusalOfBundle(bundleText(folder, (e, i) => { if (i === 1) e.sha256 = e.sha256!.toUpperCase(); }))],
+    ["unknown_name", refusalOfBundle(bundleText([...folder, ["notes.txt", Buffer.from("x")]]))],
+    ["unknown_name", refusalOfBundle(bundleText([["../run-meta.json", Buffer.from("x")]]))],
+    ["duplicate_name", refusalOfBundle(bundleText([...folder, ["summary.md", Buffer.from("x")]]))],
+    ["too_many_files", refusalOfBundle(twentyOne)],
+    ["invalid_base64", refusalOfBundle(bundleText(folder, (e, i) => { if (i === 2) e.base64 = `${e.base64!.slice(0, -1)} `; }))],
+    ["invalid_base64", refusalOfBundle(bundleText([["summary.md", Buffer.from("A")]], (e) => { e.base64 = "QR=="; }))],
+    ["too_large", refusalOfBundle(overGarbage)],
+    ["too_large", refusalOfBundle(overJson)],
+    ["invalid_bundle", refusalOfBundle(JSON.stringify({ schema: RUN_BUNDLE_SCHEMA, files: [], extra: 1 }))],
+    ["invalid_bundle", refusalOfBundle(JSON.stringify({ schema: "other/1", files: [] }))],
+    ["no_files", refusalOfBundle(JSON.stringify({ schema: RUN_BUNDLE_SCHEMA, files: [] }))],
+    ["invalid_json", refusalOfBundle(Buffer.from([0x7b, 0xff, 0x7d]))],
+  ];
+  const wrong = cases.filter(([want, got]) => want !== got).map(([want, got]) => `${want}≠${got}`);
+  check("SA117. the import document is decoded strictly: its 10 MiB bound checked BEFORE it is parsed (10 MiB and a byte of "
+    + "garbage is too_large, never invalid_json), at most twenty files, then each name one of the CLI's known files and named "
+    + "once, each base64 canonical, each sha256 recomputed and equal (lower-case hex only), and nothing else in the document; "
+    + "a valid one decodes byte for byte (a byte-order mark, CRLF and invalid UTF-8 kept)",
+    wrong.length === 0, wrong.join("; "));
+
+  const encoded = encodeRunBundle([...folder].reverse().map(([name, content]) => ({ name, content })));
+  const round = encoded.ok ? decodeRunBundle(encoded.value) : null;
+  const tooLarge = encodeRunBundle([{ name: "rejected-responses.json", content: Buffer.alloc(8 * 1024 * 1024, 0x41) }]);
+  const foreign = encodeRunBundle([{ name: "notes.txt", content: Buffer.from("x") }]);
+  check("SA118. the whole-run bundle is exactly the import's format — the schema and every file by name, sorted, with its "
+    + "sha256 and base64 — so it decodes back byte for byte; a bundle over 10 MiB is refused with its reason ('too large to "
+    + "re-import'), and a run holding a file the import refuses is offered no bundle",
+    encoded.ok && round !== null && round.ok && round.value.map((f) => f.name).join() === [...folder].map(([n]) => n).sort().join()
+      && round.value.every((f) => f.content.equals(folder.find(([n]) => n === f.name)![1]))
+      && JSON.parse(encoded.value.toString("utf8")).schema === RUN_BUNDLE_SCHEMA
+      && !tooLarge.ok && tooLarge.refusal === "bundle_too_large" && tooLarge.message.includes(BUNDLE_TOO_LARGE)
+      && BUNDLE_TOO_LARGE === "too large to re-import" && !foreign.ok && foreign.refusal === "bundle_not_importable",
+    `${JSON.stringify(tooLarge).slice(0, 160)}`);
+
+  const facts = Buffer.from(JSON.stringify({ facts: [] }));
+  const up = (text: string) => { const d = decodeFactUpload(Buffer.from(text)); return d.ok ? `ok:${d.value.sha256}` : d.refusal; };
+  const field = (form: URLSearchParams) => { const d = documentField(form); return d.ok ? "ok" : d.refusal; };
+  const uploads: Array<[string, string]> = [
+    [`ok:${sha256Of(facts)}`, up(uploadText(facts))],
+    ["sha_mismatch", up(uploadText(facts, sha256Of("other")))],
+    ["empty_file", up(uploadText(Buffer.alloc(0)))],
+    ["too_large", up(uploadText(Buffer.alloc(FACT_UPLOAD_MAX_BYTES + 1, 0x20)))],
+    ["invalid_base64", up(JSON.stringify({ sha256: sha256Of(facts), base64: "%%%" }))],
+    ["invalid_upload", up(JSON.stringify({ sha256: sha256Of(facts), base64: facts.toString("base64"), name: "x" }))],
+    ["too_large", up(" ".repeat(FACT_UPLOAD_MAX_DOCUMENT_BYTES + 1))],
+    ["invalid_document", field(new URLSearchParams())],
+    ["invalid_document", field(new URLSearchParams([["document", "a"], ["document", "b"]]))],
+    ["ok", field(new URLSearchParams([["document", "a"]]))],
+  ];
+  const wrongUploads = uploads.filter(([want, got]) => want !== got).map(([want, got]) => `${want}≠${got}`);
+  check("SA119. a fact upload is decoded strictly: exactly a sha256 and canonical base64 content of 1 byte to 1 MiB, the "
+    + "sha256 recomputed and equal, the document bounded before it is parsed; and the form carries exactly one document",
+    wrongUploads.length === 0 && FACT_UPLOAD_MAX_FORM_BYTES >= 3 * FACT_UPLOAD_MAX_DOCUMENT_BYTES, wrongUploads.join("; "));
+}
+
+{
+  // SA120: every S7.2 owner route is refused to a runner and a viewer at the route, before the store; viewers read versions and bundles.
+  const s = await s62World();
+  const versionId = s.factVersion;
+  const run = s.w.store.addRun(s.w.owner, { runner: "live", platforms: ["instagram"] });
+  for (const [name, content] of s72Folder()) s.w.store.addArtifact(run.id, name, content);
+  const ownerRoutes: Array<[string, string]> = [["GET", "/facts/upload"], ["POST", "/facts/upload"], ["GET", `/facts/checks/${randomUUIDv4()}`],
+    ["POST", `/facts/versions/${versionId}/activate`], ["POST", `/facts/versions/${versionId}/retire`], ["POST", `/facts/versions/${versionId}/restore`],
+    ["GET", `/facts/versions/${versionId}/file`], ["GET", "/imports/new"], ["POST", "/imports"]];
+  const callsBefore = s.w.store.calls.length;
+  const actorsBefore = s.w.store.declaredActors.length;
+  const replies: number[] = [];
+  for (const jar of [s.runner, s.viewer]) {
+    for (const [method, path] of ownerRoutes) {
+      replies.push((method === "GET" ? await request(s.w, path, { jar }) : await sendDocument(s.w, path, jar, uploadText(Buffer.from("{}")))).status);
+    }
+  }
+  const touched = s.w.store.calls.slice(callsBefore).filter((c) => c !== "findSession");
+  const versionsAsViewer = await request(s.w, "/facts", { jar: s.viewer });
+  const bundleAsViewer = await request(s.w, `/runs/${run.id}/bundle`, { jar: s.viewer });
+  check("SA120. a runner and a viewer are refused (403) at the route on every S7.2 owner route — the upload page and post, "
+    + "a check's result, activate, retire, restore, a version's bytes, the import page and post — before the store is "
+    + "touched (no read, no staged bytes, no declared actor); a viewer reads the versions list, with no download link or "
+    + "action, and downloads the whole-run bundle",
+    replies.every((status) => status === 403) && touched.length === 0 && s.w.store.declaredActors.length === actorsBefore
+      && s.w.store.staged === null && versionsAsViewer.status === 200 && !versionsAsViewer.body.includes("/file")
+      && !versionsAsViewer.body.includes("<form method=\"post\" action=\"/facts/versions") && bundleAsViewer.status === 200,
+    `${replies.join()} ${touched.join()} ${versionsAsViewer.status} ${bundleAsViewer.status}`);
+  await s.w.close();
+}
+
+{
+  // SA121: the upload, through the route: staged with its check; refusals write nothing; one check at a time.
+  const s = await s62World();
+  const facts = Buffer.from(JSON.stringify({ facts: [{ id: "synthetic-sa121" }] }));
+  const badSha = await sendDocument(s.w, "/facts/upload", s.owner, uploadText(facts, sha256Of("other")));
+  const tooLarge = await sendDocument(s.w, "/facts/upload", s.owner, uploadText(Buffer.alloc(FACT_UPLOAD_MAX_BYTES + 1, 0x20)));
+  // Over the route's own bound the body is never read to its end: a 413, or the connection closed mid-upload.
+  const overRoute = await request(s.w, "/facts/upload", { method: "POST", jar: s.owner, headers: { origin: ORIGIN,
+    "content-type": "application/x-www-form-urlencoded" }, body: `csrf=x&document=${"a".repeat(FACT_UPLOAD_MAX_FORM_BYTES)}` })
+    .catch(() => ({ status: 413 }));
+  const nothingYet = s.w.store.staged === null && s.w.store.factChecks.size === 0;
+  const uploaded = await sendDocument(s.w, "/facts/upload", s.owner, uploadText(facts));
+  const checkId = /^\/facts\/checks\/([0-9a-f-]{36})$/.exec(uploaded.location ?? "")?.[1] ?? "";
+  const pending = await request(s.w, `/facts/checks/${checkId}`, { jar: s.owner });
+  const second = await sendDocument(s.w, "/facts/upload", s.owner, uploadText(Buffer.from("{\"facts\":[]}")));
+  check("SA121. the owner's upload is staged byte for byte with its fact check and job (303 to the check's page, which polls "
+    + "while the worker works), the actor declared; a sha256 mismatch (400), a file over 1 MiB (413) and a body over the "
+    + "route's own bound (413) each write nothing; and a second upload while a check is pending is refused (409, check_pending)",
+    badSha.status === 400 && badSha.body.includes("<code>sha_mismatch</code>") && tooLarge.status === 413 && overRoute.status === 413
+      && nothingYet && uploaded.status === 303 && s.w.store.staged?.content.equals(facts) === true && s.w.store.staged.sha256 === sha256Of(facts)
+      && s.w.store.factChecks.get(checkId)?.outcome === null && s.w.store.declaredActors.at(-1)?.actor === s.w.owner.id
+      && pending.status === 200 && pending.body.includes(`<meta http-equiv="refresh" content="5">`)
+      && second.status === 409 && second.body.includes("<code>check_pending</code>") && s.w.store.factChecks.size === 1,
+    `${badSha.status} ${tooLarge.status} ${overRoute.status} ${uploaded.status} ${second.status}`);
+
+  // SA122 (part): the check's result page — refusal, acceptance, warnings — escaped.
+  s.w.store.answerFactCheck(checkId, { refused: { refusalClass: "loader_refused", message: `${HOSTILE}[loader message]` } }, [`facts[].${HOSTILE}`]);
+  const refusedPage = await request(s.w, `/facts/checks/${checkId}`, { jar: s.owner });
+  const accepted = await sendDocument(s.w, "/facts/upload", s.owner, uploadText(Buffer.from("{\"facts\":[1]}")));
+  const acceptedId = /^\/facts\/checks\/([0-9a-f-]{36})$/.exec(accepted.location ?? "")?.[1] ?? "";
+  s.w.store.answerFactCheck(acceptedId, { accepted: { recordCount: 70, tagCounts: { [`${HOSTILE}[tag]`]: 3 }, overCap: true } }, ["exportedBy"]);
+  const acceptedPage = await request(s.w, `/facts/checks/${acceptedId}`, { jar: s.owner });
+  check("SA122. the check's page shows a refusal's class and the loader's message, or the acceptance with its counts, its tag "
+    + "counts, the over-cap warning and the unknown field names — every one escaped; it stops polling once answered",
+    refusedPage.status === 200 && !refusedPage.body.includes(HOSTILE) && refusedPage.body.includes(escapeHtml(`${HOSTILE}[loader message]`))
+      && refusedPage.body.includes(escapeHtml(`facts[].${HOSTILE}`)) && !refusedPage.body.includes("http-equiv=\"refresh\"")
+      && acceptedPage.body.includes("70 records") && acceptedPage.body.includes("an unscoped run will be refused")
+      && acceptedPage.body.includes("<code>exportedBy</code>") && !acceptedPage.body.includes(HOSTILE)
+      && acceptedPage.body.includes(escapeHtml(`${HOSTILE}[tag]`)),
+    `${refusedPage.status} ${acceptedPage.status}`);
+  await s.w.close();
+}
+
+{
+  // SA123: versions: activate, retire and restore, each one owner edit with its actor and audit row; never the active one retired.
+  const s = await s62World();
+  const active = s.factVersion;
+  const other = s.w.store.addFactVersion({ "synthetic-tag-c": 1 }, false);
+  const page = await request(s.w, "/facts", { jar: s.owner });
+  const retireActive = await post(s.w, `/facts/versions/${active}/retire`, s.owner);
+  const stillActive = s.w.store.factVersions.get(active)?.status === "active" && s.w.store.settings?.activeFactVersionId === active;
+  const audits = () => s.w.store.auditLog.filter((a) => a.action === "settings.update" || a.action === "fact_version.status")
+    .map((a) => `${a.action}:${a.actorUserId === s.w.owner.id ? "owner" : "other"}`);
+  const activate = await post(s.w, `/facts/versions/${other}/activate`, s.owner);
+  const retire = await post(s.w, `/facts/versions/${active}/retire`, s.owner);
+  const activateRetired = await post(s.w, `/facts/versions/${active}/activate`, s.owner);
+  const restore = await post(s.w, `/facts/versions/${active}/restore`, s.owner);
+  const noChange = await post(s.w, `/facts/versions/${active}/restore`, s.owner);
+  const actors = s.w.store.declaredActors.map((d) => `${d.edit}:${d.actor === s.w.owner.id ? "owner" : "other"}`);
+  const activeRow = page.body.split("<li class=\"version\">").find((li) => li.includes("ACTIVE")) ?? "";
+  check("SA123. the owner activates, retires and restores versions — each one edit declaring the owner as its actor and "
+    + "audited by that actor (settings.update, fact_version.status) — the versions page never offers retiring the active "
+    + "version and the store refuses it anyway (409, nothing changed); a retired version is restored before it is made "
+    + "active (409), and an edit that changes nothing is refused (409)",
+    retireActive.status === 409 && stillActive && activate.status === 303 && retire.status === 303 && activateRetired.status === 409
+      && restore.status === 303 && noChange.status === 409 && s.w.store.settings?.activeFactVersionId === other
+      && s.w.store.factVersions.get(active)?.status === "active"
+      && audits().join() === "settings.update:owner,fact_version.status:owner,fact_version.status:owner"
+      && actors.every((a) => a.endsWith(":owner")) && actors.length === 6
+      && activeRow.length > 0 && !activeRow.includes("/retire") && !activeRow.includes("/activate") && page.body.includes(`/facts/versions/${other}/retire`),
+    `${retireActive.status} ${activate.status} ${retire.status} ${activateRetired.status} ${restore.status} ${noChange.status} ${audits().join()} ${actors.join()}`);
+
+  // SA124: a version's bytes are the owner's alone, as an attachment.
+  const bytes = Buffer.from(JSON.stringify({ facts: [], synthetic: "sa124" }));
+  const versionId = s.w.store.addFactVersion({}, false);
+  s.w.store.factVersions.get(versionId)!.sha256 = sha256Of(bytes);
+  s.w.store.versionBytes.set(versionId, { content: bytes, uploadedBy: s.w.owner.id, statusChangedAt: null });
+  const asOwner = await request(s.w, `/facts/versions/${versionId}/file`, { jar: s.owner });
+  const asRunner = await request(s.w, `/facts/versions/${versionId}/file`, { jar: s.runner });
+  const asViewer = await request(s.w, `/facts/versions/${versionId}/file`, { jar: s.viewer });
+  const name = `automotive-facts-${sha256Of(bytes).slice(0, 12)}.json`;
+  check("SA124. only the owner downloads a version's bytes — exactly as stored, as an attachment with S5's exact download "
+    + "headers — and a runner or a viewer is refused (403) without the bytes being read",
+    asOwner.status === 200 && asOwner.raw.equals(bytes)
+      && JSON.stringify([...asOwner.headers.entries()].filter(([k]) => k !== "date" && k !== "connection" && k !== "keep-alive" && k !== "transfer-encoding").sort())
+        === JSON.stringify(Object.entries(downloadHeaders(name, bytes.length)).sort())
+      && asRunner.status === 403 && asViewer.status === 403 && !asRunner.raw.includes(bytes) && !asViewer.raw.includes(bytes),
+    `${asOwner.status} ${asRunner.status} ${asViewer.status} ${[...asOwner.headers.keys()].join()}`);
+  await s.w.close();
+}
+
+{
+  // SA125-SA127: the import route, the bundle download and its byte-for-byte re-import.
+  const s = await s62World();
+  const tally = () => ({ runs: s.w.store.runs.size, jobs: s.w.store.jobs.size, actors: s.w.store.declaredActors.length });
+  const folder = s72Folder();
+  const before = tally();
+  const refusals = [
+    await sendDocument(s.w, "/imports", s.owner, bundleText(folder, (e, i) => { if (i === 0) e.sha256 = sha256Of("x"); })),
+    await sendDocument(s.w, "/imports", s.owner, bundleText([...folder, ["notes.txt", Buffer.from("x")]])),
+    await sendDocument(s.w, "/imports", s.owner, JSON.stringify({ schema: RUN_BUNDLE_SCHEMA, files: Array.from({ length: 21 },
+      (_, i) => ({ name: STUDIO_IMPORT_FILE_NAMES[i % 16], sha256: sha256Of("x"), base64: "eA==" })) })),
+    await sendDocument(s.w, "/imports", s.owner, `${bundleText(folder)}${" ".repeat(IMPORT_MAX_DOCUMENT_BYTES)}`),
+  ];
+  const unchanged = JSON.stringify(tally()) === JSON.stringify(before);
+  const created = await sendDocument(s.w, "/imports", s.owner, bundleText(folder));
+  const runId = /^\/runs\/([0-9a-f-]{36})$/.exec(created.location ?? "")?.[1] ?? "";
+  const imported = s.w.store.runs.get(runId);
+  const job = [...s.w.store.jobs.values()].find((j) => j.runId === runId);
+  check("SA125. the owner's import creates, in one edit declaring the owner, the queued import run (its runner from its "
+    + "metadata), every file byte for byte and its queued import job; a sha256 mismatch, an unknown name and more than twenty "
+    + "files (400) and a document over 10 MiB (413) are each refused with nothing written",
+    refusals.map((r) => r.status).join() === "400,400,400,413" && refusals[0]!.body.includes("<code>sha_mismatch</code>")
+      && refusals[1]!.body.includes("<code>unknown_name</code>") && refusals[2]!.body.includes("<code>too_many_files</code>")
+      && refusals[3]!.body.includes("<code>too_large</code>") && unchanged
+      && created.status === 303 && imported?.kind === "imported" && imported.state === "queued" && imported.runner === "live"
+      && job?.kind === "import" && job.state === "queued" && s.w.store.declaredActors.at(-1)?.edit === "createImport"
+      && folder.every(([name, content]) => s.w.store.artifacts.get(runId)?.get(name)?.content.equals(content) === true)
+      && importRunner(s72Folder("fake").map(([name, content]) => ({ name, content }))) === "fake"
+      && importRunner([...s72Folder(), ["revision-meta.json", Buffer.from("{\"runner\":\"fake\"}")] as [string, Buffer]].map(([name, content]) => ({ name, content }))) === "fake"
+      && importRunner(folder.slice(1).map(([name, content]) => ({ name, content }))) === "fake",
+    `${refusals.map((r) => r.status).join()} ${unchanged} ${created.status} ${imported?.runner}`);
+
+  const download = await request(s.w, `/runs/${runId}/bundle`, { jar: s.viewer });
+  const reimport = await sendDocument(s.w, "/imports", s.owner, download.raw.toString("utf8"));
+  const reimportId = /^\/runs\/([0-9a-f-]{36})$/.exec(reimport.location ?? "")?.[1] ?? "";
+  const same = [...(s.w.store.artifacts.get(runId)?.values() ?? [])].every((a) =>
+    s.w.store.artifacts.get(reimportId)?.get(a.name)?.content.equals(a.content) === true)
+    && s.w.store.artifacts.get(reimportId)?.size === s.w.store.artifacts.get(runId)?.size;
+  const bundleName = `run-${runId}.json`;
+  const headerSet = JSON.stringify([...download.headers.entries()].filter(([k]) => !["date", "connection", "keep-alive", "transfer-encoding"].includes(k)).sort());
+  const big = s.w.store.addRun(s.w.owner, { runner: "live" });
+  s.w.store.addArtifact(big.id, "rejected-responses.json", Buffer.alloc(8 * 1024 * 1024, 0x41));
+  const bigReply = await request(s.w, `/runs/${big.id}/bundle`, { jar: s.viewer });
+  const tampered = s.w.store.addRun(s.w.owner, { runner: "live" });
+  s.w.store.addArtifact(tampered.id, "summary.md", "stored", Buffer.from("other"));
+  const tamperedReply = await request(s.w, `/runs/${tampered.id}/bundle`, { jar: s.viewer });
+  check("SA126. the whole-run download is one JSON bundle in exactly the import's format, viewer-readable, with S5's exact "
+    + "attachment headers (application/json, nosniff, the sandboxing CSP); it re-imports BYTE FOR BYTE; a bundle over 10 MiB "
+    + "is refused with its reason (409, 'too large to re-import'), and a file failing its sha256 serves no bundle (500)",
+    download.status === 200 && headerSet === JSON.stringify(Object.entries(downloadHeaders(bundleName, download.raw.length)).sort())
+      && reimport.status === 303 && reimportId !== runId && same
+      && bigReply.status === 409 && bigReply.body.includes("too large to re-import") && tamperedReply.status === 500,
+    `${download.status} ${reimport.status} ${same} ${bigReply.status} ${tamperedReply.status}`);
+
+  // SA127: lineage — proven, ambiguous, absent.
+  const source = s.w.store.runs.get(runId)!;
+  source.fact_version_id = s.factVersion;
+  const critic = Buffer.from("{\"output\":{\"synthetic\":\"round 1 critic\"}}");
+  s.w.store.addArtifact(runId, "06-final-critic.json", critic);
+  const revised: Array<[string, Buffer]> = [["run-meta.json", folder[0]![1]], ["round-1-06-final-critic.json", critic],
+    ["revision-meta.json", Buffer.from("{\"runner\":\"live\",\"sourceRunDir\":\"/Users/synthetic-owner/local-output/round-1\"}")]];
+  const proven = await sendDocument(s.w, "/imports", s.owner, bundleText(revised));
+  const provenRun = s.w.store.runs.get(/^\/runs\/([0-9a-f-]{36})$/.exec(proven.location ?? "")?.[1] ?? "");
+  const absent = await sendDocument(s.w, "/imports", s.owner, bundleText([revised[0]!, ["round-1-06-final-critic.json", Buffer.from("{}")]]));
+  const absentRun = s.w.store.runs.get(/^\/runs\/([0-9a-f-]{36})$/.exec(absent.location ?? "")?.[1] ?? "");
+  const twin = await sendDocument(s.w, "/imports", s.owner, bundleText([...folder, ["06-final-critic.json", critic]]));
+  void twin;
+  const ambiguous = await sendDocument(s.w, "/imports", s.owner, bundleText(revised));
+  const ambiguousRun = s.w.store.runs.get(/^\/runs\/([0-9a-f-]{36})$/.exec(ambiguous.location ?? "")?.[1] ?? "");
+  check("SA127. lineage is proven from the folder's bytes and recorded only when EXACTLY ONE non-deleted import's "
+    + "run-meta.json and 06-final-critic.json are this folder's run-meta.json and round-1-06-final-critic.json: then the child "
+    + "names it and pins its fact version; with none matching, or two, no source is recorded",
+    provenRun?.source_run_id === runId && provenRun.fact_version_id === s.factVersion
+      && absentRun?.source_run_id === null && absentRun.fact_version_id === null
+      && ambiguousRun?.source_run_id === null && ambiguousRun.fact_version_id === null
+      && decideLineage([]) === null && decideLineage([{ id: "a" }])?.id === "a" && decideLineage([{ id: "a" }, { id: "b" }]) === null,
+    `${provenRun?.source_run_id} ${absentRun?.source_run_id} ${ambiguousRun?.source_run_id}`);
+
+  // SA128: an import's report: its tier, its reason escaped, and the recorded files by base name only. (A hostile base
+  // name holds no path separator: one that did would itself be cut at its last separator.)
+  const HOSTILE_BASE = "<img src=x onerror=alert(9)>\"'.json";
+  const archived = s.w.store.runs.get(provenRun!.id)!;
+  Object.assign(archived, { state: "succeeded", import_tier: "archived_unverified", failure_class: "revalidation_failed",
+    failure_message: `${HOSTILE}[reason]` });
+  s.w.store.artifacts.get(archived.id)!.set("run-meta.json", { name: "run-meta.json",
+    content: Buffer.from(JSON.stringify({ approvedFacts: { path: `/Users/synthetic-owner/${HOSTILE}/approved-facts.json` },
+      automotiveFacts: { path: `C:\\Users\\synthetic-owner\\secret\\${HOSTILE_BASE}` } })), sha256: "", byte_length: 0 });
+  const meta = s.w.store.artifacts.get(archived.id)!.get("run-meta.json")!;
+  meta.sha256 = sha256Of(meta.content);
+  meta.byte_length = meta.content.length;
+  const report = await request(s.w, `/runs/${archived.id}`, { jar: s.viewer });
+  check("SA128. an imported run's report shows its tier — archived with its class and reason, escaped, and Copy disabled — "
+    + "and the files its metadata recorded by BASE NAME only: no absolute path from the owner's computer, and a hostile "
+    + "name escaped",
+    report.status === 200 && report.body.includes("Not revalidated") && report.body.includes("<code>revalidation_failed</code>")
+      && report.body.includes(escapeHtml(`${HOSTILE}[reason]`)) && !report.body.includes(HOSTILE)
+      && report.body.includes("<code>approved-facts.json</code>") && report.body.includes(`<code>${escapeHtml(HOSTILE_BASE)}</code>`)
+      && !report.body.includes(HOSTILE_BASE)
+      && report.body.includes("<code>round-1</code>") && !report.body.includes("/Users/") && !report.body.includes("C:\\Users"),
+    `${report.status}`);
+  await s.w.close();
+}
+
+{
+  // SA129: hostile content on every new page.
+  const s = await s62World();
+  s.w.store.users.get(s.w.owner.id)!.display_name = `${HOSTILE}[uploader]`;
+  const v = s.w.store.addFactVersion({ [`${HOSTILE}[tag]`]: 2 }, false);
+  s.w.store.versionBytes.set(v, { content: Buffer.from("{}"), uploadedBy: s.w.owner.id, statusChangedAt: null });
+  const pages = await Promise.all(["/facts", "/facts/upload", "/imports/new"].map((path) => request(s.w, path, { jar: s.owner })));
+  const viewerFacts = await request(s.w, "/facts", { jar: s.viewer });
+  const refusedImport = await sendDocument(s.w, "/imports", s.owner, bundleText([[`${HOSTILE}.json`, Buffer.from("x")]]));
+  check("SA129. hostile text stays inert on every S7.2 page: a version's tags and its uploader's name (to the owner and to a "
+    + "viewer), the upload and import pages, and a refusal naming a hostile file name — each escaped text, never markup",
+    [...pages, viewerFacts, refusedImport].every((p) => !p.body.includes(HOSTILE) && !/<script>alert/.test(p.body))
+      && pages[0]!.body.includes(escapeHtml(`${HOSTILE}[tag]`)) && pages[0]!.body.includes(escapeHtml(`${HOSTILE}[uploader]`))
+      && viewerFacts.body.includes(escapeHtml(`${HOSTILE}[tag]`)) && refusedImport.status === 400
+      && refusedImport.body.includes("<code>unknown_name</code>"),
+    pages.map((p) => p.status).join());
+
+  // SA130: the upload and import pages are plain forms; the script completes them and sends nothing itself.
+  const [, uploadPage, importPage] = pages;
+  const js = STATIC_ASSETS.js.body.toString("utf8");
+  check("SA130. the upload and import pages are POST forms carrying the session's token and one document field, their file "
+    + "inputs unnamed (no file is sent any other way); the one static script reads the file or the folder's known files, puts "
+    + "ONE JSON document — each file's sha256 beside its base64 — in that field and submits the form: it sends nothing itself",
+    [uploadPage!, importPage!].every((p) => /<form class="action-form" method="post" action="\/(facts\/upload|imports)" data-upload="(facts|import)"/.test(p.body)
+      && p.body.includes('<input type="hidden" name="csrf"') && p.body.includes('<input type="hidden" name="document" value="">')
+      && !/<input[^>]*type="file"[^>]*name=/.test(p.body))
+      && STUDIO_IMPORT_FILE_NAMES.every((n) => importPage!.body.includes(n))
+      && /crypto\.subtle\.digest\("SHA-256"/.test(js) && /field\.value = JSON\.stringify\(doc\)/.test(js) && /form\.submit\(\)/.test(js)
+      && js.includes(`schema: "${RUN_BUNDLE_SCHEMA}"`) && !/fetch\(|XMLHttpRequest|sendBeacon|WebSocket/.test(js),
+    `${uploadPage!.status} ${importPage!.status}`);
+  await s.w.close();
+}
+
+{
+  // SA131: the actor helper — one place, SET LOCAL only — and no Studio source sets the actor any other way.
+  const sources: Array<[string, string]> = [];
+  const walk = (dir: string) => {
+    for (const entry of readdirSync(resolve(REPO_ROOT, dir), { withFileTypes: true })) {
+      const rel = `${dir}/${entry.name}`;
+      if (entry.isDirectory()) walk(rel);
+      else if (/\.(ts|mjs|js|sql)$/.test(entry.name)) sources.push([rel, readFileSync(resolve(REPO_ROOT, rel), "utf8")]);
+    }
+  };
+  for (const dir of ["src/studio", "studio/migrations", "scripts"]) walk(dir);
+  const sessionWide = /\bSET\s+(?:SESSION\s+)?studio\.actor\b|set_config\(\s*'studio\.actor'\s*,[^)]*,\s*false\s*\)/i;
+  const offenders = sources.filter(([, text]) => sessionWide.test(text)).map(([file]) => file);
+  const runtimeWeb = sources.filter(([file]) => file.startsWith("src/studio/web/") && !/selftest|testSupport/.test(file));
+  // The statement itself, not a comment naming it: a template literal that interpolates the actor.
+  const runtimeDeclarations = runtimeWeb.flatMap(([file, text]) => [...text.matchAll(/`SET LOCAL studio\.actor = '\$\{/g)].map(() => file));
+  const statements: string[] = [];
+  const client = { query: async (text: string) => {
+    statements.push(text.replace(/\s+/g, " ").trim());
+    return { rows: /SELECT status FROM studio_fact_versions/.test(text) ? [{ status: "active" }] : [], rowCount: 1 };
+  }, release: () => {} };
+  const pool = { connect: async () => client, query: client.query } as unknown as import("pg").Pool;
+  const store = new PgWebStore(pool, pool);
+  const owner = "0b8f2a4e-6c1d-4f3a-9e7b-2d5c8a1f0e93";
+  await store.activateFactVersion({ ownerId: owner, versionId: owner });
+  const activation = [...statements];
+  statements.length = 0;
+  const forged = await store.setFactVersionStatus({ ownerId: "x'; RESET studio.actor; --", versionId: owner, status: "retired" })
+    .then(() => "written", (e: Error) => e.message);
+  check("SA131. the web declares an owner edit's actor in ONE place (declareActor): its first statement inside the edit's own "
+    + "transaction is SET LOCAL studio.actor, then the edit, then COMMIT; a value that is not a user id is refused before any "
+    + "statement of the edit; and no Studio source — runtime, migration, test or script — sets the actor for the session: "
+    + "no SET of it without LOCAL, and no set_config of it with is_local false",
+    offenders.length === 0 && runtimeDeclarations.join() === "src/studio/web/store.ts"
+      && activation.join(" | ") === `BEGIN | SET LOCAL studio.actor = '${owner}' | SELECT status FROM studio_fact_versions WHERE id = $1::uuid | `
+        + "UPDATE studio_settings SET active_fact_version_id = $1::uuid, updated_by = $2::uuid WHERE singleton | COMMIT"
+      && /^declareActor/.test(forged) && statements.join(" | ") === "BEGIN | ROLLBACK"
+      // (Each vector is assembled, so this file never matches itself.)
+      && [["SE", "T studio.actor = 'x'"], ["set sessio", "n studio.actor = 'x'"], ["SELECT set_config('studio.actor'", ", $1, false)"]]
+        .every((parts) => sessionWide.test(parts.join("")))
+      && [["SET LOCA", "L studio.actor = 'x'"], ["SELECT set_config('studio.actor'", ", $1, true)"]].every((parts) => !sessionWide.test(parts.join("")))
+      && sources.length > 50,
+    `${offenders.join()} ${runtimeDeclarations.join()} ${activation.join(" | ")} ${forged} ${statements.join(" | ")}`);
+}
+
+{
+  // SA132: the purge deletes fact checks older than 30 days (0004's rule), in the web's purge.
+  const s = await s62World();
+  const old = await sendDocument(s.w, "/facts/upload", s.owner, uploadText(Buffer.from("{\"facts\":[]}")));
+  const oldId = /([0-9a-f-]{36})$/.exec(old.location ?? "")?.[1] ?? "";
+  s.w.store.answerFactCheck(oldId, { refused: { refusalClass: "loader_refused", message: "m" } });
+  s.w.clock.now += 31 * 24 * 3_600_000;
+  for (const id of s.w.store.users.keys()) s.w.store.userUpdatedAt.set(id, s.w.clock.now);
+  const ownerJar = new Jar();
+  await signIn(s.w, ownerJar, { identity: identityOf(s.w.owner) });
+  const recent = await sendDocument(s.w, "/facts/upload", ownerJar, uploadText(Buffer.from("{\"facts\":[2]}")));
+  const recentId = /([0-9a-f-]{36})$/.exec(recent.location ?? "")?.[1] ?? "";
+  const purged = await s.w.app.purge();
+  const statements: string[] = [];
+  const pgStore = new PgWebStore({ query: async (text: string) => { statements.push(text.replace(/\s+/g, " ").trim()); return { rows: [], rowCount: 0 }; } } as never);
+  await pgStore.purge(new Date(), new Date());
+  check("SA132. the web's purge deletes fact checks older than 30 days — migration 0004's rule, by the database's own clock "
+    + "— and keeps a younger one",
+    purged.factChecks === 1 && !s.w.store.factChecks.has(oldId) && s.w.store.factChecks.has(recentId)
+      && statements.includes("DELETE FROM studio_fact_checks WHERE created_at <= now() - interval '30 days'")
+      && captured.some((line) => line.includes("[studio-web] purge") && line.includes("\"fact_checks\":1")),
+    `${JSON.stringify(purged)} ${statements.join(" | ")}`);
+  await s.w.close();
 }
 
 {

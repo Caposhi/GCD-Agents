@@ -15,7 +15,7 @@ export type {
   RunReporter, RunSink, RunSource, UnprovenFactsConfirmation, UnprovenFactsDecision, UnprovenFactsNotice,
 } from "./types.js";
 export {
-  EvidenceScopeError, alwaysIncludedIds, buildRunEvidence, countTags, effectiveEvidenceScope,
+  AUTOMOTIVE_FACT_FIELDS, EvidenceScopeError, alwaysIncludedIds, buildRunEvidence, countTags, effectiveEvidenceScope,
   evidencePackFingerprint, factFileAt, factFingerprint, loadAutomotiveFactsFile, loadRecords, normalizeScopeTags,
   parseAutomotiveFacts, sha256OfBytes, type EvidenceScope, type RunFingerprints, type TagCounts,
 } from "./evidence.js";

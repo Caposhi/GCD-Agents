@@ -4,17 +4,19 @@
  * and restart recovery. Every statement runs on the ownership session.
  *
  * - **Claim.** `FOR UPDATE SKIP LOCKED`, inside a transaction that first
- *   proves this backend holds the ownership lock. Free `preflight` jobs are
- *   taken before `paid` and `fake` ones; within a kind, oldest first. Only
- *   those three kinds are claimed (`CLAIMED_JOB_KINDS`): migration 0004's
- *   `fact_check` and `import` jobs are Content Studio S7.2's, never claimed
- *   here; the sweep below expires them, like any queued job past its expiry.
+ *   proves this backend holds the ownership lock. The free kinds
+ *   (`FREE_JOB_KINDS`: `preflight`, and since Content Studio S7.2 migration
+ *   0004's `fact_check` and `import`) are taken before `paid` and `fake` ones;
+ *   then oldest first. Every kind 0004 allows is claimed (`CLAIMED_JOB_KINDS`).
+ *   (Until S7.2 the claim took only `preflight`, `paid` and `fake`.)
  * - **No retries.** A job is claimed only from `queued`, and nothing ever
  *   returns one to `queued` (the schema refuses it too).
  * - **Expiry and queued cancellation.** A queued job past `expires_at` is never
  *   started: it becomes `expired`, its run `cancelled` and its whole
  *   reservation is released. A queued job whose cancellation was requested
- *   becomes `cancelled`, likewise.
+ *   becomes `cancelled`, likewise. An unclaimed fact check's staged bytes are
+ *   deleted with it, but only when the staging row still holds that check's
+ *   bytes (S7.2: the staging row is a singleton a later upload may replace).
  * - **Recovery: refuse, don't resume.** At start-up, after ownership, every
  *   `running` run becomes `interrupted`. Its reservation is reconciled from the
  *   durable request rows: a request with a `started` row and no completed one
@@ -26,8 +28,10 @@ import { holdsOwnership } from "./session.js";
 import type { WorkerSession } from "./session.js";
 import { planSettlement, type Settlement, type SqlClient } from "./spend.js";
 
-/** The job kinds this worker claims. 0004's `fact_check` and `import` kinds are S7.2's: the sweep expires them. */
-export const CLAIMED_JOB_KINDS = ["preflight", "paid", "fake"] as const;
+/** The job kinds this worker claims: every kind migration 0004 allows (Content Studio S7.2). */
+export const CLAIMED_JOB_KINDS = ["preflight", "fact_check", "import", "paid", "fake"] as const;
+/** The free kinds, which spend nothing: claimed before `paid` and `fake` jobs, then oldest first. */
+export const FREE_JOB_KINDS = ["preflight", "fact_check", "import"] as const;
 
 export interface ClaimedJob {
   jobId: string;
@@ -42,8 +46,8 @@ export async function claimNextJob(session: WorkerSession, commit: string): Prom
     const job = (await client.query(
       `SELECT id, kind, run_id FROM studio_jobs
         WHERE state = 'queued' AND kind = ANY ($1::text[]) AND expires_at > now() AND cancel_requested_at IS NULL
-        ORDER BY (kind = 'preflight') DESC, created_at, id
-        LIMIT 1 FOR UPDATE SKIP LOCKED`, [[...CLAIMED_JOB_KINDS]])).rows[0];
+        ORDER BY (kind = ANY ($2::text[])) DESC, created_at, id
+        LIMIT 1 FOR UPDATE SKIP LOCKED`, [[...CLAIMED_JOB_KINDS], [...FREE_JOB_KINDS]])).rows[0];
     if (!job) return null;
     if (job.run_id !== null) {
       const run = (await client.query("SELECT state FROM studio_runs WHERE id = $1 FOR UPDATE", [job.run_id])).rows[0];
@@ -162,11 +166,26 @@ export async function sweepQueuedJobs(session: WorkerSession): Promise<{ expired
       const end: Terminal = job.expired
         ? { runState: "cancelled", jobState: "expired", failureClass: "job_expired", failureMessage: "the job expired before it was claimed" }
         : { runState: "cancelled", jobState: "cancelled", failureClass: "job_cancelled", failureMessage: "the job was cancelled before it was claimed" };
-      if (job.run_id === null) await client.query("UPDATE studio_jobs SET state = $2 WHERE id = $1", [job.id, end.jobState]);
-      else await terminalize(client, job.run_id, job.id, end);
+      if (job.run_id === null) {
+        await client.query("UPDATE studio_jobs SET state = $2 WHERE id = $1", [job.id, end.jobState]);
+        await deleteCheckStagedBytes(client, job.id);
+      } else {
+        await terminalize(client, job.run_id, job.id, end);
+      }
     }
     return { expired, cancelled };
   });
+}
+
+/**
+ * Content Studio S7.2: a fact check's staged bytes, deleted only while the
+ * singleton staging row still holds that check's bytes (its sha256). For any
+ * other job (no fact check names it) nothing matches, and nothing is deleted.
+ */
+export async function deleteCheckStagedBytes(client: SqlClient, jobId: string): Promise<void> {
+  await client.query(
+    `DELETE FROM studio_fact_uploads s USING studio_fact_checks c
+      WHERE c.job_id = $1 AND s.sha256 = c.sha256`, [jobId]);
 }
 
 /**

@@ -18,6 +18,7 @@ import { microsToNumeric, numericToMicros, OVERRUN_ACKNOWLEDGED, UNACKNOWLEDGED_
 import {
   decideCancel, decideConfirm, localDay, preflightPurgeable, type DeploymentCeilings, type PreflightRequestInput, type Refusal,
 } from "./actions.js";
+import { decideLineage, type BundleFile } from "./bundle.js";
 import type {
   ArtifactMeta, FindingRow, RequestRow, RunFilters, RunLineage, RunListRow, RunRow, StoredArtifact,
 } from "./runs.js";
@@ -95,9 +96,43 @@ export interface WebStore {
   acknowledgeOverrun(input: { runId: string; ownerId: string }): Promise<boolean>;
   /** §6.4: spend for `day` (America/New_York) and its month, per user, and every overrun. */
   spendView(day: string): Promise<SpendView>;
+
+  // --- Content Studio S7.2: fact versions and imports. Every owner edit runs in ONE transaction that first
+  // declares its actor (`declareActor`, `SET LOCAL studio.actor`); the schema refuses a non-owner too.
+  /** §8.5: the staged bytes, their fact check and its job, in ONE transaction; refused while another check is pending. */
+  stageFactUpload(input: { ownerId: string; content: Buffer; sha256: string }): Promise<StageResult>;
+  findFactCheck(id: string): Promise<FactCheckView | null>;
+  /** Every version, newest first, with which is active; never a version's bytes. */
+  listFactVersions(): Promise<FactVersionListRow[]>;
+  /** A version's exact bytes (the route is the owner's alone). */
+  readFactVersion(id: string): Promise<{ sha256: string; content: Buffer } | null>;
+  /** Points the settings at a version (the schema refuses a retired one). */
+  activateFactVersion(input: { ownerId: string; versionId: string }): Promise<EditResult>;
+  /** Retires or restores a version (the schema refuses retiring the active one). */
+  setFactVersionStatus(input: { ownerId: string; versionId: string; status: "active" | "retired" }): Promise<EditResult>;
+  /** §8.6: the import's run, its files and its import job, in ONE transaction, with its lineage when exactly one import matches. */
+  createImport(input: { ownerId: string; runner: "live" | "fake"; files: readonly BundleFile[];
+    lineage: { runMeta: Buffer; roundOneCritic: Buffer } | null }): Promise<{ runId: string; jobId: string; sourceRunId: string | null }>;
 }
 
-export interface PurgeResult { loginAttempts: number; sessions: number; preflightRequests: number }
+export interface PurgeResult { loginAttempts: number; sessions: number; preflightRequests: number; factChecks: number }
+
+export type EditResult = { ok: true } | ({ ok: false } & Refusal);
+export type StageResult = { ok: true; checkId: string; jobId: string } | ({ ok: false } & Refusal);
+
+export interface FactVersionListRow {
+  id: string; sha256: string; byteLength: number; recordCount: number; tagCounts: Record<string, number>; uploadedAt: Date;
+  uploaderName: string | null; status: "active" | "retired"; isActive: boolean; statusChangedAt: Date | null;
+}
+
+export interface FactCheckView {
+  id: string; jobState: string; requestedBy: string; sha256: string; byteLength: number; createdAt: Date;
+  outcome: "accepted" | "refused" | null; refusalClass: string | null; refusalMessage: string | null; unknownFields: string[] | null;
+  /** The accepted bytes' version (by sha256), when it still exists. */
+  version: { id: string; recordCount: number; tagCounts: Record<string, number>; status: string } | null;
+  /** From the worker's audit row of the outcome: whether the bytes were already a version, and whether the upload is over the pack's cap. */
+  existing: boolean; overCap: boolean;
+}
 
 /** The worker's heartbeat row, as the web reads it (design §3.3, §4.6). */
 export interface HeartbeatRow {
@@ -171,7 +206,7 @@ const runListRow = (row: Record<string, unknown>): RunListRow => ({
 });
 const textOrNull = (value: unknown) => (value === null || value === undefined ? null : String(value));
 
-type Queryable = Pick<pg.Pool, "query"> | Pick<pg.PoolClient, "query">;
+export type Queryable = Pick<pg.Pool, "query"> | Pick<pg.PoolClient, "query">;
 
 const USER_COLUMNS = "id::text AS id, email, google_sub, display_name, role, status";
 
@@ -184,6 +219,22 @@ function userRow(row: Record<string, unknown>): StudioUserRow {
     role: String(row.role) as Role,
     status: String(row.status) as StudioUserRow["status"],
   };
+}
+
+/** A user id as PostgreSQL prints a uuid: the only text `declareActor` ever puts in its statement. */
+const ACTOR_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/**
+ * Content Studio S7.2 — THE ONE place the web declares an owner edit's actor
+ * (migration 0004): `SET LOCAL studio.actor`, inside the edit's own
+ * transaction, so it ends with that transaction and a later edit on the same
+ * pooled connection can never inherit it. A value that is not a user id is
+ * refused before any statement. The offline suite holds every Studio source to
+ * this (`SA131`: the actor is never set for the session, by SET or by set_config).
+ */
+export async function declareActor(db: Queryable, actorId: string): Promise<void> {
+  if (!ACTOR_SHAPE.test(actorId)) throw new Error("declareActor: the actor must be a user id");
+  await db.query(`SET LOCAL studio.actor = '${actorId}'`);
 }
 
 /** The Studio database, through a pool (or, inside a transaction, one client). */
@@ -314,7 +365,11 @@ export class PgWebStore implements WebStore {
       .map((c) => String(c.id));
     const requests = ids.length
       ? (await this.db.query("DELETE FROM studio_preflight_requests WHERE id = ANY($1::uuid[])", [ids])).rowCount ?? 0 : 0;
-    return { loginAttempts: attempts.rowCount ?? 0, sessions: sessions.rowCount ?? 0, preflightRequests: requests };
+    // S7.2 (design §4.7): fact checks older than 30 days, by the database's own clock — migration 0004's rule,
+    // whose trigger refuses any younger deletion.
+    const checks = await this.db.query("DELETE FROM studio_fact_checks WHERE created_at <= now() - interval '30 days'");
+    return { loginAttempts: attempts.rowCount ?? 0, sessions: sessions.rowCount ?? 0, preflightRequests: requests,
+      factChecks: checks.rowCount ?? 0 };
   }
 
   async listRuns(filters: Omit<RunFilters, "page">, limit: number, offset: number): Promise<RunListRow[]> {
@@ -655,6 +710,156 @@ export class PgWebStore implements WebStore {
         `INSERT INTO studio_audit_log (actor_user_id, action, target_type, target_id, detail)
          VALUES ($1::uuid, '${OVERRUN_ACKNOWLEDGED}', 'studio_runs', $2, '{}'::jsonb)`, [input.ownerId, input.runId]);
       return { result: true, commit: true };
+    });
+  }
+
+  // --- Content Studio S7.2 -----------------------------------------------------------------------
+
+  /** An owner edit: ONE transaction whose first statement declares its actor (`declareActor`). */
+  private ownerEdit<T>(actorId: string, fn: (db: Queryable) => Promise<{ result: T; commit: boolean }>): Promise<T> {
+    return this.atomically(async (db) => {
+      await declareActor(db, actorId);
+      return fn(db);
+    });
+  }
+
+  /**
+   * §8.5 step 1, in ONE transaction: refused while another fact check is
+   * pending (queued and unexpired, or running), since the staging row is a
+   * singleton; a check that expired unclaimed is closed here, so the sweep can
+   * never delete these bytes as its own; then the staged bytes replace any stale
+   * staging row, and the fact_check job, its check and an audit row are written.
+   */
+  async stageFactUpload(input: { ownerId: string; content: Buffer; sha256: string }): Promise<StageResult> {
+    return this.ownerEdit<StageResult>(input.ownerId, async (db) => {
+      const pending = (await db.query(
+        `SELECT 1 FROM studio_jobs WHERE kind = 'fact_check'
+            AND (state = 'running' OR (state = 'queued' AND expires_at > now())) LIMIT 1`)).rows.length === 1;
+      if (pending) {
+        return { result: { ok: false, refusal: "check_pending",
+          message: "a fact check is still waiting for the worker or running; wait for its result, then upload again" }, commit: false };
+      }
+      await db.query("UPDATE studio_jobs SET state = 'expired' WHERE kind = 'fact_check' AND state = 'queued' AND expires_at <= now()");
+      await db.query("DELETE FROM studio_fact_uploads");
+      await db.query("INSERT INTO studio_fact_uploads (content, sha256, byte_length, uploaded_by) VALUES ($1, $2, $3, $4::uuid)",
+        [input.content, input.sha256, input.content.length, input.ownerId]);
+      const jobId = String((await db.query("INSERT INTO studio_jobs (kind) VALUES ('fact_check') RETURNING id::text AS id")).rows[0]!.id);
+      const checkId = String((await db.query(
+        `INSERT INTO studio_fact_checks (job_id, requested_by, sha256, byte_length) VALUES ($1::uuid, $2::uuid, $3, $4)
+         RETURNING id::text AS id`, [jobId, input.ownerId, input.sha256, input.content.length])).rows[0]!.id);
+      await db.query(
+        `INSERT INTO studio_audit_log (actor_user_id, action, target_type, target_id, detail)
+         VALUES ($1::uuid, 'fact.upload', 'studio_fact_checks', $2, $3::jsonb)`,
+        [input.ownerId, checkId, JSON.stringify({ byte_length: input.content.length })]);
+      return { result: { ok: true, checkId, jobId }, commit: true };
+    });
+  }
+
+  async findFactCheck(id: string): Promise<FactCheckView | null> {
+    const { rows } = await this.db.query(
+      `SELECT c.id::text AS id, j.state AS job_state, c.requested_by::text AS requested_by, c.sha256, c.byte_length, c.created_at,
+              c.outcome, c.refusal_class, c.refusal_message, c.unknown_fields,
+              v.id::text AS v_id, v.record_count AS v_records, v.tag_counts AS v_tags, v.status AS v_status,
+              (SELECT a.detail FROM studio_audit_log a WHERE a.action = 'fact_check.outcome' AND a.target_type = 'studio_fact_checks'
+                  AND a.target_id = c.id::text ORDER BY a.at DESC LIMIT 1) AS detail
+         FROM studio_fact_checks c JOIN studio_jobs j ON j.id = c.job_id
+         LEFT JOIN studio_fact_versions v ON v.sha256 = c.sha256 AND c.outcome = 'accepted'
+        WHERE c.id = $1::uuid`, [id]);
+    if (rows.length !== 1) return null;
+    const r = rows[0]!;
+    const detail = (r.detail ?? {}) as Record<string, unknown>;
+    return {
+      id: r.id, jobState: r.job_state, requestedBy: r.requested_by, sha256: r.sha256, byteLength: Number(r.byte_length),
+      createdAt: r.created_at, outcome: r.outcome, refusalClass: r.refusal_class, refusalMessage: r.refusal_message,
+      unknownFields: Array.isArray(r.unknown_fields) ? r.unknown_fields.map(String) : null,
+      version: r.v_id === null ? null : { id: r.v_id, recordCount: Number(r.v_records), tagCounts: countsOf(r.v_tags), status: r.v_status },
+      existing: detail.existing === true, overCap: detail.over_cap === true,
+    };
+  }
+
+  async listFactVersions(): Promise<FactVersionListRow[]> {
+    const { rows } = await this.db.query(
+      `SELECT v.id::text AS id, v.sha256, v.byte_length, v.record_count, v.tag_counts, v.uploaded_at, u.display_name, v.status,
+              v.status_changed_at, COALESCE(s.active_fact_version_id = v.id, false) AS is_active
+         FROM studio_fact_versions v JOIN studio_users u ON u.id = v.uploaded_by LEFT JOIN studio_settings s ON s.singleton
+        ORDER BY v.uploaded_at DESC, v.id`);
+    return rows.map((r) => ({
+      id: r.id, sha256: r.sha256, byteLength: Number(r.byte_length), recordCount: Number(r.record_count), tagCounts: countsOf(r.tag_counts),
+      uploadedAt: r.uploaded_at, uploaderName: textOrNull(r.display_name), status: r.status, isActive: r.is_active === true,
+      statusChangedAt: (r.status_changed_at as Date | null) ?? null,
+    }));
+  }
+
+  async readFactVersion(id: string): Promise<{ sha256: string; content: Buffer } | null> {
+    const { rows } = await this.db.query("SELECT sha256, content FROM studio_fact_versions WHERE id = $1::uuid", [id]);
+    return rows.length === 1 ? { sha256: String(rows[0]!.sha256), content: rows[0]!.content as Buffer } : null;
+  }
+
+  /** The settings' pointer, in ONE owner edit; the schema audits it (`settings.update`, by its actor) and refuses a retired version. */
+  async activateFactVersion(input: { ownerId: string; versionId: string }): Promise<EditResult> {
+    return this.ownerEdit<EditResult>(input.ownerId, async (db) => {
+      const version = (await db.query("SELECT status FROM studio_fact_versions WHERE id = $1::uuid", [input.versionId])).rows[0];
+      if (!version) return { result: { ok: false, refusal: "no_version", message: "no such fact version" }, commit: false };
+      if (version.status !== "active") {
+        return { result: { ok: false, refusal: "version_retired", message: "a retired version is restored before it is made active" },
+          commit: false };
+      }
+      const updated = await db.query(
+        "UPDATE studio_settings SET active_fact_version_id = $1::uuid, updated_by = $2::uuid WHERE singleton",
+        [input.versionId, input.ownerId]);
+      if (updated.rowCount !== 1) return { result: { ok: false, refusal: "no_settings", message: "the settings row does not exist" }, commit: false };
+      return { result: { ok: true }, commit: true };
+    });
+  }
+
+  /** A retirement or restoration, in ONE owner edit; the schema audits it (`fact_version.status`) and refuses retiring the active one. */
+  async setFactVersionStatus(input: { ownerId: string; versionId: string; status: "active" | "retired" }): Promise<EditResult> {
+    return this.ownerEdit<EditResult>(input.ownerId, async (db) => {
+      const updated = await db.query(
+        "UPDATE studio_fact_versions SET status = $2, status_changed_by = $3::uuid WHERE id = $1::uuid AND status <> $2",
+        [input.versionId, input.status, input.ownerId]);
+      if (updated.rowCount !== 1) {
+        return { result: { ok: false, refusal: "no_change", message: `no such fact version that is not already ${input.status}` }, commit: false };
+      }
+      return { result: { ok: true }, commit: true };
+    });
+  }
+
+  /**
+   * §8.6, in ONE owner edit: the lineage (a source only when exactly one
+   * non-deleted import's run-meta.json and 06-final-critic.json are this
+   * folder's run-meta.json and round-1-06-final-critic.json, byte for byte —
+   * the child then pins the source's fact version), the import's run, its
+   * files, its import job and an audit row of counts. Migration 0004 checks at
+   * commit that the import has its job and its files.
+   */
+  async createImport(input: { ownerId: string; runner: "live" | "fake"; files: readonly BundleFile[];
+    lineage: { runMeta: Buffer; roundOneCritic: Buffer } | null }): Promise<{ runId: string; jobId: string; sourceRunId: string | null }> {
+    return this.ownerEdit(input.ownerId, async (db) => {
+      const source = input.lineage === null ? null : decideLineage((await db.query(
+        `SELECT r.id::text AS id, r.fact_version_id::text AS fact_version_id FROM studio_runs r
+          WHERE r.kind = 'imported' AND r.deleted_at IS NULL
+            AND EXISTS (SELECT 1 FROM studio_run_artifacts a WHERE a.run_id = r.id AND a.name = 'run-meta.json' AND a.content = $1)
+            AND EXISTS (SELECT 1 FROM studio_run_artifacts a WHERE a.run_id = r.id AND a.name = '06-final-critic.json' AND a.content = $2)
+          ORDER BY r.created_at, r.id LIMIT 2`, [input.lineage.runMeta, input.lineage.roundOneCritic])).rows as Array<{
+        id: string; fact_version_id: string | null }>);
+      const runId = String((await db.query(
+        `INSERT INTO studio_runs (kind, requested_by, runner, source_run_id, fact_version_id)
+         VALUES ('imported', $1::uuid, $2, $3::uuid, $4::uuid) RETURNING id::text AS id`,
+        [input.ownerId, input.runner, source?.id ?? null, source?.fact_version_id ?? null])).rows[0]!.id);
+      for (const file of input.files) {
+        await db.query(
+          "INSERT INTO studio_run_artifacts (run_id, name, content, sha256, byte_length) VALUES ($1::uuid, $2, $3, $4, $5)",
+          [runId, file.name, file.content, file.sha256, file.content.length]);
+      }
+      const jobId = String((await db.query(
+        "INSERT INTO studio_jobs (run_id, kind) VALUES ($1::uuid, 'import') RETURNING id::text AS id", [runId])).rows[0]!.id);
+      await db.query(
+        `INSERT INTO studio_audit_log (actor_user_id, action, target_type, target_id, detail)
+         VALUES ($1::uuid, 'import.create', 'studio_runs', $2, $3::jsonb)`,
+        [input.ownerId, runId, JSON.stringify({ files: input.files.length, bytes: input.files.reduce((n, f) => n + f.content.length, 0),
+          runner: input.runner, lineage: source !== null })]);
+      return { result: { runId, jobId, sourceRunId: source?.id ?? null }, commit: true };
     });
   }
 
