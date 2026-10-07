@@ -75,7 +75,10 @@ export function shell(input: {
     + "</head><body>"
     + "<header class=\"top\"><a class=\"brand\" href=\"/\">Content Studio</a><nav><a href=\"/runs\">Runs</a>"
     + (input.user.role === "owner" || input.user.role === "runner" ? "<a href=\"/new\">New run</a>" : "")
-    + "<a href=\"/spend\">Spend</a><a href=\"/facts\">Facts</a></nav>"
+    + "<a href=\"/spend\">Spend</a><a href=\"/facts\">Facts</a>"
+    // Content Studio S7.3: the owner's screens (§8.7). Hidden from everyone else, and refused at the route anyway (403).
+    + (input.user.role === "owner" ? "<a href=\"/users\">Users</a><a href=\"/settings\">Caps and settings</a><a href=\"/audit\">Audit</a>" : "")
+    + "</nav>"
     + `<span class="who">${escapeHtml(input.user.display_name ?? "(no display name)")} · ${escapeHtml(input.user.role)}</span>`
     + `<form method="post" action="/auth/logout"><input type="hidden" name="csrf" value="${escapeAttribute(input.csrfToken)}">`
     + "<button type=\"submit\">Sign out</button></form></header>"

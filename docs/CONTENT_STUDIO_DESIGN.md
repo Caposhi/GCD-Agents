@@ -1299,6 +1299,23 @@ is zero, §6.2), in the web and in the worker; the owner's own unset cap stays n
 the overrun acknowledgement no longer depends on the acknowledger's current role, so a later role
 change cannot silently re-lock confirmations.)*
 
+*(Dated note, 2026-10-07, Content Studio S7.3 — `IMPLEMENTED`, not merged; built as above, with
+these choices where the section is silent. **The cap bound:** a typed cap is a dollar amount with
+at most two decimals, below the next power of ten above its deployment ceiling's whole dollars
+($100 for the $75 daily ceiling, $1,000 for the $300 monthly, never below $10); a cap above the
+ceiling may be stored but has no effect, since the effective cap is the lower of the two. **Last
+sign-in** is read from the newest `auth.sign_in` audit row, because `studio_users` has no such
+column and S7.3 adds no migration. **"Revoke sessions"** is an explicit action audited as
+`user.sessions_revoked` with the count; disabling a user relies on 0002's trigger alone. **Demoting
+or disabling oneself** shows a confirmation first; once confirmed, the acting owner's own sessions
+are revoked in the same transaction and they are signed out. **One "Caps and settings" page**
+(`/settings`) carries the caps, the active fact version's link, the audit log's link and
+`scheduled_runs_enabled`, shown as off and unavailable with no control; the audit log is its own
+read-only page (`/audit`, 50 rows a page, filterable by action). **The overrun acknowledgement's
+write** is checked against the live users row in the store, since its reads no longer imply the
+role. **No display-name entry:** a user added by address shows no name until a later change offers
+one.)*
+
 ---
 
 ## 9. Security and privacy

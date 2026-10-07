@@ -153,6 +153,11 @@ export function decideConfirm(s: ConfirmSnapshot): Decision {
   if (s.unacknowledgedOverruns > 0) {
     return no("confirmations_locked", "an overrun the owner has not acknowledged locks every confirmation");
   }
+  // Content Studio S7.3 (the S7 analysis's item 12, accepted by the owner): a runner's missing daily cap is zero
+  // (design §6.2), so a runner with none cannot confirm. The owner's own unset cap is still no per-user cap.
+  if (u.role === "runner" && u.dailyCapMicros === null) {
+    return no("cap_missing", "you have no daily cap, which counts as zero: the owner sets one on the Users page before you can confirm");
+  }
   const caps = effectiveCaps(s.settings, s.ceilings, u.dailyCapMicros);
   if (!(s.spend.dayMicros + q.ceilingMicros <= caps.dailyMicros)) {
     return no("cap_exceeded_daily", "this quote's ceiling does not fit what remains of today's cap");

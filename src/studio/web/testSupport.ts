@@ -33,9 +33,10 @@ import type {
 } from "./runs.js";
 import type { SessionRow, StudioUserRow } from "./sessions.js";
 import type {
-  ActionContext, AuditEntry, CancelResult, ConfirmHooks, ConfirmResult, EditResult, FactCheckView, FactVersionListRow, PreflightView,
-  PurgeResult, SpendView, StageResult, WebHealth, WebStore,
+  ActionContext, AuditEntry, AuditListRow, CancelResult, ConfirmHooks, ConfirmResult, EditResult, FactCheckView, FactVersionListRow,
+  PreflightView, PurgeResult, RevokeResult, SpendView, StageResult, UserEditResult, UserListRow, WebHealth, WebStore,
 } from "./store.js";
+import { decideUserChange, losesOwnSeat, type UserChange } from "./users.js";
 import { decideLineage, type BundleFile } from "./bundle.js";
 
 export const STUDIO_DOMAIN = ["germancardepot", "com"].join(".");
@@ -556,9 +557,9 @@ export class MemoryWebStore implements WebStore {
   }
 
   unacknowledgedOverruns(): string[] {
+    // S7.3: any acknowledgement with an actor counts, whatever the acknowledger's role is now (OVERRUN_ACKNOWLEDGEMENTS_SQL).
     return this.ledger.filter((row) => row.entry === "overrun" && !this.auditLog.some((a) => a.action === "spend.overrun_acknowledged"
-      && a.targetType === "studio_runs" && a.targetId === row.runId
-      && [...this.users.values()].some((u) => u.id === a.actorUserId && u.role === "owner"))).map((row) => row.runId);
+      && a.actorUserId !== null && a.targetType === "studio_runs" && a.targetId === row.runId)).map((row) => row.runId);
   }
 
   /** As the PostgreSQL store: serialized (the settings-row lock), decided by `decideConfirm`, then written together. */
@@ -655,6 +656,8 @@ export class MemoryWebStore implements WebStore {
   }
 
   async acknowledgeOverrun(input: { runId: string; ownerId: string }): Promise<boolean> {
+    const owner = this.users.get(input.ownerId);
+    if (!owner || owner.role !== "owner" || owner.status !== "active") return false;
     if (!this.unacknowledgedOverruns().includes(input.runId)) return false;
     this.auditLog.push({ action: "spend.overrun_acknowledged", actorUserId: input.ownerId, targetType: "studio_runs",
       targetId: input.runId, detail: {} });
@@ -836,6 +839,130 @@ export class MemoryWebStore implements WebStore {
     this.auditLog.push({ action: "import.create", actorUserId: input.ownerId, targetType: "studio_runs", targetId: run.id,
       detail: { files: input.files.length, runner: input.runner, lineage: source !== null } });
     return { runId: run.id, jobId, sourceRunId: source?.id ?? null };
+  }
+
+  // --- S7.3: users, caps and the audit view, over memory, with the schema's own rules ------------------------
+
+  /** Each audit row's time, by its index in `auditLog` (rows pushed without one are stamped when first listed). */
+  readonly auditAt: number[] = [];
+
+  async listUsers(): Promise<UserListRow[]> {
+    this.calls.push("listUsers");
+    const now = this.clock();
+    return [...this.users.values()].sort((a, b) => (a.role < b.role ? -1 : a.role > b.role ? 1 : a.email < b.email ? -1 : 1)).map((u) => {
+      const sessions = [...this.sessions.values()].filter((x) => x.user_id === u.id);
+      const signIns = sessions.map((x) => x.created_at.getTime());
+      return {
+        id: u.id, email: u.email, displayName: u.display_name, role: u.role, status: u.status, dailyCapMicros: this.userCaps.get(u.id) ?? null,
+        googleBound: u.google_sub !== null, createdAt: new Date(this.createdAt.get(u.id) ?? now),
+        lastSignInAt: signIns.length ? new Date(Math.max(...signIns)) : null,
+        liveSessions: sessions.filter((x) => x.revoked_at === null && x.idle_expires_at.getTime() > now && x.absolute_expires_at.getTime() > now).length,
+      };
+    });
+  }
+
+  readonly createdAt = new Map<string, number>();
+
+  /** As the users triggers: created by an active owner, the address lower-cased at the domain and unique; `user.create` audited. */
+  async createUser(input: { ownerId: string; email: string; role: StudioUserRow["role"]; dailyCapMicros: number | null }): Promise<{ userId: string }> {
+    this.calls.push("createUser");
+    this.requireOwner(input.ownerId, "createUser");
+    const user = this.insertUser({ email: input.email, role: input.role, created_by: input.ownerId });
+    this.userCaps.set(user.id, input.dailyCapMicros);
+    this.userUpdatedAt.set(user.id, this.clock());
+    this.createdAt.set(user.id, this.clock());
+    this.auditLog.push({ action: "user.create", actorUserId: input.ownerId, targetType: "studio_users", targetId: user.id,
+      detail: { role: input.role, status: "active", daily_cap_usd: input.dailyCapMicros === null ? "null" : microsToNumeric(input.dailyCapMicros) } });
+    return { userId: user.id };
+  }
+
+  /** `user.update`, as 0004's trigger writes it: the before and after of role, status and cap, never an address or a name. */
+  private auditUserUpdate(actor: string, id: string, before: { role: string; status: string; cap: number | null }): void {
+    const u = this.users.get(id)!;
+    const cap = (micros: number | null) => (micros === null ? "null" : microsToNumeric(micros));
+    this.auditLog.push({ action: "user.update", actorUserId: actor, targetType: "studio_users", targetId: id,
+      detail: { before: JSON.stringify({ role: before.role, status: before.status, daily_cap_usd: cap(before.cap) }),
+        after: JSON.stringify({ role: u.role, status: u.status, daily_cap_usd: cap(this.userCaps.get(id) ?? null) }),
+        email_changed: false, display_name_changed: false } });
+  }
+
+  async changeUser(input: { ownerId: string; userId: string; change: UserChange }): Promise<UserEditResult> {
+    this.calls.push("changeUser");
+    this.requireOwner(input.ownerId, "changeUser");
+    const target = this.users.get(input.userId) ?? null;
+    const owners = [...this.users.values()].filter((u) => u.role === "owner" && u.status === "active").map((u) => u.id);
+    const decision = decideUserChange({ target, change: input.change, activeOwnerIds: owners });
+    if (!decision.ok) return decision;
+    const before = { role: target!.role, status: target!.status, cap: this.userCaps.get(target!.id) ?? null };
+    if (input.change.kind === "role") target!.role = input.change.role;
+    else this.setStatus(target!.id, input.change.status);
+    // As 0002's trigger: at least one active owner always remains.
+    if (![...this.users.values()].some((u) => u.role === "owner" && u.status === "active")) {
+      Object.assign(target!, { role: before.role, status: before.status });
+      throw new RefusedWrite("23514", "studio: the last active owner cannot be removed, demoted or disabled");
+    }
+    this.userUpdatedAt.set(target!.id, this.clock());
+    this.auditUserUpdate(input.ownerId, target!.id, before);
+    const signedOut = losesOwnSeat(input.ownerId, input.userId, input.change);
+    if (signedOut) for (const x of this.sessions.values()) if (x.user_id === input.userId && x.revoked_at === null) x.revoked_at = new Date(this.clock());
+    return { ok: true, signedOut };
+  }
+
+  async setUserCap(input: { ownerId: string; userId: string; dailyCapMicros: number | null }): Promise<EditResult> {
+    this.calls.push("setUserCap");
+    this.requireOwner(input.ownerId, "setUserCap");
+    const target = this.users.get(input.userId);
+    if (!target) return { ok: false, refusal: "no_user", message: "there is no such user" };
+    const before = this.userCaps.get(target.id) ?? null;
+    if (before === input.dailyCapMicros) return { ok: false, refusal: "no_change", message: "the user already has that cap" };
+    if (input.dailyCapMicros !== null && input.dailyCapMicros < 0) throw new RefusedWrite("23514", "cap");
+    this.userCaps.set(target.id, input.dailyCapMicros);
+    this.userUpdatedAt.set(target.id, this.clock());
+    this.auditUserUpdate(input.ownerId, target.id, { role: target.role, status: target.status, cap: before });
+    return { ok: true };
+  }
+
+  async revokeUserSessions(input: { ownerId: string; userId: string }): Promise<RevokeResult> {
+    this.calls.push("revokeUserSessions");
+    this.requireOwner(input.ownerId, "revokeUserSessions");
+    if (!this.users.has(input.userId)) return { ok: false, refusal: "no_user", message: "there is no such user" };
+    let revoked = 0;
+    for (const x of this.sessions.values()) {
+      if (x.user_id === input.userId && x.revoked_at === null) { x.revoked_at = new Date(this.clock()); revoked += 1; }
+    }
+    this.auditLog.push({ action: "user.sessions_revoked", actorUserId: input.ownerId, targetType: "studio_users", targetId: input.userId,
+      detail: { sessions: revoked } });
+    return { ok: true, revoked };
+  }
+
+  async setCaps(input: { ownerId: string; dailyCapMicros: number; monthlyCapMicros: number }): Promise<EditResult> {
+    this.calls.push("setCaps");
+    this.requireOwner(input.ownerId, "setCaps");
+    if (!this.settings) return { ok: false, refusal: "no_settings", message: "the settings row does not exist" };
+    if (input.dailyCapMicros < 0 || input.monthlyCapMicros < 0) throw new RefusedWrite("23514", "cap");
+    const before = { daily_cap_usd: microsToNumeric(this.settings.dailyCapMicros), monthly_cap_usd: microsToNumeric(this.settings.monthlyCapMicros) };
+    this.settings.dailyCapMicros = input.dailyCapMicros;
+    this.settings.monthlyCapMicros = input.monthlyCapMicros;
+    this.auditLog.push({ action: "settings.update", actorUserId: input.ownerId, targetType: "studio_settings", targetId: "singleton",
+      detail: { before: JSON.stringify(before), after: JSON.stringify({ daily_cap_usd: microsToNumeric(input.dailyCapMicros),
+        monthly_cap_usd: microsToNumeric(input.monthlyCapMicros) }) } });
+    return { ok: true };
+  }
+
+  async listAudit(action: string | null, limit: number, offset: number): Promise<AuditListRow[]> {
+    this.calls.push("listAudit");
+    for (let i = this.auditAt.length; i < this.auditLog.length; i += 1) this.auditAt.push(this.clock());
+    return this.auditLog.map((entry, index) => ({ entry, index })).filter(({ entry }) => action === null || entry.action === action)
+      .reverse().slice(offset, offset + limit).map(({ entry, index }) => ({
+        id: `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`, at: new Date(this.auditAt[index]!),
+        actorId: entry.actorUserId, actorName: entry.actorUserId === null ? null : this.users.get(entry.actorUserId)?.display_name ?? null,
+        action: entry.action, targetType: entry.targetType, targetId: entry.targetId, detail: JSON.stringify(entry.detail),
+      }));
+  }
+
+  async auditActions(): Promise<string[]> {
+    this.calls.push("auditActions");
+    return [...new Set(this.auditLog.map((a) => a.action))].sort();
   }
 
   /** Everything stored, as text: for proving no cookie value or token is ever kept. */

@@ -25,7 +25,9 @@ import pg from "pg";
 
 import {
   preflightParamsSha256, runStudioMigrations, STUDIO_DATABASE_NAME, STUDIO_EXPECTED_MIGRATIONS, STUDIO_SCHEMA_VERSION,
+  UNACKNOWLEDGED_OVERRUNS_SQL,
 } from "../db/runner.js";
+import { escapeHtml as escapeText } from "./html.js";
 import { createStudioWebApp, type StudioWebApp, type WebLog } from "./app.js";
 import { GOOGLE_OIDC } from "./oidc.js";
 import { localDay, preflightRequest } from "./actions.js";
@@ -660,8 +662,10 @@ async function suite(pool: pg.Pool, url: string, issuer: FakeIssuer): Promise<vo
     const addUser = async (role: string, label: string) => {
       const sub = `sub-${label}-${randomBytes(4).toString("hex")}`;
       const email = syntheticEmail(label);
-      const id = (await pool.query("INSERT INTO studio_users (email, role, created_by, google_sub, display_name) VALUES ($1, $2, $3, $4, $5) RETURNING id::text AS id",
-        [email, role, owner.id, sub, `Synthetic ${label}`])).rows[0].id as string;
+      // Content Studio S7.3, by fact: a runner with no daily cap cannot confirm (cap_missing), so each runner here has one
+      // so large it never binds, even under WIDE ceilings. (Until S7.3 a runner had none, which meant no per-user cap.)
+      const id = (await pool.query("INSERT INTO studio_users (email, role, created_by, google_sub, display_name, daily_cap_usd) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id::text AS id",
+        [email, role, owner.id, sub, `Synthetic ${label}`, role === "runner" ? 999_999 : null])).rows[0].id as string;
       return { id, email, sub };
     };
     const runnerA = await addUser("runner", "s62-runner-a");
@@ -1078,6 +1082,196 @@ async function suite(pool: pg.Pool, url: string, issuer: FakeIssuer): Promise<vo
       + "trigger refuses deleting a younger one — and keeps every younger check",
       purged33.factChecks === 1 && !left33.includes(checkIds[0]!) && left33.length === checkIds.length - 1 && youngRefused === "23514",
       `${JSON.stringify(purged33)} ${left33.length}/${checkIds.length} ${youngRefused}`);
+
+    // SAP34-SAP40 (Content Studio S7.3): users, caps and the audit view over the real schema; the runner's missing cap and
+    // the overrun acknowledgement at the confirmation.
+    const users73 = async () => JSON.stringify((await pool.query(
+      `SELECT (SELECT json_agg(json_build_object('e', email, 'r', role, 's', status, 'c', daily_cap_usd) ORDER BY id) FROM studio_users) AS u,
+              (SELECT count(*) FROM studio_sessions WHERE revoked_at IS NULL)::int AS live,
+              (SELECT count(*) FROM studio_audit_log)::int AS audit,
+              (SELECT daily_cap_usd::text || '/' || monthly_cap_usd::text FROM studio_settings) AS caps`)).rows[0]);
+    const auditSince = async (since: string, action?: string) => (await pool.query(
+      `SELECT action, actor_user_id::text AS actor, target_id, detail::text AS detail FROM studio_audit_log
+        WHERE at >= $1::timestamptz AND ($2::text IS NULL OR action = $2) ORDER BY at, id`, [since, action ?? null])).rows;
+    const nowText = async () => String((await pool.query("SELECT now()::text AS t")).rows[0].t);
+    const liveSessions = async (id: string) => (await pool.query(
+      "SELECT count(*)::int AS n FROM studio_sessions WHERE user_id = $1 AND revoked_at IS NULL", [id])).rows[0].n as number;
+
+    // SAP34: adding a user.
+    let since = await nowText();
+    const local = `Sap34.Mixed.${randomBytes(3).toString("hex")}`;
+    const added = await post("/users", ownerJar, [["email", ` ${local}@GermanCarDepot.COM `], ["role", "runner"], ["cap", "25"]]);
+    const addedRow = (await pool.query(
+      "SELECT id::text AS id, email, role, daily_cap_usd::text AS cap, created_by::text AS cb, updated_by::text AS ub, google_sub FROM studio_users WHERE email = $1",
+      [`${local.toLowerCase()}@${STUDIO_DOMAIN}`])).rows[0];
+    const addAudit = await auditSince(since, "user.create");
+    const before34 = await users73();
+    const duplicate = await post("/users", ownerJar, [["email", addedRow?.email.toUpperCase() ?? "x"], ["role", "viewer"]]);
+    const wrongDomain = await post("/users", ownerJar, [["email", `sap34.${randomBytes(2).toString("hex")}@other.test`], ["role", "viewer"]]);
+    const viewerAdd = await post("/users", viewerJar, [["email", syntheticEmail("sap34v")], ["role", "owner"]]);
+    const direct34 = [
+      await refusedCode(store.createUser({ ownerId: owner.id, email: `Upper.${randomBytes(2).toString("hex")}@${STUDIO_DOMAIN}`, role: "viewer", dailyCapMicros: null })),
+      await refusedCode(store.createUser({ ownerId: owner.id, email: `x.${randomBytes(2).toString("hex")}@other.test`, role: "viewer", dailyCapMicros: null })),
+      await refusedCode(store.createUser({ ownerId: runnerA.id, email: syntheticEmail("sap34r"), role: "owner", dailyCapMicros: null })),
+    ];
+    const after34 = await users73();
+    check("SAP34. over PostgreSQL the owner adds a user through the route: the address stored lower-cased, the role and cap as "
+      + "given, created and stamped (updated_by) by the owner, audited by the schema (user.create) with the owner as actor and "
+      + "no address; a duplicate in another case is refused (409), another domain (400) and a viewer (403) too, and the schema "
+      + "itself refuses an upper-case address, another domain and a runner as creator — each with nothing written",
+      added.status === 303 && addedRow?.role === "runner" && addedRow.cap === "25.000000" && addedRow.cb === owner.id && addedRow.ub === owner.id
+        && addedRow.google_sub === null && addAudit.length === 1 && addAudit[0].actor === owner.id && !addAudit[0].detail.includes("@")
+        && duplicate.status === 409 && duplicate.body.includes("<code>duplicate</code>") && wrongDomain.status === 400
+        && viewerAdd.status === 403 && direct34.every((c) => c === "23514") && before34 === after34,
+      `${added.status} ${duplicate.status} ${wrongDomain.status} ${viewerAdd.status} ${direct34.join()}`);
+
+    // SAP35: role, cap, disable (the schema revokes the sessions), re-enable, and the explicit revocation.
+    const target = await addUser("runner", "s73-target");
+    let targetJar = await signedIn(target);
+    since = await nowText();
+    const roleChange = await post(`/users/${target.id}/role`, ownerJar, [["role", "viewer"]]);
+    const capClear = await post(`/users/${target.id}/cap`, ownerJar, [["cap", ""]]);
+    const capSet = await post(`/users/${target.id}/cap`, ownerJar, [["cap", "7.25"]]);
+    const liveBefore = await liveSessions(target.id);
+    const disable = await post(`/users/${target.id}/disable`, ownerJar);
+    const signedOutNext = await get(w.base, "/runs", targetJar);
+    const liveAfterDisable = await liveSessions(target.id);
+    const enable = await post(`/users/${target.id}/enable`, ownerJar);
+    targetJar = await signedIn(target);
+    const revoke = await post(`/users/${target.id}/revoke-sessions`, ownerJar);
+    const afterRevoke = await get(w.base, "/runs", targetJar);
+    const row35 = (await pool.query("SELECT role, status, daily_cap_usd::text AS cap, updated_by::text AS ub FROM studio_users WHERE id = $1",
+      [target.id])).rows[0];
+    const audit35 = await auditSince(since);
+    const edits35 = audit35.filter((r) => r.action === "user.update" || r.action === "user.sessions_revoked");
+    check("SAP35. over PostgreSQL the role, the cap (cleared, then set), disable, re-enable and an explicit revocation each go "
+      + "through ONE owner edit with its declared actor: the schema audits each user.update with the owner as actor and no "
+      + "address or name; disabling revokes every session in the same transaction (the next request is 401); the revocation "
+      + "ends the re-signed-in session too and is audited with its count",
+      [roleChange, capClear, capSet, disable, enable, revoke].every((r) => r.status === 303) && liveBefore === 1 && liveAfterDisable === 0
+        && signedOutNext.status === 401 && afterRevoke.status === 401 && row35.role === "viewer" && row35.status === "active"
+        && row35.cap === "7.250000" && row35.ub === owner.id
+        && edits35.map((r) => r.action).join() === "user.update,user.update,user.update,user.update,user.update,user.sessions_revoked"
+        && edits35.every((r) => r.actor === owner.id && r.target_id === target.id && !r.detail.includes("@") && !r.detail.includes("Synthetic"))
+        && edits35.at(-1)?.detail === "{\"sessions\": 1}",
+      `${[roleChange, capClear, capSet, disable, enable, revoke].map((r) => r.status).join()} ${liveBefore}/${liveAfterDisable} `
+        + `${signedOutNext.status} ${afterRevoke.status} ${JSON.stringify(row35)} ${edits35.map((r) => `${r.action}:${r.detail}`).join(" | ")}`);
+
+    // Caps wide enough that only the rules under test refuse a confirmation below (the day's spend has grown by now).
+    await asActor(pool, owner.id, "UPDATE studio_settings SET daily_cap_usd = 99999, monthly_cap_usd = 999999, updated_by = $1", [owner.id]);
+
+    // SAP36: D — a runner with no daily cap cannot confirm; the owner's own NULL cap is still no per-user cap.
+    await post(`/users/${runnerB.id}/cap`, ownerJar, [["cap", ""]]);
+    await beat();
+    const quoteB = await answer(await ask(jarB));
+    const tally36 = await tally();
+    const refusedB = await post(`/quotes/${quoteB}/confirm`, jarB);
+    const tally36b = await tally();
+    const ownerQuote = await answer(await ask(ownerJar));
+    const ownerCap = (await pool.query("SELECT daily_cap_usd FROM studio_users WHERE id = $1", [owner.id])).rows[0].daily_cap_usd;
+    const ownerConfirmed = await store.confirmQuote({ quoteId: ownerQuote, userId: owner.id, ceilings: WIDE });
+    check("SAP36. over PostgreSQL a runner whose daily_cap_usd is NULL is refused at the confirmation (409, cap_missing) with "
+      + "nothing written — no run, job, ledger entry or consumed quote — while the owner, whose own cap is NULL too, confirms",
+      refusedB.status === 409 && refusedB.body.includes("<code>cap_missing</code>") && JSON.stringify(tally36) === JSON.stringify(tally36b)
+        && ownerCap === null && ownerConfirmed.ok,
+      `${refusedB.status} ${JSON.stringify(tally36)} ${JSON.stringify(tally36b)} ${JSON.stringify(ownerConfirmed)}`);
+
+    // SAP37: E — an acknowledgement survives its owner's later demotion.
+    const owner2 = await addUser("owner", "s73-owner2");
+    const owner2Jar = await signedIn(owner2);
+    const overrunRun37 = ownerConfirmed.ok ? ownerConfirmed.runId : "";
+    await pool.query("INSERT INTO studio_spend_ledger (entry, run_id, amount_usd) VALUES ('overrun', $1, 0.25)", [overrunRun37]);
+    await beat();
+    const lockedA = await store.confirmQuote({ quoteId: await answer(await ask(jarA)), userId: runnerA.id, ceilings: WIDE });
+    const runnerDirectAck = await store.acknowledgeOverrun({ runId: overrunRun37, ownerId: runnerA.id });
+    const ack37 = await post(`/spend/overruns/${overrunRun37}/acknowledge`, owner2Jar);
+    const demote37 = await post(`/users/${owner2.id}/role`, ownerJar, [["role", "runner"]]);
+    await beat();
+    const afterDemotion = await store.confirmQuote({ quoteId: await answer(await ask(jarA)), userId: runnerA.id, ceilings: WIDE });
+    const panel37 = await get(w.base, "/spend", ownerJar);
+    const unacknowledged = (await pool.query(UNACKNOWLEDGED_OVERRUNS_SQL)).rows[0].n;
+    const second37 = afterDemotion.ok ? afterDemotion.runId : "";
+    await pool.query("INSERT INTO studio_spend_ledger (entry, run_id, amount_usd) VALUES ('overrun', $1, 0.25)", [second37]);
+    const lockedAgain = await store.confirmQuote({ quoteId: await answer(await ask(jarA)), userId: runnerA.id, ceilings: WIDE });
+    check("SAP37. over PostgreSQL an overrun acknowledged by an owner who is later demoted stays acknowledged: confirmations stay "
+      + "unlocked (the worker's query counts none) and the spend panel shows it acknowledged; a runner's acknowledgement written "
+      + "through the store is refused; and a new unacknowledged overrun still locks every confirmation",
+      !lockedA.ok && lockedA.refusal === "confirmations_locked" && runnerDirectAck === false && ack37.status === 303
+        && demote37.status === 303 && afterDemotion.ok && unacknowledged === 0
+        && panel37.body.includes(`<code>${overrunRun37}</code></a>`) && !lockedAgain.ok && lockedAgain.refusal === "confirmations_locked",
+      `${JSON.stringify(lockedA)} ${runnerDirectAck} ${ack37.status} ${demote37.status} ${JSON.stringify(afterDemotion)} ${unacknowledged} ${JSON.stringify(lockedAgain)}`);
+    await post(`/spend/overruns/${second37}/acknowledge`, ownerJar);
+
+    // SAP38: the owner's caps.
+    since = await nowText();
+    const caps38 = await post("/settings/caps", ownerJar, [["daily", "90"], ["monthly", "250.50"]]);
+    const settings38 = (await pool.query("SELECT daily_cap_usd::text AS d, monthly_cap_usd::text AS m, updated_by::text AS ub FROM studio_settings")).rows[0];
+    const audit38 = await auditSince(since, "settings.update");
+    const page38 = await get(w.base, "/settings", ownerJar);
+    const before38 = await users73();
+    const bad38 = await Promise.all([[["daily", "100"], ["monthly", "10"]], [["daily", "-1"], ["monthly", "10"]], [["daily", "1.234"], ["monthly", "10"]]]
+      .map((fields) => post("/settings/caps", ownerJar, fields as Array<[string, string]>)));
+    const runnerCaps = await post("/settings/caps", jarA, [["daily", "1"], ["monthly", "1"]]);
+    const direct38 = await refusedCode(store.setCaps({ ownerId: runnerA.id, dailyCapMicros: 1, monthlyCapMicros: 1 }));
+    check("SAP38. over PostgreSQL the owner's caps are written in ONE owner edit, audited by the schema (settings.update) with the "
+      + "owner as actor; the page shows the effective cap, the lower of each cap and its ceiling ($75.00 for a $90 daily cap); "
+      + "invalid amounts (400), a runner (403) and a runner's edit straight through the store (the schema) change nothing",
+      caps38.status === 303 && settings38.d === "90.000000" && settings38.m === "250.500000" && settings38.ub === owner.id
+        && audit38.length === 1 && audit38[0].actor === owner.id
+        && page38.body.includes("<tr><td>Daily</td><td>$90.00</td><td>$75.00</td><td><strong>$75.00</strong></td></tr>")
+        && bad38.every((r) => r.status === 400) && runnerCaps.status === 403 && direct38 === "23514" && before38 === await users73(),
+      `${caps38.status} ${JSON.stringify(settings38)} ${audit38.length} ${bad38.map((r) => r.status).join()} ${runnerCaps.status} ${direct38}`);
+
+    // SAP39: the audit view over the real log, and hostile text in it.
+    const hostile = "<script>alert(1)</script>\"'&";
+    await asActor(pool, owner.id, "UPDATE studio_users SET display_name = $2, updated_by = $3 WHERE id = $1", [runnerA.id, `${hostile}[name]`, owner.id]);
+    await pool.query(`INSERT INTO studio_audit_log (actor_user_id, action, target_type, target_id, detail)
+      VALUES ($1, 'test.hostile', 'studio_runs', $2, $3::jsonb)`, [runnerA.id, `${hostile}[t]`, JSON.stringify({ note: `${hostile}[detail]` })]);
+    const auditPage = await get(w.base, "/audit", ownerJar);
+    const filtered = await get(w.base, "/audit?action=user.update", ownerJar);
+    const viewerAudit = await get(w.base, "/audit", viewerJar);
+    const usersPage = await get(w.base, "/users", ownerJar);
+    const auditList = auditPage.body.slice(auditPage.body.indexOf("<ol class=\"audit-log\">"));
+    const actionsShown = [...filtered.body.matchAll(/<li class="audit"><p><code>([^<]+)<\/code>/g)].map((m) => m[1]);
+    check("SAP39. over PostgreSQL the audit view is the owner's alone (a viewer 403), newest first, filtered by action, and "
+      + "inert: a hostile display name, target and detail are shown escaped (the detail as the stored JSON's text), never as "
+      + "markup, on the audit view and the users screen",
+      auditPage.status === 200 && auditList.indexOf("test.hostile") >= 0 && auditList.indexOf("test.hostile") < auditList.indexOf("settings.update")
+        && !auditPage.body.includes("<script>alert") && auditPage.body.includes(escapeText(`${hostile}[t]`))
+        && auditPage.body.includes(escapeText(`${hostile}[name]`)) && auditPage.body.includes(escapeText("[detail]"))
+        && actionsShown.length > 3 && actionsShown.every((a) => a === "user.update") && viewerAudit.status === 403
+        && usersPage.status === 200 && !usersPage.body.includes("<script>alert") && usersPage.body.includes(escapeText(`${hostile}[name]`)),
+      `${auditPage.status} ${actionsShown.length} ${viewerAudit.status} ${usersPage.status}`);
+
+    // SAP40: the last owner, and the acting owner stepping down (last, as it signs the owner out).
+    const otherOwners = (await pool.query(
+      "SELECT id::text AS id FROM studio_users WHERE role = 'owner' AND status = 'active' AND id <> $1", [owner.id])).rows.map((r) => r.id as string);
+    for (const id of otherOwners) await store.changeUser({ ownerId: owner.id, userId: id, change: { kind: "role", role: "viewer" } });
+    const before40 = await users73();
+    const lastRole = await post(`/users/${owner.id}/role`, ownerJar, [["role", "viewer"], ["confirm", "yes"]]);
+    const lastDisable = await post(`/users/${owner.id}/disable`, ownerJar, [["confirm", "yes"]]);
+    const bySchema = await refusedCode(asActor(pool, owner.id, "UPDATE studio_users SET role = 'viewer', updated_by = $1 WHERE id = $1", [owner.id]));
+    const unchanged40 = before40 === await users73();
+    const successor = await addUser("owner", "s73-successor");
+    const successorJar = await signedIn(successor);
+    const before40b = await users73();
+    const asked = await post(`/users/${owner.id}/role`, ownerJar, [["role", "runner"]]);
+    const notYet = before40b === await users73();
+    const stepped = await post(`/users/${owner.id}/role`, ownerJar, [["role", "runner"], ["confirm", "yes"]]);
+    const stillSignedIn = await get(w.base, "/runs", ownerJar);
+    const staleCookie = (await pool.query("SELECT count(*)::int AS n FROM studio_sessions WHERE user_id = $1 AND revoked_at IS NULL", [owner.id])).rows[0].n;
+    const roleNow = (await pool.query("SELECT role FROM studio_users WHERE id = $1", [owner.id])).rows[0].role;
+    const successorUsers = await get(w.base, "/users", successorJar);
+    check("SAP40. over PostgreSQL the last active owner can never be demoted or disabled — refused by the store's decision (409, "
+      + "last_owner) even when confirmed, and by the schema's trigger written directly — with nothing written; with a second "
+      + "owner, stepping down first asks for confirmation (nothing written), then demotes, revokes every session of the acting "
+      + "owner and signs them out, and the other owner carries on",
+      lastRole.status === 409 && lastRole.body.includes("<code>last_owner</code>") && lastDisable.status === 409
+        && lastDisable.body.includes("<code>last_owner</code>") && bySchema === "23514" && unchanged40
+        && asked.status === 200 && asked.body.includes("name=\"confirm\" value=\"yes\"") && notYet
+        && stepped.status === 303 && stepped.location === "/" && staleCookie === 0 && roleNow === "runner" && stillSignedIn.status === 401
+        && successorUsers.status === 200,
+      `${lastRole.status} ${lastDisable.status} ${bySchema} ${unchanged40} ${asked.status} ${notYet} ${stepped.status} ${staleCookie} ${roleNow}`);
     await w.close();
   }
 

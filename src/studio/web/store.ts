@@ -14,7 +14,9 @@
 
 import pg from "pg";
 
-import { microsToNumeric, numericToMicros, OVERRUN_ACKNOWLEDGED, UNACKNOWLEDGED_OVERRUNS_SQL } from "../db/runner.js";
+import {
+  microsToNumeric, numericToMicros, OVERRUN_ACKNOWLEDGED, OVERRUN_ACKNOWLEDGEMENTS_SQL, UNACKNOWLEDGED_OVERRUNS_SQL,
+} from "../db/runner.js";
 import {
   decideCancel, decideConfirm, localDay, preflightPurgeable, type DeploymentCeilings, type PreflightRequestInput, type Refusal,
 } from "./actions.js";
@@ -23,6 +25,7 @@ import type {
   ArtifactMeta, FindingRow, RequestRow, RunFilters, RunLineage, RunListRow, RunRow, StoredArtifact,
 } from "./runs.js";
 import type { Role, SessionRow, StudioUserRow } from "./sessions.js";
+import { decideUserChange, losesOwnSeat, type UserChange } from "./users.js";
 
 export interface AuditEntry {
   action: string;
@@ -113,7 +116,42 @@ export interface WebStore {
   /** §8.6: the import's run, its files and its import job, in ONE transaction, with its lineage when exactly one import matches. */
   createImport(input: { ownerId: string; runner: "live" | "fake"; files: readonly BundleFile[];
     lineage: { runMeta: Buffer; roundOneCritic: Buffer } | null }): Promise<{ runId: string; jobId: string; sourceRunId: string | null }>;
+
+  // --- Content Studio S7.3: users, caps and the audit view (owner only, §8.7). Every edit is ONE owner edit that
+  // first declares its actor (`declareActor`); the schema audits each with that actor and refuses a non-owner too.
+  /** Every user, for the owner: never a session value, and whether a Google account is bound, never its subject. */
+  listUsers(): Promise<UserListRow[]>;
+  /** §8.7: a user added by an address the caller lower-cased (the schema refuses any other, and a duplicate). */
+  createUser(input: { ownerId: string; email: string; role: Role; dailyCapMicros: number | null }): Promise<{ userId: string }>;
+  /** A role or status change, under the active owners' row locks (`decideUserChange`); never the email. */
+  changeUser(input: { ownerId: string; userId: string; change: UserChange }): Promise<UserEditResult>;
+  /** A user's own daily cap, set or cleared (null). */
+  setUserCap(input: { ownerId: string; userId: string; dailyCapMicros: number | null }): Promise<EditResult>;
+  /** Revokes every live session of one user, with an audit row of the count. */
+  revokeUserSessions(input: { ownerId: string; userId: string }): Promise<RevokeResult>;
+  /** The owner's daily and monthly caps (`studio_settings`); the schema audits it (`settings.update`). */
+  setCaps(input: { ownerId: string; dailyCapMicros: number; monthlyCapMicros: number }): Promise<EditResult>;
+  /** The audit log, newest first, optionally one action; at most `limit` rows from `offset`. */
+  listAudit(action: string | null, limit: number, offset: number): Promise<AuditListRow[]>;
+  /** Every action the audit log holds, for its filter. */
+  auditActions(): Promise<string[]>;
 }
+
+/** One user as the owner's users screen shows them (design §8.7, §9.5). */
+export interface UserListRow {
+  id: string; email: string; displayName: string | null; role: Role; status: "active" | "disabled";
+  dailyCapMicros: number | null; googleBound: boolean; createdAt: Date; lastSignInAt: Date | null; liveSessions: number;
+}
+
+/** One audit row as the owner's audit view shows it: `detail` is the stored JSON as TEXT, rendered escaped. */
+export interface AuditListRow {
+  id: string; at: Date; actorId: string | null; actorName: string | null; action: string; targetType: string | null;
+  targetId: string | null; detail: string;
+}
+
+/** A role or status change: `signedOut` when it took owner away from the acting owner, whose sessions then end. */
+export type UserEditResult = { ok: true; signedOut: boolean } | ({ ok: false } & Refusal);
+export type RevokeResult = { ok: true; revoked: number } | ({ ok: false } & Refusal);
 
 export interface PurgeResult { loginAttempts: number; sessions: number; preflightRequests: number; factChecks: number }
 
@@ -700,10 +738,13 @@ export class PgWebStore implements WebStore {
    */
   async acknowledgeOverrun(input: { runId: string; ownerId: string }): Promise<boolean> {
     return this.atomically(async (db) => {
+      // S7.3: written only for an active owner, judged against the live users row (the route is owner-only too);
+      // whether it acknowledges then no longer depends on the acknowledger's later role (OVERRUN_ACKNOWLEDGEMENTS_SQL).
+      const owner = (await db.query("SELECT studio_is_active_user_in_role($1::uuid, ARRAY['owner']) AS ok", [input.ownerId])).rows[0];
+      if (owner?.ok !== true) return { result: false, commit: false };
       const open = (await db.query(
         `SELECT 1 FROM studio_spend_ledger l WHERE l.run_id = $1::uuid AND l.entry = 'overrun' AND NOT EXISTS (
-           SELECT 1 FROM studio_audit_log a JOIN studio_users u ON u.id = a.actor_user_id AND u.role = 'owner'
-            WHERE a.action = '${OVERRUN_ACKNOWLEDGED}' AND a.target_type = 'studio_runs' AND a.target_id = l.run_id::text)`,
+           ${OVERRUN_ACKNOWLEDGEMENTS_SQL} AND a.target_id = l.run_id::text)`,
         [input.runId])).rows.length === 1;
       if (!open) return { result: false, commit: false };
       await db.query(
@@ -863,6 +904,120 @@ export class PgWebStore implements WebStore {
     });
   }
 
+  // --- Content Studio S7.3 -----------------------------------------------------------------------
+
+  async listUsers(): Promise<UserListRow[]> {
+    const { rows } = await this.db.query(
+      `SELECT u.id::text AS id, u.email, u.display_name, u.role, u.status, u.daily_cap_usd::text AS cap,
+              u.google_sub IS NOT NULL AS bound, u.created_at,
+              (SELECT max(a.at) FROM studio_audit_log a WHERE a.action = 'auth.sign_in' AND a.actor_user_id = u.id) AS last_sign_in,
+              (SELECT count(*)::int FROM studio_sessions s WHERE s.user_id = u.id AND s.revoked_at IS NULL
+                  AND s.idle_expires_at > now() AND s.absolute_expires_at > now()) AS live
+         FROM studio_users u ORDER BY u.role, u.email`);
+    return rows.map((r) => ({
+      id: r.id, email: String(r.email), displayName: textOrNull(r.display_name), role: r.role, status: r.status,
+      dailyCapMicros: numericToMicros(r.cap), googleBound: r.bound === true, createdAt: r.created_at,
+      lastSignInAt: (r.last_sign_in as Date | null) ?? null, liveSessions: Number(r.live),
+    }));
+  }
+
+  /** ONE owner edit: the insert names its creator; the schema stamps `updated_by`, audits `user.create` and refuses a duplicate. */
+  async createUser(input: { ownerId: string; email: string; role: Role; dailyCapMicros: number | null }): Promise<{ userId: string }> {
+    return this.ownerEdit(input.ownerId, async (db) => {
+      const userId = String((await db.query(
+        `INSERT INTO studio_users (email, role, daily_cap_usd, created_by) VALUES ($1, $2, $3, $4::uuid) RETURNING id::text AS id`,
+        [input.email, input.role, input.dailyCapMicros === null ? null : microsToNumeric(input.dailyCapMicros), input.ownerId])).rows[0]!.id);
+      return { result: { userId }, commit: true };
+    });
+  }
+
+  /**
+   * ONE owner edit: the active owners' rows locked (so two demotions cannot
+   * each see the other still active), the target's row locked, the change
+   * decided (`decideUserChange`), then written with its actor — the schema
+   * audits it (`user.update`) and revokes a disabled user's sessions in the
+   * same transaction. When the change takes owner away from the acting owner,
+   * their own sessions are revoked here too, so they are signed out at once.
+   */
+  async changeUser(input: { ownerId: string; userId: string; change: UserChange }): Promise<UserEditResult> {
+    return this.ownerEdit<UserEditResult>(input.ownerId, async (db) => {
+      const owners = (await db.query(
+        "SELECT id::text AS id FROM studio_users WHERE role = 'owner' AND status = 'active' ORDER BY id FOR UPDATE")).rows.map((r) => String(r.id));
+      const target = (await db.query(
+        "SELECT id::text AS id, role, status FROM studio_users WHERE id = $1::uuid FOR UPDATE", [input.userId])).rows[0] ?? null;
+      const decision = decideUserChange({ target, change: input.change, activeOwnerIds: owners });
+      if (!decision.ok) return { result: decision, commit: false };
+      if (input.change.kind === "role") {
+        await db.query("UPDATE studio_users SET role = $2, updated_by = $3::uuid WHERE id = $1::uuid", [input.userId, input.change.role, input.ownerId]);
+      } else {
+        await db.query("UPDATE studio_users SET status = $2, updated_by = $3::uuid WHERE id = $1::uuid", [input.userId, input.change.status, input.ownerId]);
+      }
+      const signedOut = losesOwnSeat(input.ownerId, input.userId, input.change);
+      if (signedOut) {
+        await db.query("UPDATE studio_sessions SET revoked_at = now() WHERE user_id = $1::uuid AND revoked_at IS NULL", [input.userId]);
+      }
+      return { result: { ok: true, signedOut }, commit: true };
+    });
+  }
+
+  async setUserCap(input: { ownerId: string; userId: string; dailyCapMicros: number | null }): Promise<EditResult> {
+    return this.ownerEdit<EditResult>(input.ownerId, async (db) => {
+      const cap = input.dailyCapMicros === null ? null : microsToNumeric(input.dailyCapMicros);
+      const target = (await db.query("SELECT daily_cap_usd::text AS cap FROM studio_users WHERE id = $1::uuid FOR UPDATE", [input.userId])).rows[0];
+      if (!target) return { result: { ok: false, refusal: "no_user", message: "there is no such user" }, commit: false };
+      if (numericToMicros(target.cap) === input.dailyCapMicros) {
+        return { result: { ok: false, refusal: "no_change", message: "the user already has that cap" }, commit: false };
+      }
+      await db.query("UPDATE studio_users SET daily_cap_usd = $2, updated_by = $3::uuid WHERE id = $1::uuid", [input.userId, cap, input.ownerId]);
+      return { result: { ok: true }, commit: true };
+    });
+  }
+
+  /** ONE owner edit: an active owner (judged against the live row), then every live session revoked, audited with the count. */
+  async revokeUserSessions(input: { ownerId: string; userId: string }): Promise<RevokeResult> {
+    return this.ownerEdit<RevokeResult>(input.ownerId, async (db) => {
+      const owner = (await db.query("SELECT studio_is_active_user_in_role($1::uuid, ARRAY['owner']) AS ok", [input.ownerId])).rows[0];
+      if (owner?.ok !== true) return { result: { ok: false, refusal: "not_permitted", message: "only an active owner can revoke sessions" }, commit: false };
+      const target = (await db.query("SELECT 1 FROM studio_users WHERE id = $1::uuid", [input.userId])).rows.length === 1;
+      if (!target) return { result: { ok: false, refusal: "no_user", message: "there is no such user" }, commit: false };
+      const revoked = (await db.query(
+        "UPDATE studio_sessions SET revoked_at = now() WHERE user_id = $1::uuid AND revoked_at IS NULL", [input.userId])).rowCount ?? 0;
+      await db.query(
+        `INSERT INTO studio_audit_log (actor_user_id, action, target_type, target_id, detail)
+         VALUES ($1::uuid, 'user.sessions_revoked', 'studio_users', $2, $3::jsonb)`,
+        [input.ownerId, input.userId, JSON.stringify({ sessions: revoked })]);
+      return { result: { ok: true, revoked }, commit: true };
+    });
+  }
+
+  /** ONE owner edit of the settings row's two caps; the schema audits it (`settings.update`, by its actor). */
+  async setCaps(input: { ownerId: string; dailyCapMicros: number; monthlyCapMicros: number }): Promise<EditResult> {
+    return this.ownerEdit<EditResult>(input.ownerId, async (db) => {
+      const updated = await db.query(
+        "UPDATE studio_settings SET daily_cap_usd = $1, monthly_cap_usd = $2, updated_by = $3::uuid WHERE singleton",
+        [microsToNumeric(input.dailyCapMicros), microsToNumeric(input.monthlyCapMicros), input.ownerId]);
+      if (updated.rowCount !== 1) return { result: { ok: false, refusal: "no_settings", message: "the settings row does not exist" }, commit: false };
+      return { result: { ok: true }, commit: true };
+    });
+  }
+
+  async listAudit(action: string | null, limit: number, offset: number): Promise<AuditListRow[]> {
+    const { rows } = await this.db.query(
+      `SELECT a.id::text AS id, a.at, a.actor_user_id::text AS actor, u.display_name, a.action, a.target_type, a.target_id,
+              a.detail::text AS detail
+         FROM studio_audit_log a LEFT JOIN studio_users u ON u.id = a.actor_user_id
+        WHERE ($1::text IS NULL OR a.action = $1)
+        ORDER BY a.at DESC, a.id DESC LIMIT $2 OFFSET $3`, [action, limit, offset]);
+    return rows.map((r) => ({
+      id: r.id, at: r.at, actorId: textOrNull(r.actor), actorName: textOrNull(r.display_name), action: String(r.action),
+      targetType: textOrNull(r.target_type), targetId: textOrNull(r.target_id), detail: String(r.detail),
+    }));
+  }
+
+  async auditActions(): Promise<string[]> {
+    return (await this.db.query("SELECT DISTINCT action FROM studio_audit_log ORDER BY action")).rows.map((r) => String(r.action));
+  }
+
   /** §6.4: the day's and the month's spend, per user, and every overrun — the ledger formula, by the schema's own functions. */
   async spendView(day: string): Promise<SpendView> {
     const totals = (await this.db.query(
@@ -879,8 +1034,7 @@ export class PgWebStore implements WebStore {
         GROUP BY u.id ORDER BY u.role, u.display_name NULLS LAST, u.id`, [day])).rows;
     const overruns = (await this.db.query(
       `SELECT l.run_id::text AS run_id, l.amount_usd::text AS amount, l.day_local::text AS day, r.requested_by::text AS requested_by,
-              EXISTS (SELECT 1 FROM studio_audit_log a JOIN studio_users o ON o.id = a.actor_user_id AND o.role = 'owner'
-                       WHERE a.action = '${OVERRUN_ACKNOWLEDGED}' AND a.target_type = 'studio_runs' AND a.target_id = l.run_id::text) AS acknowledged
+              EXISTS (${OVERRUN_ACKNOWLEDGEMENTS_SQL} AND a.target_id = l.run_id::text) AS acknowledged
          FROM studio_spend_ledger l JOIN studio_runs r ON r.id = l.run_id WHERE l.entry = 'overrun'
         ORDER BY l.day_local DESC, l.created_at DESC`)).rows;
     return {

@@ -19,7 +19,9 @@ import { fileURLToPath } from "node:url";
 
 import * as lib from "../../harness/contentRun/index.js";
 import type { ContentRunRuntime, CostCeilingLine, ReviewOnlyRequestUnit } from "../../harness/contentRun/index.js";
-import { STUDIO_IMPORT_FILE_NAMES, STUDIO_MIGRATION_LOCK_NAMESPACE } from "../db/runner.js";
+import {
+  OVERRUN_ACKNOWLEDGEMENTS_SQL, STUDIO_IMPORT_FILE_NAMES, STUDIO_MIGRATION_LOCK_NAMESPACE, UNACKNOWLEDGED_OVERRUNS_SQL,
+} from "../db/runner.js";
 import {
   decideFactCheck, runFactCheck, UNKNOWN_FIELDS_MAX, UPLOAD_LABEL, writeFactCheckOutcome, type FactCheckOutcome, type FactCheckRow,
 } from "./factCheck.js";
@@ -1352,6 +1354,35 @@ async function importChecks(): Promise<void> {
     `${JSON.stringify(fakeStudio.outcome).slice(0, 120)} ${JSON.stringify(fakeImport.outcome).slice(0, 120)} ${liveImport.outcome.outcome}`);
 }
 
+// --- SW41-SW42: Content Studio S7.3 — the runner's missing cap, and the overrun acknowledgement -------------
+
+function s73Checks(): void {
+  const runner = (cap: number | null) => (s: PaidUnitSnapshot) => { s.requester = { status: "active", role: "runner", dailyCapMicros: cap }; };
+  const cases: Array<[string, string, string]> = [
+    ["a runner with no daily cap", decide(snapshot(runner(null))), "cap_missing"],
+    ["a runner with no daily cap, nothing yet spent", decide(snapshot((s) => { runner(null)(s); s.userDaySpendMicros = 0; s.daySpendMicros = 0; })), "cap_missing"],
+    ["a runner with a cap of zero", decide(snapshot(runner(0))), "cap_exceeded_user_daily"],
+    ["a runner with a cap that fits", decide(snapshot(runner(25_000_000))), "ok"],
+    ["the owner with no daily cap (no per-user cap)", decide(snapshot()), "ok"],
+    ["an owner demoted to viewer, no cap", decide(snapshot((s) => { s.requester = { status: "active", role: "viewer", dailyCapMicros: null }; })),
+      "requester_not_permitted"],
+  ];
+  check("SW41. before every paid unit, a requester whose role is runner and whose daily_cap_usd is NULL is refused "
+    + "(cap_missing): a missing cap is zero (design §6.2, the S7 analysis's item 12); a runner with a cap is judged by it, and the "
+    + "owner's own NULL cap still means no per-user cap",
+    cases.every(([, got, want]) => got === want), cases.filter(([, got, want]) => got !== want).map(([n, got]) => `${n}: ${got}`).join("; "));
+
+  const acknowledgementReads = [UNACKNOWLEDGED_OVERRUNS_SQL, OVERRUN_ACKNOWLEDGEMENTS_SQL];
+  check("SW42. whether an overrun is acknowledged no longer depends on the acknowledger's CURRENT role: the query the worker "
+    + "reads before every unit (and the web's confirmation) joins no users row and names no role — any acknowledgement row "
+    + "with an actor counts — and it is built on the one shared OVERRUN_ACKNOWLEDGEMENTS_SQL",
+    acknowledgementReads.every((sql) => !/studio_users|\brole\b/.test(sql))
+      && UNACKNOWLEDGED_OVERRUNS_SQL.includes(OVERRUN_ACKNOWLEDGEMENTS_SQL)
+      && /a\.action = 'spend\.overrun_acknowledged' AND a\.actor_user_id IS NOT NULL AND a\.target_type = 'studio_runs'/.test(OVERRUN_ACKNOWLEDGEMENTS_SQL)
+      && /AND a\.target_id = l\.run_id::text\)/.test(UNACKNOWLEDGED_OVERRUNS_SQL),
+    UNACKNOWLEDGED_OVERRUNS_SQL.replace(/\s+/g, " "));
+}
+
 async function main(): Promise<void> {
   await startupChecks();
   beforeWorkChecks();
@@ -1365,6 +1396,7 @@ async function main(): Promise<void> {
   await productionWiringChecks();
   await factCheckChecks();
   await importChecks();
+  s73Checks();
   console.log(failures === 0 ? `\n[studio-worker] ALL PASS (${total} checks)` : `\n[studio-worker] ${failures} FAILURE(S) of ${total}`);
   process.exit(failures === 0 ? 0 : 1);
 }

@@ -112,6 +112,8 @@ export interface CapsLeft {
   spend: Pick<SpendView, "dayMicros" | "monthMicros" | "settings">;
   userDayMicros: number;
   userDailyCapMicros: number | null;
+  /** S7.3: the asking user's role — a runner with no daily cap cannot confirm (a missing cap is zero). */
+  userRole?: string | null;
 }
 
 /** What remains of each effective cap: the cap less the ledger's spend (never a price). */
@@ -122,6 +124,8 @@ export function capsLeftList(left: CapsLeft): string {
   return "<dl class=\"facts\">" + item("Left today", caps.dailyMicros, left.spend.dayMicros)
     + item("Left this month", caps.monthlyMicros, left.spend.monthMicros)
     + (caps.userDailyMicros === null ? "" : item("Left of your own daily cap", caps.userDailyMicros, left.userDayMicros))
+    + (caps.userDailyMicros === null && left.userRole === "runner"
+      ? "<dt>Your own daily cap</dt><dd>none — a runner without one cannot confirm (a missing cap is zero); the owner sets it</dd>" : "")
     + "</dl>";
 }
 
@@ -258,7 +262,8 @@ export function spendBody(input: { view: SpendView; ceilings: DeploymentCeilings
   const users = "<div class=\"table\"><table><thead><tr><th>User</th><th>Role</th><th>Today</th><th>This month</th><th>Own daily cap</th>"
     + "</tr></thead><tbody>" + v.users.map((u) => `<tr><td>${escapeHtml(u.name ?? "(no display name)")}</td>`
       + `<td>${escapeHtml(u.role)}${u.status === "active" ? "" : ` (${escapeHtml(u.status)})`}</td><td>${dollars(u.dayMicros)}</td>`
-      + `<td>${dollars(u.monthMicros)}</td><td>${u.dailyCapMicros === null ? "—" : dollars(Math.min(u.dailyCapMicros, input.ceilings.dailyMicros))}</td></tr>`).join("")
+      + `<td>${dollars(u.monthMicros)}</td><td>${u.dailyCapMicros === null ? (u.role === "runner" ? "none — cannot confirm" : "—")
+        : dollars(Math.min(u.dailyCapMicros, input.ceilings.dailyMicros))}</td></tr>`).join("")
     + "</tbody></table></div>";
   const overruns = v.overruns.length
     ? "<ul class=\"overruns\">" + v.overruns.map((o) => `<li><a href="/runs/${encodeURIComponent(o.runId)}"><code>${escapeHtml(o.runId)}</code></a> `

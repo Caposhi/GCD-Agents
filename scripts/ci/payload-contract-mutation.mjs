@@ -457,6 +457,29 @@
  * change. Three captured paths are added, the worker's fact-check and import
  * modules and the web's bundle module: sixty-seven in all, for 680 mutations.
  *
+ * Content Studio S7.3's group, `M681`–`M698`, covers the users, caps and audit
+ * screens, the runner's missing cap and the overrun acknowledgement. In the
+ * Studio web's offline suite: a runner reaching the users screen, a viewer the
+ * caps and settings screen or the audit log (`SA58`, `SA133`, `SA148`,
+ * `SA149`); addresses shown to anyone the users screen is rendered for
+ * (`SA135`); an added address not lower-cased (`SA136`, `SA153`); an
+ * email-edit path (`SA144`); an owner who demotes themself not signed out at
+ * the web layer, and the self-confirmation skipped (`SA143`); the last-owner
+ * refusal swallowed as success (`SA142`, `SA143`) and the last-owner decision
+ * counting the target itself (`SA142`); a cap above the deployment ceiling
+ * shown as effective (`SA146`); a typed cap left unbounded (`SA139`, `SA147`);
+ * a runner's NULL cap treated as unlimited at the confirmation (`SA151`); an
+ * audit row's detail rendered as markup (`SA149`, `SA150`); a scheduled-runs
+ * control rendered (`SA148`); and the owner's links shown to every role
+ * (`SA134`). In the Studio worker's offline suite: a runner's NULL cap treated
+ * as unlimited before a paid unit (`SW41`), and the overrun acknowledgement
+ * query rejoined to the acknowledger's current role (`SW42`). The web adds no
+ * session revocation of its own when a user is DISABLED — the schema's trigger
+ * revokes them in the same transaction, proven by `SA140` and `SAP35` — so the
+ * web-layer revocation proven here is the acting owner's own sign-out. Two
+ * captured paths are added, the web's users and user-views modules:
+ * sixty-nine in all, for 698 mutations.
+ *
  * It is offline and deterministic: no network, no database, no provider, no
  * credential. The mutations run in parallel on up to MAX_WORKERS workers (the
  * runner's available parallelism, capped), each worker in its OWN disposable
@@ -600,6 +623,9 @@ const STUDIO_MIGRATION_0004 = "studio/migrations/0004_studio_fact_checks_and_imp
 const STUDIO_WORKER_FACT_CHECK = "src/studio/worker/factCheck.ts";
 const STUDIO_WORKER_IMPORT = "src/studio/worker/importRun.ts";
 const STUDIO_WEB_BUNDLE = "src/studio/web/bundle.ts";
+// Content Studio S7.3: the users, caps and audit screens' decisions and views.
+const STUDIO_WEB_USERS = "src/studio/web/users.ts";
+const STUDIO_WEB_USER_VIEWS = "src/studio/web/userViews.ts";
 const PROVIDER_TEXT_LEAF = "src/harness/agents/providerText.ts";
 const CONTENT_INTELLIGENCE_SUITE = "dist/harness/contentIntelligence.selftest.js";
 const STUDIO_DB_SUITE = "dist/studio/db/migrate.offline.selftest.js";
@@ -6235,6 +6261,162 @@ const CONTENT_STUDIO_S7_2_MUTATIONS = [
   },
 ];
 
+// Content Studio S7.3: the users, caps and audit screens, the runner's missing cap and the overrun
+// acknowledgement, against the offline suites that prove them. The disposable-PostgreSQL suites
+// prove the same end to end (SAP34-SAP40, SWP36-SWP37).
+const CONTENT_STUDIO_S7_3_MUTATIONS = [
+  {
+    name: "a runner may open the users screen",
+    file: STUDIO_WEB_APP,
+    from: "  { method: \"GET\", path: \"/users\", minRole: \"owner\" },",
+    to: "  { method: \"GET\", path: \"/users\", minRole: \"runner\" },",
+    expect: ["SA58.", "SA133."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "a viewer may open the caps and settings screen",
+    file: STUDIO_WEB_APP,
+    from: "  { method: \"GET\", path: \"/settings\", minRole: \"owner\" },",
+    to: "  { method: \"GET\", path: \"/settings\", minRole: \"viewer\" },",
+    expect: ["SA58.", "SA133.", "SA148."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "a viewer may read the audit log",
+    file: STUDIO_WEB_APP,
+    from: "  { method: \"GET\", path: \"/audit\", minRole: \"owner\" },",
+    to: "  { method: \"GET\", path: \"/audit\", minRole: \"viewer\" },",
+    expect: ["SA58.", "SA133.", "SA149."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "the users screen shows addresses to anyone it is rendered for, not only an active owner",
+    file: STUDIO_WEB_USER_VIEWS,
+    from: "  const showEmail = input.viewer.role === \"owner\" && input.viewer.status === \"active\";",
+    to: "  const showEmail = true;",
+    expect: ["SA135."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "an added address is not lower-cased",
+    file: STUDIO_WEB_USERS,
+    from: "  const email = raw.trim().toLowerCase();",
+    to: "  const email = raw.trim();",
+    expect: ["SA136.", "SA153."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "an email-edit path exists: POST /users/:id/email, handled as an owner edit",
+    file: STUDIO_WEB_APP,
+    from: "  routes.push(...(options.extraRoutes ?? []));",
+    to: "  routes.push(...(options.extraRoutes ?? []), { method: \"POST\", path: \"/users/:id/email\", minRole: \"owner\", "
+      + "handle: handlers[\"POST /users/:id/role\"]! });",
+    expect: ["SA144."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "an owner who demotes themself is not signed out at the web layer (the cookie kept, no redirect to /)",
+    file: STUDIO_WEB_APP,
+    from: "    if (result.signedOut) return signedOut(ctx);",
+    to: "",
+    expect: ["SA143."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "demoting or disabling oneself needs no confirmation",
+    file: STUDIO_WEB_APP,
+    from: "    if (losesOwnSeat(owner.id, id, change) && ctx.form!.get(\"confirm\") !== \"yes\") {",
+    to: "    if (losesOwnSeat(owner.id, id, change) && ctx.form!.get(\"confirm\") === \"no-such-value\") {",
+    expect: ["SA143."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "the last-owner refusal is swallowed as success (redirected to the users screen)",
+    file: STUDIO_WEB_APP,
+    from: "    const result = await ownerWrite(ctx, () => store.changeUser({ ownerId: owner.id, userId: id, change }));\n"
+      + "    if (!result.ok) return userRefused(ctx, result.refusal === \"no_user\" ? 404 : 409, result);",
+    to: "    const result = await ownerWrite(ctx, () => store.changeUser({ ownerId: owner.id, userId: id, change }));\n"
+      + "    if (!result.ok) return result.refusal === \"last_owner\" ? redirect(ctx.res, 303, \"/users\")\n"
+      + "      : userRefused(ctx, result.refusal === \"no_user\" ? 404 : 409, result);",
+    expect: ["SA142.", "SA143."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "the last-owner decision counts the target itself among the other active owners",
+    file: STUDIO_WEB_USERS,
+    from: "  if (wasActiveOwner && !staysActiveOwner && !input.activeOwnerIds.some((id) => id !== t.id)) {",
+    to: "  if (wasActiveOwner && !staysActiveOwner && input.activeOwnerIds.length === 0) {",
+    expect: ["SA142."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "a cap above the deployment ceiling is shown as the effective cap",
+    file: STUDIO_WEB_USER_VIEWS,
+    from: "  const caps = effectiveCaps(settings, input.ceilings, null);",
+    to: "  const caps = { dailyMicros: settings?.dailyCapMicros ?? 0, monthlyMicros: settings?.monthlyCapMicros ?? 0, "
+      + "userDailyMicros: null as number | null };",
+    expect: ["SA146."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "a typed cap is not bounded at the deployment ceiling's order of magnitude",
+    file: STUDIO_WEB_USERS,
+    from: "  if (!(micros < bound)) {",
+    to: "  if (!(micros < bound * 1_000)) {",
+    expect: ["SA139.", "SA147."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "the web treats a runner's NULL daily cap as unlimited at the confirmation",
+    file: STUDIO_WEB_ACTIONS,
+    from: "  if (u.role === \"runner\" && u.dailyCapMicros === null) {",
+    to: "  if (u.role === \"no-such-role\" && u.dailyCapMicros === null) {",
+    expect: ["SA151."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "the worker treats a runner's NULL daily cap as unlimited before a paid unit",
+    file: STUDIO_WORKER_SPEND,
+    from: "  if (s.requester.role === \"runner\" && s.requester.dailyCapMicros === null) {",
+    to: "  if (s.requester.role === \"no-such-role\" && s.requester.dailyCapMicros === null) {",
+    expect: ["SW41."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "the overrun acknowledgement query is rejoined to the acknowledger's CURRENT role",
+    file: STUDIO_DB_RUNNER,
+    from: "export const OVERRUN_ACKNOWLEDGEMENTS_SQL = `SELECT 1 FROM studio_audit_log a\n",
+    to: "export const OVERRUN_ACKNOWLEDGEMENTS_SQL = `SELECT 1 FROM studio_audit_log a JOIN studio_users u ON u.id = a.actor_user_id AND u.role = 'owner'\n",
+    expect: ["SW42."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "an audit row's detail is rendered as markup, unescaped",
+    file: STUDIO_WEB_USER_VIEWS,
+    from: "    + `<pre class=\"detail\"><code>${escapeHtml(r.detail)}</code></pre></li>`).join(\"\");",
+    to: "    + `<pre class=\"detail\"><code>${r.detail}</code></pre></li>`).join(\"\");",
+    expect: ["SA149.", "SA150."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "a scheduled-runs control is rendered on the settings screen",
+    file: STUDIO_WEB_USER_VIEWS,
+    from: "    + `<dt>Scheduled runs</dt><dd>Off. ${escapeHtml(SCHEDULED_RUNS_UNAVAILABLE)}</dd>`",
+    to: "    + `<dt>Scheduled runs</dt><dd><label class=\"check\"><input type=\"checkbox\" name=\"scheduled_runs_enabled\" value=\"on\"> "
+      + "Enable scheduled runs</label></dd>`",
+    expect: ["SA148."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "the owner's navigation links are shown to every role",
+    file: STUDIO_WEB_VIEWS,
+    from: "    + (input.user.role === \"owner\" ? \"<a href=\\\"/users\\\">",
+    to: "    + (true ? \"<a href=\\\"/users\\\">",
+    expect: ["SA134."],
+    suite: STUDIO_WEB_SUITE,
+  },
+];
+
 // Every group, in order. MUTATIONS is their concatenation; the groups exist
 // only so `M-inc-sample` can spread its sample across them.
 const MUTATION_GROUPS = [
@@ -6250,6 +6432,7 @@ const MUTATION_GROUPS = [
   ["Content Studio S4", CONTENT_STUDIO_S4_MUTATIONS], ["Content Studio S5", CONTENT_STUDIO_S5_MUTATIONS],
   ["Content Studio S6.1", CONTENT_STUDIO_S6_1_MUTATIONS], ["Content Studio S6.2", CONTENT_STUDIO_S6_2_MUTATIONS],
   ["Content Studio S7.1", CONTENT_STUDIO_S7_1_MUTATIONS], ["Content Studio S7.2", CONTENT_STUDIO_S7_2_MUTATIONS],
+  ["Content Studio S7.3", CONTENT_STUDIO_S7_3_MUTATIONS],
 ];
 const MUTATIONS = MUTATION_GROUPS.flatMap(([, group]) => group);
 

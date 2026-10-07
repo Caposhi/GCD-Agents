@@ -37,7 +37,7 @@ button[disabled]{color:var(--muted);background:var(--panel)}
 code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.9em;word-break:break-all}
 .top{display:flex;flex-wrap:wrap;align-items:center;gap:.5rem 1rem;padding:.5rem 1rem;border-bottom:1px solid var(--line)}
 .top .brand{font-weight:700;text-decoration:none;color:var(--ink)}
-.top nav{display:flex;gap:1rem}
+.top nav{display:flex;flex-wrap:wrap;gap:0 1rem}
 .top .who{color:var(--muted);margin-left:auto}
 .top form{margin:0}
 h1{font-size:1.4rem;line-height:1.3;margin:.5rem 0 1rem}
@@ -110,6 +110,13 @@ td .lines li{white-space:normal}
 .badge-active{background:#dff3e3;color:#11602b}
 .tag-counts{padding-left:1.1rem;margin:.25rem 0}
 input[type=file]{min-height:44px;max-width:100%;font:inherit}
+input[type=text],input[type=email]{min-height:44px;max-width:100%;font:inherit;padding:.4rem .5rem;border:1px solid var(--line);border-radius:.4rem}
+.users,.audit-log{list-style:none;margin:0;padding:0}
+.user,.audit{padding:.75rem 0;border-bottom:1px solid var(--line)}
+.user p,.audit p{margin:.15rem 0}
+.inline-form{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;margin:0}
+.inline-form input[type=text]{width:7rem}
+.detail{white-space:pre-wrap;overflow-wrap:anywhere;margin:.25rem 0;padding:.5rem;background:var(--panel);border-radius:.4rem;font-size:.85rem}
 @media (max-width:699.98px){
 main{padding:.75rem}
 .facts{grid-template-columns:1fr}
