@@ -14,9 +14,11 @@
  * connection it opened has closed.
  *
  * Every check is `SWP…`, in groups: `startup`, `queue`, `paid`, `identical`,
- * `findings` and (Content Studio S6.2) `actions` — the free preflight answered
+ * `findings`, (Content Studio S6.2) `actions` — the free preflight answered
  * by the worker, the confirmation through the web's own store, and the paid
- * path behind it with the counting fake runner.
+ * path behind it with the counting fake runner — and (S7.2) `facts` and
+ * `imports`: the fact check and the import's revalidation, each staged through
+ * the web's own store and answered by the worker.
  */
 
 import { execFile, spawn, type ChildProcess } from "node:child_process";
@@ -31,20 +33,22 @@ import pg from "pg";
 import * as lib from "../../harness/contentRun/index.js";
 import type { ContentRunRuntime } from "../../harness/contentRun/index.js";
 import { runStudioMigrations, STUDIO_DATABASE_NAME, STUDIO_EXPECTED_MIGRATIONS, STUDIO_SCHEMA_VERSION } from "../db/runner.js";
-import { closeRun, type PaidStageRunner } from "./execute.js";
+import { closeRun, workerRuntime, type PaidStageRunner } from "./execute.js";
+import { UPLOAD_LABEL } from "./factCheck.js";
 import { CRITIC_ARTIFACT } from "./findings.js";
 import { ceilingMicros, microsToNumeric, numericToMicros } from "./money.js";
 import { studioOwnershipKey } from "./session.js";
 import { confirmationsLocked, OVERRUN_ACKNOWLEDGED } from "./spend.js";
-import { fakeTranscript, replayRunner, syntheticFactsBytes, type ReplayCall } from "./testSupport.js";
+import { fakeTranscript, memoryIo, memorySink, replayRunner, repoFacts, syntheticFactsBytes, type ReplayCall } from "./testSupport.js";
 import { startWorker, type WorkerHandle, type WorkerOptions } from "./worker.js";
 import { localDay, preflightRequest } from "../web/actions.js";
 import { PgWebStore } from "../web/store.js";
+import { importRunner, lineageKey } from "../web/bundle.js";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
-const GROUPS = ["startup", "queue", "paid", "identical", "findings", "actions"] as const;
+const GROUPS = ["startup", "queue", "paid", "identical", "findings", "actions", "facts", "imports"] as const;
 type Group = typeof GROUPS[number];
-const counts: Record<Group, number> = { startup: 0, queue: 0, paid: 0, identical: 0, findings: 0, actions: 0 };
+const counts: Record<Group, number> = { startup: 0, queue: 0, paid: 0, identical: 0, findings: 0, actions: 0, facts: 0, imports: 0 };
 let failures = 0;
 function check(group: Group, name: string, cond: boolean, detail = ""): void {
   console.log(`${cond ? "PASS" : "FAIL"}  [${group}] ${name}${cond || !detail ? "" : ` — ${detail}`}`);
@@ -506,22 +510,25 @@ async function queueGroup(dbs: Databases): Promise<void> {
         && recovery.includes(killed!.runId) && afterRow.state === "succeeded",
       `${JSON.stringify(killedRow)} ${killedJob} ${killedNames} ${reclaims} ${recovery}`);
 
-    // SWP27 (Content Studio S7.1): migration 0004's fact_check and import jobs are S7.2's; this worker never claims
-    // them, and its sweep expires them. Both are queued with a two-second expiry, then a fake job behind them.
+    // SWP27 (Content Studio S7.1; by fact since S7.2, whose worker claims every kind): migration 0004's fact_check
+    // and import jobs are FREE and claimed before a fake job queued with them. All three are written in one
+    // transaction, so they share a creation time: the claim's free-first order alone decides. (Until S7.2 this check
+    // read: "the worker never claims migration 0004's fact_check or import jobs (S7.2's) … the sweep expires them".)
     const client = await st.pool.connect();
     let factCheckJob = "";
     let importRun = "";
     let importJob = "";
+    let behind = { runId: "", jobId: "" };
     try {
       await client.query("BEGIN");
-      factCheckJob = (await client.query(
-        "INSERT INTO studio_jobs (kind, expires_at) VALUES ('fact_check', now() + interval '2 seconds') RETURNING id")).rows[0].id;
+      const fakeRun = (await client.query(
+        `INSERT INTO studio_runs (kind, requested_by, runner, goal, fact_version_id, automotive_facts_sha256)
+         VALUES ('full', $1, 'fake', $2, $3, $4) RETURNING id`, [st.owner, GOAL, st.factVersion, st.factSha])).rows[0].id;
+      behind = { runId: fakeRun, jobId: (await client.query("INSERT INTO studio_jobs (run_id, kind) VALUES ($1, 'fake') RETURNING id", [fakeRun])).rows[0].id };
+      factCheckJob = (await client.query("INSERT INTO studio_jobs (kind) VALUES ('fact_check') RETURNING id")).rows[0].id;
       importRun = (await client.query(
-        "INSERT INTO studio_runs (kind, requested_by, runner, fact_version_id) VALUES ('imported', $1, 'live', $2) RETURNING id",
-        [st.owner, st.factVersion])).rows[0].id;
-      importJob = (await client.query(
-        "INSERT INTO studio_jobs (run_id, kind, expires_at) VALUES ($1, 'import', now() + interval '2 seconds') RETURNING id",
-        [importRun])).rows[0].id;
+        "INSERT INTO studio_runs (kind, requested_by, runner) VALUES ('imported', $1, 'live') RETURNING id", [st.owner])).rows[0].id;
+      importJob = (await client.query("INSERT INTO studio_jobs (run_id, kind) VALUES ($1, 'import') RETURNING id", [importRun])).rows[0].id;
       const meta = Buffer.from("{}", "utf8");
       await client.query("INSERT INTO studio_run_artifacts (run_id, name, content, sha256, byte_length) VALUES ($1, 'run-meta.json', $2, $3, $4)",
         [importRun, meta, createHash("sha256").update(meta).digest("hex"), meta.length]);
@@ -529,24 +536,20 @@ async function queueGroup(dbs: Databases): Promise<void> {
     } finally {
       client.release();
     }
-    const behind = await fakeJob(st);
     const behindRow = await terminal(st, behind.runId);
-    const jobsOf = async () => (await st.pool.query(
-      "SELECT id, state, claimed_at IS NULL AS unclaimed FROM studio_jobs WHERE id = ANY ($1::uuid[]) ORDER BY kind",
-      [[factCheckJob, importJob]])).rows;
-    const expired = await waitFor("the sweep to expire S7.2's jobs",
-      async () => { const rows = await jobsOf(); return rows.every((r) => r.state === "expired") ? rows : undefined; }, 30_000);
-    const imported = await runRow(st, importRun);
+    const imported = await terminal(st, importRun);
     const tier = (await st.pool.query("SELECT import_tier FROM studio_runs WHERE id = $1", [importRun])).rows[0].import_tier;
-    const claimedNew = (await st.pool.query("SELECT count(*)::int AS n FROM studio_audit_log WHERE action = 'job.claim' AND target_id = ANY ($1::text[])",
-      [[factCheckJob, importJob]])).rows[0].n;
-    check("queue", "SWP27. the worker never claims migration 0004's fact_check or import jobs (S7.2's): a fake job queued "
-      + "behind them runs, while they stay unclaimed until the sweep expires them — the import's run cancelled "
-      + "(job_expired) and, by 0004, archived_unverified",
-      behindRow.state === "succeeded" && expired.length === 2 && expired.every((r) => r.unclaimed === true) && claimedNew === 0
-        && imported.state === "cancelled" && imported.failure_class === "job_expired" && tier === "archived_unverified"
-        && !standby.output.some((l) => l.startsWith("[studio-worker] job.claimed") && (l.includes(factCheckJob) || l.includes(importJob))),
-      `${behindRow.state} ${JSON.stringify(expired)} ${claimedNew} ${JSON.stringify(imported)} ${tier}`);
+    const claimOrder = (await st.pool.query(
+      `SELECT target_id FROM studio_audit_log WHERE action = 'job.claim' AND target_id = ANY ($1::text[]) ORDER BY at, id`,
+      [[factCheckJob, importJob, behind.jobId]])).rows.map((r) => String(r.target_id));
+    const factJobState = (await st.pool.query("SELECT state FROM studio_jobs WHERE id = $1", [factCheckJob])).rows[0].state;
+    check("queue", "SWP27. the worker claims migration 0004's fact_check and import jobs (S7.2), FREE kinds taken before a fake "
+      + "job queued with them in one transaction: a fact check with no check row is closed (no_check), an import of an "
+      + "incomplete folder ends succeeded and archived_unverified (incomplete_folder), and the fake job runs after both",
+      claimOrder.length === 3 && claimOrder.at(-1) === behind.jobId && claimOrder.includes(factCheckJob) && claimOrder.includes(importJob)
+        && factJobState === "finished" && behindRow.state === "succeeded"
+        && imported.state === "succeeded" && imported.failure_class === "incomplete_folder" && tier === "archived_unverified",
+      `${claimOrder.join()} ${factJobState} ${behindRow.state} ${JSON.stringify(imported)} ${tier}`);
   } finally {
     for (const child of children) { child.process.kill("SIGKILL"); await child.exited; }
     await st.close();
@@ -1078,21 +1081,20 @@ async function actionsGroup(dbs: Databases): Promise<void> {
       `${unpriced.refusalClass}`);
     await worker.stop();
 
-    // SWP20: a fake run (owner only, through the web's store), then a revise of it: planRevision's plan.
+    // SWP20: a fake run (owner only, through the web's store), then a revise of it. (By fact since Content Studio S7.2,
+    // owner decision of 2026-10-06: a fake run is never a paid action's source, so the revise is refused by name before
+    // any quote. Until S7.2 this check read: "a revise of it is quoted with planRevision's plan, stored with the outcome";
+    // that property is now proven on a verified live import's revise, SWP34.)
     worker = inProcess(st);
     await worker.ready;
     const fake = await web.createFakeRun({ ownerId: st.owner, goal: GOAL, platforms: PLATFORMS, scopeTags: null, factVersionId: st.factVersion });
     const fakeEnd = await terminal(st, fake.runId);
     const revise = await answered((await ask(st.runner, { action: "revise", goal: null, sourceRunId: fake.runId })).requestId);
-    const critic = JSON.parse(String((await st.pool.query(
-      "SELECT content FROM studio_run_artifacts WHERE run_id = $1 AND name = '06-final-critic.json'", [fake.runId])).rows[0].content)).output;
-    const plan = JSON.parse(JSON.stringify(rt.revision.planRevision(critic)));
-    check("actions", "SWP20. the owner's fake run (no quote, no reservation) succeeds on the worker; a revise of it is quoted "
-      + "with planRevision's plan, stored with the outcome, and its lines are computeCostCeiling's for the round",
-      fakeEnd.state === "succeeded" && revise.outcome === "quoted" && isDeepStrictEqual(revise.revisePlan, plan)
-        && plan.kind === "revision"
-        && (await ledgerOf(st, fake.runId)) === "",
-      `${fakeEnd.state} ${revise.outcome} ${revise.refusalClass} plan=${isDeepStrictEqual(revise.revisePlan, plan)} ${plan.kind} ledger=${await ledgerOf(st, fake.runId)}`);
+    check("actions", "SWP20. the owner's fake run (no quote, no reservation) succeeds on the worker; a revise of it is REFUSED by "
+      + "name (fake_source) before any quote — no quote, no plan — and the fake run has no ledger entry",
+      fakeEnd.state === "succeeded" && revise.outcome === "refused" && revise.refusalClass === "fake_source" && revise.quote === null
+        && revise.revisePlan === null && (await ledgerOf(st, fake.runId)) === "",
+      `${fakeEnd.state} ${revise.outcome} ${revise.refusalClass} ledger=${await ledgerOf(st, fake.runId)}`);
     await worker.stop();
 
     // SWP21: confirmed, then run on the injected counting fake paid runner: requests charged, reconciled, released.
@@ -1267,6 +1269,288 @@ async function actionsGroup(dbs: Databases): Promise<void> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// facts (Content Studio S7.2): the fact check, staged through the web's store and answered by the worker
+// ---------------------------------------------------------------------------
+
+/** A synthetic facts file of `n` records, plainly labelled. */
+const s72Facts = (n: number, edit: (record: Record<string, unknown>, i: number) => void = () => {}) => Buffer.from(JSON.stringify({
+  facts: Array.from({ length: n }, (_, i) => {
+    const record: Record<string, unknown> = {
+      id: `synthetic-swp-fact-${i}`, claim: `SYNTHETIC WORKER-POSTGRES FIXTURE ${i} - not a real automotive fact.`,
+      subject: `synthetic-swp-subject-${i}`, attribute: `synthetic-swp-attr-${i}`, tags: ["swp-all", ...(i % 2 ? ["swp-odd"] : [])],
+      sourceType: "repository_config", sourceRef: "synthetic://swp-test-fixture", provenance: "synthetic fixture; not a real source",
+      reviewedAt: "2026-09-01T00:00:00.000Z",
+    };
+    edit(record, i);
+    return record;
+  }),
+}, null, 2), "utf8");
+
+async function factsGroup(dbs: Databases): Promise<void> {
+  const st = await studio(dbs, "facts");
+  const web = new PgWebStore(st.pool, st.pool);
+  let worker: WorkerHandle | undefined;
+  const sha = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
+  const checkOf = (checkId: string) => waitFor(`fact check ${checkId}`, async () => {
+    const row = (await st.pool.query(
+      `SELECT c.outcome, c.refusal_class, c.refusal_message, c.unknown_fields, c.outcome_at, j.state AS job,
+              (SELECT a.at FROM studio_audit_log a WHERE a.action = 'fact_check.outcome' AND a.target_id = c.id::text) AS audit_at,
+              (SELECT a.detail FROM studio_audit_log a WHERE a.action = 'fact_check.outcome' AND a.target_id = c.id::text) AS detail
+         FROM studio_fact_checks c JOIN studio_jobs j ON j.id = c.job_id WHERE c.id = $1`, [checkId])).rows[0];
+    return row && row.outcome !== null && row.job === "finished" ? row : undefined;
+  });
+  const staged = async () => Number((await st.pool.query("SELECT count(*)::int AS n FROM studio_fact_uploads")).rows[0].n);
+  const stage = async (bytes: Buffer) => {
+    const result = await web.stageFactUpload({ ownerId: st.owner, content: bytes, sha256: sha(bytes) });
+    if (!result.ok) throw new Error(`not staged: ${result.refusal}`);
+    return result.checkId;
+  };
+  try {
+    worker = inProcess(st);
+    await worker.ready;
+
+    // SWP28: accepted, end to end.
+    const accepted = s72Facts(5, (r, i) => { if (i === 0) r.vin = "SYNTHETIC-VALUE"; });
+    const acceptedCheck = await checkOf(await stage(accepted));
+    const version = (await st.pool.query(
+      `SELECT content, record_count, tag_counts, uploaded_by::text AS by, uploaded_at, status FROM studio_fact_versions WHERE sha256 = $1`,
+      [sha(accepted)])).rows[0];
+    check("facts", "SWP28. an owner's upload, staged through the web's store, is checked by the worker and ACCEPTED: the version "
+      + "is created from the staged bytes, byte for byte, with the uploaded records' count and tag counts; the outcome (with "
+      + "the unknown field names, never their values), the staging row's deletion, the job's end and the audit row are ONE "
+      + "transaction (the version, the outcome and the audit row share its instant)",
+      acceptedCheck.outcome === "accepted" && version?.content.equals(accepted) && version.record_count === 5
+        && JSON.stringify(version.tag_counts) === JSON.stringify({ "swp-all": 5, "swp-odd": 2 }) && version.by === st.owner
+        && JSON.stringify(acceptedCheck.unknown_fields) === JSON.stringify(["facts[].vin"]) && (await staged()) === 0
+        && acceptedCheck.outcome_at.getTime() === version.uploaded_at.getTime()
+        && acceptedCheck.audit_at.getTime() === acceptedCheck.outcome_at.getTime()
+        && !JSON.stringify(acceptedCheck).includes("SYNTHETIC-VALUE") && acceptedCheck.detail.existing === false,
+      JSON.stringify({ ...acceptedCheck, detail: acceptedCheck.detail }).slice(0, 400));
+
+    // SWP29: refused with the loader's own message.
+    const missing = s72Facts(3, (r, i) => { if (i === 2) delete r.provenance; });
+    const refusedCheck = await checkOf(await stage(missing));
+    let expected = "";
+    try { lib.parseAutomotiveFacts(missing, { label: UPLOAD_LABEL, now: Date.now() }); } catch (error) { expected = (error as Error).message; }
+    const noVersion = (await st.pool.query("SELECT 1 FROM studio_fact_versions WHERE sha256 = $1", [sha(missing)])).rows.length === 0;
+    check("facts", "SWP29. a file the loader refuses is REFUSED with the loader's own message (loader_refused); no version is "
+      + "created, the staging row is deleted, and the outcome and the job's end are one transaction",
+      refusedCheck.outcome === "refused" && refusedCheck.refusal_class === "loader_refused" && expected.length > 0
+        && refusedCheck.refusal_message === expected && noVersion && (await staged()) === 0
+        && refusedCheck.audit_at.getTime() === refusedCheck.outcome_at.getTime(),
+      JSON.stringify(refusedCheck).slice(0, 400));
+
+    // SWP30: bytes that are already a version.
+    const versionsBefore = Number((await st.pool.query("SELECT count(*)::int AS n FROM studio_fact_versions")).rows[0].n);
+    const existingCheck = await checkOf(await stage(accepted));
+    const versionsAfter = Number((await st.pool.query("SELECT count(*)::int AS n FROM studio_fact_versions")).rows[0].n);
+    check("facts", "SWP30. bytes that are already a fact version are ACCEPTED, naming that version, with no insert; the staging "
+      + "row is deleted",
+      existingCheck.outcome === "accepted" && versionsAfter === versionsBefore && (await staged()) === 0 && existingCheck.detail.existing === true,
+      `${versionsBefore} → ${versionsAfter} ${JSON.stringify(existingCheck.detail)}`);
+
+    // SWP31: the sweep deletes an expired, unclaimed check's staged bytes only while they are its bytes.
+    await worker.stop();
+    worker = undefined;
+    const expiredCheck = async (bytes: Buffer, stagedBytes: Buffer) => {
+      const c = await st.pool.connect();
+      try {
+        await c.query("BEGIN");
+        await c.query("DELETE FROM studio_fact_uploads");
+        await c.query("INSERT INTO studio_fact_uploads (content, sha256, byte_length, uploaded_by) VALUES ($1, $2, $3, $4)",
+          [bytes, sha(bytes), bytes.length, st.owner]);
+        const job = (await c.query("INSERT INTO studio_jobs (kind, expires_at) VALUES ('fact_check', now() + interval '1 second') RETURNING id")).rows[0].id;
+        await c.query("INSERT INTO studio_fact_checks (job_id, requested_by, sha256, byte_length) VALUES ($1, $2, $3, $4)",
+          [job, st.owner, sha(bytes), bytes.length]);
+        if (!stagedBytes.equals(bytes)) {
+          await c.query("DELETE FROM studio_fact_uploads");
+          await c.query("INSERT INTO studio_fact_uploads (content, sha256, byte_length, uploaded_by) VALUES ($1, $2, $3, $4)",
+            [stagedBytes, sha(stagedBytes), stagedBytes.length, st.owner]);
+        }
+        await c.query("COMMIT");
+        return String(job);
+      } finally {
+        c.release();
+      }
+    };
+    const own = s72Facts(1);
+    const ownJob = await expiredCheck(own, own);
+    await sleep(1_500);
+    worker = inProcess(st);
+    await worker.ready;
+    const ownState = await waitFor("the sweep", async () => {
+      const r = (await st.pool.query("SELECT state FROM studio_jobs WHERE id = $1", [ownJob])).rows[0];
+      return r.state === "expired" ? r.state : undefined;
+    });
+    const ownLeft = await staged();
+    await worker.stop();
+    worker = undefined;
+    const other = s72Facts(2);
+    const otherJob = await expiredCheck(s72Facts(1, (r) => { r.claim = "SYNTHETIC replaced bytes"; }), other);
+    await sleep(1_500);
+    worker = inProcess(st);
+    await worker.ready;
+    await waitFor("the sweep", async () => ((await st.pool.query("SELECT state FROM studio_jobs WHERE id = $1", [otherJob])).rows[0].state === "expired") || undefined);
+    const otherLeft = (await st.pool.query("SELECT sha256 FROM studio_fact_uploads")).rows.map((r) => r.sha256);
+    check("facts", "SWP31. the sweep expires a fact check that was never claimed and deletes the staging row with it only while "
+      + "that row still holds the check's bytes (its sha256): another upload's staged bytes are left in place",
+      ownState === "expired" && ownLeft === 0 && otherLeft.join() === sha(other),
+      `${ownState} ${ownLeft} ${otherLeft.join()}`);
+    await st.pool.query("DELETE FROM studio_fact_uploads");
+  } finally {
+    await worker?.stop();
+    await st.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// imports (Content Studio S7.2): an import created through the web's store and revalidated by the worker
+// ---------------------------------------------------------------------------
+
+/** A run folder, as the CLI writes it: a live run's (the provider replayed), or a fake one's. */
+async function runFolder(runner: "live" | "fake"): Promise<Map<string, Buffer>> {
+  const sink = memorySink("import-folder");
+  const goal = "SYNTHETIC import goal";
+  if (runner === "fake") {
+    await lib.runFullPipeline(lib.loadRuntime(), { runner: "fake", facts: repoFacts(REPO_ROOT), goal, reviewedAt: new Date().toISOString(),
+      reviewedAtExplicit: false }, memoryIo(sink));
+  } else {
+    const transcript = await fakeTranscript(REPO_ROOT, goal);
+    await lib.runFullPipeline(workerRuntime(lib.loadRuntime(), replayRunner(transcript)), {
+      runner: "live", facts: repoFacts(REPO_ROOT), goal, reviewedAt: new Date().toISOString(), reviewedAtExplicit: false,
+    }, memoryIo(sink, { consent: async () => {}, execution: lib.createReviewOnlyExecutionContext({ caller: "studio-worker", checkRequests: async () => {} }) }));
+  }
+  return sink.files;
+}
+
+async function importsGroup(dbs: Databases): Promise<void> {
+  const st = await studio(dbs, "imports");
+  const web = new PgWebStore(st.pool, st.pool);
+  let worker: WorkerHandle | undefined;
+  const sha = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
+  const create = async (files: Map<string, Buffer>) => {
+    const list = [...files].map(([name, content]) => ({ name, content, sha256: sha(content) }));
+    return web.createImport({ ownerId: st.owner, runner: importRunner(list), files: list, lineage: lineageKey(list) });
+  };
+  const ended = async (runId: string) => {
+    await terminal(st, runId);
+    return (await st.pool.query(
+      `SELECT r.state, r.import_tier, r.failure_class, r.failure_message, r.goal, r.platforms, r.scope_tags, r.runner,
+              r.fact_version_id::text AS fv, r.approved_facts_sha256 AS approved, r.automotive_facts_sha256 AS automotive,
+              r.evidence_pack_sha256 AS pack, r.code_commit, r.finished_at, r.source_run_id::text AS source, r.blocking_findings,
+              j.state AS job, (SELECT a.at FROM studio_audit_log a WHERE a.action = 'import.outcome' AND a.target_id = r.id::text) AS audit_at
+         FROM studio_runs r JOIN studio_jobs j ON j.run_id = r.id WHERE r.id = $1`, [runId])).rows[0];
+  };
+  const edited = (files: Map<string, Buffer>, edit: (m: Map<string, Buffer>) => void) => {
+    const copy = new Map([...files].map(([k, v]) => [k, Buffer.from(v)] as [string, Buffer]));
+    edit(copy);
+    return copy;
+  };
+  const editMeta = (edit: (meta: Record<string, any>) => void) => (m: Map<string, Buffer>) => {
+    const meta = JSON.parse(m.get("run-meta.json")!.toString("utf8"));
+    edit(meta);
+    m.set("run-meta.json", Buffer.from(JSON.stringify(meta, null, 2), "utf8"));
+  };
+  try {
+    await asActor(st.pool, st.owner,
+      "UPDATE studio_settings SET active_fact_version_id = $1, daily_cap_usd = 1000, monthly_cap_usd = 10000, updated_by = $2",
+      [st.factVersion, st.owner]);
+    worker = inProcess(st);
+    await worker.ready;
+    const live = await runFolder("live");
+    const meta = JSON.parse(live.get("run-meta.json")!.toString("utf8"));
+
+    // SWP32: verified, end to end.
+    const verified = await create(live);
+    const v = await ended(verified.runId);
+    const stored = (await st.pool.query("SELECT name, content FROM studio_run_artifacts WHERE run_id = $1", [verified.runId])).rows;
+    check("imports", "SWP32. a complete live run folder, imported through the web's store, is revalidated by the worker with "
+      + "verifySourceRun in revision mode and ends succeeded and VERIFIED: every fingerprint, the fact version its folder names, "
+      + "the worker's commit, the goal and platforms from that result, its findings rebuilt from its critic, its files byte for "
+      + "byte — and its end, its job's end and its audit row in ONE transaction",
+      v.state === "succeeded" && v.import_tier === "verified" && v.failure_class === null && v.fv === st.factVersion
+        && v.approved === approvedSha && v.automotive === st.factSha && v.pack === meta.evidencePackSha256 && v.code_commit === COMMIT
+        && v.goal === meta.goal && JSON.stringify(v.platforms) === JSON.stringify(meta.platforms) && v.scope_tags === null
+        && v.runner === "live" && v.job === "finished" && v.blocking_findings === 1 && v.audit_at.getTime() === v.finished_at.getTime()
+        && stored.length === live.size && stored.every((r) => live.get(r.name)?.equals(r.content)),
+      JSON.stringify({ ...v, finished_at: undefined, audit_at: undefined }).slice(0, 400));
+
+    // SWP33: archived, each with its class and reason, and only bounded metadata.
+    const corrupt = (m: Map<string, Buffer>) => {
+      const script = JSON.parse(m.get("03-hook-story-script.json")!.toString("utf8"));
+      script.output.evidence = { ...(script.output.evidence ?? {}), supportingFactIds: ["synthetic-unknown-id"] };
+      m.set("03-hook-story-script.json", Buffer.from(JSON.stringify(script, null, 2), "utf8"));
+    };
+    const archivedCases: Array<[string, Map<string, Buffer>, string]> = [
+      ["an old approved-facts hash", edited(live, editMeta((m) => { m.approvedFacts.sha256 = "0".repeat(64); m.goal = "é".repeat(2_001); })), "approved_facts_changed"],
+      ["a missing fact version", edited(live, editMeta((m) => { m.automotiveFacts.sha256 = "1".repeat(64); })), "fact_version_missing"],
+      ["a failed saved output", edited(live, corrupt), "revalidation_failed"],
+      ["an incomplete folder", edited(live, (m) => { m.delete("06-final-critic.json"); }), "incomplete_folder"],
+    ];
+    const archived = [];
+    for (const [label, files, cls] of archivedCases) archived.push([label, await ended((await create(files)).runId), cls] as const);
+    check("imports", "SWP33. an import that does not revalidate ends succeeded and ARCHIVED (archived_unverified) with its class "
+      + "and reason — an old approved-facts hash, a fact version never uploaded, a failed saved output, an incomplete folder — "
+      + "keeping only bounded metadata (a 2,001-character goal is null) and no verified fingerprint pair",
+      archived.every(([, r, cls]) => r.state === "succeeded" && r.import_tier === "archived_unverified" && r.failure_class === cls
+        && typeof r.failure_message === "string" && r.failure_message.length > 0 && r.automotive === null && r.job === "finished")
+        && archived[0]![1].goal === null && archived[1]![1].goal === meta.goal
+        && JSON.stringify(archived[1]![1].platforms) === JSON.stringify(meta.platforms),
+      archived.map(([label, r]) => `${label}: ${r.import_tier}/${r.failure_class}/${String(r.goal).slice(0, 12)}`).join(" | "));
+
+    // SWP34: an import as a paid source only when verified; a fake import never.
+    const fakeImport = await ended((await create(await runFolder("fake"))).runId);
+    const fakeImportId = (await st.pool.query("SELECT id::text AS id FROM studio_runs WHERE kind = 'imported' AND runner = 'fake'")).rows[0].id;
+    const archivedId = (await st.pool.query(
+      "SELECT id::text AS id FROM studio_runs WHERE kind = 'imported' AND failure_class = 'revalidation_failed'")).rows[0].id;
+    const askRevise = async (sourceRunId: string, factVersionId: string | null) => {
+      const asked = await web.createPreflightRequest(preflightRequest({ userId: st.runner, action: "revise", goal: null,
+        platforms: meta.platforms, scopeTags: null, sourceRunId, factVersionId: factVersionId ?? st.factVersion }));
+      return waitFor(`preflight ${asked.requestId}`, async () => {
+        const view = await web.findPreflightRequest(asked.requestId);
+        return view && view.outcome !== null ? view : undefined;
+      });
+    };
+    const fromVerified = await askRevise(verified.runId, st.factVersion);
+    const fromArchived = await askRevise(archivedId, st.factVersion);
+    const fromFake = await askRevise(fakeImportId, fakeImport.fv);
+    const plan = JSON.parse(JSON.stringify(lib.loadRuntime().revision.planRevision(JSON.parse(live.get("06-final-critic.json")!.toString("utf8")).output)));
+    check("imports", "SWP34. a verified live import is a paid action's source: its revise is quoted with planRevision's plan, "
+      + "stored with the outcome (the property S6.2's SWP20 proved on a fake run); an archived import is refused "
+      + "(source_not_verified) and a verified import of a FAKE CLI run is refused by name (fake_source), each before any quote",
+      fakeImport.import_tier === "verified" && fakeImport.runner === "fake"
+        && fromVerified.outcome === "quoted" && isDeepStrictEqual(fromVerified.revisePlan, plan) && plan.kind === "revision"
+        && fromArchived.outcome === "refused" && fromArchived.refusalClass === "source_not_verified"
+        && fromFake.outcome === "refused" && fromFake.refusalClass === "fake_source" && fromFake.quote === null,
+      `${fromVerified.outcome}/${fromVerified.refusalClass} ${fromArchived.refusalClass} ${fromFake.refusalClass} ${fakeImport.import_tier}`);
+
+    // SWP35: lineage — proven, ambiguous, absent — over a fresh folder that no earlier import shares.
+    const second = await runFolder("live");
+    const source = await create(second);
+    await ended(source.runId);
+    const child = new Map<string, Buffer>([["run-meta.json", second.get("run-meta.json")!], ["round-1-06-final-critic.json", second.get("06-final-critic.json")!],
+      ["revision-meta.json", Buffer.from(JSON.stringify({ runner: "live" }), "utf8")]]);
+    const proven = await create(child);
+    const absent = await create(edited(child, (m) => { m.set("round-1-06-final-critic.json", Buffer.from("{}", "utf8")); }));
+    await ended((await create(second)).runId);
+    const ambiguous = await create(child);
+    const pins = async (runId: string) => (await st.pool.query(
+      "SELECT source_run_id::text AS source, fact_version_id::text AS fv FROM studio_runs WHERE id = $1", [runId])).rows[0];
+    const [p, a, amb] = [await pins(proven.runId), await pins(absent.runId), await pins(ambiguous.runId)];
+    check("imports", "SWP35. lineage is recorded only when exactly one non-deleted import's run-meta.json and 06-final-critic.json "
+      + "are this folder's run-meta.json and round-1-06-final-critic.json, byte for byte — the child then pins its source's fact "
+      + "version — and not when none or two match",
+      proven.sourceRunId === source.runId && p.source === source.runId && p.fv === st.factVersion
+        && absent.sourceRunId === null && a.source === null && a.fv === null
+        && ambiguous.sourceRunId === null && amb.source === null && amb.fv === null,
+      JSON.stringify([p, a, amb]));
+  } finally {
+    await worker?.stop();
+    await st.close();
+  }
+}
+
 async function main(): Promise<void> {
   const admin = adminUrl();
   const adminPool = openPool("admin", { connectionString: admin, max: 3, connectionTimeoutMillis: 10_000 });
@@ -1290,6 +1574,8 @@ async function main(): Promise<void> {
     await identicalGroup(dbs);
     await findingsGroup(dbs);
     await actionsGroup(dbs);
+    await factsGroup(dbs);
+    await importsGroup(dbs);
   } finally {
     for (const name of [...dbs.created]) await dbs.drop(name).catch((e) => console.error(`[studio-worker-postgres] drop ${name}: ${(e as Error).message}`));
     await closePool(adminPool);

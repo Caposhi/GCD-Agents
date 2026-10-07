@@ -33,6 +33,7 @@ import { csrfTokenFor, LOGIN_COOKIE, SESSION_COOKIE, sessionIdHash } from "./ses
 import { STUDIO_ALLOWED_HD } from "./startup.js";
 import { PgWebStore } from "./store.js";
 import { FakeIssuer, STUDIO_DOMAIN, syntheticEmail, syntheticRunArtifacts } from "./testSupport.js";
+import { IMPORT_MAX_DOCUMENT_BYTES, RUN_BUNDLE_SCHEMA } from "./bundle.js";
 import { providerTextWithContact } from "../../harness/agents/providerText.js";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -41,6 +42,7 @@ const COMMIT = createHash("sha256").update("studio-web-postgres-suite").digest("
 const CLIENT_ID = `client-${randomBytes(4).toString("hex")}.apps.test`;
 const CLIENT_SECRET = `secret-${randomBytes(18).toString("base64url")}`;
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
+const sha256Of = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
 
 let failures = 0;
 let total = 0;
@@ -914,6 +916,168 @@ async function suite(pool: pg.Pool, url: string, issuer: FakeIssuer): Promise<vo
       spend.status === 200 && dbDay === localDay(Date.now()) && spend.body.includes(`Today (${dbDay})`)
         && spend.body.includes("Synthetic s62-runner-a") && spend.body.includes("acknowledged"),
       `${spend.status} ${dbDay}`);
+
+    // SAP27-SAP33 (Content Studio S7.2): fact versions, imports and the whole-run bundle over the real schema.
+    const viewerS72 = await addUser("viewer", "s72-viewer");
+    const viewerJar = await signedIn(viewerS72);
+    const document = (path: string, jar: Jar, text: string) => post(path, jar, [["document", text]]);
+    const bundleText = (files: Array<[string, Buffer]>, edit: (entry: Record<string, string>, i: number) => void = () => {}) =>
+      JSON.stringify({ schema: RUN_BUNDLE_SCHEMA, files: files.map(([name, content], i) => {
+        const entry: Record<string, string> = { name, sha256: sha256Of(content), base64: content.toString("base64") };
+        edit(entry, i);
+        return entry;
+      }) });
+    const counts = async () => (await pool.query(
+      `SELECT (SELECT count(*) FROM studio_runs)::int AS runs, (SELECT count(*) FROM studio_jobs)::int AS jobs,
+              (SELECT count(*) FROM studio_run_artifacts)::int AS artifacts, (SELECT count(*) FROM studio_fact_uploads)::int AS staged,
+              (SELECT count(*) FROM studio_fact_checks)::int AS checks, (SELECT count(*) FROM studio_fact_versions)::int AS versions,
+              (SELECT count(*) FROM studio_preflight_requests)::int AS requests,
+              (SELECT active_fact_version_id::text FROM studio_settings) AS active,
+              (SELECT string_agg(status, ',' ORDER BY id) FROM studio_fact_versions) AS statuses`)).rows[0];
+
+    // SAP27: every S7.2 edit is the owner's: refused by the schema for a runner, with nothing written.
+    const s72Bytes = Buffer.from(JSON.stringify({ facts: [], synthetic: "sap27" }), "utf8");
+    const before27 = await counts();
+    const refusedCode = (p: Promise<unknown>) => p.then(() => "written", (e) => String((e as { code?: unknown }).code));
+    const runnerEdits = [
+      await refusedCode(store.stageFactUpload({ ownerId: runnerA.id, content: s72Bytes, sha256: sha256Of(s72Bytes) })),
+      await refusedCode(store.activateFactVersion({ ownerId: runnerA.id, versionId: factVersion })),
+      await refusedCode(store.setFactVersionStatus({ ownerId: runnerA.id, versionId: factVersion, status: "retired" })),
+      await refusedCode(store.createImport({ ownerId: runnerA.id, runner: "live", lineage: null,
+        files: [{ name: "summary.md", content: Buffer.from("x"), sha256: sha256Of(Buffer.from("x")) }] })),
+    ];
+    const after27 = await counts();
+    check("SAP27. over PostgreSQL every S7.2 edit is the owner's: a runner's upload, activation, retirement and import, each "
+      + "written straight through the store with the runner declared as the transaction's actor, is refused by the schema "
+      + "(check_violation) and leaves nothing behind",
+      runnerEdits.every((code) => code === "23514") && JSON.stringify(before27) === JSON.stringify(after27),
+      `${runnerEdits.join()} ${JSON.stringify(before27)} ${JSON.stringify(after27)}`);
+
+    // SAP28: activate, retire and restore through the routes, each audited with the owner as actor; never the active one retired.
+    const other = await (async () => {
+      const bytes = Buffer.from(JSON.stringify({ facts: [], synthetic: "sap28" }), "utf8");
+      const staged = await store.stageFactUpload({ ownerId: owner.id, content: bytes, sha256: sha256Of(bytes) });
+      if (!staged.ok) throw new Error(staged.refusal);
+      const c = await pool.connect();
+      try {
+        await c.query("BEGIN");
+        await c.query("UPDATE studio_jobs SET state = 'running' WHERE id = $1", [staged.jobId]);
+        const id = (await c.query(`INSERT INTO studio_fact_versions (sha256, content, byte_length, record_count, tag_counts, uploaded_by)
+          SELECT sha256, content, byte_length, 0, '{}', uploaded_by FROM studio_fact_uploads RETURNING id::text AS id`)).rows[0].id as string;
+        await c.query("UPDATE studio_fact_checks SET outcome = 'accepted' WHERE id = $1", [staged.checkId]);
+        await c.query("DELETE FROM studio_fact_uploads");
+        await c.query("UPDATE studio_jobs SET state = 'finished' WHERE id = $1", [staged.jobId]);
+        await c.query("COMMIT");
+        return id;
+      } finally {
+        c.release();
+      }
+    })();
+    const auditFrom = (await pool.query("SELECT count(*)::int AS n FROM studio_audit_log")).rows[0].n as number;
+    const retireActive = await post(`/facts/versions/${factVersion}/retire`, ownerJar);
+    const activeKept = (await counts()).active === factVersion;
+    const activate = await post(`/facts/versions/${other}/activate`, ownerJar);
+    const retire = await post(`/facts/versions/${factVersion}/retire`, ownerJar);
+    const restore = await post(`/facts/versions/${factVersion}/restore`, ownerJar);
+    const runnerRetire = await post(`/facts/versions/${factVersion}/retire`, jarA);
+    const audited = (await pool.query(
+      `SELECT action, actor_user_id::text AS actor, detail FROM studio_audit_log ORDER BY at OFFSET $1`, [auditFrom])).rows
+      .filter((r) => r.action === "settings.update" || r.action === "fact_version.status")
+      .map((r) => `${r.action}:${r.actor === owner.id ? "owner" : r.actor}:${typeof r.detail.after === "string" ? r.detail.after : ""}`);
+    // A direct edit with no actor declared, on the pool the helper used, and one carrying the last editor's id, are refused.
+    const noActor = await refusedCode(pool.query("UPDATE studio_settings SET active_fact_version_id = $1", [factVersion]));
+    const stale = await refusedCode(pool.query("UPDATE studio_fact_versions SET status = 'retired', status_changed_by = $2 WHERE id = $1",
+      [factVersion, owner.id]));
+    check("SAP28. over PostgreSQL the owner activates, retires and restores versions through the routes, each one edit "
+      + "declaring the owner as its transaction's actor and audited by the schema with that actor (settings.update, "
+      + "fact_version.status retired then active); retiring the active version is refused (409, nothing changed) and a "
+      + "runner's is refused at the route (403); an edit with no actor, or carrying the last editor's id undeclared, is refused",
+      retireActive.status === 409 && activeKept && activate.status === 303 && retire.status === 303 && restore.status === 303
+        && runnerRetire.status === 403 && (await counts()).active === other
+        && audited.join() === "settings.update:owner:,fact_version.status:owner:retired,fact_version.status:owner:active"
+        && noActor === "23514" && stale === "23514",
+      `${retireActive.status} ${activate.status} ${retire.status} ${restore.status} ${runnerRetire.status} ${audited.join()} ${noActor} ${stale}`);
+
+    // SAP29: a version's bytes are the owner's alone.
+    const asOwner = await get(w.base, `/facts/versions/${factVersion}/file`, ownerJar);
+    const asRunner = await get(w.base, `/facts/versions/${factVersion}/file`, jarA);
+    const asViewer = await get(w.base, `/facts/versions/${factVersion}/file`, viewerJar);
+    const versionsPage = await get(w.base, "/facts", viewerJar);
+    check("SAP29. over PostgreSQL the owner downloads a version's exact bytes as an attachment; a runner and a viewer are refused "
+      + "(403), and a viewer's versions list shows each version's sha256, uploader and counts with no download link",
+      asOwner.status === 200 && asOwner.body === facts.toString("utf8") && asOwner.headers.get("content-disposition")?.startsWith("attachment;") === true
+        && asOwner.headers.get("content-security-policy") === "default-src 'none'; sandbox"
+        && asRunner.status === 403 && asViewer.status === 403 && versionsPage.status === 200
+        && versionsPage.body.includes(factSha.slice(0, 12)) && !versionsPage.body.includes("/file"),
+      `${asOwner.status} ${asRunner.status} ${asViewer.status} ${versionsPage.status}`);
+
+    // SAP30: the whole-run bundle re-imports byte for byte.
+    const files = syntheticRunArtifacts("");
+    for (const [name, text] of Object.entries(files)) {
+      const bytes = Buffer.from(text, "utf8");
+      await pool.query("INSERT INTO studio_run_artifacts (run_id, name, content, sha256, byte_length) VALUES ($1, $2, $3, $4, $5)",
+        [fakeId, name, bytes, sha256Of(bytes), bytes.length]);
+    }
+    const download = await fetch(`${w.base}/runs/${fakeId}/bundle`, { headers: { cookie: viewerJar.header() } });
+    const bundle = Buffer.from(await download.arrayBuffer());
+    const reimport = await document("/imports", ownerJar, bundle.toString("utf8"));
+    const reimportId = /^\/runs\/([0-9a-f-]{36})$/.exec(reimport.location ?? "")?.[1] ?? "";
+    const pair = (await pool.query(
+      `SELECT COALESCE(a.name, b.name) AS name, a.content = b.content AS same
+         FROM (SELECT name, content FROM studio_run_artifacts WHERE run_id = $1) a
+         FULL JOIN (SELECT name, content FROM studio_run_artifacts WHERE run_id = $2) b ON b.name = a.name`, [fakeId, reimportId])).rows;
+    const reimported = (await pool.query("SELECT kind, state, runner FROM studio_runs WHERE id = $1", [reimportId])).rows[0];
+    check("SAP30. over PostgreSQL a run's whole-run bundle, downloaded by a viewer as an attachment, re-imports BYTE FOR BYTE: the "
+      + "import's files are exactly the run's, and the import is queued with its import job (migration 0004's commit check passed)",
+      download.status === 200 && download.headers.get("content-type") === "application/json"
+        && download.headers.get("content-disposition") === `attachment; filename="run-${fakeId}.json"`
+        && reimport.status === 303 && pair.length === Object.keys(files).length && pair.every((r) => r.same === true)
+        && reimported?.kind === "imported" && reimported.state === "queued",
+      `${download.status} ${reimport.status} ${pair.length} ${JSON.stringify(reimported)}`);
+
+    // SAP31: import refusals over PostgreSQL write nothing.
+    const before31 = await counts();
+    const folder: Array<[string, Buffer]> = [["run-meta.json", Buffer.from("{\"runner\":\"live\"}")], ["summary.md", Buffer.from("# x\n")]];
+    const refusals31 = [
+      await document("/imports", ownerJar, bundleText(folder, (e, i) => { if (i === 1) e.sha256 = sha256Of("other"); })),
+      await document("/imports", ownerJar, bundleText([...folder, ["notes.txt", Buffer.from("x")]])),
+      await document("/imports", ownerJar, JSON.stringify({ schema: RUN_BUNDLE_SCHEMA, files: Array.from({ length: 21 }, () => folder[0]) })),
+      await document("/imports", ownerJar, `${bundleText(folder)}${" ".repeat(IMPORT_MAX_DOCUMENT_BYTES)}`),
+      await document("/imports", jarA, bundleText(folder)),
+    ];
+    const after31 = await counts();
+    check("SAP31. over PostgreSQL an import with a sha256 mismatch, an unknown name or more than twenty files (400), a document "
+      + "over 10 MiB (413) and a runner's import (403) are each refused with nothing written: no run, job or file",
+      refusals31.map((r) => r.status).join() === "400,400,400,413,403" && JSON.stringify(before31) === JSON.stringify(after31),
+      `${refusals31.map((r) => r.status).join()} ${JSON.stringify(before31)} ${JSON.stringify(after31)}`);
+
+    // SAP32: a fake run is refused as a source by name, with no preflight written.
+    const before32 = await counts();
+    const fakeSource = await post(`/runs/${fakeId}/price`, ownerJar, [["action", "revise"]]);
+    const after32 = await counts();
+    check("SAP32. over PostgreSQL a fake run's price request is refused by name (409, fake_source) before anything is written: no "
+      + "preflight request, no job",
+      fakeSource.status === 409 && fakeSource.body.includes("<code>fake_source</code>") && after32.requests === before32.requests
+        && after32.jobs === before32.jobs,
+      `${fakeSource.status} ${JSON.stringify(before32)} ${JSON.stringify(after32)}`);
+
+    // SAP33: the purge deletes fact checks older than 30 days, through 0004's rule.
+    const checkIds = (await pool.query("SELECT id::text AS id FROM studio_fact_checks ORDER BY created_at")).rows.map((r) => r.id as string);
+    const aged = await pool.connect();
+    try {
+      await aged.query("SET session_replication_role = replica");
+      await aged.query("UPDATE studio_fact_checks SET created_at = now() - interval '31 days' WHERE id = $1", [checkIds[0]]);
+      await aged.query("SET session_replication_role = origin");
+    } finally {
+      aged.release();
+    }
+    const youngRefused = await refusedCode(pool.query("DELETE FROM studio_fact_checks WHERE id = $1", [checkIds.at(-1)]));
+    const purged33 = await w.app.purge();
+    const left33 = (await pool.query("SELECT id::text AS id FROM studio_fact_checks")).rows.map((r) => r.id as string);
+    check("SAP33. over PostgreSQL the web's purge deletes the fact checks older than 30 days — migration 0004's rule, whose "
+      + "trigger refuses deleting a younger one — and keeps every younger check",
+      purged33.factChecks === 1 && !left33.includes(checkIds[0]!) && left33.length === checkIds.length - 1 && youngRefused === "23514",
+      `${JSON.stringify(purged33)} ${left33.length}/${checkIds.length} ${youngRefused}`);
     await w.close();
   }
 

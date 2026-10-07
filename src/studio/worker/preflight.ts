@@ -63,6 +63,8 @@ export interface PreflightSourceRun {
   state: string;
   deleted: boolean;
   kind: string;
+  /** Content Studio S7.2: a fake source (a Studio fake run, or an import of a fake CLI run) is refused by name. */
+  runner: string;
   importTier: string | null;
   factVersionId: string | null;
   source: RunSource;
@@ -166,6 +168,8 @@ export async function decidePreflight(input: PreflightInputs): Promise<Preflight
   if (kind !== "full") {
     const s = input.sourceRun;
     if (!s || s.deleted) return refused("source_unavailable", "the source run does not exist or was deleted");
+    // Owner decision of 2026-10-06 (migration 0004 refuses its confirmation): refused here by name, before any quote.
+    if (s.runner === "fake") return refused("fake_source", "a fake run can never be the source of a paid action; nothing was checked or priced");
     if (!TERMINAL_STATES.includes(s.state)) return refused("source_not_finished", "the source run has not finished");
     if (s.kind === "imported" && s.importTier !== "verified") {
       return refused("source_not_verified", "an import that was not revalidated can never be the source of a paid action");
@@ -338,7 +342,7 @@ export async function runPreflight(ctx: WorkerJobContext, job: ClaimedJob): Prom
   };
   const version = (await session.query("SELECT content, sha256 FROM studio_fact_versions WHERE id = $1", [request.factVersionId])).rows[0];
   const source = request.sourceRunId === null ? undefined : (await session.query(
-    `SELECT state, deleted_at IS NOT NULL AS deleted, kind, import_tier, fact_version_id::text AS fact_version_id
+    `SELECT state, deleted_at IS NOT NULL AS deleted, kind, runner, import_tier, fact_version_id::text AS fact_version_id
        FROM studio_runs WHERE id = $1`, [request.sourceRunId])).rows[0];
   let outcome: PreflightOutcome;
   try {
@@ -346,7 +350,7 @@ export async function runPreflight(ctx: WorkerJobContext, job: ClaimedJob): Prom
       request,
       factVersion: version ? { content: version.content as Buffer, sha256: String(version.sha256) } : null,
       sourceRun: source && request.sourceRunId !== null ? {
-        state: source.state, deleted: source.deleted === true, kind: source.kind, importTier: source.import_tier,
+        state: source.state, deleted: source.deleted === true, kind: source.kind, runner: source.runner, importTier: source.import_tier,
         factVersionId: source.fact_version_id, source: dbRunSource(session, request.sourceRunId),
       } : null,
       approvedFacts: ctx.approvedFacts, repoRoot: ctx.repoRoot, runtime: ctx.runtime,

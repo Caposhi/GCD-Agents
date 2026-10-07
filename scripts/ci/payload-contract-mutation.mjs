@@ -429,6 +429,34 @@
  * expected check (`SW12`). One captured path is added, migration 0004 itself
  * (the runner and the worker's jobs module already are): sixty-four in all.
  *
+ * Content Studio S7.2's group, `M662`–`M680`, covers the fact check, the
+ * import's revalidation, the web's upload and bundle codecs, the owner-only
+ * routes, the actor helper and the fake source refused by name. In the Studio
+ * worker's offline suite: the loader's refusal skipped (`SW29`); a file over the
+ * pack's 64-record cap refused instead of warned (`SW31`); the unknown-field
+ * warning dropped (`SW32`); the loader's known field set duplicated rather than
+ * taken from the library's export (`SW28`); the staging row kept on a refusal
+ * (`SW29`, `SW34`); a check's job ended outside its outcome's transaction
+ * (`SW34`); an import verified without `verifySourceRun` (`SW37`); an archived
+ * import keeping an unbounded goal (`SW38`); the free preflight not refusing a
+ * fake source (`SW40`); and the free fact_check and import jobs claimed after
+ * paid ones (`SW12a`). In the Studio web's offline suite: a runner uploading
+ * (`SA58`, `SA120`); a viewer downloading a version's bytes (`SA58`, `SA120`,
+ * `SA124`); the actor helper without `LOCAL` (`SA131`; its replacement text is
+ * assembled so this file never holds the statement `SA131` refuses in every
+ * Studio source); a sha256 mismatch, an unknown name, or the 10 MiB bound
+ * checked after parsing (`SA117`); lineage on an ambiguous match (`SA127`); the
+ * bundle's size refusal skipped (`SA118`, `SA126`); and the web not refusing a
+ * fake source (`SA116`). S3's `M582` (a claim waiting on a locked job) and
+ * `M583` (the claim's order) are re-pointed at the claim's new lines, which bind
+ * the free kinds as a second parameter, with the same edits, suite and expected
+ * check (`SW12`). S7.1's `M659` is re-pointed BY FACT: S7.2's worker claims the
+ * import job, so its former fault (the claimed kinds widened to the import job)
+ * is now correct behaviour; it now widens them past 0004 (an `upload` kind) with
+ * the same suite and expected checks (`SW12a`, `SW26`), and its name records the
+ * change. Three captured paths are added, the worker's fact-check and import
+ * modules and the web's bundle module: sixty-seven in all, for 680 mutations.
+ *
  * It is offline and deterministic: no network, no database, no provider, no
  * credential. The mutations run in parallel on up to MAX_WORKERS workers (the
  * runner's available parallelism, capped), each worker in its OWN disposable
@@ -568,6 +596,10 @@ const STUDIO_WORKER_FINDINGS = "src/studio/worker/findings.ts";
 const STUDIO_WORKER_PREFLIGHT = "src/studio/worker/preflight.ts";
 const STUDIO_WEB_ACTIONS = "src/studio/web/actions.ts";
 const STUDIO_MIGRATION_0004 = "studio/migrations/0004_studio_fact_checks_and_imports.sql";
+// Content Studio S7.2: the fact check, the import's revalidation and the web's upload and bundle codecs.
+const STUDIO_WORKER_FACT_CHECK = "src/studio/worker/factCheck.ts";
+const STUDIO_WORKER_IMPORT = "src/studio/worker/importRun.ts";
+const STUDIO_WEB_BUNDLE = "src/studio/web/bundle.ts";
 const PROVIDER_TEXT_LEAF = "src/harness/agents/providerText.ts";
 const CONTENT_INTELLIGENCE_SUITE = "dist/harness/contentIntelligence.selftest.js";
 const STUDIO_DB_SUITE = "dist/studio/db/migrate.offline.selftest.js";
@@ -5348,18 +5380,21 @@ const CONTENT_STUDIO_S3_WORKER_MUTATIONS = [
   },
   {
     // Re-pointed by Content Studio S7.1 at the claim's new last line (it now binds
-    // CLAIMED_JOB_KINDS): the same edit, suite and expected check.
+    // CLAIMED_JOB_KINDS), and by S7.2 again (it also binds FREE_JOB_KINDS): the same
+    // edit, suite and expected check.
     name: "a claim waits on a locked job instead of skipping it",
     file: STUDIO_WORKER_JOBS,
-    from: "        LIMIT 1 FOR UPDATE SKIP LOCKED`, [[...CLAIMED_JOB_KINDS]])).rows[0];",
-    to: "        LIMIT 1 FOR UPDATE`, [[...CLAIMED_JOB_KINDS]])).rows[0];",
+    from: "        LIMIT 1 FOR UPDATE SKIP LOCKED`, [[...CLAIMED_JOB_KINDS], [...FREE_JOB_KINDS]])).rows[0];",
+    to: "        LIMIT 1 FOR UPDATE`, [[...CLAIMED_JOB_KINDS], [...FREE_JOB_KINDS]])).rows[0];",
     expect: ["SW12."],
     suite: STUDIO_WORKER_SUITE,
   },
   {
+    // Re-pointed by Content Studio S7.2 at the claim's new order (the free kinds are
+    // FREE_JOB_KINDS, bound as its second parameter): the same edit, suite and expected check.
     name: "a claim takes paid and fake jobs before free preflight jobs",
     file: STUDIO_WORKER_JOBS,
-    from: "        ORDER BY (kind = 'preflight') DESC, created_at, id",
+    from: "        ORDER BY (kind = ANY ($2::text[])) DESC, created_at, id",
     to: "        ORDER BY created_at, id",
     expect: ["SW12."],
     suite: STUDIO_WORKER_SUITE,
@@ -5994,6 +6029,8 @@ const CONTENT_STUDIO_S6_2_MUTATIONS = [
 // by the disposable-PostgreSQL refusals, not here.
 const CONTENT_STUDIO_S7_1_MUTATIONS = [
   {
+    // (Since Content Studio S7.2 the worker claims every kind 0004 allows; this still
+    // proves the claim binds its kinds, `SW12a`, so a kind outside them is never taken.)
     name: "the worker's claim takes every job kind, so 0004's fact_check and import jobs would be claimed",
     file: STUDIO_WORKER_JOBS,
     from: "WHERE state = 'queued' AND kind = ANY ($1::text[]) AND expires_at > now() AND cancel_requested_at IS NULL",
@@ -6003,10 +6040,15 @@ const CONTENT_STUDIO_S7_1_MUTATIONS = [
   },
   {
     // The constant keeps its declared tuple type (a cast), so the tree still compiles.
-    name: "the worker's claimed kinds widened to S7.2's import job",
+    // Re-pointed by Content Studio S7.2, BY FACT: S7.2's worker claims the import job (and
+    // every kind 0004 allows), so "widened to the import job" is no longer a fault. The
+    // fault it guards — the claimed kinds widened past what the schema allows — is kept,
+    // with a kind 0004 does not have; same suite and expected checks. (Until S7.2 its
+    // name was "the worker's claimed kinds widened to S7.2's import job".)
+    name: "the worker's claimed kinds widened past migration 0004's (a kind it does not allow)",
     file: STUDIO_WORKER_JOBS,
-    from: "export const CLAIMED_JOB_KINDS = [\"preflight\", \"paid\", \"fake\"] as const;",
-    to: "export const CLAIMED_JOB_KINDS = [\"preflight\", \"paid\", \"fake\", \"import\"] as unknown as readonly [\"preflight\", \"paid\", \"fake\"];",
+    from: "export const CLAIMED_JOB_KINDS = [\"preflight\", \"fact_check\", \"import\", \"paid\", \"fake\"] as const;",
+    to: "export const CLAIMED_JOB_KINDS = [\"preflight\", \"fact_check\", \"import\", \"paid\", \"fake\", \"upload\"] as unknown as readonly [\"preflight\", \"fact_check\", \"import\", \"paid\", \"fake\"];",
     expect: ["SW12a.", "SW26."],
     suite: STUDIO_WORKER_SUITE,
   },
@@ -6028,6 +6070,171 @@ const CONTENT_STUDIO_S7_1_MUTATIONS = [
   },
 ];
 
+// Content Studio S7.2: the fact check, the import, the whole-run bundle, the actor
+// helper, the owner-only routes and the fake source, against the offline suites that
+// prove them. The disposable-PostgreSQL suites prove the same end to end.
+const CONTENT_STUDIO_S7_2_MUTATIONS = [
+  {
+    name: "the fact check's loader refusal is skipped: a file the loader refuses is checked as if empty",
+    file: STUDIO_WORKER_FACT_CHECK,
+    from: "    return { outcome: \"refused\", refusalClass: \"loader_refused\", message: bounded(String((error as Error)?.message ?? error)), unknownFields };",
+    to: "    approvedRecords = []; uploaded = [];",
+    expect: ["SW29."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "a file over the pack's 64-record cap is checked as one pack, so it is refused instead of warned",
+    file: STUDIO_WORKER_FACT_CHECK,
+    from: "  const overCap = approvedRecords.length + uploaded.length > cap;",
+    to: "  const overCap = false;",
+    expect: ["SW31."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "the unknown-field warning is dropped",
+    file: STUDIO_WORKER_FACT_CHECK,
+    from: "  const unknownFields = unknownFieldNames(input.bytes);",
+    to: "  const unknownFields: string[] | null = null;",
+    expect: ["SW32."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "the loader's known field set is duplicated in the fact check rather than taken from the library's export",
+    file: STUDIO_WORKER_FACT_CHECK,
+    from: "  const known = new Set(lib.AUTOMOTIVE_FACT_FIELDS);",
+    to: "  const known = new Set([\"id\", \"claim\", \"subject\", \"attribute\", \"tags\", \"sourceType\", \"sourceRef\", \"provenance\", "
+      + "\"confidence\", \"observedAt\", \"reviewedAt\", \"reviewedBy\", \"reviewBy\", \"expiresAt\", \"createdAt\", \"lifecycle\"]);",
+    expect: ["SW28."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "the staging row is not deleted when a fact check refuses",
+    file: STUDIO_WORKER_FACT_CHECK,
+    from: "    await deleteStagedBytes(client, check.sha256);",
+    to: "    if (outcome.outcome === \"accepted\") await deleteStagedBytes(client, check.sha256);",
+    expect: ["SW29.", "SW34."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "a fact check's job is ended outside the transaction that writes its outcome",
+    file: STUDIO_WORKER_FACT_CHECK,
+    from: "    await client.query(\"UPDATE studio_jobs SET state = 'finished' WHERE id = $1\", [check.jobId]);",
+    to: "    await session.tx((own) => own.query(\"UPDATE studio_jobs SET state = 'finished' WHERE id = $1\", [check.jobId]));",
+    expect: ["SW34."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "an import is verified without verifySourceRun: its folder's own metadata is trusted",
+    file: STUDIO_WORKER_IMPORT,
+    from: "    verified = await lib.verifySourceRun(rt, {",
+    to: "    verified = await (async (..._args: unknown[]): Promise<any> => ({ goal: (meta as any).goal, platforms: (meta as any).platforms, "
+      + "scope: null, fingerprints: { approvedFacts: { sha256: recorded.approved }, automotiveFacts: { sha256: named }, "
+      + "evidencePackSha256: recorded.pack } }))(rt, {",
+    expect: ["SW37."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "an archived import keeps an unbounded goal from its untrusted run-meta.json",
+    file: STUDIO_WORKER_IMPORT,
+    from: "  const goal = typeof meta.goal === \"string\" && meta.goal.trim() && goalChars <= IMPORT_GOAL_MAX_CHARS",
+    to: "  const goal = typeof meta.goal === \"string\" && meta.goal.trim() && goalChars <= Number.MAX_SAFE_INTEGER",
+    expect: ["SW38."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "the free preflight does not refuse a fake source by name before the quote",
+    file: STUDIO_WORKER_PREFLIGHT,
+    from: "    if (s.runner === \"fake\") return refused(\"fake_source\", \"a fake run can never be the source of a paid action; nothing was checked or priced\");",
+    to: "",
+    expect: ["SW40."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    // The constant keeps its declared tuple type (a cast), so the tree still compiles.
+    name: "the free fact_check and import jobs are claimed after paid and fake jobs",
+    file: STUDIO_WORKER_JOBS,
+    from: "export const FREE_JOB_KINDS = [\"preflight\", \"fact_check\", \"import\"] as const;",
+    to: "export const FREE_JOB_KINDS = [\"preflight\"] as unknown as readonly [\"preflight\", \"fact_check\", \"import\"];",
+    expect: ["SW12a."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "a runner may upload a facts file",
+    file: STUDIO_WEB_APP,
+    from: "  { method: \"POST\", path: \"/facts/upload\", minRole: \"owner\", maxFormBytes: FACT_UPLOAD_MAX_FORM_BYTES },",
+    to: "  { method: \"POST\", path: \"/facts/upload\", minRole: \"runner\", maxFormBytes: FACT_UPLOAD_MAX_FORM_BYTES },",
+    expect: ["SA58.", "SA120."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "a viewer may download a fact version's bytes",
+    file: STUDIO_WEB_APP,
+    from: "  { method: \"GET\", path: \"/facts/versions/:id/file\", minRole: \"owner\" },",
+    to: "  { method: \"GET\", path: \"/facts/versions/:id/file\", minRole: \"viewer\" },",
+    expect: ["SA58.", "SA120.", "SA124."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "the actor helper sets studio.actor for the whole session (SET without LOCAL)",
+    file: STUDIO_WEB_STORE,
+    from: "  await db.query(`SET LOCAL studio.actor = '${actorId}'`);",
+    // (Assembled, so this file never holds the session-wide statement `SA131` refuses in every Studio source.)
+    to: ["  await db.query(`SE", "T studio.actor = '${actorId}'`);"].join(""),
+    expect: ["SA131."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "an import file whose bytes do not hash to its sha256 is accepted",
+    file: STUDIO_WEB_BUNDLE,
+    from: "    if (!HEX64.test(entry.sha256) || sha256(content) !== entry.sha256) {",
+    to: "    if (!HEX64.test(entry.sha256)) {",
+    expect: ["SA117."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "an import file whose name is not one of the CLI's known files is accepted",
+    file: STUDIO_WEB_BUNDLE,
+    from: "    if (!STUDIO_IMPORT_FILE_NAMES.includes(entry.name)) {",
+    to: "    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(entry.name)) {",
+    expect: ["SA117."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "the import document's 10 MiB bound is checked after it is parsed",
+    file: STUDIO_WEB_BUNDLE,
+    from: "  if (raw.length > IMPORT_MAX_DOCUMENT_BYTES) {\n    return no(\"too_large\", `the import document is ${raw.length} bytes; at most ${IMPORT_MAX_DOCUMENT_BYTES} (10 MiB) is accepted`);\n  }\n"
+      + "  const parsed = parseJson(raw);\n  if (!parsed.ok) return no(\"invalid_json\", \"the import document is not valid UTF-8 JSON\");\n",
+    to: "  const parsed = parseJson(raw);\n  if (!parsed.ok) return no(\"invalid_json\", \"the import document is not valid UTF-8 JSON\");\n"
+      + "  if (raw.length > IMPORT_MAX_DOCUMENT_BYTES) {\n    return no(\"too_large\", `the import document is ${raw.length} bytes; at most ${IMPORT_MAX_DOCUMENT_BYTES} (10 MiB) is accepted`);\n  }\n",
+    expect: ["SA117."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "lineage is recorded on an ambiguous match (the first of two imports)",
+    file: STUDIO_WEB_BUNDLE,
+    from: "  return matches.length === 1 ? matches[0]! : null;",
+    to: "  return matches.length >= 1 ? matches[0]! : null;",
+    expect: ["SA127."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "the whole-run bundle's 10 MiB refusal is skipped",
+    file: STUDIO_WEB_BUNDLE,
+    from: "  if (bytes.length > IMPORT_MAX_DOCUMENT_BYTES) {",
+    to: "  if (bytes.length > IMPORT_MAX_DOCUMENT_BYTES * 1_000) {",
+    expect: ["SA118.", "SA126."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "the web does not refuse a fake source by name before a price is asked",
+    file: STUDIO_WEB_APP,
+    from: "      if (run.runner === \"fake\") {",
+    to: "      if (run.runner === \"fake\" && run.kind === \"no-such-kind\") {",
+    expect: ["SA116."],
+    suite: STUDIO_WEB_SUITE,
+  },
+];
+
 // Every group, in order. MUTATIONS is their concatenation; the groups exist
 // only so `M-inc-sample` can spread its sample across them.
 const MUTATION_GROUPS = [
@@ -6042,7 +6249,7 @@ const MUTATION_GROUPS = [
   ["Content Studio S3 context", CONTENT_STUDIO_S3_CONTEXT_MUTATIONS], ["Content Studio S3 worker", CONTENT_STUDIO_S3_WORKER_MUTATIONS],
   ["Content Studio S4", CONTENT_STUDIO_S4_MUTATIONS], ["Content Studio S5", CONTENT_STUDIO_S5_MUTATIONS],
   ["Content Studio S6.1", CONTENT_STUDIO_S6_1_MUTATIONS], ["Content Studio S6.2", CONTENT_STUDIO_S6_2_MUTATIONS],
-  ["Content Studio S7.1", CONTENT_STUDIO_S7_1_MUTATIONS],
+  ["Content Studio S7.1", CONTENT_STUDIO_S7_1_MUTATIONS], ["Content Studio S7.2", CONTENT_STUDIO_S7_2_MUTATIONS],
 ];
 const MUTATIONS = MUTATION_GROUPS.flatMap(([, group]) => group);
 

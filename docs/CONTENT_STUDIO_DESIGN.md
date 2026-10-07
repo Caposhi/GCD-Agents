@@ -1140,6 +1140,15 @@ is read as first among the report's sections, below the header that identifies t
 failure display:** "the stage it stopped at" is the stage of the run's last request that did not
 succeed, else the first stage file it did not save; the Resume control is S6's, so S5 shows none.)*
 
+*(Dated note, Content Studio S7.2, 2026-10-07 — `IMPLEMENTED`, not merged. **Item 8's whole-run
+bundle** is offered to every signed-in user as one JSON document,
+`{"schema":"gcd-studio-run-bundle/1","files":[{"name","sha256","base64"},…]}`, sorted by name — the
+import's format of §8.6 exactly, so a downloaded bundle re-imports byte for byte. A run holding a
+file the import does not accept, or whose bundle would exceed the import's 10 MiB, is refused with
+its reason (*too large to re-import*) rather than offered a bundle that cannot be imported again.
+An imported run's report adds its own section: the tier, the archived reason, and the files its
+`run-meta.json` records by base name only.)*
+
 ### 8.3 New run
 
 For an `owner` or a `runner`:
@@ -1205,6 +1214,23 @@ is exported from the library with an offline equality check, and unknown top-lev
 `facts` are listed too; and a version's `tag_counts` count the uploaded records only, because the
 new-run screen adds the heartbeat's approved-facts counts.)*
 
+*(Dated note, Content Studio S7.2, 2026-10-07 — `IMPLEMENTED`, not merged; where S7.2 interprets
+this section. **Transport:** the page's one static script reads the file and puts one JSON document,
+`{"sha256","base64"}`, in the form's `document` field, then submits the form; it makes no request
+of its own (the static-asset check forbids `fetch`), so S4's form token and Origin check apply
+unchanged. The route's own body bound allows that document's worst percent-encoding; the document
+is bounded before it is parsed, and the decoded bytes at 1 MiB (1,048,576), the "1 MB" of step 1.
+**One check at a time:** an upload is refused while another check is queued and unexpired or
+running, because the staging row is a singleton; a check that expired unclaimed is closed by the
+next upload, so the sweep (which deletes staged bytes only when their sha256 is its own check's)
+never deletes another upload's bytes. **The dry run is windowed:** every record of the uploaded file
+and the approved facts is validated, and over the 64-record cap the pack is checked over successive
+windows of the uploaded records, each fitting the cap beside the approved facts, so every record is
+checked in a pack; a file over the cap is accepted with the warning, and the over-cap flag is
+kept in the outcome's audit row, which 0004's check row has no column for. **Bytes that are already
+a version** are accepted naming that version, with nothing inserted and no new check of their
+content. The check's result page polls every five seconds until the worker answers.)*
+
 ### 8.6 Import of existing `local-output` runs
 
 The owner picks one run folder from `local-output/content-intelligence/` in the browser. The page
@@ -1241,6 +1267,18 @@ source's — and recorded only when exactly one non-deleted import matches, the 
 source's fact version (upload the facts before importing); only complete folders can verify, so
 replay folders and failed runs are always archived; and **"10 MB" is the posted JSON document's
 bound, 10 MiB, checked before parsing**, with 0004's limit on the stored bytes as a backstop.)*
+
+*(Dated note, Content Studio S7.2, 2026-10-07 — `IMPLEMENTED`, not merged; where S7.2 interprets
+this section. **Transport:** as §8.5's, the bundle travels in the form's `document` field and the
+route's body bound allows its worst percent-encoding; the 10 MiB is checked on the document's own
+bytes before parsing. **Lineage is decided by the web when the import is created,** in the same
+transaction as its run, files and job — the child records its source's fact version only then — and
+the worker never changes it. **The runner an import records** is read from its meta files and fails
+closed: `live` only when `run-meta.json` names `live` and no other meta file names anything else,
+otherwise `fake`, so a folder of uncertain origin can never be a paid action's source. **Bounded
+values for an archived import:** the goal only when 1 to 2,000 characters, not blank and free of
+control characters; the platforms only when the packaging validator accepts them; the scope tags
+only when already in their normalized form; otherwise each is null.)*
 
 ### 8.7 Users and caps settings (owner only)
 

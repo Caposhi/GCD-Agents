@@ -33,8 +33,10 @@ import type {
 } from "./runs.js";
 import type { SessionRow, StudioUserRow } from "./sessions.js";
 import type {
-  ActionContext, AuditEntry, CancelResult, ConfirmHooks, ConfirmResult, PreflightView, PurgeResult, SpendView, WebHealth, WebStore,
+  ActionContext, AuditEntry, CancelResult, ConfirmHooks, ConfirmResult, EditResult, FactCheckView, FactVersionListRow, PreflightView,
+  PurgeResult, SpendView, StageResult, WebHealth, WebStore,
 } from "./store.js";
+import { decideLineage, type BundleFile } from "./bundle.js";
 
 export const STUDIO_DOMAIN = ["germancardepot", "com"].join(".");
 /** A synthetic Studio address: `<local>.<random>` at the Studio's domain, assembled at run time. */
@@ -358,7 +360,12 @@ export class MemoryWebStore implements WebStore {
         preflightRequests += 1;
       }
     }
-    return { loginAttempts, sessions, preflightRequests };
+    // S7.2: fact checks past their 30 days (0004's rule).
+    let factChecks = 0;
+    for (const [id, c] of this.factChecks) {
+      if (c.createdAtMs <= this.clock() - PREFLIGHT_RETENTION_MS) { this.factChecks.delete(id); factChecks += 1; }
+    }
+    return { loginAttempts, sessions, preflightRequests, factChecks };
   }
 
   async health(): Promise<WebHealth> {
@@ -451,8 +458,8 @@ export class MemoryWebStore implements WebStore {
     { dailyCapMicros: 50_000_000, monthlyCapMicros: 200_000_000, activeFactVersionId: null };
   heartbeat: { commit: string; approvedFactsSha256: string; priceTableSha256: string; tagCounts: Record<string, number>;
     beatAtMs: number } | null = null;
-  readonly jobs = new Map<string, { id: string; runId: string | null; kind: "preflight" | "paid" | "fake"; state: string;
-    cancelRequested: boolean }>();
+  readonly jobs = new Map<string, { id: string; runId: string | null; kind: "preflight" | "paid" | "fake" | "fact_check" | "import";
+    state: string; cancelRequested: boolean }>();
   readonly preflight = new Map<string, PreflightRequestInput & { id: string; jobId: string; createdAtMs: number;
     outcome: "quoted" | "refused" | null; refusalClass: string | null; refusalMessage: string | null; revisePlan: unknown;
     quoteId: string | null }>();
@@ -688,6 +695,147 @@ export class MemoryWebStore implements WebStore {
       uploadedAt: new Date(this.clock()), status: "active" });
     if (active && this.settings) this.settings.activeFactVersionId = id;
     return id;
+  }
+
+  // --- S7.2: fact versions and imports, over memory, with the schema's own rules -------------------------
+
+  /** The staging row (a singleton), each check, each version's bytes and uploader, and every declared actor, in order. */
+  staged: { content: Buffer; sha256: string; uploadedBy: string } | null = null;
+  readonly factChecks = new Map<string, { id: string; jobId: string; requestedBy: string; sha256: string; byteLength: number;
+    createdAtMs: number; outcome: "accepted" | "refused" | null; refusalClass: string | null; refusalMessage: string | null;
+    unknownFields: string[] | null; existing: boolean; overCap: boolean }>();
+  readonly versionBytes = new Map<string, { content: Buffer; uploadedBy: string; statusChangedAt: Date | null }>();
+  readonly declaredActors: Array<{ actor: string; edit: string }> = [];
+
+  private requireOwner(userId: string, edit: string): void {
+    const user = this.users.get(userId);
+    if (!user || user.status !== "active" || user.role !== "owner") {
+      throw new RefusedWrite("23514", `${edit}: the transaction's actor is not an active owner`);
+    }
+    this.declaredActors.push({ actor: userId, edit });
+  }
+
+  async stageFactUpload(input: { ownerId: string; content: Buffer; sha256: string }): Promise<StageResult> {
+    this.calls.push("stageFactUpload");
+    this.requireOwner(input.ownerId, "stageFactUpload");
+    if ([...this.jobs.values()].some((j) => j.kind === "fact_check" && (j.state === "queued" || j.state === "running"))) {
+      return { ok: false, refusal: "check_pending", message: "a fact check is still waiting for the worker or running; wait for its result, then upload again" };
+    }
+    this.staged = { content: Buffer.from(input.content), sha256: input.sha256, uploadedBy: input.ownerId };
+    const jobId = crypto.randomUUID();
+    const checkId = crypto.randomUUID();
+    this.jobs.set(jobId, { id: jobId, runId: null, kind: "fact_check", state: "queued", cancelRequested: false });
+    this.factChecks.set(checkId, { id: checkId, jobId, requestedBy: input.ownerId, sha256: input.sha256, byteLength: input.content.length,
+      createdAtMs: this.clock(), outcome: null, refusalClass: null, refusalMessage: null, unknownFields: null, existing: false, overCap: false });
+    this.auditLog.push({ action: "fact.upload", actorUserId: input.ownerId, targetType: "studio_fact_checks", targetId: checkId,
+      detail: { byte_length: input.content.length } });
+    return { ok: true, checkId, jobId };
+  }
+
+  /** Test-only: the worker's outcome, as `writeFactCheckOutcome` writes it: the version, the outcome, the staging row gone, the job ended. */
+  answerFactCheck(checkId: string, answer: { accepted: { recordCount: number; tagCounts: Record<string, number>; existing?: boolean;
+    overCap?: boolean } } | { refused: { refusalClass: string; message: string } }, unknownFields: string[] | null = null): string | null {
+    const c = this.factChecks.get(checkId)!;
+    if (c.outcome !== null) throw new RefusedWrite("23514", "written once");
+    let versionId: string | null = null;
+    if ("accepted" in answer) {
+      const existing = [...this.factVersions.values()].find((v) => v.sha256 === c.sha256);
+      versionId = existing?.id ?? crypto.randomUUID();
+      if (!existing) {
+        this.factVersions.set(versionId, { id: versionId, sha256: c.sha256, recordCount: answer.accepted.recordCount,
+          tagCounts: answer.accepted.tagCounts, uploadedAt: new Date(this.clock()), status: "active" });
+        this.versionBytes.set(versionId, { content: Buffer.from(this.staged?.content ?? Buffer.alloc(0)), uploadedBy: c.requestedBy,
+          statusChangedAt: null });
+      }
+      Object.assign(c, { outcome: "accepted", unknownFields, existing: answer.accepted.existing ?? Boolean(existing),
+        overCap: answer.accepted.overCap ?? false });
+    } else {
+      Object.assign(c, { outcome: "refused", refusalClass: answer.refused.refusalClass, refusalMessage: answer.refused.message, unknownFields });
+    }
+    if (this.staged?.sha256 === c.sha256) this.staged = null;
+    this.jobs.get(c.jobId)!.state = "finished";
+    return versionId;
+  }
+
+  async findFactCheck(id: string): Promise<FactCheckView | null> {
+    const c = this.factChecks.get(id);
+    if (!c) return null;
+    const v = c.outcome === "accepted" ? [...this.factVersions.values()].find((x) => x.sha256 === c.sha256) : undefined;
+    return {
+      id: c.id, jobState: this.jobs.get(c.jobId)?.state ?? "finished", requestedBy: c.requestedBy, sha256: c.sha256, byteLength: c.byteLength,
+      createdAt: new Date(c.createdAtMs), outcome: c.outcome, refusalClass: c.refusalClass, refusalMessage: c.refusalMessage,
+      unknownFields: c.unknownFields ? [...c.unknownFields] : null,
+      version: v ? { id: v.id, recordCount: v.recordCount, tagCounts: { ...v.tagCounts }, status: v.status } : null,
+      existing: c.existing, overCap: c.overCap,
+    };
+  }
+
+  async listFactVersions(): Promise<FactVersionListRow[]> {
+    return [...this.factVersions.values()].sort((a, b) => b.uploadedAt.getTime() - a.uploadedAt.getTime() || (a.id < b.id ? -1 : 1))
+      .map((v) => {
+        const bytes = this.versionBytes.get(v.id);
+        const uploader = bytes ? this.users.get(bytes.uploadedBy) : [...this.users.values()].find((u) => u.role === "owner");
+        return { id: v.id, sha256: v.sha256, byteLength: bytes?.content.length ?? 0, recordCount: v.recordCount, tagCounts: { ...v.tagCounts },
+          uploadedAt: v.uploadedAt, uploaderName: uploader?.display_name ?? null, status: v.status,
+          isActive: this.settings?.activeFactVersionId === v.id, statusChangedAt: bytes?.statusChangedAt ?? null };
+      });
+  }
+
+  async readFactVersion(id: string): Promise<{ sha256: string; content: Buffer } | null> {
+    this.calls.push("readFactVersion");
+    const v = this.factVersions.get(id);
+    return v ? { sha256: v.sha256, content: Buffer.from(this.versionBytes.get(id)?.content ?? Buffer.alloc(0)) } : null;
+  }
+
+  async activateFactVersion(input: { ownerId: string; versionId: string }): Promise<EditResult> {
+    this.requireOwner(input.ownerId, "activateFactVersion");
+    const v = this.factVersions.get(input.versionId);
+    if (!v) return { ok: false, refusal: "no_version", message: "no such fact version" };
+    if (v.status !== "active") return { ok: false, refusal: "version_retired", message: "a retired version is restored before it is made active" };
+    if (!this.settings) return { ok: false, refusal: "no_settings", message: "the settings row does not exist" };
+    this.settings.activeFactVersionId = v.id;
+    this.auditLog.push({ action: "settings.update", actorUserId: input.ownerId, targetType: "studio_settings", targetId: "singleton", detail: {} });
+    return { ok: true };
+  }
+
+  async setFactVersionStatus(input: { ownerId: string; versionId: string; status: "active" | "retired" }): Promise<EditResult> {
+    this.requireOwner(input.ownerId, "setFactVersionStatus");
+    const v = this.factVersions.get(input.versionId);
+    if (!v || v.status === input.status) {
+      return { ok: false, refusal: "no_change", message: `no such fact version that is not already ${input.status}` };
+    }
+    if (input.status === "retired" && this.settings?.activeFactVersionId === v.id) {
+      throw new RefusedWrite("23514", "the active fact version is retired only after the settings point elsewhere");
+    }
+    const before = v.status;
+    v.status = input.status;
+    const bytes = this.versionBytes.get(v.id);
+    if (bytes) bytes.statusChangedAt = new Date(this.clock());
+    this.auditLog.push({ action: "fact_version.status", actorUserId: input.ownerId, targetType: "studio_fact_versions", targetId: v.id,
+      detail: { before, after: input.status } });
+    return { ok: true };
+  }
+
+  async createImport(input: { ownerId: string; runner: "live" | "fake"; files: readonly BundleFile[];
+    lineage: { runMeta: Buffer; roundOneCritic: Buffer } | null }): Promise<{ runId: string; jobId: string; sourceRunId: string | null }> {
+    this.calls.push("createImport");
+    this.requireOwner(input.ownerId, "createImport");
+    const same = (runId: string, name: string, bytes: Buffer) => this.artifacts.get(runId)?.get(name)?.content.equals(bytes) === true;
+    const lineage = input.lineage;
+    const source = lineage === null ? null : decideLineage([...this.runs.values()]
+      .filter((r) => r.kind === "imported" && r.deleted_at === null && same(r.id, "run-meta.json", lineage.runMeta)
+        && same(r.id, "06-final-critic.json", lineage.roundOneCritic))
+      .sort((a, b) => a.created_at.getTime() - b.created_at.getTime()).slice(0, 2));
+    const owner = this.users.get(input.ownerId)!;
+    const run = this.addRun(owner, { kind: "imported", state: "queued", runner: input.runner, goal: null, verdict: null, platforms: null,
+      source_run_id: source?.id ?? null, fact_version_id: source?.fact_version_id ?? null, created_at: new Date(this.clock()),
+      started_at: null, finished_at: null });
+    for (const file of input.files) this.addArtifact(run.id, file.name, file.content);
+    const jobId = crypto.randomUUID();
+    this.jobs.set(jobId, { id: jobId, runId: run.id, kind: "import", state: "queued", cancelRequested: false });
+    this.auditLog.push({ action: "import.create", actorUserId: input.ownerId, targetType: "studio_runs", targetId: run.id,
+      detail: { files: input.files.length, runner: input.runner, lineage: source !== null } });
+    return { runId: run.id, jobId, sourceRunId: source?.id ?? null };
   }
 
   /** Everything stored, as text: for proving no cookie value or token is ever kept. */

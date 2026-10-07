@@ -1,8 +1,13 @@
 /**
  * The Studio's two static files, served from code (docs/CONTENT_STUDIO_DESIGN.md
  * §8): `/static/studio.css`, the only styles any page uses, and
- * `/static/studio.js`, the one small script — the Copy buttons (S5) and the
- * new-run form's scope upper bound (S6.2). Content Studio S5.
+ * `/static/studio.js`, the one small script — the Copy buttons (S5), the
+ * new-run form's scope upper bound (S6.2), and (S7.2) the fact upload and the
+ * import: the chosen file, or the chosen folder's known files, read in the
+ * browser, each base64-encoded beside its sha256, and put as ONE JSON document
+ * in the form's `document` field before the form is submitted with its
+ * synchronizer token, as every form is; the script sends nothing itself.
+ * Content Studio S5.
  *
  * No page carries an inline script or an inline style, so S4's CSP
  * (`script-src 'self'`, and `default-src 'self'` for styles) is unchanged. Each
@@ -99,6 +104,12 @@ td .lines li{white-space:normal}
 .total{font-size:1.1rem}
 .confirm{margin:1rem 0}
 .overruns form{display:inline-block;margin-left:.5rem}
+.versions{list-style:none;margin:0;padding:0}
+.version{padding:.75rem 0;border-bottom:1px solid var(--line)}
+.version p{margin:.15rem 0}
+.badge-active{background:#dff3e3;color:#11602b}
+.tag-counts{padding-left:1.1rem;margin:.25rem 0}
+input[type=file]{min-height:44px;max-width:100%;font:inherit}
 @media (max-width:699.98px){
 main{padding:.75rem}
 .facts{grid-template-columns:1fr}
@@ -136,6 +147,59 @@ document.addEventListener("change", function (event) {
   for (var i = 0; i < boxes.length; i++) sum += Number(boxes[i].getAttribute("data-count")) || 0;
   out.textContent = boxes.length ? "At most " + sum + " records carry the chosen tags (an upper bound), plus the always-included contact and identity records."
     : "No tags chosen: an unscoped run, with every record.";
+});
+// The fact upload and the import (Content Studio S7.2): read here, each file base64-encoded beside its sha256, and ONE JSON
+// document put in the form's "document" field; then the form is submitted as any form is. This script sends nothing itself.
+function studioHex(buffer) {
+  var bytes = new Uint8Array(buffer), text = "";
+  for (var i = 0; i < bytes.length; i++) text += (bytes[i] < 16 ? "0" : "") + bytes[i].toString(16);
+  return text;
+}
+function studioBase64(bytes) {
+  var text = "";
+  for (var i = 0; i < bytes.length; i += 32768) text += String.fromCharCode.apply(null, bytes.subarray(i, i + 32768));
+  return btoa(text);
+}
+function studioEncode(file) {
+  return file.arrayBuffer().then(function (buffer) {
+    return crypto.subtle.digest("SHA-256", buffer).then(function (digest) {
+      return { sha256: studioHex(digest), base64: studioBase64(new Uint8Array(buffer)) };
+    });
+  });
+}
+document.addEventListener("submit", function (event) {
+  var form = event.target;
+  var kind = form && form.getAttribute ? form.getAttribute("data-upload") : null;
+  if (kind !== "facts" && kind !== "import") return;
+  event.preventDefault();
+  var status = form.querySelector("[data-upload-status]");
+  var say = function (text) { if (status) status.textContent = text; };
+  var field = form.querySelector("input[name=document]");
+  var input = form.querySelector("input[type=file]");
+  var files = input && input.files ? Array.prototype.slice.call(input.files) : [];
+  if (!field) return;
+  if (!window.crypto || !crypto.subtle) { say("This browser cannot compute a sha256 here: a secure connection is needed."); return; }
+  var built;
+  if (kind === "facts") {
+    if (files.length !== 1) { say("Choose one file."); return; }
+    if (files[0].size > 1048576) { say("The file is larger than 1 MiB."); return; }
+    built = studioEncode(files[0]);
+  } else {
+    var known = (form.getAttribute("data-known-names") || "").split(" ");
+    var chosen = files.filter(function (f) {
+      return (f.webkitRelativePath || f.name).split("/").length <= 2 && known.indexOf(f.name) >= 0;
+    });
+    if (!chosen.length) { say("That folder holds none of the CLI's known run files."); return; }
+    built = Promise.all(chosen.map(function (f) {
+      return studioEncode(f).then(function (e) { return { name: f.name, sha256: e.sha256, base64: e.base64 }; });
+    })).then(function (list) { return { schema: "gcd-studio-run-bundle/1", files: list }; });
+  }
+  say("Reading...");
+  built.then(function (doc) {
+    field.value = JSON.stringify(doc);
+    say("Sending...");
+    form.submit();
+  }, function () { say("The file could not be read; nothing was sent."); });
 });
 `;
 

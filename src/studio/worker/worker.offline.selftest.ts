@@ -19,7 +19,11 @@ import { fileURLToPath } from "node:url";
 
 import * as lib from "../../harness/contentRun/index.js";
 import type { ContentRunRuntime, CostCeilingLine, ReviewOnlyRequestUnit } from "../../harness/contentRun/index.js";
-import { STUDIO_MIGRATION_LOCK_NAMESPACE } from "../db/runner.js";
+import { STUDIO_IMPORT_FILE_NAMES, STUDIO_MIGRATION_LOCK_NAMESPACE } from "../db/runner.js";
+import {
+  decideFactCheck, runFactCheck, UNKNOWN_FIELDS_MAX, UPLOAD_LABEL, writeFactCheckOutcome, type FactCheckOutcome, type FactCheckRow,
+} from "./factCheck.js";
+import { decideImport, IMPORT_GOAL_MAX_CHARS, writeImportOutcome, type ImportDecision } from "./importRun.js";
 import { closeRun, decideBeforeWork, executeJob, failureClassOf, workerRuntime, WorkerStop, type BeforeWork } from "./execute.js";
 import {
   decidePreflight, writePreflightOutcome, type PreflightInputs, type PreflightOutcome, type PreflightRequestRow, type PreflightSourceRun,
@@ -29,7 +33,7 @@ import { preflightRequest } from "../web/actions.js";
 import { CRITIC_ARTIFACT, deriveFindings } from "./findings.js";
 import { providerTextWithContact } from "../../harness/agents/providerText.js";
 import { readCaptions, readScript, readShotList } from "../web/runs.js";
-import { CLAIMED_JOB_KINDS, claimNextJob, recoverInterruptedRuns, sweepQueuedJobs, terminalize } from "./jobs.js";
+import { CLAIMED_JOB_KINDS, claimNextJob, FREE_JOB_KINDS, recoverInterruptedRuns, sweepQueuedJobs, terminalize } from "./jobs.js";
 import { ceilingMicros, measuredMicros, microsToNumeric, numericToMicros, parseCapMicros } from "./money.js";
 import { DbRunSink, REWRITTEN_ARTIFACTS } from "./runSink.js";
 import { LIVE_WORKER_OWNERSHIP_KEY, STUDIO_WORKER_OWNERSHIP_NAMESPACE, studioOwnershipKey, type WorkerSession } from "./session.js";
@@ -527,12 +531,12 @@ async function queueStatementChecks(): Promise<void> {
   const none = scripted([held(true)]);
   const nothing = await claimNextJob(none.session, COMMIT);
   check("SW12. a claim is made only by the ownership holder — proven inside the claim's own transaction before any job "
-    + "is read — with FOR UPDATE SKIP LOCKED, free preflight jobs first, never an expired or cancellation-requested "
+    + "is read — with FOR UPDATE SKIP LOCKED, free jobs first (preflight; since S7.2 also fact_check and import), never an expired or cancellation-requested "
     + "job, and only from queued (no retries); it starts the job and its run, claims nothing when nothing is queued, and "
     + "closes — never starts — a job whose run is not queued, instead of stopping the worker",
     /^ownership_lost/.test(lostClaim) && lost.index(/FROM studio_jobs/) === -1
       && claimed?.jobId === "j1" && claimed.runId === "r1"
-      && /FOR UPDATE SKIP LOCKED/.test(select) && /ORDER BY \(kind = 'preflight'\) DESC, created_at, id/.test(select)
+      && /FOR UPDATE SKIP LOCKED/.test(select) && /ORDER BY \(kind = ANY \(\$2::text\[\]\)\) DESC, created_at, id/.test(select)
       && /state = 'queued'/.test(select) && /expires_at > now\(\)/.test(select) && /cancel_requested_at IS NULL/.test(select)
       && ok.index(/pg_locks/) < ok.index(/FROM studio_jobs/)
       && ok.index(/FROM studio_jobs/) < ok.index(/UPDATE studio_jobs SET state = 'running'/)
@@ -598,13 +602,18 @@ async function queueStatementChecks(): Promise<void> {
   [/SUM\(charged_usd\)/, () => [{ charged: "0" }]]]);
   const sweptNew = await sweepQueuedJobs(newKinds.session);
   const sweepSelect = newKinds.statements[newKinds.index(/WHERE state = 'queued' AND \(expires_at <= now\(\)/)]?.text ?? "";
-  check("SW12a. the worker claims only preflight, paid and fake jobs (CLAIMED_JOB_KINDS, bound as the claim's one parameter): "
-    + "migration 0004's fact_check and import jobs are Content Studio S7.2's and are never claimed here; the sweep, which "
-    + "filters on no kind, expires them like any queued job past its expiry — a fact_check job alone, an import with its run "
-    + "cancelled (job_expired)",
+  // (Until Content Studio S7.2 this check read: "the worker claims only preflight, paid and fake jobs … migration 0004's
+  // fact_check and import jobs are Content Studio S7.2's and are never claimed here".)
+  check("SW12a. the worker claims every kind migration 0004 allows (CLAIMED_JOB_KINDS, bound as the claim's first parameter), "
+    + "the free kinds — preflight, fact_check and import (FREE_JOB_KINDS, its second) — before paid and fake jobs, then oldest "
+    + "first; the sweep, which filters on no kind, expires a queued job past its expiry whatever its kind — a fact_check job "
+    + "alone, with its staged bytes only while the staging row still holds its sha256, an import with its run cancelled (job_expired)",
     /AND kind = ANY \(\$1::text\[\]\)/.test(select)
-      && JSON.stringify(claimValues) === JSON.stringify([["preflight", "paid", "fake"]])
-      && JSON.stringify([...CLAIMED_JOB_KINDS]) === JSON.stringify(["preflight", "paid", "fake"])
+      && JSON.stringify(claimValues) === JSON.stringify([["preflight", "fact_check", "import", "paid", "fake"], ["preflight", "fact_check", "import"]])
+      && JSON.stringify([...CLAIMED_JOB_KINDS]) === JSON.stringify(["preflight", "fact_check", "import", "paid", "fake"])
+      && JSON.stringify([...FREE_JOB_KINDS]) === JSON.stringify(["preflight", "fact_check", "import"])
+      && newKinds.statements.filter((x) => /DELETE FROM studio_fact_uploads s USING studio_fact_checks c/.test(x.text)
+        && /WHERE c\.job_id = \$1 AND s\.sha256 = c\.sha256/.test(x.text)).map((x) => x.values[0]).join() === "f1"
       && !/\bkind\b/.test(sweepSelect) && sweptNew.expired === 2
       && JSON.stringify(newKinds.statements.filter((x) => /UPDATE studio_jobs SET state = \$2/.test(x.text)).map((x) => x.values))
         === JSON.stringify([["f1", "expired"], ["i1", "expired"]])
@@ -626,12 +635,13 @@ function migration0004Checks(): void {
       && importNames.length === 16,
     `${importNames.length}: ${[...importNames].sort().join(",")} vs ${libraryNames.join(",")}`);
   const jobKinds = quoted(/CONSTRAINT studio_jobs_kind\s+CHECK \(kind IN \(([^)]*)\)\)/.exec(sql)?.[1]);
-  const deferred = ["fact_check", "import"];
-  check("SW26. migration 0004's job kinds are exactly the kinds this worker claims (CLAIMED_JOB_KINDS) plus S7.2's two, "
-    + "fact_check and import, which it never claims; no kind is both, and none is missing",
+  // (Until Content Studio S7.2 this check read: "… exactly the kinds this worker claims plus S7.2's two, fact_check and
+  // import, which it never claims".)
+  check("SW26. migration 0004's job kinds are exactly the kinds this worker claims (CLAIMED_JOB_KINDS, since S7.2 every "
+    + "one), each once; none is missing and the worker claims none the schema lacks",
     jobKinds.length === new Set(jobKinds).size
-      && JSON.stringify([...jobKinds].sort()) === JSON.stringify([...CLAIMED_JOB_KINDS, ...deferred].sort())
-      && deferred.every((kind) => !(CLAIMED_JOB_KINDS as readonly string[]).includes(kind)),
+      && JSON.stringify([...jobKinds].sort()) === JSON.stringify([...CLAIMED_JOB_KINDS].sort())
+      && jobKinds.length === 5,
     jobKinds.join(","));
 }
 
@@ -816,7 +826,7 @@ async function sourceFiles(kind: "fake" | "live", edit: (t: { stages: string[]; 
   return sink.files;
 }
 const sourceOf = (files: Map<string, Buffer>, edit: Partial<Omit<PreflightSourceRun, "source">> = {}): PreflightSourceRun => ({
-  state: "succeeded", deleted: false, kind: "full", importTier: null, factVersionId: FACT_VERSION,
+  state: "succeeded", deleted: false, kind: "full", runner: "live", importTier: null, factVersionId: FACT_VERSION,
   source: { label: "source-run", displayLabel: "source-run", name: "source-run", exists: () => true,
     readArtifact: async (name) => (files.has(name) ? new Uint8Array(files.get(name)!) : undefined) },
   ...edit,
@@ -1036,6 +1046,312 @@ async function productionWiringChecks(): Promise<void> {
     `${state} ${counted.calls()} ${JSON.stringify(release?.values)} ${JSON.stringify(runEnd?.values?.slice(0, 3))}`);
 }
 
+// --- Content Studio S7.2: the fact check, the import's revalidation and the fake source --------------------------------
+
+/** A synthetic automotive record, valid by the contract, plainly labelled. */
+const syntheticRecord = (i: number, edit: Record<string, unknown> = {}) => ({
+  id: `synthetic-s72-fact-${i}`, claim: `SYNTHETIC S7.2 TEST FIXTURE ${i} - not a real automotive fact.`,
+  subject: `synthetic-s72-subject-${i}`, attribute: `synthetic-s72-attr-${i}`, tags: i % 2 ? ["s72-odd", "s72-all"] : ["s72-all"],
+  sourceType: "repository_config", sourceRef: "synthetic://s72-test-fixture", provenance: "synthetic S7.2 fixture; not a real source",
+  reviewedAt: "2026-09-01T00:00:00.000Z", ...edit,
+});
+const factsFile = (records: unknown[], top: Record<string, unknown> = {}) => Buffer.from(JSON.stringify({ ...top, facts: records }, null, 2), "utf8");
+const loaderMessage = (bytes: Buffer, now: number): string => {
+  try { lib.parseAutomotiveFacts(bytes, { label: UPLOAD_LABEL, now }); return "accepted"; } catch (error) { return (error as Error).message; }
+};
+/** The fact check's statements, by role, in their transactions. */
+const factOrder = (log: string[]) => log.map((t) => (t === "BEGIN" || t === "COMMIT" || t === "ROLLBACK" ? t
+  : /^INSERT INTO studio_fact_versions .* FROM studio_fact_uploads s WHERE s\.sha256 = \$1/.test(t) ? "version"
+    : /SET outcome = 'accepted'/.test(t) ? "accepted" : /SET outcome = 'refused'/.test(t) ? "refused"
+      : /^DELETE FROM studio_fact_uploads WHERE sha256 = \$1/.test(t) ? "unstage"
+        : /^UPDATE studio_jobs SET state = 'finished' WHERE id = \$1$/.test(t) ? "job"
+          : /INSERT INTO studio_audit_log/.test(t) ? "audit" : t)).join(",");
+const CHECK_ROW: FactCheckRow = { id: "check-1", jobId: "job-1", requestedBy: "owner-1", sha256: "e".repeat(64), byteLength: 10 };
+
+async function factCheckChecks(): Promise<void> {
+  const rt = lib.loadRuntime();
+  const approved = approvedRepo();
+  const now = Date.now();
+  const decide = (bytes: Buffer) => decideFactCheck({ bytes, approvedFacts: approved, runtime: rt, now });
+  const sql = readFileSync(resolve(REPO_ROOT, "studio/migrations/0004_studio_fact_checks_and_imports.sql"), "utf8");
+  const quoted = (text: string | undefined) => [...(text ?? "").matchAll(/'([^']*)'/g)].map((m) => m[1]!);
+  const importNames = quoted(/IF NEW\.name <> ALL \(ARRAY\[([^\]]*)\]\) THEN/.exec(sql)?.[1]).sort();
+  const libraryNames = [...new Set(Object.values(lib.RUN_ARTIFACT_NAMES).flat())].sort();
+  check("SW27. the import's known file names the web reads (STUDIO_IMPORT_FILE_NAMES, in the S2 runner module the web may "
+    + "reach) are exactly the library's RUN_ARTIFACT_NAMES and migration 0004's list, each once — sixteen",
+    JSON.stringify([...STUDIO_IMPORT_FILE_NAMES].sort()) === JSON.stringify(libraryNames)
+      && JSON.stringify(importNames) === JSON.stringify(libraryNames) && new Set(STUDIO_IMPORT_FILE_NAMES).size === 16,
+    [...STUDIO_IMPORT_FILE_NAMES].join(","));
+
+  // SW28: the loader's known field set is the library's export, held equal to what parseAutomotiveFacts reads.
+  const sentinel = Object.fromEntries(lib.AUTOMOTIVE_FACT_FIELDS.map((field, i) => [field, `sentinel-${i}`]));
+  const read = lib.parseAutomotiveFacts(JSON.stringify({ facts: [{ ...sentinel, kind: "ignored", extraField: "ignored" }] }),
+    { label: "t", now: 0 })[0] as Record<string, unknown>;
+  const readKeys = Object.keys(read).filter((key) => key !== "kind").sort();
+  const each = lib.AUTOMOTIVE_FACT_FIELDS.every((field) => {
+    const without = { ...sentinel };
+    delete (without as Record<string, unknown>)[field];
+    let after: Record<string, unknown> | string;
+    try { after = lib.parseAutomotiveFacts(JSON.stringify({ facts: [without] }), { label: "t", now: 0 })[0] as Record<string, unknown>; }
+    catch { after = "refused"; }
+    return after === "refused" || (after as Record<string, unknown>)[field] !== sentinel[field];
+  });
+  const factCheckSource = readFileSync(resolve(REPO_ROOT, "src/studio/worker/factCheck.ts"), "utf8");
+  const ownLiterals = [...factCheckSource.matchAll(/["']([A-Za-z]+)["']/g)].map((m) => m[1]!)
+    .filter((name) => lib.AUTOMOTIVE_FACT_FIELDS.includes(name));
+  check("SW28. the loader's known field set is EXPORTED by the library (AUTOMOTIVE_FACT_FIELDS) and equals exactly what "
+    + "parseAutomotiveFacts reads — every listed field is read through (dropping any one changes or refuses the record) and "
+    + "nothing else is (an extra field and the input's kind are not kept); the fact check names that export and holds no "
+    + "field-name list of its own",
+    JSON.stringify(readKeys) === JSON.stringify([...lib.AUTOMOTIVE_FACT_FIELDS].sort())
+      && lib.AUTOMOTIVE_FACT_FIELDS.every((field) => read[field] === sentinel[field]) && each
+      && !("extraField" in read) && read.kind === "verified_automotive_fact" && lib.AUTOMOTIVE_FACT_FIELDS.length === 16
+      && /new Set\(lib\.AUTOMOTIVE_FACT_FIELDS\)/.test(factCheckSource) && ownLiterals.length === 0,
+    `${readKeys.join(",")} ${ownLiterals.join(",")}`);
+
+  // SW29: every loader error is a refusal with the loader's own message, and writes no version.
+  const loaderCases: Array<[string, Buffer]> = [
+    ["not JSON", Buffer.from("{ this is not json", "utf8")],
+    ["no facts array", Buffer.from(JSON.stringify({ records: [] }), "utf8")],
+    ["a missing required field", factsFile([syntheticRecord(0), syntheticRecord(1, { provenance: undefined })])],
+  ];
+  const loaderResults = await Promise.all(loaderCases.map(async ([label, bytes]) => {
+    const decision = await decide(bytes);
+    const tx = txRecorder(() => ({ rows: [], rowCount: 1 }));
+    if (decision.outcome === "refused") await writeFactCheckOutcome(tx.session, CHECK_ROW, decision);
+    return { label, decision, expected: loaderMessage(bytes, now), order: factOrder(tx.log) };
+  }));
+  check("SW29. every loader error refuses the file with the loader's OWN message (loader_refused) — bytes that are not JSON, "
+    + "no facts array, an entry missing a required field — and the refusal's write inserts no version: the outcome, the "
+    + "staged bytes' deletion, the job's end and the audit row, in one transaction",
+    loaderResults.every((r) => r.decision.outcome === "refused" && r.decision.refusalClass === "loader_refused"
+      && r.expected !== "accepted" && r.decision.message === r.expected && r.order === "BEGIN,refused,unstage,job,audit,COMMIT")
+      && loaderResults[2]!.decision.outcome === "refused" && /missing required field\(s\): provenance/.test(loaderResults[2]!.decision.message),
+    loaderResults.map((r) => `${r.label}: ${JSON.stringify(r.decision).slice(0, 160)} ${r.order}`).join(" | "));
+
+  // SW30: an invalid record is refused with the library's own message.
+  const invalid = factsFile([syntheticRecord(0), syntheticRecord(1, { reviewedAt: "not-a-date" })]);
+  const invalidDecision = await decide(invalid);
+  let packMessage = "accepted";
+  try {
+    const all = await lib.loadRecords(rt, { facts: { approvedFacts: { path: "a", displayPath: "a", exists: () => true, read: async () => new Uint8Array(approved.bytes) },
+      automotiveFacts: { path: UPLOAD_LABEL, displayPath: "x", exists: () => true, read: async () => new Uint8Array(invalid) } }, now,
+    reviewedAt: new Date(now).toISOString() });
+    rt.packModule.buildEvidencePack({ goal: "g", records: all.records, now });
+  } catch (error) { packMessage = (error as Error).message; }
+  check("SW30. a file the loader reads but whose record the evidence contract refuses (a reviewedAt that is not a date) is "
+    + "refused as pack_refused with the library's own validation message; nothing is accepted",
+    invalidDecision.outcome === "refused" && invalidDecision.refusalClass === "pack_refused" && packMessage !== "accepted"
+      && invalidDecision.message === packMessage && /synthetic-s72-fact-1/.test(invalidDecision.message),
+    JSON.stringify(invalidDecision).slice(0, 300));
+
+  // SW31: over the pack's cap is a warning; every record is still validated and checked in a pack that fits.
+  const many = Array.from({ length: 70 }, (_, i) => syntheticRecord(i));
+  const over = await decide(factsFile(many));
+  const overInvalid = await decide(factsFile([...many.slice(0, 69), syntheticRecord(69, { sourceType: "not-a-source-type" })]));
+  const under = await decide(factsFile(many.slice(0, 4)));
+  check("SW31. a file whose records, with the approved facts, exceed the pack's 64-record cap is ACCEPTED with the over-cap "
+    + "warning (an unscoped run will be refused), not refused; every record is still validated and checked in packs that "
+    + "fit — the seventieth record invalid refuses the file — and a file within the cap carries no warning",
+    over.outcome === "accepted" && over.overCap && over.recordCount === 70
+      && overInvalid.outcome === "refused" && overInvalid.refusalClass === "pack_refused" && /synthetic-s72-fact-69/.test(overInvalid.message)
+      && under.outcome === "accepted" && !under.overCap && rt.payloadContract.EVIDENCE_LIMITS.maxProjectedRecords === 64,
+    `${JSON.stringify(over).slice(0, 160)} | ${JSON.stringify(overInvalid).slice(0, 200)}`);
+
+  // SW32: unknown field names, names only, entry fields and top-level keys, bounded.
+  const SECRET = "SYNTHETIC-VALUE-NEVER-SHOWN";
+  const withUnknown = await decide(factsFile([syntheticRecord(0, { vin: SECRET, customerName: SECRET }), syntheticRecord(1)],
+    { exportedBy: SECRET, version: 2 }));
+  const manyUnknown = await decide(factsFile([syntheticRecord(0, Object.fromEntries(Array.from({ length: 250 }, (_, i) => [`stray${String(i).padStart(3, "0")}`, 1])))]));
+  check("SW32. field names outside the loader's known set are listed as a warning — each entry field as facts[].<name>, each "
+    + "top-level key besides facts by name — sorted, names only (no value is kept), never refusing the file; and bounded to "
+    + "the schema's 200 names",
+    withUnknown.outcome === "accepted"
+      && JSON.stringify(withUnknown.unknownFields) === JSON.stringify(["exportedBy", "facts[].customerName", "facts[].vin", "version"])
+      && !JSON.stringify(withUnknown).includes(SECRET)
+      && manyUnknown.outcome === "accepted" && manyUnknown.unknownFields?.length === UNKNOWN_FIELDS_MAX
+      && (await decide(factsFile([syntheticRecord(0)]))).unknownFields === null,
+    JSON.stringify(withUnknown.unknownFields));
+
+  // SW33: the counts are the uploaded records' only.
+  const four = await decide(syntheticFactsBytes());
+  const approvedOnly = await lib.countTags(rt, { facts: { approvedFacts: { path: "a", displayPath: "a", exists: () => true,
+    read: async () => new Uint8Array(approved.bytes) }, automotiveFacts: { path: "-", displayPath: "-", exists: () => false,
+    read: async () => { throw new Error("absent"); } } }, now, reviewedAt: new Date(now).toISOString() });
+  check("SW33. a version's record count and tag counts are over the uploaded records only — the approved facts' own tags are "
+    + "not added (the new-run page adds the heartbeat's) — each record counted once per tag",
+    four.outcome === "accepted" && four.recordCount === 4
+      && JSON.stringify(four.tagCounts) === JSON.stringify({ "synthetic-worker": 4, "worker-scope": 2 })
+      && approvedOnly.tags.length > 0 && approvedOnly.tags.every((tag) => !(tag in (four.outcome === "accepted" ? four.tagCounts : {}))),
+    JSON.stringify(four));
+
+  // SW34: the outcome, the version, the staging row's deletion and the job's end in ONE transaction.
+  const ok = (text: string) => ({ rows: [], rowCount: /^\s*DELETE/.test(text) ? 0 : 1 });
+  const acceptedNew = txRecorder(ok);
+  await writeFactCheckOutcome(acceptedNew.session, CHECK_ROW, { ...(four as Extract<FactCheckOutcome, { outcome: "accepted" }>), existing: false });
+  const acceptedExisting = txRecorder(ok);
+  await writeFactCheckOutcome(acceptedExisting.session, CHECK_ROW, { ...(four as Extract<FactCheckOutcome, { outcome: "accepted" }>), existing: true });
+  const refusedWrite = txRecorder(ok);
+  await writeFactCheckOutcome(refusedWrite.session, CHECK_ROW, loaderResults[0]!.decision as FactCheckOutcome);
+  const vanished = txRecorder((text) => ({ rows: [], rowCount: /INSERT INTO studio_fact_versions/.test(text) ? 0 : 1 }));
+  const vanishedResult = await writeFactCheckOutcome(vanished.session, CHECK_ROW,
+    { ...(four as Extract<FactCheckOutcome, { outcome: "accepted" }>), existing: false }).then(() => "written", () => "refused");
+  const insert = acceptedNew.log.find((t) => /^INSERT INTO studio_fact_versions/.test(t)) ?? "";
+  check("SW34. each outcome is written in ONE transaction with its job's end, in order: a new acceptance inserts the version "
+    + "FROM the staged bytes (never bytes the worker holds), then the check's outcome, the staging row's deletion (by the "
+    + "check's sha256), the job's end and the audit row; bytes already a version insert nothing; a refusal deletes the staging "
+    + "row too; and when the staged bytes are gone the transaction is rolled back, so no outcome is written alone",
+    factOrder(acceptedNew.log) === "BEGIN,version,accepted,unstage,job,audit,COMMIT"
+      && factOrder(acceptedExisting.log) === "BEGIN,accepted,unstage,job,audit,COMMIT"
+      && factOrder(refusedWrite.log) === "BEGIN,refused,unstage,job,audit,COMMIT"
+      && vanishedResult === "refused" && factOrder(vanished.log) === "BEGIN,version,ROLLBACK"
+      && /SELECT s\.sha256, s\.content, s\.byte_length, \$2, \$3, s\.uploaded_by FROM studio_fact_uploads s/.test(insert),
+    `${factOrder(acceptedNew.log)} | ${factOrder(acceptedExisting.log)} | ${factOrder(refusedWrite.log)} | ${factOrder(vanished.log)}`);
+
+  // SW35: the worker's own reads: bytes already a version, and staged bytes that are gone.
+  const runCheck = async (staged: boolean, existing: boolean) => {
+    const tx = txRecorder((text) => ({ rows: [], rowCount: /^\s*DELETE/.test(text) ? 0 : 1 }));
+    const bytes = syntheticFactsBytes();
+    const session = {
+      ...tx.session,
+      query: async (text: string) => {
+        if (/FROM studio_fact_checks WHERE job_id/.test(text)) {
+          return { rows: [{ id: "check-1", job_id: "job-1", requested_by: "owner-1", sha256: "e".repeat(64), byte_length: bytes.length, outcome: null }] };
+        }
+        if (/SELECT content FROM studio_fact_uploads/.test(text)) return { rows: staged ? [{ content: bytes }] : [] };
+        if (/SELECT 1 FROM studio_fact_versions/.test(text)) return { rows: existing ? [{ "?column?": 1 }] : [] };
+        return { rows: [] };
+      },
+    } as unknown as WorkerSession;
+    const answered = await runFactCheck({ session, runtime: rt, approvedFacts: approved } as never,
+      { jobId: "job-1", kind: "fact_check", runId: null });
+    return { answered, order: factOrder(tx.log), log: tx.log };
+  };
+  const existingCheck = await runCheck(true, true);
+  const goneCheck = await runCheck(false, false);
+  const freshCheck = await runCheck(true, false);
+  check("SW35. bytes that are already a fact version are accepted, naming that version, with NO insert; staged bytes that "
+    + "are no longer the check's are refused (staging_missing) with nothing inserted; and fresh bytes are inserted as a new version",
+    existingCheck.answered.outcome === "accepted" && existingCheck.order === "BEGIN,accepted,unstage,job,audit,COMMIT"
+      && goneCheck.answered.outcome === "refused" && goneCheck.answered.refusalClass === "staging_missing"
+      && goneCheck.order === "BEGIN,refused,unstage,job,audit,COMMIT"
+      && freshCheck.answered.outcome === "accepted" && freshCheck.order === "BEGIN,version,accepted,unstage,job,audit,COMMIT",
+    `${JSON.stringify(existingCheck.answered)} ${existingCheck.order} | ${JSON.stringify(goneCheck.answered)} ${goneCheck.order} | ${freshCheck.order}`);
+}
+
+async function importChecks(): Promise<void> {
+  const rt = lib.loadRuntime();
+  const approved = approvedRepo();
+  const facts = syntheticFactsBytes();
+  const pinned = { id: FACT_VERSION, sha256: createHash("sha256").update(facts).digest("hex"), content: facts };
+  const live = await sourceFiles("live");
+  const folder = (files: Map<string, Buffer>, edit: (m: Map<string, Buffer>) => void = () => {}) => {
+    const copy = new Map([...files].map(([k, v]) => [k, Buffer.from(v)] as [string, Buffer]));
+    edit(copy);
+    return { label: "import", displayLabel: "import", name: "import", exists: () => true,
+      readArtifact: async (name: string) => (copy.has(name) ? new Uint8Array(copy.get(name)!) : undefined) };
+  };
+  const editMeta = (edit: (meta: Record<string, any>) => void) => (m: Map<string, Buffer>) => {
+    const meta = JSON.parse(m.get("run-meta.json")!.toString("utf8"));
+    edit(meta);
+    m.set("run-meta.json", Buffer.from(JSON.stringify(meta, null, 2), "utf8"));
+  };
+  const decide = (source: ReturnType<typeof folder>, edit: { pinned?: typeof pinned | null; found?: boolean } = {}) => decideImport({
+    source, pinned: edit.pinned ?? null, versionBySha: async (sha) => (edit.found === false || sha !== pinned.sha256 ? null : pinned),
+    approvedFacts: approved, runtime: rt,
+  });
+  const meta = JSON.parse(live.get("run-meta.json")!.toString("utf8"));
+  const verified = await decide(folder(live));
+  check("SW36. a complete live run folder whose approved facts are this commit's and whose named fact version exists is "
+    + "VERIFIED by the library's own verifySourceRun in revision mode: its goal, platforms and scope from that result, every "
+    + "fingerprint and the fact version set",
+    verified.tier === "verified" && verified.goal === meta.goal && JSON.stringify(verified.platforms) === JSON.stringify(meta.platforms)
+      && verified.scopeTags === null && verified.factVersionId === FACT_VERSION && verified.approvedFactsSha256 === approved.sha256
+      && verified.automotiveFactsSha256 === pinned.sha256 && verified.evidencePackSha256 === meta.evidencePackSha256,
+    JSON.stringify(verified).slice(0, 300));
+
+  const corrupt = (m: Map<string, Buffer>) => {
+    const script = JSON.parse(m.get("03-hook-story-script.json")!.toString("utf8"));
+    script.output.provisional.hook = `${script.output.provisional.hook} [cites an id the pack does not hold: synthetic-unknown-id]`;
+    script.output.evidence = { ...(script.output.evidence ?? {}), supportingFactIds: ["synthetic-unknown-id"] };
+    m.set("03-hook-story-script.json", Buffer.from(JSON.stringify(script, null, 2), "utf8"));
+  };
+  let libraryMessage = "verified";
+  try {
+    await lib.verifySourceRun(rt, { runner: "live", facts: repoFacts(REPO_ROOT), reviewedAt: new Date().toISOString(), reviewedAtExplicit: false },
+      folder(live, corrupt), null, { reporter: { log: () => {}, warn: () => {} }, confirmUnproven: lib.refuseUnprovenAutomotiveFacts }, { revise: true });
+  } catch (error) { libraryMessage = (error as Error).message; }
+  const cases: Array<[string, ImportDecision, string]> = [
+    ["an old approved-facts hash", await decide(folder(live, editMeta((m) => { m.approvedFacts.sha256 = "0".repeat(64); }))), "approved_facts_changed"],
+    ["a missing fact version", await decide(folder(live), { found: false }), "fact_version_missing"],
+    ["a source pin that is another file", await decide(folder(live), { pinned: { ...pinned, sha256: "1".repeat(64) } }), "fact_version_mismatch"],
+    ["a failed saved output", await decide(folder(live, corrupt)), "revalidation_failed"],
+    ["an incomplete folder", await decide(folder(live, (m) => { m.delete("06-final-critic.json"); })), "incomplete_folder"],
+    ["a replay folder", await decide(folder(new Map([["replay-meta.json", Buffer.from("{}")], ["06-final-critic.json", live.get("06-final-critic.json")!]]))),
+      "incomplete_folder"],
+  ];
+  check("SW37. otherwise the import is ARCHIVED (archived_unverified) with its class and reason: an old approved-facts hash "
+    + "(approved_facts_changed), a fact version never uploaded (fact_version_missing), a source pin that is another file "
+    + "(fact_version_mismatch), a saved output that no longer revalidates — with verifySourceRun's own message "
+    + "(revalidation_failed) — and an incomplete folder or a replay folder (incomplete_folder)",
+    cases.every(([, d, cls]) => d.tier === "archived_unverified" && d.failureClass === cls && d.message.length >= 1 && d.message.length <= 4000)
+      && libraryMessage !== "verified" && (cases[3]![1] as Extract<ImportDecision, { tier: "archived_unverified" }>).message === libraryMessage,
+    cases.map(([label, d]) => `${label}: ${d.tier}/${d.tier === "archived_unverified" ? `${d.failureClass} ${d.message.slice(0, 80)}` : ""}`).join(" | "));
+
+  const archivedWith = async (edit: (m: Record<string, any>) => void) => decide(folder(live, editMeta((m) => {
+    m.approvedFacts.sha256 = "0".repeat(64);
+    edit(m);
+  })));
+  const longGoal = await archivedWith((m) => { m.goal = "é".repeat(IMPORT_GOAL_MAX_CHARS + 1); });
+  const edgeGoal = await archivedWith((m) => { m.goal = "é".repeat(IMPORT_GOAL_MAX_CHARS); });
+  const hostile = await archivedWith((m) => { m.goal = "bad\u0000goal"; m.platforms = ["instagram", "myspace"]; m.evidenceScope = { schema: "gcd-evidence-scope/1", tags: ["b", "a"] }; });
+  const good = await archivedWith((m) => { m.evidenceScope = { schema: "gcd-evidence-scope/1", tags: ["a", "b"] }; });
+  check("SW38. an archived import keeps only bounded metadata from its untrusted run-meta.json: a goal of 1–2,000 characters "
+    + "(2,000 kept, 2,001 or a control character null), platforms the library's validator accepts (else null) and a "
+    + "well-formed, normalized scope (else null)",
+    longGoal.goal === null && edgeGoal.goal === "é".repeat(IMPORT_GOAL_MAX_CHARS) && hostile.goal === null
+      && hostile.platforms === null && hostile.scopeTags === null && JSON.stringify(good.scopeTags) === JSON.stringify(["a", "b"])
+      && JSON.stringify(good.platforms) === JSON.stringify(meta.platforms),
+    JSON.stringify([longGoal.goal?.length, edgeGoal.goal?.length, hostile.goal, hostile.platforms, hostile.scopeTags, good.scopeTags]));
+
+  // SW39: the import's outcome in ONE transaction.
+  const importOrder = (log: string[]) => log.map((t) => (t === "BEGIN" || t === "COMMIT" || t === "ROLLBACK" ? t
+    : /^UPDATE studio_runs SET goal = \$2/.test(t) ? "metadata" : t === "FINDINGS" ? "findings"
+      : /^UPDATE studio_runs SET state = 'succeeded', import_tier = \$2/.test(t) ? "end"
+        : /^UPDATE studio_jobs SET state = 'finished' WHERE id = \$1$/.test(t) ? "job" : /INSERT INTO studio_audit_log/.test(t) ? "audit" : t)).join(",");
+  const tx = txRecorder(() => ({ rows: [], rowCount: 1 }));
+  const values: unknown[][] = [];
+  const recording = { tx: async <T>(fn: (c: { query: (t: string, v?: unknown[]) => Promise<unknown> }) => Promise<T>) => tx.session.tx(async (c) =>
+    fn({ query: async (t: string, v: unknown[] = []) => { values.push(v); return c.query(t, v); } })) } as unknown as Pick<WorkerSession, "tx">;
+  await writeImportOutcome(recording, { runId: "run-1", jobId: "job-1" }, verified, "needs_revision", async () => { tx.log.push("FINDINGS"); });
+  const archivedTx = txRecorder(() => ({ rows: [], rowCount: 1 }));
+  await writeImportOutcome(archivedTx.session, { runId: "run-1", jobId: "job-1" }, cases[0]![1], null, async () => { archivedTx.log.push("FINDINGS"); });
+  const notRunning = txRecorder((text) => ({ rows: [], rowCount: /SET state = 'succeeded'/.test(text) ? 0 : 1 }));
+  const notRunningResult = await writeImportOutcome(notRunning.session, { runId: "run-1", jobId: "job-1" }, verified, null, async () => {})
+    .then(() => "written", () => "refused");
+  check("SW39. an import's outcome is written in ONE transaction with its job's end: its metadata (and, verified, its fact "
+    + "version and automotive fingerprint) while still running, the findings rebuilt from its stored critic, then its end — "
+    + "succeeded with its tier — the job's end and the audit row; when the import is no longer running the transaction rolls back",
+    importOrder(tx.log) === "BEGIN,metadata,findings,end,job,audit,COMMIT"
+      && importOrder(archivedTx.log) === "BEGIN,metadata,findings,end,job,audit,COMMIT"
+      && values[0]?.[4] === FACT_VERSION && values[0]?.[5] === pinned.sha256 && values[1]?.[1] === "verified"
+      && importOrder(notRunning.log) === "BEGIN,metadata,end,ROLLBACK" && notRunningResult === "refused",
+    `${importOrder(tx.log)} | ${importOrder(archivedTx.log)} | ${importOrder(notRunning.log)}`);
+
+  // SW40: a fake source is refused by name before any quote, Studio or imported.
+  const replay = await sourceFiles("fake");
+  const fakeStudio = await preflightOf({ request: requestRow({ action: "revise", goal: null, sourceRunId: SOURCE_RUN }),
+    sourceRun: sourceOf(replay, { runner: "fake" }) });
+  const fakeImport = await preflightOf({ request: requestRow({ action: "replay_critic", goal: null, sourceRunId: SOURCE_RUN }),
+    sourceRun: sourceOf(replay, { runner: "fake", kind: "imported", importTier: "verified" }) });
+  const liveImport = await preflightOf({ request: requestRow({ action: "replay_critic", goal: null, sourceRunId: SOURCE_RUN }),
+    sourceRun: sourceOf(live, { kind: "imported", importTier: "verified" }) });
+  check("SW40. the free preflight refuses a fake source BY NAME (fake_source) before any quote and before the library is "
+    + "touched — a Studio fake run and a verified import of a fake CLI run alike — while a verified live import is quoted",
+    refusedAs(fakeStudio, "fake_source") && refusedAs(fakeImport, "fake_source") && liveImport.outcome.outcome === "quoted",
+    `${JSON.stringify(fakeStudio.outcome).slice(0, 120)} ${JSON.stringify(fakeImport.outcome).slice(0, 120)} ${liveImport.outcome.outcome}`);
+}
+
 async function main(): Promise<void> {
   await startupChecks();
   beforeWorkChecks();
@@ -1047,6 +1363,8 @@ async function main(): Promise<void> {
   await findingsChecks();
   await preflightChecks();
   await productionWiringChecks();
+  await factCheckChecks();
+  await importChecks();
   console.log(failures === 0 ? `\n[studio-worker] ALL PASS (${total} checks)` : `\n[studio-worker] ${failures} FAILURE(S) of ${total}`);
   process.exit(failures === 0 ? 0 : 1);
 }

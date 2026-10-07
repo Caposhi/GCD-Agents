@@ -3,7 +3,8 @@
  * Content Studio S5 — the phone-layout check (docs/CONTENT_STUDIO_DESIGN.md §8,
  * §10's S5 row: "phone-width layout checked in a headless Chromium at 375 px,
  * with no horizontal scroll"), extended in S6.2 to the new-run, quote and
- * spend pages.
+ * spend pages, and in S7.2 to the fact versions, upload, check-result and
+ * import pages and an archived import's report.
  *
  * LOCAL ONLY; not part of CI (an accepted limitation recorded in docs/TESTING.md).
  * It needs a build (`npm run build`) and a Chromium binary: the preinstalled one
@@ -22,6 +23,10 @@
  *    revise's page (planRevision's plan for the fixture critic), the spend
  *    panel with an unacknowledged overrun, and the run report with its action
  *    buttons;
+ *  - S7.2: as the owner, the fact versions list (long tags, an active and a
+ *    retired version), the upload page, an accepted check's page (an over-cap
+ *    warning, long unknown field names), the import page, and an archived
+ *    import's report (a long reason, recorded files by base name);
  *  - at 375 px (a phone) it asserts, on every one of those pages and on the
  *    runs list and the run report,
  *    that `document.scrollingElement.scrollWidth <= 375` (no horizontal scroll),
@@ -124,6 +129,20 @@ store.ledger.push({ entry: "reserve", runId: run.id, amountMicros: 21_650_000, d
   { entry: "release", runId: run.id, amountMicros: 20_415_433, day: today },
   { entry: "overrun", runId: run.id, amountMicros: 1_234_567, day: today });
 
+// S7.2: fact versions, an accepted check with warnings, and an archived import.
+const retired = store.addFactVersion({ [`retired-${LONG.slice(0, 60)}`]: 4 }, false);
+store.factVersions.get(retired).status = "retired";
+const factsBytes = Buffer.from(JSON.stringify({ facts: [], layout: LONG }), "utf8");
+const staged = await store.stageFactUpload({ ownerId: owner.id, content: factsBytes,
+  sha256: createHash("sha256").update(factsBytes).digest("hex") });
+store.answerFactCheck(staged.checkId, { accepted: { recordCount: 70, overCap: true,
+  tagCounts: { brakes: 30, [LONG.slice(0, 120)]: 40 } } }, [`facts[].${LONG.slice(0, 100)}`, "exportedBy", "facts[].vin"]);
+const archivedImport = store.addRun(owner, { kind: "imported", runner: "live", state: "succeeded", import_tier: "archived_unverified",
+  goal: `An imported goal ${LONG}`, failure_class: "revalidation_failed", failure_message: `the saved output no longer revalidates: ${LONG}` });
+store.addArtifact(archivedImport.id, "run-meta.json", JSON.stringify({ runner: "live",
+  approvedFacts: { path: `/Users/synthetic-owner/${LONG}/config/approved-facts.json` },
+  automotiveFacts: { path: `/Users/synthetic-owner/private/${LONG.slice(0, 120)}.json` } }));
+
 const app = createStudioWebApp({
   store, commit: "0".repeat(40), log: () => {},
   config: { publicOrigin: "https://studio.test", allowedHd: "germancardepot.com", clientId: "layout.apps.test", clientSecret: "layout-secret",
@@ -137,7 +156,7 @@ const base = `http://127.0.0.1:${server.address().port}`;
 
 const profile = mkdtempSync(join(tmpdir(), "gcd-studio-layout-"));
 const browser = spawn(CHROMIUM, ["--headless=new", "--no-sandbox", "--disable-gpu", "--no-first-run", "--no-default-browser-check",
-  "--remote-debugging-port=0", `--user-data-dir=${profile}`, "about:blank"], { stdio: ["ignore", "ignore", "pipe"] });
+  "--remote-debugging-port=0", `--user-data-dir=${profile}`, "about:blank"], { stdio: ["ignore", "ignore", "pipe"], detached: true });
 const wsUrl = await new Promise((settle, fail) => {
   let text = "";
   const timer = setTimeout(() => fail(new Error("Chromium did not report its DevTools endpoint")), 30_000);
@@ -246,12 +265,22 @@ try {
   results.revisePhone = await visit(`/preflights/${revise.requestId}`, PHONE);
   results.spendPhone = await visit("/spend", PHONE);
   results.ownerReportPhone = await visit(`/runs/${run.id}`, PHONE);
+  results.versionsPhone = await visit("/facts", PHONE);
+  results.uploadPhone = await visit("/facts/upload", PHONE);
+  results.checkPhone = await visit(`/facts/checks/${staged.checkId}`, PHONE);
+  results.importPhone = await visit("/imports/new", PHONE);
+  results.importReportPhone = await visit(`/runs/${archivedImport.id}`, PHONE);
   const S62_PAGES = {
     newRunPhone: ["Check and get a price", "Start FAKE — wiring test"],
     quotePhone: ["Confirm", "$21.65"],
     revisePhone: ["Confirm", "$9.15"],
     spendPhone: ["Overruns", "Acknowledge"],
     ownerReportPhone: ["Revise"],
+    versionsPhone: ["Fact versions", "ACTIVE", "Make active", "Restore"],
+    uploadPhone: ["Upload a facts file", "Upload and check"],
+    checkPhone: ["Accepted", "70 records", "an unscoped run will be refused", "exportedBy"],
+    importPhone: ["Import a run folder", "Run folder", "The known files"],
+    importReportPhone: ["Not revalidated", "approved-facts.json"],
   };
   for (const [key, words] of Object.entries(S62_PAGES)) {
     assert(`${key}: the page rendered what it is for (${words.join(", ")})`, words.every((w) => results[key].text.includes(w)),
@@ -274,12 +303,20 @@ try {
   assert("report: each Copy button's attribute, as Chromium parses it, is exactly the expected text (CR LF kept)",
     JSON.stringify(phone.copies) === JSON.stringify(expectedCopies) && phone.copies.every((c) => c.includes("\r\n")),
     { got: phone.copies.map((c) => c.length), want: expectedCopies.map((c) => c.length) });
+  assert("archived import report: the recorded files are shown by base name only (no absolute path)",
+    !results.importReportPhone.text.includes("/Users/") && results.importReportPhone.text.includes("approved-facts.json"),
+    results.importReportPhone.text.slice(0, 400));
   assert("no Content-Security-Policy violation was reported on any page", violations.length === 0, violations);
 } finally {
   socket.close();
-  browser.kill("SIGKILL");
+  // (S7.2) Chromium and every helper process it started (its own process group) are stopped, and the profile is
+  // removed only once Chromium has exited, so nothing is still writing to it.
+  const exited = browser.exitCode !== null || browser.signalCode !== null ? Promise.resolve() : new Promise((settle) => browser.once("exit", settle));
+  try { process.kill(-browser.pid, "SIGKILL"); } catch { browser.kill("SIGKILL"); }
+  await exited;
+  await new Promise((settle) => setTimeout(settle, 300));
   await new Promise((settle) => { server.closeAllConnections(); server.close(() => settle()); });
-  rmSync(profile, { recursive: true, force: true });
+  rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 }
 console.log(ok ? "\nstudio layout check: ALL PASS" : "\nstudio layout check: FAILED");
 process.exit(ok ? 0 : 1);
