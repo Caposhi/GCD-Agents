@@ -18,8 +18,8 @@
 # in a harness command -- is refused, never guessed.
 #
 # After checking the given workflow, it proves itself: it applies injected
-# faults to that workflow's text (a shard missing -- either of the quality
-# job's two shard steps --, a shard duplicated, a different n, k out of range,
+# faults to that workflow's text (a shard missing -- any one of the quality
+# job's three shard steps --, a shard duplicated, a different n, k out of range,
 # the harness without `--shard`, an unresolved shard value, an unsupported
 # matrix form) and requires each to be refused with the expected reason. Each fault's anchor text must occur exactly once, so the
 # self-test fails rather than passes vacuously if the workflow drifts.
@@ -151,45 +151,48 @@ def check_workflow(text)
 end
 
 FAULTS = [
-  ["a shard missing: the quality job's shard 0/4 step removed",
-   "        run: npm run test:payload-mutation -- --shard 0/4\n", "",
-   "shard 0/4 is not run"],
+  ["a shard missing: the quality job's shard 0/5 step removed",
+   "        run: npm run test:payload-mutation -- --shard 0/5\n", "",
+   "shard 0/5 is not run"],
   ["a shard duplicated: the PostgreSQL 18 job given shard 1",
    "          - postgres-version: \"18\"\n            mutation-shard: \"2\"",
    "          - postgres-version: \"18\"\n            mutation-shard: \"1\"",
-   "shard 1/4 is run 2 times; shard 2/4 is not run"],
+   "shard 1/5 is run 2 times; shard 2/5 is not run"],
   ["a shard duplicated: the quality job's first step given shard 2",
-   "--shard 0/4\n", "--shard 2/4\n",
-   "shard 0/4 is not run; shard 2/4 is run 2 times"],
+   "--shard 0/5\n", "--shard 2/5\n",
+   "shard 0/5 is not run; shard 2/5 is run 2 times"],
   ["a different n in one job",
-   "--shard 0/4\n", "--shard 0/3\n",
-   "shards disagree on n: 3, 4"],
+   "--shard 0/5\n", "--shard 0/3\n",
+   "shards disagree on n: 3, 5"],
   ["k out of range",
-   "--shard 0/4\n", "--shard 4/4\n",
+   "--shard 0/5\n", "--shard 5/5\n",
    "has k >= n"],
   ["the harness run without --shard",
-   "npm run test:payload-mutation -- --shard 0/4\n", "npm run test:payload-mutation\n",
+   "npm run test:payload-mutation -- --shard 0/5\n", "npm run test:payload-mutation\n",
    "runs the harness without --shard"],
   ["the harness run directly, without --shard, in another job",
    "          npm run test:studio-worker-postgres\n",
    "          npm run test:studio-worker-postgres && node scripts/ci/payload-contract-mutation.mjs\n",
    "runs the harness without --shard"],
   ["--shard= instead of --shard k/n",
-   "--shard 0/4\n", "--shard=0/4\n",
+   "--shard 0/5\n", "--shard=0/5\n",
    "uses --shard="],
   ["a shard value no matrix entry defines",
-   "--shard ${{ matrix.mutation-shard }}/4", "--shard ${{ matrix.mutation-shards }}/4",
+   "--shard ${{ matrix.mutation-shard }}/5", "--shard ${{ matrix.mutation-shards }}/5",
    "matrix.mutation-shards is not defined"],
   ["a shard value left as an expression",
-   "--shard ${{ matrix.mutation-shard }}/4", "--shard ${{ github.run_attempt }}/4",
+   "--shard ${{ matrix.mutation-shard }}/5", "--shard ${{ github.run_attempt }}/5",
    "is not resolved to k/n"],
   ["an unsupported matrix form",
    "        postgres-version: [\"16\", \"18\"]\n",
    "        postgres-version: [\"16\", \"18\"]\n        exclude:\n          - postgres-version: \"16\"\n",
    "matrix exclude is not supported"],
-  ["a shard missing: the quality job's shard 3/4 step removed",
-   "        run: npm run test:payload-mutation -- --shard 3/4\n", "",
-   "shard 3/4 is not run"],
+  ["a shard missing: the quality job's shard 3/5 step removed",
+   "        run: npm run test:payload-mutation -- --shard 3/5\n", "",
+   "shard 3/5 is not run"],
+  ["a shard missing: the quality job's shard 4/5 step removed",
+   "        run: npm run test:payload-mutation -- --shard 4/5\n", "",
+   "shard 4/5 is not run"],
 ].freeze
 
 path = ARGV.fetch(0) { abort "usage: ruby scripts/ci/check-mutation-shards.rb .github/workflows/ci.yml" }

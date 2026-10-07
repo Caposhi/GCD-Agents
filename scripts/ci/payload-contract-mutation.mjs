@@ -6301,8 +6301,9 @@ const INC_SAMPLE_IDS = [...INC_SAMPLE.keys()].sort((a, b) => a - b).map((index) 
 /**
  * `--shard k/n`: run exactly the mutations whose zero-based index modulo `n` is
  * `k`. The selection depends on the index alone, so shards `0` to `n - 1` are
- * disjoint and together run every mutation; CI runs three, one in each of three
- * existing jobs, and `scripts/ci/check-mutation-shards.rb` checks that
+ * disjoint and together run every mutation; CI runs five (Content Studio
+ * S7.3): three as steps of the quality job and one in each PostgreSQL job,
+ * and `scripts/ci/check-mutation-shards.rb` checks that
  * `.github/workflows/ci.yml` runs each exactly once with the same `n`. Without
  * `--shard` the run is shard 0/1: every mutation, as before. Every per-run proof
  * (`M0`, `M-isolation`, `M-kill`, `M-capture`, the `M-inc` checks, `M-end`,
