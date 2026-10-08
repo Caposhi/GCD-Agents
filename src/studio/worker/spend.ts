@@ -19,7 +19,7 @@ export type PaidRefusal =
   | "job_cancelled" | "job_timeout" | "not_running" | "reservation_missing" | "reservation_settled" | "quote_mismatch"
   | "requester_not_permitted" | "unpriced_request" | "requests_in_flight" | "cost_ceiling_exceeded"
   | "reservation_exhausted" | "confirmations_locked" | "cap_exceeded_daily" | "cap_exceeded_monthly"
-  | "cap_exceeded_user_daily";
+  | "cap_exceeded_user_daily" | "cap_missing";
 
 /** What the worker read about one paid run, under its row lock, immediately before a unit. */
 export interface PaidUnitSnapshot {
@@ -104,6 +104,11 @@ export function decidePaidUnit(
   }
   if (s.unacknowledgedOverruns > 0) {
     return no("confirmations_locked", "an overrun the owner has not acknowledged locks every paid request and confirmation");
+  }
+  // Content Studio S7.3 (the S7 analysis's item 12, accepted by the owner): a runner's missing daily cap is zero
+  // (design §6.2), so a runner with none buys no request. The owner's own unset cap is still no per-user cap.
+  if (s.requester.role === "runner" && s.requester.dailyCapMicros === null) {
+    return no("cap_missing", "the requester is a runner with no daily cap, which counts as zero; no paid request is sent");
   }
   const dailyCap = Math.min(caps.dailyMicros, s.settings?.dailyCapMicros ?? 0);
   const monthlyCap = Math.min(caps.monthlyMicros, s.settings?.monthlyCapMicros ?? 0);

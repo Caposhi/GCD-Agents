@@ -18,7 +18,9 @@
  * by the worker, the confirmation through the web's own store, and the paid
  * path behind it with the counting fake runner — and (S7.2) `facts` and
  * `imports`: the fact check and the import's revalidation, each staged through
- * the web's own store and answered by the worker.
+ * the web's own store and answered by the worker; and (S7.3) `caps`: a runner
+ * with no daily cap refused before any paid unit, and an overrun's
+ * acknowledgement surviving its owner's later demotion.
  */
 
 import { execFile, spawn, type ChildProcess } from "node:child_process";
@@ -46,9 +48,9 @@ import { PgWebStore } from "../web/store.js";
 import { importRunner, lineageKey } from "../web/bundle.js";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
-const GROUPS = ["startup", "queue", "paid", "identical", "findings", "actions", "facts", "imports"] as const;
+const GROUPS = ["startup", "queue", "paid", "identical", "findings", "actions", "facts", "imports", "caps"] as const;
 type Group = typeof GROUPS[number];
-const counts: Record<Group, number> = { startup: 0, queue: 0, paid: 0, identical: 0, findings: 0, actions: 0, facts: 0, imports: 0 };
+const counts: Record<Group, number> = { startup: 0, queue: 0, paid: 0, identical: 0, findings: 0, actions: 0, facts: 0, imports: 0, caps: 0 };
 let failures = 0;
 function check(group: Group, name: string, cond: boolean, detail = ""): void {
   console.log(`${cond ? "PASS" : "FAIL"}  [${group}] ${name}${cond || !detail ? "" : ` — ${detail}`}`);
@@ -189,7 +191,9 @@ async function studio(dbs: Databases, label: string, { migrated = true } = {}): 
   if (migrated) {
     owner = (await pool.query("INSERT INTO studio_users (email, role, google_sub) VALUES ($1, 'owner', $2) RETURNING id",
       [`owner.${randomBytes(3).toString("hex")}@germancardepot.com`, `sub-${randomBytes(6).toString("hex")}`])).rows[0].id;
-    runner = (await pool.query("INSERT INTO studio_users (email, role, created_by) VALUES ($1, 'runner', $2) RETURNING id",
+    // Content Studio S7.3, by fact: a runner with no daily cap is refused before any paid unit (cap_missing), so this
+    // runner has one at the daily ceiling, which never binds first. (Until S7.3 it had none, then no per-user cap.)
+    runner = (await pool.query("INSERT INTO studio_users (email, role, created_by, daily_cap_usd) VALUES ($1, 'runner', $2, 75) RETURNING id",
       [`runner.${randomBytes(3).toString("hex")}@germancardepot.com`, owner])).rows[0].id;
     await pool.query("INSERT INTO studio_fact_uploads (content, sha256, byte_length, uploaded_by) VALUES ($1, $2, $3, $4)",
       [facts, factSha, facts.length, owner]);
@@ -714,6 +718,49 @@ async function paidGroup(dbs: Databases): Promise<void> {
         && calls7b === 0 && r7b.state === "refused" && r7b.failure_class === "confirmations_locked"
         && !lockedAfterAck && r7c.state === "succeeded" && current.calls.length === 9,
       `${calls7} ${JSON.stringify(r7)} ${await ledgerOf(st, p7.runId)} ${lockedAfter} ${calls7b} ${JSON.stringify(r7b)} ${lockedAfterAck} ${JSON.stringify(r7c)}`);
+
+    // SWP36-SWP37 (Content Studio S7.3): the runner's missing cap before a paid unit, and an acknowledgement that
+    // survives its owner's later demotion.
+    current = replayRunner(transcript);
+    const p36 = await paidJob(st, { requestedBy: "runner", after: async (c) => {
+      await c.query(`SET LOCAL studio.actor = '${st.owner}'`);
+      await c.query("UPDATE studio_users SET daily_cap_usd = NULL, updated_by = $2 WHERE id = $1", [st.runner, st.owner]);
+    } });
+    const r36 = await terminal(st, p36.runId);
+    const calls36 = current.calls.length;
+    const rows36 = (await requestsOf(st, p36.runId)).length;
+    const ownerCap36 = (await st.pool.query("SELECT daily_cap_usd FROM studio_users WHERE id = $1", [st.owner])).rows[0].daily_cap_usd;
+    current = replayRunner(transcript);
+    const p36b = await paidJob(st);
+    const r36b = await terminal(st, p36b.runId);
+    await asActor(st.pool, st.owner, "UPDATE studio_users SET daily_cap_usd = 75, updated_by = $2 WHERE id = $1", [st.runner, st.owner]);
+    check("caps", "SWP36. before every paid unit, a run whose requester is a runner with no daily cap (NULL) is refused "
+      + "(cap_missing) with ZERO fake-runner calls, no request row, and its reservation released in full; the owner, whose own "
+      + "cap is NULL too, runs to the end (9 calls)",
+      calls36 === 0 && r36.state === "refused" && r36.failure_class === "cap_missing" && rows36 === 0
+        && await ledgerOf(st, p36.runId) === `release:${microsToNumeric(p36.reserved)},reserve:${microsToNumeric(p36.reserved)}`
+        && ownerCap36 === null && r36b.state === "succeeded" && current.calls.length === 9,
+      `${calls36} ${JSON.stringify(r36)} ${rows36} ${ownerCap36} ${JSON.stringify(r36b)} ${current.calls.length}`);
+
+    const owner2 = (await st.pool.query("INSERT INTO studio_users (email, role, created_by) VALUES ($1, 'owner', $2) RETURNING id",
+      [`owner2.${randomBytes(3).toString("hex")}@germancardepot.com`, st.owner])).rows[0].id as string;
+    let overrun37 = 0;
+    current = replayRunner(transcript, { costUsd: (call) => (call.index === 0 ? (overrun37 + 250_000) / 1e6 : 0.01) });
+    const p37 = await paidJob(st, { after: async () => { overrun37 = fullCeiling.micros; } });
+    await terminal(st, p37.runId);
+    const locked37 = await confirmationsLocked(st.pool);
+    await st.pool.query(`INSERT INTO studio_audit_log (actor_user_id, action, target_type, target_id, detail)
+      VALUES ($1, '${OVERRUN_ACKNOWLEDGED}', 'studio_runs', $2, '{}')`, [owner2, p37.runId]);
+    await asActor(st.pool, st.owner, "UPDATE studio_users SET role = 'viewer', updated_by = $2 WHERE id = $1", [owner2, st.owner]);
+    const lockedAfterDemotion = await confirmationsLocked(st.pool);
+    current = replayRunner(transcript);
+    const p37b = await paidJob(st);
+    const r37b = await terminal(st, p37b.runId);
+    check("caps", "SWP37. an overrun acknowledged by an owner who is later demoted stays acknowledged: the worker's own query "
+      + "(the one it reads before every unit) no longer depends on the acknowledger's CURRENT role, so confirmations stay "
+      + "unlocked and the next confirmed run is not refused as confirmations_locked",
+      locked37 && !lockedAfterDemotion && r37b.state === "succeeded" && current.calls.length === 9,
+      `${locked37} ${lockedAfterDemotion} ${JSON.stringify(r37b)} ${current.calls.length}`);
 
     // SWP8: no retries.
     current = replayRunner(transcript, { fail: (call) => call.index === 1 });

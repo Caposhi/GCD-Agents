@@ -37,15 +37,18 @@ jobs:
       - name: Offline self-tests
         run: npm run test:offline
 
-      # The mutation harness runs as four shards: two in this job (0/4 and
-      # 3/4, under its 60-minute limit) and one in each PostgreSQL job;
+      # The mutation harness runs as five shards: three in this job (0/5, 3/5
+      # and 4/5, under its 60-minute limit) and one in each PostgreSQL job;
       # scripts/ci/check-mutation-shards.rb (workflow validation job) requires
       # shards 0..n-1 exactly once with one n.
-      - name: Payload-contract mutation tests, shard 0/4
-        run: npm run test:payload-mutation -- --shard 0/4
+      - name: Payload-contract mutation tests, shard 0/5
+        run: npm run test:payload-mutation -- --shard 0/5
 
-      - name: Payload-contract mutation tests, shard 3/4
-        run: npm run test:payload-mutation -- --shard 3/4
+      - name: Payload-contract mutation tests, shard 3/5
+        run: npm run test:payload-mutation -- --shard 3/5
+
+      - name: Payload-contract mutation tests, shard 4/5
+        run: npm run test:payload-mutation -- --shard 4/5
 
       - name: M1 readiness runner offline tests
         run: npm run test:m1-readiness
@@ -147,8 +150,8 @@ jobs:
           npm run test:studio-worker-postgres
           npm run test:studio-web-postgres
 
-      - name: Payload-contract mutation tests, shard ${{ matrix.mutation-shard }}/4
-        run: npm run test:payload-mutation -- --shard ${{ matrix.mutation-shard }}/4
+      - name: Payload-contract mutation tests, shard ${{ matrix.mutation-shard }}/5
+        run: npm run test:payload-mutation -- --shard ${{ matrix.mutation-shard }}/5
 
   agentshield:
     name: AgentShield 1.4.0

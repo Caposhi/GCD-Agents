@@ -55,9 +55,12 @@ import { attachmentDisposition, DOWNLOAD_CSP, verifiedBytes } from "./downloads.
 import { escapeHtml } from "./html.js";
 import {
   MAX_DISPLAY_ARTIFACT_BYTES, needsDecision, parseRunFilters, POLL_SECONDS, readCaptions, readScript, readShotList, RUN_KINDS,
-  RUN_STATES, type FindingRow,
+  RUN_STATES, type FindingRow, type RunRow,
 } from "./runs.js";
 import { STATIC_ASSETS } from "./static.js";
+import { capBoundMicros, decideUserChange, losesOwnSeat, normalizeNewUserEmail, parseAuditFilters, parseCapInput, parseRole } from "./users.js";
+import { SCHEDULED_RUNS_UNAVAILABLE, usersBody } from "./userViews.js";
+import { dollars } from "./actionViews.js";
 import {
   BUNDLE_TOO_LARGE, decideLineage, decodeFactUpload, decodeRunBundle, documentField, encodeRunBundle, FACT_UPLOAD_MAX_DOCUMENT_BYTES,
   FACT_UPLOAD_MAX_FORM_BYTES, IMPORT_MAX_DOCUMENT_BYTES, IMPORT_MAX_FILES, importRunner, RUN_BUNDLE_SCHEMA,
@@ -917,7 +920,11 @@ const undeclaredRole: Route = { method: "GET", path: "/test/undeclared-role", mi
         // Content Studio S7.2: the versions list and the whole-run bundle viewer; every fact and import edit owner.
         "GET /facts viewer", "GET /facts/upload owner", "POST /facts/upload owner", "GET /facts/checks/:id owner",
         "POST /facts/versions/:id/activate owner", "POST /facts/versions/:id/retire owner", "POST /facts/versions/:id/restore owner",
-        "GET /facts/versions/:id/file owner", "GET /imports/new owner", "POST /imports owner", "GET /runs/:id/bundle viewer"].join()
+        "GET /facts/versions/:id/file owner", "GET /imports/new owner", "POST /imports owner", "GET /runs/:id/bundle viewer",
+        // Content Studio S7.3 (by fact; until S7.3 the list ended at the bundle): the users, caps and audit screens, every one owner.
+        "GET /users owner", "POST /users owner", "POST /users/:id/role owner", "POST /users/:id/cap owner",
+        "POST /users/:id/disable owner", "POST /users/:id/enable owner", "POST /users/:id/revoke-sessions owner",
+        "GET /settings owner", "POST /settings/caps owner", "GET /audit owner"].join()
       && w.app.routes.length === STUDIO_ROUTE_TABLE.length + 2,
     undeclared.map((r) => r.status).join());
   const viewer = new Jar();
@@ -1548,14 +1555,21 @@ async function s62World(options: { ceilings?: WebConfig["ceilings"]; withVersion
   const factVersion = options.withVersion === false ? "" : w.store.addFactVersion({ "synthetic-tag-a": 3, "synthetic-tag-b": 2 });
   w.store.heartbeat = { commit: S62_COMMIT, approvedFactsSha256: APPROVED_SHA, priceTableSha256: PRICE_SHA,
     tagCounts: { "synthetic-approved": 5, "synthetic-tag-a": 1 }, beatAtMs: w.clock.now };
+  // Content Studio S7.3, by fact: a runner with no daily cap cannot confirm (a missing cap is zero, §6.2), so this
+  // world's runner has one AT the daily deployment ceiling — it never binds before the day's own cap, so every S6.2
+  // check keeps its meaning. (Until S7.3 the runner had none, which then meant no per-user cap.)
+  w.store.userCaps.set(runnerUser.id, CEILINGS.dailyMicros);
   // Every user row predates the quotes this world makes.
   for (const id of w.store.users.keys()) w.store.userUpdatedAt.set(id, w.clock.now - 60_000);
   return { w, ...jars, runnerUser, viewerUser, factVersion };
 }
 
-/** A POST with the session's synchronizer token and the configured Origin. */
+/**
+ * A POST with the session's synchronizer token and the configured Origin. (S7.3: a jar whose session cookie was cleared
+ * sends a token for no session, so the route refuses it instead of the suite crashing.)
+ */
 async function post(w: World, path: string, jar: Jar, fields: Array<[string, string]> = []): Promise<Reply> {
-  const body = new URLSearchParams([...fields, ["csrf", csrfTokenFor(jar.values.get(SESSION_COOKIE)!)]]).toString();
+  const body = new URLSearchParams([...fields, ["csrf", csrfTokenFor(jar.values.get(SESSION_COOKIE) ?? "")]]).toString();
   return request(w, path, { method: "POST", jar, headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" }, body });
 }
 const newRunFields = (goal = "Synthetic S6.2 goal", extra: Array<[string, string]> = []): Array<[string, string]> =>
@@ -1880,7 +1894,8 @@ class ScriptedConfirmDb {
     const st = this.state;
     if (/FROM studio_settings WHERE singleton/.test(t)) return [{ daily: st.dailyCap, monthly: "200", active: "fv-1" }];
     if (/^SELECT \(extract\(epoch FROM now\(\)\) \* 1000\)::float8 AS now$/.test(t.trim())) return [{ now: st.nowMs }];
-    if (/FROM studio_users WHERE id/.test(t)) return [{ id: st.userId, role: "runner", status: "active", cap: null, updated: st.nowMs - 60_000 }];
+    // (S7.3, by fact: the runner has a cap at the daily ceiling — a runner with none is refused as cap_missing. Until S7.3: cap null.)
+    if (/FROM studio_users WHERE id/.test(t)) return [{ id: st.userId, role: "runner", status: "active", cap: "75.000000", updated: st.nowMs - 60_000 }];
     if (/FROM studio_quotes q LEFT JOIN studio_fact_versions/.test(t)) {
       const q = st.quotes.get(String(values[0]));
       return q ? [{ id: values[0], user_id: st.userId, action: "full", params_sha256: "p".repeat(64), worker_commit: S62_COMMIT,
@@ -2177,7 +2192,8 @@ class ScriptedConfirmDb {
   const quoteSnap = (edit: (s: ConfirmSnapshot) => void = () => {}): ConfirmSnapshot => {
     const now = Date.UTC(2026, 9, 5, 16);
     const snap: ConfirmSnapshot = {
-      nowMs: now, user: { id: "u", role: "runner", status: "active", dailyCapMicros: null, updatedAtMs: now - 60_000 },
+      // (S7.3, by fact: the runner's cap is the daily ceiling — a runner with none is cap_missing. Until S7.3: null.)
+      nowMs: now, user: { id: "u", role: "runner", status: "active", dailyCapMicros: 75_000_000, updatedAtMs: now - 60_000 },
       quote: { id: "q", userId: "u", action: "full", paramsSha256: "p", workerCommit: "c", approvedFactsSha256: "a", factVersionId: "fv",
         priceTableSha256: "t", ceilingMicros: 21_650_000, createdAtMs: now - 1_000, expiresAtMs: now + 60_000, consumed: false },
       request: { action: "full", paramsSha256: "p", factVersionId: "fv", sourceRunId: null }, sourceAvailable: false,
@@ -2654,6 +2670,479 @@ const sendDocument = (w: World, path: string, jar: Jar, document: string) => pos
       && captured.some((line) => line.includes("[studio-web] purge") && line.includes("\"fact_checks\":1")),
     `${JSON.stringify(purged)} ${statements.join(" | ")}`);
   await s.w.close();
+}
+
+// =====================================================================================================
+// Content Studio S7.3: users, caps and settings, the audit view; the runner's missing cap; the overrun rule
+// (design §4.1, §6.2, §7.2, §8.7, §9.5)
+// =====================================================================================================
+
+/** What an S7.3 edit could write: users (role, status, cap), sessions' revocations, the settings' caps and the audit log. */
+const s73State = (w: World) => JSON.stringify({
+  users: [...w.store.users.values()].map((u) => [u.id, u.email, u.role, u.status, w.store.userCaps.get(u.id) ?? null]),
+  revoked: [...w.store.sessions.values()].map((x) => x.revoked_at === null ? null : x.revoked_at.getTime()),
+  caps: w.store.settings ? [w.store.settings.dailyCapMicros, w.store.settings.monthlyCapMicros] : null,
+  audit: w.store.auditLog.length,
+});
+/** A refused S7.3 edit: its status, its class on the page, and nothing written. */
+async function s73Refused(w: World, path: string, jar: Jar, fields: Array<[string, string]>, refusal: string, status: number):
+  Promise<{ ok: boolean; detail: string }> {
+  const before = s73State(w);
+  const reply = await post(w, path, jar, fields);
+  const got = /<code>([a-z_]+)<\/code>/.exec(reply.body)?.[1];
+  return { ok: reply.status === status && got === refusal && s73State(w) === before, detail: `${path} ${reply.status} ${got}` };
+}
+const auditAfter = (w: World, from: number) => w.store.auditLog.slice(from);
+const S73_ROUTES: Array<[string, string]> = [
+  ["GET", "/users"], ["POST", "/users"], ["POST", "/users/:id/role"], ["POST", "/users/:id/cap"], ["POST", "/users/:id/disable"],
+  ["POST", "/users/:id/enable"], ["POST", "/users/:id/revoke-sessions"], ["GET", "/settings"], ["POST", "/settings/caps"], ["GET", "/audit"],
+];
+
+{
+  // SA133-SA134: owner only, at the route and in the navigation.
+  const s = await s62World();
+  const results: string[] = [];
+  for (const [who, jar] of [["runner", s.runner], ["viewer", s.viewer]] as const) {
+    for (const [method, pattern] of S73_ROUTES) {
+      const path = pattern.replace(":id", s.runnerUser.id);
+      const before = s73State(s.w);
+      const calls = s.w.store.calls.length;
+      const reply = method === "GET" ? await request(s.w, path, { jar })
+        : await post(s.w, path, jar, [["email", syntheticEmail("x")], ["role", "owner"], ["cap", "1"], ["daily", "1"], ["monthly", "1"]]);
+      const read = s.w.store.calls.slice(calls).filter((c) => c !== "findSession");
+      if (reply.status !== 403 || read.length || s73State(s.w) !== before) results.push(`${who} ${method} ${path}: ${reply.status} ${read.join()}`);
+    }
+  }
+  const signedOut = await Promise.all(S73_ROUTES.filter(([m]) => m === "GET").map(([, p]) => request(s.w, p)));
+  check("SA133. every S7.3 route — the users screen and its six edits, the caps and settings and their edit, and the audit "
+    + "log — is refused to a runner and to a viewer (403) before the store is read (nothing but the session), with nothing "
+    + "written; signed out, it is 401",
+    results.length === 0 && signedOut.every((r) => r.status === 401) && S73_ROUTES.length === 10, results.join("; "));
+  const navOf = async (jar: Jar) => /<nav>([\s\S]*?)<\/nav>/.exec((await request(s.w, "/runs", { jar })).body)?.[1] ?? "";
+  const [ownerNav, runnerNav, viewerNav] = [await navOf(s.owner), await navOf(s.runner), await navOf(s.viewer)];
+  const links = ["href=\"/users\"", "href=\"/settings\"", "href=\"/audit\""];
+  check("SA134. the navigation carries the owner's links — Users, Caps and settings, Audit — for the owner only; a runner's and "
+    + "a viewer's carry none of them",
+    links.every((l) => ownerNav.includes(l)) && links.every((l) => !runnerNav.includes(l) && !viewerNav.includes(l))
+      && ownerNav.includes(">Caps and settings<"),
+    `${ownerNav} | ${runnerNav} | ${viewerNav}`);
+  await s.w.close();
+}
+
+{
+  // SA135: the users list, for the owner; addresses for an active owner only (§9.5).
+  const s = await s62World();
+  const unbound = listed(s.w, "viewer", { display_name: "Synthetic Unbound" });
+  const page = await request(s.w, "/users", { jar: s.owner });
+  const rows = await s.w.store.listUsers();
+  const runnerItem = page.body.split("<li class=\"user\">").find((x) => x.includes("Synthetic runner")) ?? "";
+  const unboundItem = page.body.split("<li class=\"user\">").find((x) => x.includes("Synthetic Unbound")) ?? "";
+  const asViewer = usersBody({ users: rows, viewer: s.viewerUser, csrfToken: "t", ceilings: CEILINGS });
+  const asDisabledOwner = usersBody({ users: rows, viewer: { ...s.w.owner, status: "disabled" }, csrfToken: "t", ceilings: CEILINGS });
+  const subs = [...s.w.store.users.values()].map((u) => u.google_sub).filter((x): x is string => x !== null);
+  check("SA135. the owner's users screen lists every user with their address, display name, role, status, own daily cap, last "
+    + "sign-in and whether a Google account is bound — never the account's subject or any session value; rendered for anyone "
+    + "but an active owner, it shows no address at all",
+    page.status === 200 && [...s.w.store.users.values()].every((u) => page.body.includes(escapeHtml(u.email)))
+      && runnerItem.includes("bound at first sign-in") && unboundItem.includes("not yet bound") && unboundItem.includes("<dt>Last sign-in</dt><dd>—</dd>")
+      && /<dt>Last sign-in<\/dt><dd>\d\d\/\d\d\/\d{4}/.test(runnerItem) && runnerItem.includes("<dt>Live sessions</dt><dd>1</dd>")
+      && runnerItem.includes(`<dt>Own daily cap</dt><dd>${dollars(CEILINGS.dailyMicros)}</dd>`) && runnerItem.includes("· runner")
+      && subs.length >= 3 && subs.every((sub) => !page.body.includes(sub))
+      && [...s.w.store.sessions.keys()].every((h) => !page.body.includes(h))
+      && [...s.w.store.users.values()].every((u) => !asViewer.includes(escapeHtml(u.email)) && !asDisabledOwner.includes(escapeHtml(u.email)))
+      && unbound.google_sub === null,
+    `${page.status}`);
+  await s.w.close();
+}
+
+{
+  // SA136-SA137: adding a user.
+  const s = await s62World();
+  const local = `Mixed.Case.${randomBytes(3).toString("hex")}`;
+  const typed = `  ${local}@GermanCarDepot.COM `;
+  const auditFrom = s.w.store.auditLog.length;
+  const added = await post(s.w, "/users", s.owner, [["email", typed], ["role", "runner"], ["cap", "25"]]);
+  const row = [...s.w.store.users.values()].find((u) => u.email === `${local.toLowerCase()}@${STUDIO_DOMAIN}`);
+  const audit = auditAfter(s.w, auditFrom);
+  check("SA136. adding a user stores the address trimmed and LOWER-CASED, with the chosen role and own daily cap, created by "
+    + "the acting owner in ONE owner edit that declares its actor; it is audited (user.create) with that owner as actor and "
+    + "no address or name in the detail",
+    added.status === 303 && added.location === "/users" && row !== undefined && row.role === "runner" && row.status === "active"
+      && row.created_by === s.w.owner.id && s.w.store.userCaps.get(row.id) === 25_000_000 && row.google_sub === null
+      && audit.length === 1 && audit[0]!.action === "user.create" && audit[0]!.actorUserId === s.w.owner.id && audit[0]!.targetId === row.id
+      && !JSON.stringify(audit[0]!.detail).includes("@") && s.w.store.declaredActors.at(-1)?.actor === s.w.owner.id
+      && s.w.store.declaredActors.at(-1)?.edit === "createUser",
+    `${added.status} ${row?.role} ${JSON.stringify(audit.map((a) => a.action))}`);
+  const refusals = [
+    await s73Refused(s.w, "/users", s.owner, [["email", `someone.${randomBytes(2).toString("hex")}@other.test`], ["role", "viewer"]], "wrong_domain", 400),
+    await s73Refused(s.w, "/users", s.owner, [["email", `x@${STUDIO_DOMAIN}.evil.test`], ["role", "viewer"]], "wrong_domain", 400),
+    await s73Refused(s.w, "/users", s.owner, [["email", "not an address"], ["role", "viewer"]], "invalid_email", 400),
+    await s73Refused(s.w, "/users", s.owner, [["email", `two@x@${STUDIO_DOMAIN}`], ["role", "viewer"]], "invalid_email", 400),
+    await s73Refused(s.w, "/users", s.owner, [["role", "viewer"]], "invalid_email", 400),
+    await s73Refused(s.w, "/users", s.owner, [["email", syntheticEmail("y")], ["role", "admin"]], "invalid_role", 400),
+    await s73Refused(s.w, "/users", s.owner, [["email", syntheticEmail("y")], ["role", "viewer"], ["cap", "-1"]], "invalid_cap", 400),
+    await s73Refused(s.w, "/users", s.owner, [["email", s.runnerUser.email], ["role", "viewer"]], "duplicate", 409),
+    await s73Refused(s.w, "/users", s.owner, [["email", s.runnerUser.email.toUpperCase()], ["role", "viewer"]], "duplicate", 409),
+  ];
+  check("SA137. an address at another domain (or a look-alike) is refused (wrong_domain, 400), as are a malformed or missing "
+    + "address, an unknown role and an invalid cap (400); an address already listed — in any case — is refused as a duplicate "
+    + "(409); each with nothing written",
+    refusals.every((r) => r.ok), refusals.filter((r) => !r.ok).map((r) => r.detail).join("; "));
+  await s.w.close();
+}
+
+{
+  // SA138-SA141: role, cap, disable and re-enable, and the explicit revocation.
+  const s = await s62World();
+  const id = s.runnerUser.id;
+  let from = s.w.store.auditLog.length;
+  const role = await post(s.w, `/users/${id}/role`, s.owner, [["role", "viewer"]]);
+  const roleAudit = auditAfter(s.w, from);
+  check("SA138. changing a role writes it in ONE owner edit with its declared actor, audited (user.update) with the owner as "
+    + "actor and the role before and after; the changed user's next request is judged by the new role (403 on a runner's page)",
+    role.status === 303 && s.w.store.users.get(id)!.role === "viewer" && roleAudit.length === 1 && roleAudit[0]!.action === "user.update"
+      && roleAudit[0]!.actorUserId === s.w.owner.id && roleAudit[0]!.targetId === id
+      && String(roleAudit[0]!.detail.before).includes("\"role\":\"runner\"") && String(roleAudit[0]!.detail.after).includes("\"role\":\"viewer\"")
+      && (await request(s.w, "/new", { jar: s.runner })).status === 403
+      && (await s73Refused(s.w, `/users/${id}/role`, s.owner, [["role", "viewer"]], "no_change", 409)).ok
+      && (await s73Refused(s.w, `/users/${id}/role`, s.owner, [["role", "superuser"]], "invalid_role", 400)).ok
+      && (await s73Refused(s.w, `/users/${crypto.randomUUID()}/role`, s.owner, [["role", "runner"]], "no_user", 404)).ok,
+    `${role.status} ${JSON.stringify(roleAudit)}`);
+  await post(s.w, `/users/${id}/role`, s.owner, [["role", "runner"]]);
+  from = s.w.store.auditLog.length;
+  const set = await post(s.w, `/users/${id}/cap`, s.owner, [["cap", "12.50"]]);
+  const afterSet = s.w.store.userCaps.get(id);
+  const cleared = await post(s.w, `/users/${id}/cap`, s.owner, [["cap", ""]]);
+  const capAudit = auditAfter(s.w, from);
+  const capRefusals = await Promise.all([["-1", "invalid_cap"], ["12.345", "invalid_cap"], ["1e2", "invalid_cap"], ["+5", "invalid_cap"],
+    ["05", "invalid_cap"], ["100", "cap_too_large"], ["99.995", "invalid_cap"]].map(([v, r]) => s73Refused(s.w, `/users/${id}/cap`, s.owner, [["cap", v!]], r!, 400)));
+  check("SA139. a runner's own daily cap is set (12.50 is $12.50) and cleared (blank), each ONE owner edit audited (user.update) "
+    + "with the owner as actor; an amount that is negative, has more than two decimals, an exponent, a sign or a leading "
+    + "zero, or reaches the next order of magnitude above the daily ceiling ($100 for $75) is refused (400) with nothing written",
+    set.status === 303 && afterSet === 12_500_000 && cleared.status === 303 && s.w.store.userCaps.get(id) === null
+      && capAudit.length === 2 && capAudit.every((a) => a.action === "user.update" && a.actorUserId === s.w.owner.id && a.targetId === id)
+      && capRefusals.every((r) => r.ok),
+    capRefusals.filter((r) => !r.ok).map((r) => r.detail).join("; "));
+  s.w.store.userCaps.set(id, CEILINGS.dailyMicros);
+  const runnerCookie = s.runner.values.get(SESSION_COOKIE)!;
+  from = s.w.store.auditLog.length;
+  const disabled = await post(s.w, `/users/${id}/disable`, s.owner);
+  const stale = new Jar();
+  stale.values.set(SESSION_COOKIE, runnerCookie);
+  const next = await request(s.w, "/runs", { jar: stale });
+  const enabled = await post(s.w, `/users/${id}/enable`, s.owner);
+  const stillOut = await request(s.w, "/runs", { jar: stale });
+  const again = new Jar();
+  await signIn(s.w, again, { identity: identityOf(s.w.store.users.get(id)!) });
+  const statusAudit = auditAfter(s.w, from);
+  check("SA140. disabling a user revokes every session of theirs in the same change, so their very next request is signed out "
+    + "(401, the cookie cleared); re-enabling makes them active again without reviving a revoked session — they sign in afresh; "
+    + "both audited (user.update) with the owner as actor",
+    disabled.status === 303 && s.w.store.users.get(id)!.status === "active" && next.status === 401
+      && next.setCookies.some((c) => c.startsWith(`${SESSION_COOKIE}=;`)) && enabled.status === 303 && stillOut.status === 401
+      && (await request(s.w, "/runs", { jar: again })).status === 200
+      && [...s.w.store.sessions.values()].filter((x) => x.user_id === id && x.revoked_at === null).length === 1
+      && statusAudit.filter((a) => a.action === "user.update").length === 2
+      && statusAudit.filter((a) => a.action === "user.update").every((a) => a.actorUserId === s.w.owner.id)
+      && (await s73Refused(s.w, `/users/${id}/enable`, s.owner, [], "no_change", 409)).ok,
+    `${disabled.status} ${next.status} ${enabled.status} ${stillOut.status}`);
+  const second = new Jar();
+  await signIn(s.w, second, { identity: identityOf(s.w.store.users.get(id)!) });
+  from = s.w.store.auditLog.length;
+  const revoked = await post(s.w, `/users/${id}/revoke-sessions`, s.owner);
+  const revokeAudit = auditAfter(s.w, from);
+  const afterRevoke = await Promise.all([again, second].map((jar) => request(s.w, "/runs", { jar })));
+  check("SA141. the owner revokes one user's sessions explicitly: every live one ends at once (their next requests are 401), "
+    + "the user stays active, and the revocation is audited (user.sessions_revoked) with the owner as actor and only the count",
+    revoked.status === 303 && afterRevoke.every((r) => r.status === 401) && s.w.store.users.get(id)!.status === "active"
+      && revokeAudit.length === 1 && revokeAudit[0]!.action === "user.sessions_revoked" && revokeAudit[0]!.actorUserId === s.w.owner.id
+      && JSON.stringify(revokeAudit[0]!.detail) === JSON.stringify({ sessions: 2 })
+      && (await request(s.w, "/users", { jar: s.owner })).status === 200,
+    `${revoked.status} ${afterRevoke.map((r) => r.status).join()} ${JSON.stringify(revokeAudit)}`);
+  await s.w.close();
+}
+
+{
+  // SA142-SA143: the last owner, and the acting owner's own seat.
+  const s = await s62World();
+  const self = s.w.owner.id;
+  const last = [
+    await s73Refused(s.w, `/users/${self}/role`, s.owner, [["role", "viewer"], ["confirm", "yes"]], "last_owner", 409),
+    await s73Refused(s.w, `/users/${self}/disable`, s.owner, [["confirm", "yes"]], "last_owner", 409),
+  ];
+  const decisions = [
+    decideUserChange({ target: { id: "a", role: "owner", status: "active" }, change: { kind: "role", role: "runner" }, activeOwnerIds: ["a"] }),
+    decideUserChange({ target: { id: "a", role: "owner", status: "active" }, change: { kind: "status", status: "disabled" }, activeOwnerIds: ["a"] }),
+    decideUserChange({ target: { id: "a", role: "owner", status: "active" }, change: { kind: "role", role: "runner" }, activeOwnerIds: ["a", "b"] }),
+    decideUserChange({ target: { id: "a", role: "owner", status: "disabled" }, change: { kind: "role", role: "viewer" }, activeOwnerIds: ["b"] }),
+  ].map((d) => (d.ok ? "ok" : d.refusal));
+  let storeRefusal = "";
+  try {
+    await s.w.store.changeUser({ ownerId: self, userId: self, change: { kind: "status", status: "disabled" } }).then((r) => { storeRefusal = r.ok ? "written" : r.refusal; });
+  } catch (error) { storeRefusal = String((error as { code?: unknown }).code); }
+  check("SA142. the last active owner can never be demoted or disabled: refused (409, last_owner, shown plainly) even when "
+    + "confirmed, with nothing written; the decision counts the OTHER active owners, and a disabled owner is not one",
+    last.every((r) => r.ok) && decisions.join() === "last_owner,last_owner,ok,ok" && storeRefusal === "last_owner"
+      && s.w.store.users.get(self)!.role === "owner" && s.w.store.users.get(self)!.status === "active",
+    `${last.map((r) => r.detail).join("; ")} ${decisions.join()} ${storeRefusal}`);
+  // A second owner exists: now the acting owner may step down, but only after an explicit confirmation.
+  const other = listed(s.w, "owner");
+  const otherJar = new Jar();
+  await signIn(s.w, otherJar, { identity: identityOf(other) });
+  const before = s73State(s.w);
+  const asked = await post(s.w, `/users/${self}/role`, s.owner, [["role", "viewer"]]);
+  const notYet = s73State(s.w) === before;
+  const ownCookie = s.owner.values.get(SESSION_COOKIE)!;
+  const done = await post(s.w, `/users/${self}/role`, s.owner, [["role", "viewer"], ["confirm", "yes"]]);
+  const stale = new Jar();
+  stale.values.set(SESSION_COOKIE, ownCookie);
+  const after = await request(s.w, "/runs", { jar: stale });
+  // The other owner disables themself: the same confirmation, and signed out.
+  const askedDisable = await post(s.w, `/users/${other.id}/disable`, otherJar);
+  const lastStanding = await s73Refused(s.w, `/users/${other.id}/disable`, otherJar, [["confirm", "yes"]], "last_owner", 409);
+  check("SA143. demoting or disabling oneself first shows an explicit confirmation (200, nothing written) whose form repeats the "
+    + "change with confirm=yes; once confirmed it is written, every session of the acting owner is revoked and its cookie "
+    + "cleared, they are sent to / and their next request is signed out (401); and confirming cannot remove the last owner",
+    asked.status === 200 && notYet && asked.body.includes("name=\"confirm\" value=\"yes\"") && asked.body.includes(`action="/users/${self}/role"`)
+      && asked.body.includes("name=\"role\" value=\"viewer\"") && done.status === 303 && done.location === "/"
+      && done.setCookies.some((c) => c.startsWith(`${SESSION_COOKIE}=;`)) && after.status === 401
+      && s.w.store.users.get(self)!.role === "viewer"
+      && [...s.w.store.sessions.values()].filter((x) => x.user_id === self).every((x) => x.revoked_at !== null)
+      && askedDisable.status === 200 && askedDisable.body.includes(`action="/users/${other.id}/disable"`) && lastStanding.ok,
+    `${asked.status} ${done.status} ${done.location} ${after.status} ${askedDisable.status} ${lastStanding.detail}`);
+  await s.w.close();
+}
+
+{
+  // SA144-SA145: no email edit; every edit audited with the right actor and no address or name.
+  const s = await s62World();
+  const emailRoutes = s.w.app.routes.filter((r) => /email/i.test(r.path));
+  const id = s.runnerUser.id;
+  const before = s73State(s.w);
+  const tries = await Promise.all(["/users/:id/email", "/users/:id/address", "/users/:id"].map((p) =>
+    post(s.w, p.replace(":id", id), s.owner, [["email", syntheticEmail("changed")]])));
+  const page = (await request(s.w, "/users", { jar: s.owner })).body;
+  const storeMethods = Object.getOwnPropertyNames(PgWebStore.prototype);
+  check("SA144. there is no email edit (owner decision 5): no route's path names an address, a POST to any such path is 404 "
+    + "with nothing written, the users screen has exactly ONE address field (the add form's), and no store method writes an "
+    + "existing user's address",
+    emailRoutes.length === 0 && tries.every((r) => r.status === 404 || r.status === 405) && s73State(s.w) === before
+      && (page.match(/name="email"/g) ?? []).length === 1 && page.includes("<form class=\"action-form\" method=\"post\" action=\"/users\">")
+      && storeMethods.filter((m) => /email/i.test(m)).join() === "findUserByEmail",
+    `${emailRoutes.map((r) => r.path).join()} ${tries.map((r) => r.status).join()}`);
+  const from = s.w.store.auditLog.length;
+  const actorsFrom = s.w.store.declaredActors.length;
+  await post(s.w, "/users", s.owner, [["email", syntheticEmail("audit")], ["role", "viewer"]]);
+  await post(s.w, `/users/${id}/role`, s.owner, [["role", "viewer"]]);
+  await post(s.w, `/users/${id}/cap`, s.owner, [["cap", "3"]]);
+  await post(s.w, `/users/${id}/disable`, s.owner);
+  await post(s.w, `/users/${id}/enable`, s.owner);
+  await post(s.w, `/users/${id}/revoke-sessions`, s.owner);
+  await post(s.w, "/settings/caps", s.owner, [["daily", "40"], ["monthly", "150"]]);
+  const rows = auditAfter(s.w, from);
+  const people = [...s.w.store.users.values()].flatMap((u) => [u.email, u.display_name ?? ""]).filter((x) => x.length > 3);
+  check("SA145. every S7.3 edit — add, role, cap, disable, re-enable, revoke and the caps — writes exactly one audit row with "
+    + "the acting owner as actor, through ONE owner edit that declared that actor first, and no row's detail holds an address "
+    + "or a display name",
+    rows.map((r) => r.action).join() === "user.create,user.update,user.update,user.update,user.update,user.sessions_revoked,settings.update"
+      && rows.every((r) => r.actorUserId === s.w.owner.id)
+      && s.w.store.declaredActors.slice(actorsFrom).map((a) => a.edit).join()
+        === "createUser,changeUser,setUserCap,changeUser,changeUser,revokeUserSessions,setCaps"
+      && s.w.store.declaredActors.slice(actorsFrom).every((a) => a.actor === s.w.owner.id)
+      && rows.every((r) => people.every((p) => !JSON.stringify(r.detail).includes(p)) && !JSON.stringify(r.detail).includes("@")),
+    rows.map((r) => r.action).join());
+  await s.w.close();
+}
+
+{
+  // SA146-SA148: the caps and the other settings.
+  const s = await s62World();
+  const from = s.w.store.auditLog.length;
+  const saved = await post(s.w, "/settings/caps", s.owner, [["daily", "90"], ["monthly", "250.5"]]);
+  const audit = auditAfter(s.w, from);
+  const page = await request(s.w, "/settings", { jar: s.owner });
+  check("SA146. the owner's caps are shown beside the deployment ceilings and the EFFECTIVE cap, the lower of each pair: a "
+    + "daily cap of $90 above the $75 ceiling is stored and shown, but its effective cap is $75.00, while a monthly $250.50 "
+    + "under the $300 ceiling is effective itself; the edit is ONE owner edit, audited (settings.update) with the owner as actor",
+    saved.status === 303 && saved.location === "/settings" && s.w.store.settings!.dailyCapMicros === 90_000_000
+      && s.w.store.settings!.monthlyCapMicros === 250_500_000
+      && page.body.includes("<tr><td>Daily</td><td>$90.00</td><td>$75.00</td><td><strong>$75.00</strong></td></tr>")
+      && page.body.includes("<tr><td>Monthly</td><td>$250.50</td><td>$300.00</td><td><strong>$250.50</strong></td></tr>")
+      && audit.length === 1 && audit[0]!.action === "settings.update" && audit[0]!.actorUserId === s.w.owner.id
+      && s.w.store.declaredActors.at(-1)?.edit === "setCaps",
+    `${saved.status} ${/<tbody>([\s\S]*?)<\/tbody>/.exec(page.body)?.[1]}`);
+  const bad: Array<[Array<[string, string]>, string]> = [
+    [[["daily", "-1"], ["monthly", "100"]], "invalid_cap"], [[["daily", "10"], ["monthly", "1e3"]], "invalid_cap"],
+    [[["daily", "12.345"], ["monthly", "100"]], "invalid_cap"], [[["daily", ""], ["monthly", "100"]], "invalid_cap"],
+    [[["daily", "100"], ["monthly", "100"]], "cap_too_large"], [[["daily", "10"], ["monthly", "1000"]], "cap_too_large"],
+    [[["daily", "abc"], ["monthly", "100"]], "invalid_cap"], [[["daily", "10"]], "invalid_cap"],
+    [[["daily", "10"], ["daily", "11"], ["monthly", "100"]], "invalid_cap"], [[["daily", " 1,000 "], ["monthly", "100"]], "invalid_cap"],
+  ];
+  const refusals = await Promise.all(bad.map(([fields, refusal]) => s73Refused(s.w, "/settings/caps", s.owner, fields, refusal, 400)));
+  check("SA147. an invalid amount is refused (400) with nothing written: negative, an exponent, more than two decimals, blank, "
+    + "letters, a thousands separator, a missing or repeated field, and an amount at or past the next order of magnitude above "
+    + "its ceiling ($100 for the $75 daily, $1,000 for the $300 monthly); the bound is computed from each ceiling",
+    refusals.every((r) => r.ok) && capBoundMicros(75_000_000) === 100_000_000 && capBoundMicros(300_000_000) === 1_000_000_000
+      && capBoundMicros(100_000_000) === 1_000_000_000 && capBoundMicros(0) === 10_000_000 && capBoundMicros(9_999_999) === 10_000_000
+      && JSON.stringify(parseCapInput("99.99", 75_000_000, false)) === JSON.stringify({ ok: true, value: 99_990_000 })
+      && JSON.stringify(parseCapInput("0", 75_000_000, false)) === JSON.stringify({ ok: true, value: 0 })
+      && JSON.stringify(parseCapInput(" 7.5 ", 75_000_000, false)) === JSON.stringify({ ok: true, value: 7_500_000 })
+      && JSON.stringify(parseCapInput("", 75_000_000, true)) === JSON.stringify({ ok: true, value: null })
+      && !parseCapInput("", 75_000_000, false).ok && !parseCapInput(null, 75_000_000, true).ok,
+    refusals.filter((r) => !r.ok).map((r) => r.detail).join("; "));
+  const other = /<section><h2>Other settings<\/h2>([\s\S]*?)<\/section>/.exec(page.body)?.[1] ?? "";
+  const active = s.w.store.factVersions.get(s.factVersion)!;
+  const runnerPage = await request(s.w, "/settings", { jar: s.runner });
+  check("SA148. the other settings: the active fact version (its sha256) with a link to the fact-versions page, a link to the "
+    + "audit log, and scheduled runs shown as off and UNAVAILABLE — the cron job does not exist (S9) — with no control of any "
+    + "kind for it on the page and no route that writes it; a runner sees no caps page (403)",
+    other.includes(escapeHtml(active.sha256.slice(0, 12))) && other.includes("href=\"/facts\"") && other.includes("href=\"/audit\"")
+      && other.includes(escapeHtml(SCHEDULED_RUNS_UNAVAILABLE)) && !/scheduled/i.test((page.body.match(/<(form|input|select|button|textarea)\b[^>]*>/g) ?? []).join(""))
+      && !/<(input|select|button|textarea)\b/.test(other) && s.w.app.routes.every((r) => !/schedul/i.test(r.path))
+      && runnerPage.status === 403 && !runnerPage.body.includes("Effective cap"),
+    other.slice(0, 300));
+  await s.w.close();
+}
+
+{
+  // SA149: the audit view.
+  const s = await s62World();
+  for (let i = 0; i < 60; i += 1) {
+    s.w.store.auditLog.push({ action: "test.synthetic", actorUserId: s.w.owner.id, targetType: "studio_runs", targetId: `t${i}`, detail: { n: i } });
+  }
+  const first = await request(s.w, "/audit?action=test.synthetic", { jar: s.owner });
+  const second = await request(s.w, "/audit?action=test.synthetic&page=2", { jar: s.owner });
+  const all = await request(s.w, "/audit", { jar: s.owner });
+  const items = (body: string) => body.split("<li class=\"audit\">").length - 1;
+  const bad = await Promise.all(["/audit?action=Bad%20Action", "/audit?page=0", "/audit?page=x", "/audit?action=a&action=b", "/audit?who=x"]
+    .map((p) => request(s.w, p, { jar: s.owner })));
+  const viewer = await request(s.w, "/audit", { jar: s.viewer });
+  check("SA149. the audit log is the owner's alone (a viewer is refused, 403), read-only and newest first: 50 rows a page with "
+    + "a link to the older page, the action filter narrowing it to one action (each action offered once in its list), and a "
+    + "malformed filter or page refused (400)",
+    first.status === 200 && items(first.body) === 50 && first.body.indexOf("{&quot;n&quot;:59}") < first.body.indexOf("{&quot;n&quot;:58}")
+      && first.body.includes("href=\"/audit?action=test.synthetic&amp;page=2\">Older<") && items(second.body) === 10
+      && second.body.includes("{&quot;n&quot;:9}") && !second.body.includes("{&quot;n&quot;:10}") && second.body.includes(">Newer<")
+      && !second.body.includes(">Older<") && (first.body.match(/<option value="test.synthetic" selected>/g) ?? []).length === 1
+      && all.body.includes("auth.sign_in") && bad.every((r) => r.status === 400) && viewer.status === 403
+      && !/<form method="post"/.test(first.body.replace(/<form method="post" action="\/auth\/logout">/g, "")),
+    `${first.status} ${items(first.body)} ${items(second.body)} ${bad.map((r) => r.status).join()}`);
+  await s.w.close();
+}
+
+{
+  // SA150: hostile content stays inert on every S7.3 page.
+  const s = await s62World();
+  const hostile = "<script>alert(1)</script><img src=x onerror=alert(2)>\"'&";
+  s.w.store.users.get(s.runnerUser.id)!.display_name = `${hostile}[name]`;
+  s.w.store.auditLog.push({ action: "test.hostile", actorUserId: s.runnerUser.id, targetType: "studio_runs", targetId: `${hostile}[target]`,
+    detail: { note: `${hostile}[detail]`, nested: `</code></pre>${hostile}` } });
+  const users = await request(s.w, "/users", { jar: s.owner });
+  const audit = await request(s.w, "/audit", { jar: s.owner });
+  const cap = await post(s.w, "/settings/caps", s.owner, [["daily", "<b>x</b>"], ["monthly", "100"]]);
+  const userCap = await post(s.w, `/users/${s.runnerUser.id}/cap`, s.owner, [["cap", "<i>y</i>"]]);
+  const raw = (body: string) => body.includes("<script>alert") || body.includes("<img src=x") || body.includes("<b>x</b>") || body.includes("<i>y</i>");
+  check("SA150. hostile text on every S7.3 page stays inert — a display name on the users screen and as an audit row's actor, "
+    + "an audit row's target and its detail (shown as escaped JSON text, never markup), and a typed cap echoed back in its "
+    + "refusal: no raw tag reaches any page, and each appears escaped",
+    !raw(users.body) && users.body.includes(`${escapeHtml(hostile)}[name]`) && !raw(audit.body)
+      && audit.body.includes(`${escapeHtml(hostile)}[target]`) && audit.body.includes(escapeHtml(JSON.stringify(`${hostile}[detail]`)))
+      && audit.body.includes(`by ${escapeHtml(hostile)}[name]`) && !audit.body.includes("</code></pre><script>")
+      && cap.status === 400 && !raw(cap.body) && cap.body.includes("&lt;b&gt;x&lt;/b&gt;") && userCap.status === 400 && !raw(userCap.body),
+    `${users.status} ${audit.status} ${cap.status} ${userCap.status}`);
+  await s.w.close();
+}
+
+{
+  // SA151: D — the runner's missing cap, at the confirmation.
+  const s = await s62World();
+  s.w.store.userCaps.set(s.runnerUser.id, null);
+  const { requestId, quoteId } = await quoteFor(s, s.runner);
+  const pricePage = await request(s.w, `/preflights/${requestId}`, { jar: s.runner });
+  const refused = await confirmRefused(s, s.runner, quoteId, "cap_missing");
+  const ownerQuote = await quoteFor(s, s.owner);
+  const ownerOk = await post(s.w, `/quotes/${ownerQuote.quoteId}/confirm`, s.owner);
+  const spend = await request(s.w, "/spend", { jar: s.viewer });
+  const base: ConfirmSnapshot = {
+    nowMs: 1_000_000, user: { id: "u", role: "runner", status: "active", dailyCapMicros: null, updatedAtMs: 0 },
+    quote: { id: "q", userId: "u", action: "full", paramsSha256: "p", workerCommit: "c", approvedFactsSha256: "a", factVersionId: "f",
+      priceTableSha256: "t", ceilingMicros: 1, createdAtMs: 1, expiresAtMs: 2_000_000, consumed: false },
+    request: { action: "full", paramsSha256: "p", factVersionId: "f", sourceRunId: null }, sourceAvailable: false,
+    heartbeat: { commit: "c", approvedFactsSha256: "a", priceTableSha256: "t", beatAtMs: 1_000_000 }, currentFactVersionId: "f",
+    settings: { dailyCapMicros: 50_000_000, monthlyCapMicros: 200_000_000 }, ceilings: CEILINGS,
+    spend: { dayMicros: 0, monthMicros: 0, userDayMicros: 0 }, unacknowledgedOverruns: 0,
+  };
+  const of = (edit: (x: ConfirmSnapshot) => void) => { const x = structuredClone(base); edit(x); const d = decideConfirm(x); return d.ok ? "ok" : d.refusal; };
+  const pure = [of(() => {}), of((x) => { x.user!.dailyCapMicros = 0; }), of((x) => { x.user!.dailyCapMicros = 5; }),
+    of((x) => { x.user!.role = "owner"; })].join();
+  check("SA151. at the confirmation, a runner whose daily_cap_usd is NULL is refused (cap_missing, 409) — a missing cap is "
+    + "zero (§6.2) — with nothing written, and their price page says why; the owner's own NULL cap still means no per-user cap, "
+    + "and their confirmation succeeds; the spend panel names a runner's missing cap",
+    refused.ok && ownerOk.status === 303 && pure === "cap_missing,cap_exceeded_user_daily,ok,ok"
+      && pricePage.body.includes("a runner without one cannot confirm") && spend.body.includes("none — cannot confirm"),
+    `${refused.detail} ${ownerOk.status} ${pure}`);
+  await s.w.close();
+}
+
+{
+  // SA152: E — the overrun acknowledgement survives the acknowledger's later demotion.
+  const s = await s62World();
+  const other = listed(s.w, "owner");
+  const otherJar = new Jar();
+  await signIn(s.w, otherJar, { identity: identityOf(other) });
+  const overrun = (run: RunRow) => s.w.store.ledger.push({ entry: "reserve", runId: run.id, amountMicros: 1_000_000, day: localDay(s.w.clock.now) },
+    { entry: "overrun", runId: run.id, amountMicros: 500_000, day: localDay(s.w.clock.now) });
+  const first = s.w.store.addRun(s.runnerUser, { runner: "live", state: "failed", failure_class: "cost_ceiling_exceeded" });
+  overrun(first);
+  const byRunner = await s.w.store.acknowledgeOverrun({ runId: first.id, ownerId: s.runnerUser.id });
+  const ack = await post(s.w, `/spend/overruns/${first.id}/acknowledge`, otherJar);
+  const demote = await post(s.w, `/users/${other.id}/role`, s.owner, [["role", "viewer"]]);
+  const { quoteId } = await quoteFor(s, s.runner);
+  const stillUnlocked = await post(s.w, `/quotes/${quoteId}/confirm`, s.runner);
+  const panel = await request(s.w, "/spend", { jar: s.owner });
+  const second = s.w.store.addRun(s.runnerUser, { runner: "live", state: "failed", failure_class: "cost_ceiling_exceeded" });
+  overrun(second);
+  const locked = await confirmRefused(s, s.runner, (await quoteFor(s, s.runner)).quoteId, "confirmations_locked");
+  // The PostgreSQL store's acknowledgement reads, over a recording database: none joins a users row or names a role.
+  const statements: string[] = [];
+  const recorder = { query: async (text: string) => {
+    statements.push(text.replace(/\s+/g, " ").trim());
+    return { rows: [{ ok: true, n: 0, day: "0", month: "0", month_start: "2026-10-01", daily: "50", monthly: "200" }], rowCount: 1 };
+  }, connect: async () => ({ ...recorder, release: () => {} }) };
+  const pgStore = new PgWebStore(recorder as unknown as import("pg").Pool, recorder as unknown as import("pg").Pool);
+  await pgStore.acknowledgeOverrun({ runId: first.id, ownerId: s.w.owner.id });
+  await pgStore.spendView("2026-10-07").catch(() => undefined);
+  const acknowledgementReads = statements.filter((t) => t.includes("spend.overrun_acknowledged") && !t.startsWith("INSERT"));
+  check("SA152. an overrun acknowledged by an owner stays acknowledged after that owner is demoted: confirmations stay "
+    + "unlocked and the spend panel still shows it acknowledged; a new unacknowledged overrun still locks them; a runner cannot "
+    + "write an acknowledgement through the store (only an active owner can); and none of the web store's acknowledgement reads "
+    + "joins a users row or names a role",
+    byRunner === false && ack.status === 303 && demote.status === 303 && s.w.store.users.get(other.id)!.role === "viewer"
+      && stillUnlocked.status === 303 && panel.body.includes("acknowledged") && locked.ok
+      && s.w.store.auditLog.filter((a) => a.action === "spend.overrun_acknowledged").length === 1
+      && acknowledgementReads.length === 2 && acknowledgementReads.every((t) => !/studio_users|\brole\b/.test(t))
+      && statements.some((t) => t.startsWith("SELECT studio_is_active_user_in_role($1::uuid, ARRAY['owner'])")),
+    `${byRunner} ${ack.status} ${demote.status} ${stillUnlocked.status} ${locked.detail} ${acknowledgementReads.join(" | ")}`);
+  await s.w.close();
+}
+
+{
+  // SA153: S7.3's pure decisions.
+  const email = (raw: unknown) => { const r = normalizeNewUserEmail(raw); return r.ok ? r.value : r.refusal; };
+  const filters = (q: string) => { const r = parseAuditFilters(new URLSearchParams(q)); return r.ok ? JSON.stringify(r.value) : r.refusal; };
+  check("SA153. S7.3's pure decisions: an address is trimmed and lower-cased and must be one address at the Studio's domain; a "
+    + "role is one of three; only demoting or disabling ONESELF loses one's own seat; and the audit filter takes one action of "
+    + "the schema's shape and a page from 1",
+    email(` A.B@${STUDIO_DOMAIN.toUpperCase()} `) === `a.b@${STUDIO_DOMAIN}` && email(`a@sub.${STUDIO_DOMAIN}`) === "wrong_domain"
+      && email(`a@${STUDIO_DOMAIN}x`) === "wrong_domain" && email("") === "invalid_email" && email(42) === "invalid_email"
+      && email(`${"a".repeat(250)}@${STUDIO_DOMAIN}`) === "invalid_email" && email(`a b@${STUDIO_DOMAIN}`) === "invalid_email"
+      && parseRole("runner").ok && !parseRole("Owner").ok && !parseRole(null).ok
+      && losesOwnSeat("a", "a", { kind: "role", role: "viewer" }) && losesOwnSeat("a", "a", { kind: "status", status: "disabled" })
+      && !losesOwnSeat("a", "a", { kind: "role", role: "owner" }) && !losesOwnSeat("a", "b", { kind: "role", role: "viewer" })
+      && !losesOwnSeat("a", "a", { kind: "status", status: "active" })
+      && filters("") === JSON.stringify({ action: null, page: 1 }) && filters("action=user.update&page=3") === JSON.stringify({ action: "user.update", page: 3 })
+      && filters("action=") === JSON.stringify({ action: null, page: 1 }) && filters("page=0") === "invalid_filter"
+      && filters("page=100000") === "invalid_filter" && filters("action=X") === "invalid_filter" && filters("q=1") === "invalid_filter");
 }
 
 {

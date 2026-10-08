@@ -3,8 +3,9 @@
  * Content Studio S5 — the phone-layout check (docs/CONTENT_STUDIO_DESIGN.md §8,
  * §10's S5 row: "phone-width layout checked in a headless Chromium at 375 px,
  * with no horizontal scroll"), extended in S6.2 to the new-run, quote and
- * spend pages, and in S7.2 to the fact versions, upload, check-result and
- * import pages and an archived import's report.
+ * spend pages, in S7.2 to the fact versions, upload, check-result and
+ * import pages and an archived import's report, and in S7.3 to the owner's
+ * users, caps-and-settings and audit pages.
  *
  * LOCAL ONLY; not part of CI (an accepted limitation recorded in docs/TESTING.md).
  * It needs a build (`npm run build`) and a Chromium binary: the preinstalled one
@@ -27,6 +28,9 @@
  *    retired version), the upload page, an accepted check's page (an over-cap
  *    warning, long unknown field names), the import page, and an archived
  *    import's report (a long reason, recorded files by base name);
+ *  - S7.3: as the owner, the users screen (a long unbroken display name and
+ *    address, a runner with no cap, a disabled user), the caps and settings
+ *    screen, and the audit log (long unbroken details);
  *  - at 375 px (a phone) it asserts, on every one of those pages and on the
  *    runs list and the run report,
  *    that `document.scrollingElement.scrollWidth <= 375` (no horizontal scroll),
@@ -142,6 +146,16 @@ const archivedImport = store.addRun(owner, { kind: "imported", runner: "live", s
 store.addArtifact(archivedImport.id, "run-meta.json", JSON.stringify({ runner: "live",
   approvedFacts: { path: `/Users/synthetic-owner/${LONG}/config/approved-facts.json` },
   automotiveFacts: { path: `/Users/synthetic-owner/private/${LONG.slice(0, 120)}.json` } }));
+
+// S7.3: users with long unbroken names and addresses, a runner with no cap, a disabled user, and audit rows.
+const longUser = await store.createUser({ ownerId: owner.id, email: `${"l".repeat(120)}.${randomBytes(2).toString("hex")}@germancardepot.com`,
+  role: "runner", dailyCapMicros: null });
+store.users.get(longUser.userId).display_name = `Name ${LONG}`;
+const disabledUser = await store.createUser({ ownerId: owner.id, email: syntheticEmail("disabled"), role: "viewer", dailyCapMicros: null });
+await store.changeUser({ ownerId: owner.id, userId: disabledUser.userId, change: { kind: "status", status: "disabled" } });
+await store.setUserCap({ ownerId: owner.id, userId: viewer.id, dailyCapMicros: 12_500_000 });
+for (let i = 0; i < 3; i += 1) store.auditLog.push({ action: "test.layout", actorUserId: owner.id, targetType: "studio_runs", targetId: run.id,
+  detail: { note: `${LONG}`, i } });
 
 const app = createStudioWebApp({
   store, commit: "0".repeat(40), log: () => {},
@@ -270,6 +284,9 @@ try {
   results.checkPhone = await visit(`/facts/checks/${staged.checkId}`, PHONE);
   results.importPhone = await visit("/imports/new", PHONE);
   results.importReportPhone = await visit(`/runs/${archivedImport.id}`, PHONE);
+  results.usersPhone = await visit("/users", PHONE);
+  results.settingsPhone = await visit("/settings", PHONE);
+  results.auditPhone = await visit("/audit", PHONE);
   const S62_PAGES = {
     newRunPhone: ["Check and get a price", "Start FAKE — wiring test"],
     quotePhone: ["Confirm", "$21.65"],
@@ -281,6 +298,9 @@ try {
     checkPhone: ["Accepted", "70 records", "an unscoped run will be refused", "exportedBy"],
     importPhone: ["Import a run folder", "Run folder", "The known files"],
     importReportPhone: ["Not revalidated", "approved-facts.json"],
+    usersPhone: ["Users", "Add a user", "Change role", "Set cap", "Revoke sessions", "Re-enable", "cannot confirm a paid run"],
+    settingsPhone: ["Caps and settings", "Effective cap", "Save caps", "Scheduled runs", "Unavailable"],
+    auditPhone: ["Audit log", "Filter", "user.create", "test.layout"],
   };
   for (const [key, words] of Object.entries(S62_PAGES)) {
     assert(`${key}: the page rendered what it is for (${words.join(", ")})`, words.every((w) => results[key].text.includes(w)),

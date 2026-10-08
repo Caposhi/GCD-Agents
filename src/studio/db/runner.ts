@@ -529,14 +529,27 @@ export function parseCapMicros(raw: string | undefined): number {
 export const OVERRUN_ACKNOWLEDGED = "spend.overrun_acknowledged";
 
 /**
- * Overrun entries no owner has acknowledged. Read by the worker before every
+ * The rows that acknowledge an overrun: every acknowledgement audit row with an
+ * actor, followed by `AND a.target_id = <the run's id as text>`. Content Studio
+ * S7.3 (the S7 analysis's item 11, accepted by the owner on 2026-10-06): whether
+ * an overrun is acknowledged no longer depends on the acknowledger's CURRENT
+ * role, so a later demotion cannot silently re-lock confirmations. Until S7.3
+ * every reader joined the actor's users row and required `role = 'owner'`. Who
+ * may WRITE an acknowledgement is unchanged: the web's route is owner-only, and
+ * its store writes one only for an active owner. The worker's unit check, the
+ * web's confirmation, its acknowledgement and its spend panel all read this.
+ */
+export const OVERRUN_ACKNOWLEDGEMENTS_SQL = `SELECT 1 FROM studio_audit_log a
+      WHERE a.action = '${OVERRUN_ACKNOWLEDGED}' AND a.actor_user_id IS NOT NULL AND a.target_type = 'studio_runs'`;
+
+/**
+ * Overrun entries no acknowledgement covers. Read by the worker before every
  * paid unit and, since S6.2, by the web's confirmation transaction.
  */
 export const UNACKNOWLEDGED_OVERRUNS_SQL = `
   SELECT count(*)::int AS n FROM studio_spend_ledger l
    WHERE l.entry = 'overrun' AND NOT EXISTS (
-     SELECT 1 FROM studio_audit_log a JOIN studio_users u ON u.id = a.actor_user_id AND u.role = 'owner'
-      WHERE a.action = '${OVERRUN_ACKNOWLEDGED}' AND a.target_type = 'studio_runs' AND a.target_id = l.run_id::text)`;
+     ${OVERRUN_ACKNOWLEDGEMENTS_SQL} AND a.target_id = l.run_id::text)`;
 
 // ---------------------------------------------------------------------------
 // Shared by the web and the worker since Content Studio S7.2

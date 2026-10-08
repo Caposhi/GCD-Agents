@@ -39,6 +39,18 @@
  *   declares its own body bound, enforced while reading, and the document's
  *   own bound is checked before it is parsed (`bundle.ts`). Every owner edit
  *   runs in one transaction that declares its actor (`declareActor`, `store.ts`).
+ * - **Content Studio S7.3's users, caps and audit screens** (design §8.7, §6.2,
+ *   §9.5): every route is the owner's, refused to anyone else (403) before the
+ *   store is read. A user is added by address (lower-cased; the schema refuses
+ *   another domain and a duplicate), and their role, own daily cap and status
+ *   change, or their sessions are revoked — each ONE owner edit through
+ *   `declareActor`, audited by the schema. **There is no email edit** (owner
+ *   decision 5). The last active owner is never removed (409, by the store's
+ *   decision and the schema's trigger). Demoting or disabling oneself needs an
+ *   explicit confirmation, and signs one out at once. The owner's daily and
+ *   monthly caps are shown beside the deployment ceilings and the effective
+ *   cap; the audit log is read-only and escaped; `scheduled_runs_enabled` is
+ *   shown as unavailable, with no control.
  */
 
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -57,6 +69,7 @@ import {
 import type { WebConfig } from "./startup.js";
 import type { WebStore } from "./store.js";
 import { escapeHtml } from "./html.js";
+import type { Refusal } from "./actions.js";
 import { downloadHeaders, verifiedBytes } from "./downloads.js";
 import {
   ARTIFACT_NAME_SHAPE, MAX_DISPLAY_ARTIFACT_BYTES, parseGrouping, parseRunFilters, runVisible, RUNS_PAGE_SIZE, UUID_SHAPE,
@@ -76,6 +89,10 @@ import {
 } from "./bundle.js";
 import { checkBody, FACT_CHECK_POLL_SECONDS, importBody, importSection, uploadBody, versionsBody } from "./factViews.js";
 import { STUDIO_IMPORT_FILE_NAMES } from "../db/runner.js";
+import {
+  AUDIT_PAGE_SIZE, losesOwnSeat, normalizeNewUserEmail, parseAuditFilters, parseCapInput, parseRole, type UserChange,
+} from "./users.js";
+import { auditBody, confirmSelfBody, settingsBody, usersBody } from "./userViews.js";
 
 export const STUDIO_WEB_SERVICE = "gcd-studio-web";
 
@@ -131,7 +148,7 @@ export interface Route extends RouteDeclaration {
   handle(ctx: RouteContext): Promise<void>;
 }
 
-/** The route table: every route the service ships, each with its minimum role (S4's five, S5's five, S6.2's nine, then S7.2's eleven). */
+/** The route table: every route the service ships, each with its minimum role (S4's five, S5's five, S6.2's nine, S7.2's eleven, then S7.3's ten). */
 export const STUDIO_ROUTE_TABLE: readonly RouteDeclaration[] = Object.freeze([
   { method: "GET", path: "/", minRole: "public" },
   { method: "GET", path: "/healthz", minRole: "public", session: false },
@@ -163,6 +180,16 @@ export const STUDIO_ROUTE_TABLE: readonly RouteDeclaration[] = Object.freeze([
   { method: "GET", path: "/imports/new", minRole: "owner" },
   { method: "POST", path: "/imports", minRole: "owner", maxFormBytes: IMPORT_MAX_FORM_BYTES },
   { method: "GET", path: "/runs/:id/bundle", minRole: "viewer" },
+  { method: "GET", path: "/users", minRole: "owner" },
+  { method: "POST", path: "/users", minRole: "owner" },
+  { method: "POST", path: "/users/:id/role", minRole: "owner" },
+  { method: "POST", path: "/users/:id/cap", minRole: "owner" },
+  { method: "POST", path: "/users/:id/disable", minRole: "owner" },
+  { method: "POST", path: "/users/:id/enable", minRole: "owner" },
+  { method: "POST", path: "/users/:id/revoke-sessions", minRole: "owner" },
+  { method: "GET", path: "/settings", minRole: "owner" },
+  { method: "POST", path: "/settings/caps", minRole: "owner" },
+  { method: "GET", path: "/audit", minRole: "owner" },
 ] as const);
 
 /**
@@ -374,6 +401,54 @@ export function createStudioWebApp(options: StudioWebOptions): StudioWebApp {
     }
     log("facts.version", { user: ownerId, version: id, verb });
     redirect(ctx.res, 303, "/facts");
+  };
+
+  // --- Content Studio S7.3's helpers -------------------------------------------------------------------
+
+  const userRefused = (ctx: RouteContext, status: number, refusal: { refusal: string; message: string }) => {
+    log("user.edit_refused", { user: ctx.user!.id, refusal: refusal.refusal });
+    return refused(ctx, status, "Not changed", refusal, "/users");
+  };
+  const capsRefused = (ctx: RouteContext, refusal: { refusal: string; message: string }, status = 400) => {
+    log("settings.caps_refused", { user: ctx.user!.id, refusal: refusal.refusal });
+    return refused(ctx, status, "Not changed", refusal, "/settings");
+  };
+  /** A typed amount echoed back in a refusal: bounded, and escaped where it is shown. */
+  const quoted = (value: string | null) => `"${(value ?? "").slice(0, 40)}"`;
+  /** An owner edit the schema may still refuse (the actor no longer an active owner, the last owner): a refusal, never a 500. */
+  const ownerWrite = async <T extends { ok: boolean }>(ctx: RouteContext, write: () => Promise<T>): Promise<T | ({ ok: false } & Refusal)> => {
+    try {
+      return await write();
+    } catch (error) {
+      if (!isRefusedActionWrite(error)) throw error;
+      log("user.edit_refused_by_schema", { user: ctx.user!.id, error_class: errorClass(error) });
+      return { ok: false, refusal: "edit_refused", message: "the database refused this change: the last active owner must remain, and "
+        + "your account must still be an active owner" };
+    }
+  };
+  /** The acting owner lost their seat: this session is already revoked; its cookie is cleared and they leave. */
+  const signedOut = (ctx: RouteContext) => {
+    addCookie(ctx.res, clearCookie(SESSION_COOKIE));
+    log("auth.signed_out_by_change", { user: ctx.user!.id });
+    redirect(ctx.res, 303, "/");
+  };
+  /** A role or status change: self-demotion and self-disabling first need `confirm=yes`; nothing is written before. */
+  const userChange = async (ctx: RouteContext, change: UserChange) => {
+    const id = ctx.params.id!;
+    if (!UUID_SHAPE.test(id)) return notFound(ctx.res);
+    const owner = ctx.user!;
+    if (losesOwnSeat(owner.id, id, change) && ctx.form!.get("confirm") !== "yes") {
+      return htmlPage(ctx.res, 200, shell({
+        title: "Confirm", user: owner, csrfToken: csrfTokenFor(ctx.sessionCookie!), poll: false,
+        body: confirmSelfBody({ userId: id, verb: change.kind === "role" ? "role" : "disable",
+          role: change.kind === "role" ? change.role : undefined, csrfToken: csrfTokenFor(ctx.sessionCookie!) }),
+      }));
+    }
+    const result = await ownerWrite(ctx, () => store.changeUser({ ownerId: owner.id, userId: id, change }));
+    if (!result.ok) return userRefused(ctx, result.refusal === "no_user" ? 404 : 409, result);
+    log("user.change", { user: owner.id, target: id, kind: change.kind, value: change.kind === "role" ? change.role : change.status });
+    if (result.signedOut) return signedOut(ctx);
+    redirect(ctx.res, 303, "/users");
   };
 
   const handlers: Record<string, (ctx: RouteContext) => Promise<void>> = {
@@ -667,7 +742,7 @@ export function createStudioWebApp(options: StudioWebOptions): StudioWebApp {
           view, csrfToken: csrfTokenFor(ctx.sessionCookie!), mine: view.userId === user.id, nowMs: context.nowMs,
           workerOnline: workerOnline(context.nowMs, context.heartbeat?.beatAtMs), sourceGoal: source?.goal ?? null,
           capsLeft: { ceilings: config.ceilings, spend, userDayMicros: mineRow?.dayMicros ?? 0,
-            userDailyCapMicros: mineRow?.dailyCapMicros ?? null },
+            userDailyCapMicros: mineRow?.dailyCapMicros ?? null, userRole: mineRow?.role ?? null },
         }),
       }));
     },
@@ -845,6 +920,110 @@ export function createStudioWebApp(options: StudioWebOptions): StudioWebApp {
       ctx.res.statusCode = 200;
       log("download.bundle", { run: run.id, files: files.length, bytes: bundle.value.length });
       ctx.res.end(bundle.value);
+    },
+
+    // --- Content Studio S7.3: users, caps and settings, and the audit log (owner only) -----------------------
+
+    "GET /users": async (ctx) => {
+      const users = await store.listUsers();
+      htmlPage(ctx.res, 200, shell({
+        title: "Users", user: ctx.user!, csrfToken: csrfTokenFor(ctx.sessionCookie!), poll: false,
+        body: usersBody({ users, viewer: ctx.user!, csrfToken: csrfTokenFor(ctx.sessionCookie!), ceilings: config.ceilings }),
+      }));
+    },
+
+    "POST /users": async (ctx) => {
+      const form = ctx.form!;
+      const owner = ctx.user!;
+      const email = form.getAll("email").length === 1 ? normalizeNewUserEmail(form.get("email")) : normalizeNewUserEmail(null);
+      if (!email.ok) return userRefused(ctx, 400, email);
+      const role = parseRole(form.get("role"));
+      if (!role.ok || form.getAll("role").length !== 1) return userRefused(ctx, 400, role.ok ? { refusal: "invalid_role", message: "choose one role" } : role);
+      const cap = parseCapInput(form.get("cap") ?? "", config.ceilings.dailyMicros, true);
+      if (!cap.ok) return userRefused(ctx, 400, cap);
+      let created;
+      try {
+        created = await store.createUser({ ownerId: owner.id, email: email.value, role: role.value, dailyCapMicros: cap.value });
+      } catch (error) {
+        const code = (error as { code?: unknown })?.code;
+        if (code === "23505") return userRefused(ctx, 409, { refusal: "duplicate", message: "a user with that address already exists" });
+        if (!isRefusedActionWrite(error)) throw error;
+        return userRefused(ctx, 409, { refusal: "add_refused",
+          message: "the database refused this user: the address must be at the Studio's domain, and your account an active owner" });
+      }
+      log("user.create", { user: owner.id, target: created.userId, role: role.value });
+      redirect(ctx.res, 303, "/users");
+    },
+
+    "POST /users/:id/role": async (ctx) => {
+      const role = parseRole(ctx.form!.get("role"));
+      if (!role.ok || ctx.form!.getAll("role").length !== 1) return userRefused(ctx, 400, role.ok ? { refusal: "invalid_role", message: "choose one role" } : role);
+      return userChange(ctx, { kind: "role", role: role.value });
+    },
+    "POST /users/:id/disable": async (ctx) => userChange(ctx, { kind: "status", status: "disabled" }),
+    "POST /users/:id/enable": async (ctx) => userChange(ctx, { kind: "status", status: "active" }),
+
+    "POST /users/:id/cap": async (ctx) => {
+      const id = ctx.params.id!;
+      if (!UUID_SHAPE.test(id)) return notFound(ctx.res);
+      if (ctx.form!.getAll("cap").length !== 1) return userRefused(ctx, 400, { refusal: "invalid_cap", message: "give one amount" });
+      const cap = parseCapInput(ctx.form!.get("cap"), config.ceilings.dailyMicros, true);
+      if (!cap.ok) return userRefused(ctx, 400, cap);
+      const result = await ownerWrite(ctx, () => store.setUserCap({ ownerId: ctx.user!.id, userId: id, dailyCapMicros: cap.value }));
+      if (!result.ok) return userRefused(ctx, result.refusal === "no_user" ? 404 : 409, result);
+      log("user.cap", { user: ctx.user!.id, target: id, cleared: cap.value === null });
+      redirect(ctx.res, 303, "/users");
+    },
+
+    "POST /users/:id/revoke-sessions": async (ctx) => {
+      const id = ctx.params.id!;
+      if (!UUID_SHAPE.test(id)) return notFound(ctx.res);
+      const result = await ownerWrite(ctx, () => store.revokeUserSessions({ ownerId: ctx.user!.id, userId: id }));
+      if (!result.ok) return userRefused(ctx, result.refusal === "no_user" ? 404 : 409, result);
+      log("user.sessions_revoked", { user: ctx.user!.id, target: id, sessions: result.revoked });
+      // Revoking one's own sessions ends this one too.
+      if (id === ctx.user!.id) return signedOut(ctx);
+      redirect(ctx.res, 303, "/users");
+    },
+
+    "GET /settings": async (ctx) => {
+      const context = await store.actionContext();
+      htmlPage(ctx.res, 200, shell({
+        title: "Caps and settings", user: ctx.user!, csrfToken: csrfTokenFor(ctx.sessionCookie!), poll: false,
+        body: settingsBody({ context, ceilings: config.ceilings, csrfToken: csrfTokenFor(ctx.sessionCookie!) }),
+      }));
+    },
+
+    "POST /settings/caps": async (ctx) => {
+      const form = ctx.form!;
+      if (form.getAll("daily").length !== 1 || form.getAll("monthly").length !== 1) {
+        return capsRefused(ctx, { refusal: "invalid_cap", message: "give one daily and one monthly amount" });
+      }
+      const daily = parseCapInput(form.get("daily"), config.ceilings.dailyMicros, false);
+      if (!daily.ok) return capsRefused(ctx, { refusal: daily.refusal, message: `daily cap ${quoted(form.get("daily"))}: ${daily.message}` });
+      const monthly = parseCapInput(form.get("monthly"), config.ceilings.monthlyMicros, false);
+      if (!monthly.ok) return capsRefused(ctx, { refusal: monthly.refusal, message: `monthly cap ${quoted(form.get("monthly"))}: ${monthly.message}` });
+      const result = await ownerWrite(ctx, () => store.setCaps({ ownerId: ctx.user!.id, dailyCapMicros: daily.value!, monthlyCapMicros: monthly.value! }));
+      if (!result.ok) return capsRefused(ctx, result, 409);
+      log("settings.caps", { user: ctx.user!.id });
+      redirect(ctx.res, 303, "/settings");
+    },
+
+    "GET /audit": async (ctx) => {
+      const filters = parseAuditFilters(ctx.url.searchParams);
+      if (!filters.ok) {
+        return page(ctx.res, 400, "Bad request", "<h1>Bad request</h1><p>That filter is not one the audit view accepts.</p>"
+          + "<p><a href=\"/audit\">The whole log</a></p>");
+      }
+      const { action, page: pageNumber } = filters.value;
+      // One row past the page tells whether an older page exists; never more than the page is shown.
+      const [rows, actions] = await Promise.all([
+        store.listAudit(action, AUDIT_PAGE_SIZE + 1, (pageNumber - 1) * AUDIT_PAGE_SIZE), store.auditActions(),
+      ]);
+      htmlPage(ctx.res, 200, shell({
+        title: "Audit log", user: ctx.user!, csrfToken: csrfTokenFor(ctx.sessionCookie!), poll: false,
+        body: auditBody({ rows, actions, action, page: pageNumber, hasNext: rows.length > AUDIT_PAGE_SIZE }),
+      }));
     },
 
     "POST /auth/logout": async (ctx) => {
