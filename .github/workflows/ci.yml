@@ -180,7 +180,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      # Full history: the Content Studio Blueprint check compares render.yaml
+      # with its bytes at the pull request's base SHA, or the pushed commit's
+      # first parent, and fails if that commit is absent.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install pinned actionlint 1.7.12
         env:
@@ -201,5 +206,11 @@ jobs:
 
       - name: Parse checked-in YAML and check the mutation shards
         run: |
-          ruby scripts/ci/check-yaml.rb render.yaml .github/workflows/*.yml
+          ruby scripts/ci/check-yaml.rb render.yaml render.studio.yaml .github/workflows/*.yml
           ruby scripts/ci/check-mutation-shards.rb .github/workflows/ci.yml
+
+      # Content Studio S8: render.studio.yaml declares only gcd-studio-*
+      # resources, render.yaml names none and stays byte-identical, and the
+      # check's self-test proves each rule (scripts/ci/check-studio-blueprint.rb).
+      - name: Check the Content Studio Blueprint
+        run: ruby scripts/ci/check-studio-blueprint.rb

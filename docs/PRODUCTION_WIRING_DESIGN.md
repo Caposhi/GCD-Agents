@@ -613,6 +613,8 @@ environment variable that selects one. "Apply only 007" cannot be expressed to t
 **VERIFIED** — `render.yaml` gives `preDeployCommand: npm run migrate` to `gcd-social-api` and to no
 other service.
 
+> **Dated note (Content Studio S8, 2026-10-08), not a rewrite.** This still holds: `render.yaml` gives `preDeployCommand: npm run migrate` to `gcd-social-api` and to no other service, and S8 leaves `render.yaml` byte-identical. The Content Studio's web service has its **own** `preDeployCommand`, `npm run studio:migrate`, declared in the separate `render.studio.yaml` (`IMPLEMENTED`, not merged; nothing created on Render). That runner reads only `studio/migrations/**`, connects only through `STUDIO_DATABASE_URL` to the Studio's own `gcd_studio`, and refuses to run beside `DATABASE_URL` (design §3.7), so it is not a second migration authority over the live database, and the live controller's `state/migrations/**` guard is unaffected.
+
 **VERIFIED** — [`docs/ROLLOUT_PHASE_0B0.md`](ROLLOUT_PHASE_0B0.md) §5 states the operating rule this
 repository already follows: *"Let the API pre-deploy command be the only migration authority… **Do not
 run `npm run migrate` by hand, and do not apply the SQL through `psql`**."* That rule is what makes
@@ -957,6 +959,8 @@ in this session, and none was authorized.
 | `gcd-social-worker` | worker | `npm run start:worker` | Queue consumption, orchestration, approval wait, the only publication handoff |
 | `gcd-social-scheduler` | cron `0 13 * * *` | `npm run start:scheduler` | Enqueues one brief daily; does not publish |
 | `gcd-social-db` | PostgreSQL | — | Durable state |
+
+> **Dated note (Content Studio S8, 2026-10-08), not a rewrite.** This table is still exactly `render.yaml`, which S8 leaves byte-identical, and `gcd-social-api` is still its only `preDeployCommand`. A separate Blueprint file, `render.studio.yaml` (`IMPLEMENTED`, not merged; **nothing created on Render**), declares the Content Studio's `gcd-studio-web` (with its own `preDeployCommand`, `npm run studio:migrate`, against the Studio's own database only), `gcd-studio-worker` and `gcd-studio-db`. None is a live resource, none touches `gcd-social-db`, and CI's `scripts/ci/check-studio-blueprint.rb` keeps the two files apart. See the [Content Studio design](CONTENT_STUDIO_DESIGN.md) §3.
 
 ### 5.2 Proposed ownership — prefer existing infrastructure
 

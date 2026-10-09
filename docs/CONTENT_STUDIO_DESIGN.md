@@ -208,6 +208,8 @@ database.
 | `gcd-studio-cron` | cron | `starter` | **Designed, not created at launch** — see [§3.5](#35-the-cron-job--built-disabled) |
 | `gcd-studio-db` | PostgreSQL | `basic-256mb` (TO VERIFY) | Studio-only durable state; `databaseName: gcd_studio`; no external access |
 
+*(Dated note, Content Studio S8, 2026-10-08: `render.studio.yaml` declares the three non-cron rows as above. The plan names are Render's legacy names, which "remain valid across all Render tooling. This includes API requests and Blueprint files": `starter` = `0.5c-512mb`, `standard` = `1c-2g` (1 CPU, 2 GB), `basic-256mb` = `0.1c-256mb` ([render.com/docs/compute-plans](https://render.com/docs/compute-plans), read 2026-10-08). **Prices remain TO VERIFY at O3.** Nothing is created.)*
+
 **VERIFIED (by contrast):** the live resources are `gcd-social-api`, `gcd-social-worker`,
 `gcd-social-scheduler` and `gcd-social-db`. The `gcd-studio-` prefix keeps every Studio resource
 distinct from the live ones by name, across the two Blueprint files, in the dashboard and in logs.
@@ -309,7 +311,7 @@ neither requires nor flags them. They become checked when the PR that first read
 **PROPOSED, and chosen: manual, exact-commit deploys by the owner, with native auto-deploy off on
 every Studio service.** Every `gcd-studio-*` block in `render.studio.yaml` sets auto-deploy off. The field
 name and value are TO VERIFY against the current Render blueprint specification:
-`autoDeployTrigger: off`, or the older `autoDeploy: false`. The owner deploys an exact commit from
+`autoDeployTrigger: off`, or the older `autoDeploy: false`. *(Dated note, S8, 2026-10-08: settled — `autoDeployTrigger`, one of `commit`, `checksPass` or `off`, replaces the deprecated `autoDeploy`, and omitted it means `commit` for a new service ([render.com/docs/blueprint-spec](https://render.com/docs/blueprint-spec), read 2026-10-08). `render.studio.yaml` writes `autoDeployTrigger: 'off'`, **quoted**, because an unquoted `off` is a YAML 1.1 boolean; CI's check refuses anything but the string.)* The owner deploys an exact commit from
 the Render dashboard, using the Studio release checklist that S8 adds to [Operations](OPERATIONS.md).
 Before any deploy, the checklist requires that:
 
@@ -396,6 +398,8 @@ before O3):**
 3. **The apply preview, or the owner's own checklist for a hand creation, must list only
    `gcd-studio-*` resources.** Any line naming a `gcd-social-*` resource is a stop condition. So is
    a preview that cannot be seen (TO VERIFY that Render shows one).
+
+*(Dated note, Content Studio S8, 2026-10-08, from Render's public documentation, read that day — not observed in the dashboard. **A non-default path is supported:** "specify a custom file path to your Blueprint's YAML file in the Blueprint Path field", and setup shows "the list of the changes that Render will apply" before *Deploy Blueprint* ([render.com/docs/infrastructure-as-code](https://render.com/docs/infrastructure-as-code)). Auto Sync is set to No on the Blueprint's Settings page (whether the creation form offers it is TO VERIFY); with it on, a push that modifies the file "triggers a deploy of any added or modified resources"; removing a resource from the file never deletes it. **Whether creating a service deploys it at once stays TO VERIFY** (Render "begins provisioning"); the release checklist in [Operations](OPERATIONS.md) assumes it does. Item 1 above is S8's **BLOCKING merge gate, OPEN** until the owner's dated check is recorded, and it is repeated before O3.)*
 
 ### 3.7 Studio migrations — kept strictly separate from the live migrations
 
@@ -1037,7 +1041,7 @@ written: the endpoints and issuers are code constants from Google's discovery do
   *(Dated note, S4, 2026-10-02: "client address" is the direct peer address, as on the live API;
   forwarding headers are not trusted without a trusted-proxy configuration. Behind Render's proxy
   every client may share one address, so the limits may act service-wide — TO VERIFY at S8, and an
-  accepted limitation in [Roadmap](ROADMAP.md). The purges follow §4.7's proposed retention.)*
+  accepted limitation in [Roadmap](ROADMAP.md). The purges follow §4.7's proposed retention.)* *(Dated note, owner decision of 2026-10-08: Render's public documentation names no client-address header (searched 2026-10-08), so the keying fix is split from S8 into **S8b**, `PLANNED` and `BLOCKED` on a written statement from Render support naming the header and whether `X-Forwarded-For` is appended or replaced. The gate before O5 stays **BLOCKING and OPEN**. Until S8b, behind Render's load balancer the limits act as near-global: the failure mode is a sign-in lockout, never a bypass. If Render will not commit, the fallback — an owner decision — is to key the limits off the client address entirely.)*
 - **Logout:** a `POST /auth/logout` with CSRF protection. It revokes the session row and clears the
   cookie. The owner can revoke any user's sessions.
 - **No shared tokens and no credentials in URLs.** No console token, no bearer URL, and no token in
@@ -1342,6 +1346,8 @@ one.)*
 | Server-side request forgery | The web makes outbound calls only to Google's fixed OIDC endpoints, and the worker only to the Anthropic API |
 | Leakage through logs | See [§9.2](#92-log-redaction) |
 
+*(Dated note, Content Studio S8, 2026-10-08 — the least-privilege role, a finding, not built. Render's credentials page ([render.com/docs/postgresql-credentials](https://render.com/docs/postgresql-credentials), read 2026-10-08) states no plan restriction on a second user, so a second role appears possible on `basic-256mb` (TO VERIFY in practice). It must be made with `CREATE USER`: a user added through Render becomes the database's new default, and Blueprint variables referencing the connection string switch to it on the next sync — which would move the worker too. The web's `STUDIO_DATABASE_URL` would then be `sync: false`, not `fromDatabase`; the web's `preDeployCommand` would need the owner credential for the migrations by another route; the grants would be a reviewed Studio migration; and S8's static check would be amended in the same PR. A follow-up with its own authorization. The "no external access" row is now `ipAllowList: []` in `render.studio.yaml`, which Render documents as blocking all external connections.)*
+
 ### 9.2 Log redaction
 
 **PROPOSED.** Studio logs are structured lines carrying ids, states, classes, counts, durations and
@@ -1471,6 +1477,8 @@ from S5; **S7.3** — the §8.7 users-and-caps screens, with the rule that a run
 `daily_cap_usd` cannot confirm. The owner also decided that a fake run can never be a paid
 action's source, that a retired fact version may be restored, and that the users screen offers no
 email edit; 0004 enforces the first two in the database. See [Roadmap](ROADMAP.md).)*
+
+*(Dated note, owner decision of 2026-10-08 — the S8 row is reduced and split. Two S8 sessions stopped on 2026-10-08 with no commit: the first because its environment could not reach `render.com`, the second because Render documents no spoof-safe client-address header. **S8** keeps `render.studio.yaml`, its static check (whose byte comparison is against the pull request's base, or the pushed commit's first parent, in every CI run, failing when no base is known), the release checklist and the least-privilege role finding — `IMPLEMENTED`, not merged, with the Blueprint check as its BLOCKING merge gate, OPEN. **S8b**, the O5 client-address fix, is `PLANNED` and `BLOCKED` on Render support's written statement, and required before O5. S7.3 is `MERGED` through PR #114 at `0f4dda0…`; the next PR after S8 is S6b. See [Roadmap](ROADMAP.md).)*
 
 **Documents each PR must update**, beyond [Roadmap](ROADMAP.md), [Status](STATUS.md) and the root
 [README](../README.md), under [`AGENTS.md`](../AGENTS.md)'s binding rule. This change adds only a labelled planned note to
