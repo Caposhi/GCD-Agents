@@ -12,8 +12,12 @@
 #   - render.studio.yaml names no live resource (gcd-social-*, gcd_social);
 #   - no gcd-studio-* block names a forbidden variable: design §3.2's list
 #     (held equal to FORBIDDEN_VARIABLES and FORBIDDEN_PREFIXES in
-#     src/studio/db/runner.ts, which both Studio services refuse at start),
-#     any IG_, FB_ or GBP_ name, and ANTHROPIC_API_KEY until S6b;
+#     src/studio/db/runner.ts, which both Studio services refuse at start)
+#     and any IG_, FB_ or GBP_ name;
+#   - ANTHROPIC_API_KEY (Content Studio S6b) appears only on gcd-studio-worker,
+#     and only as sync: false: on any other block, with a literal value, or
+#     without sync: false, it fails (the web refuses the key at start in every
+#     phase; the worker's value is entered only in Render, at O4);
 #   - every fromDatabase in a Studio block is gcd-studio-db, and every
 #     fromService or fromGroup names a Studio resource this file declares;
 #   - no gcd-social-* block references gcd-studio-db (or any Studio resource);
@@ -72,9 +76,11 @@ FORBIDDEN_NAMES = %w[
   ACTIVE_PLATFORMS
 ].freeze
 FORBIDDEN_PREFIXES = %w[IG_ FB_ GBP_].freeze
-# Until S6b (live-runner enablement) connects the real runner, no Studio block
-# may name the provider key at all; S6b amends this list in its own PR.
-FORBIDDEN_UNTIL_S6B = %w[ANTHROPIC_API_KEY].freeze
+# Content Studio S6b (live-runner enablement): the provider key may be declared
+# on the worker alone, and only as sync: false. (Until S6b no Studio block could
+# name it at all.)
+PROVIDER_KEY = "ANTHROPIC_API_KEY"
+PROVIDER_KEY_SERVICE = "gcd-studio-worker"
 
 # Names that must be `sync: false` (entered only in Render, never a literal).
 SECRET_NAMES = %w[
@@ -172,7 +178,21 @@ def any_key?(node, wanted)
 end
 
 def forbidden?(name)
-  FORBIDDEN_NAMES.include?(name) || FORBIDDEN_UNTIL_S6B.include?(name) || FORBIDDEN_PREFIXES.any? { |prefix| name.start_with?(prefix) }
+  FORBIDDEN_NAMES.include?(name) || FORBIDDEN_PREFIXES.any? { |prefix| name.start_with?(prefix) }
+end
+
+# S6b: the provider key's own rule, beside the generic secret rule (which also
+# applies, because the name matches SECRET_PATTERN).
+def provider_key_problems(name, entry)
+  return [] unless entry["key"].to_s == PROVIDER_KEY
+  return ["#{name} names #{PROVIDER_KEY}, which only #{PROVIDER_KEY_SERVICE} may carry"] unless name == PROVIDER_KEY_SERVICE
+
+  problems = []
+  if entry.key?("value") || entry.key?("generateValue")
+    problems << "#{name}'s #{PROVIDER_KEY} has a literal value; it is entered only in Render (sync: false)"
+  end
+  problems << "#{name}'s #{PROVIDER_KEY} is not sync: false" unless entry["sync"] == false
+  problems
 end
 
 def secret_class?(name)
@@ -226,6 +246,7 @@ def env_problems(name, block, declared)
   env_entries(block).each do |entry|
     key = entry["key"].to_s
     problems << "#{name} names forbidden variable #{key}" if forbidden?(key)
+    problems.concat(provider_key_problems(name, entry))
     literal = entry.key?("value") || entry.key?("generateValue")
     if secret_class?(key)
       problems << "#{name} gives #{key} a literal value; it must be sync: false" if literal
@@ -403,9 +424,17 @@ FAULTS = [
   ["the live GBP client id on the web", :studio,
    "      - key: STUDIO_ALLOWED_HD\n", "      - key: GOOGLE_CLIENT_ID\n        sync: false\n      - key: STUDIO_ALLOWED_HD\n",
    "gcd-studio-web names forbidden variable GOOGLE_CLIENT_ID"],
-  ["ANTHROPIC_API_KEY on the worker before S6b", :studio,
-   "      - key: NODE_OPTIONS         # heap headroom", "      - key: ANTHROPIC_API_KEY\n        sync: false\n      - key: NODE_OPTIONS         # heap headroom",
-   "gcd-studio-worker names forbidden variable ANTHROPIC_API_KEY"],
+  ["ANTHROPIC_API_KEY on the web", :studio,
+   "      - key: STUDIO_ALLOWED_HD\n", "      - key: ANTHROPIC_API_KEY\n        sync: false\n      - key: STUDIO_ALLOWED_HD\n",
+   "gcd-studio-web names ANTHROPIC_API_KEY, which only gcd-studio-worker may carry"],
+  ["ANTHROPIC_API_KEY on the worker with a literal value", :studio,
+   "      - key: ANTHROPIC_API_KEY            # from the GCD-Content-Studio workspace, entered only in Render at O4\n        sync: false\n",
+   "      - key: ANTHROPIC_API_KEY            # from the GCD-Content-Studio workspace, entered only in Render at O4\n        value: placeholder-not-a-key\n",
+   "gcd-studio-worker's ANTHROPIC_API_KEY has a literal value"],
+  ["ANTHROPIC_API_KEY on the worker without sync: false", :studio,
+   "      - key: ANTHROPIC_API_KEY            # from the GCD-Content-Studio workspace, entered only in Render at O4\n        sync: false\n",
+   "      - key: ANTHROPIC_API_KEY            # from the GCD-Content-Studio workspace, entered only in Render at O4\n",
+   "gcd-studio-worker's ANTHROPIC_API_KEY is not sync: false"],
   ["an IG_ name on the worker", :studio,
    "      - key: NODE_OPTIONS         # heap headroom", "      - key: IG_USER_ID\n        sync: false\n      - key: NODE_OPTIONS         # heap headroom",
    "gcd-studio-worker names forbidden variable IG_USER_ID"],
@@ -495,6 +524,10 @@ FAULTS = [
 CONTROLS = [
   ["autoDeployTrigger double-quoted", :studio,
    "    autoDeployTrigger: 'off'      # web:", "    autoDeployTrigger: \"off\"      # web:"],
+  # S6b: the key as declared -- on gcd-studio-worker, sync: false -- is accepted (here without its comment).
+  ["ANTHROPIC_API_KEY declared on the worker, sync: false", :studio,
+   "      - key: ANTHROPIC_API_KEY            # from the GCD-Content-Studio workspace, entered only in Render at O4\n        sync: false\n",
+   "      - key: ANTHROPIC_API_KEY\n        sync: false\n"],
 ].freeze
 
 FAKE_SHA = "0123456789abcdef0123456789abcdef01234567"

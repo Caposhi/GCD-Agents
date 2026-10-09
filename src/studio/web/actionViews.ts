@@ -31,9 +31,13 @@ export const FAKE_LABEL = "FAKE — wiring test";
 export const QUOTE_NOTE = "These figures are the worker's, from the CLI's own cost-ceiling computation: rough, not "
   + "billing-accurate. The web does not compute prices. Confirming reserves the whole ceiling against the caps; the unused part "
   + "is released when the run ends.";
-/** Until S6b, every confirmed live run is refused by the worker (owner decision of 2026-10-05). */
-export const S6B_NOTE = "Until Content Studio S6b connects the real runner, the worker refuses every confirmed live run "
-  + "(live_runs_not_enabled) before any request and releases its reservation: nothing is spent.";
+/**
+ * Whether a confirmed live run is sent depends on the worker (Content Studio S6b): only a worker holding the
+ * provider key runs it. The web cannot see the worker's key, so the page states both cases.
+ */
+export const S6B_NOTE = "A confirmed live run is sent only by a worker that holds the Anthropic key; a worker without "
+  + "it refuses every confirmed live run (live_runs_not_enabled) before any request and releases its reservation: "
+  + "nothing is spent.";
 
 /** Micro-dollars as dollars and cents for a person (the stored amounts keep their six decimals). */
 export const dollars = (micros: number): string => {

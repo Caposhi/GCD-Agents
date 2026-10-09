@@ -26,7 +26,9 @@ import {
   decideFactCheck, runFactCheck, UNKNOWN_FIELDS_MAX, UPLOAD_LABEL, writeFactCheckOutcome, type FactCheckOutcome, type FactCheckRow,
 } from "./factCheck.js";
 import { decideImport, IMPORT_GOAL_MAX_CHARS, writeImportOutcome, type ImportDecision } from "./importRun.js";
-import { closeRun, decideBeforeWork, executeJob, failureClassOf, workerRuntime, WorkerStop, type BeforeWork } from "./execute.js";
+import {
+  closeRun, decideBeforeWork, executeJob, failureClassOf, loadApprovedFacts, workerRuntime, WorkerStop, type BeforeWork,
+} from "./execute.js";
 import {
   decidePreflight, writePreflightOutcome, type PreflightInputs, type PreflightOutcome, type PreflightRequestRow, type PreflightSourceRun,
 } from "./preflight.js";
@@ -41,11 +43,14 @@ import { DbRunSink, REWRITTEN_ARTIFACTS } from "./runSink.js";
 import { LIVE_WORKER_OWNERSHIP_KEY, STUDIO_WORKER_OWNERSHIP_NAMESPACE, studioOwnershipKey, type WorkerSession } from "./session.js";
 import { decidePaidUnit, planSettlement, type PaidUnitPrice, type PaidUnitSnapshot } from "./spend.js";
 import {
-  decideSchemaVersion, decideWorkerIdentity, decideWorkerStartup, forbiddenVariablesPresent, FORBIDDEN_PREFIXES,
-  FORBIDDEN_VARIABLES, S3_FORBIDDEN_VARIABLES, STUDIO_EXPECTED_MIGRATIONS, STUDIO_SCHEMA_VERSION, type WorkerEnvironment,
+  decideLiveRunner, decideSchemaVersion, decideWorkerIdentity, decideWorkerStartup, forbiddenVariablesPresent, FORBIDDEN_PREFIXES,
+  FORBIDDEN_VARIABLES, paidRunnerFor, STUDIO_EXPECTED_MIGRATIONS, STUDIO_SCHEMA_VERSION, type WorkerEnvironment,
 } from "./startup.js";
-import { fakeTranscript, memoryIo, memorySink, replayRunner, repoFacts, syntheticFactsBytes } from "./testSupport.js";
-import { HEARTBEAT_INTERVAL_MS } from "./worker.js";
+import {
+  fakeTranscript, memoryIo, memorySink, providerShapedRunner, replayRunner, repoFacts, syntheticFactsBytes, usageMicros,
+  type ProviderOutcome,
+} from "./testSupport.js";
+import { HEARTBEAT_INTERVAL_MS, liveRunnerOf, readinessLine } from "./worker.js";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 
@@ -77,25 +82,32 @@ const COMMIT = "c".repeat(40);
 const URL_OK = "postgresql://worker:placeholder@127.0.0.1:5432/gcd_studio";
 const env = (extra: Partial<WorkerEnvironment> = {}): WorkerEnvironment => ({
   names: ["PATH", "NODE_ENV", "STUDIO_DATABASE_URL"], studioDatabaseUrl: URL_OK, maxDailyUsd: "75", maxMonthlyUsd: "300",
-  commit: COMMIT, ...extra,
+  commit: COMMIT, anthropicApiKey: undefined, ...extra,
 });
+/**
+ * Content Studio S6b: a value standing in for a provider key in the start-up checks, so that every captured line
+ * can be searched for it. Built at run time and plainly not a key; no real key is used anywhere in this suite.
+ */
+const KEY_SENTINEL = ["s6b", "sentinel", "not", "a", "key", createHash("sha256").update(String(process.pid)).digest("hex").slice(0, 12)].join("-");
 
 async function startupChecks(): Promise<void> {
   // --- SW1: the environment refusal ---------------------------------------------------------------
   const ok = decideWorkerStartup(env());
-  const forbidden = [...FORBIDDEN_VARIABLES, ...S3_FORBIDDEN_VARIABLES, "IG_ACCESS_TOKEN", "FB_PAGE_ACCESS_TOKEN", "GBP_LOCATION_ID"];
+  const forbidden = [...FORBIDDEN_VARIABLES, "IG_ACCESS_TOKEN", "FB_PAGE_ACCESS_TOKEN", "GBP_LOCATION_ID"];
   const refusals = forbidden.map((name) => refusalOf(() => decideWorkerStartup(env({ names: [...env().names, name] }))));
+  const keyed = refusalOf(() => decideWorkerStartup(env({ names: [...env().names, "ANTHROPIC_API_KEY"], anthropicApiKey: KEY_SENTINEL })));
   check("SW1. the worker refuses to start beside any forbidden variable — DATABASE_URL, every live credential, "
-    + "AUTONOMY_PHASE, PUBLIC_BASE_URL, ACTIVE_PLATFORMS, any IG_/FB_/GBP_ name and, until S6b, ANTHROPIC_API_KEY — "
-    + "whatever its value; with none it starts with its own caps and commit",
+    + "AUTONOMY_PHASE, PUBLIC_BASE_URL, ACTIVE_PLATFORMS and any IG_/FB_/GBP_ name — whatever its value; with none it "
+    + "starts with its own caps and commit. Since S6b ANTHROPIC_API_KEY is no longer refused by the worker (it decides "
+    + "the live runner, SW44); it is not on the worker's list",
     ok.connectionString === URL_OK && ok.commit === COMMIT && ok.caps.dailyMicros === 75_000_000
       && ok.caps.monthlyMicros === 300_000_000 && ok.zeroCaps.length === 0
-      && refusals.length === 15 && refusals.every((r) => r === "forbidden-variable")
+      && refusals.length === 14 && refusals.every((r) => r === "forbidden-variable") && keyed === "accepted"
       && JSON.stringify(FORBIDDEN_PREFIXES) === JSON.stringify(["IG_", "FB_", "GBP_"])
-      && JSON.stringify(S3_FORBIDDEN_VARIABLES) === JSON.stringify(["ANTHROPIC_API_KEY"])
+      && !(FORBIDDEN_VARIABLES as readonly string[]).includes("ANTHROPIC_API_KEY")
       && forbiddenVariablesPresent(["IGNORE_ME", "FBX", "GBPX", "IG", "PATH"]).length === 0
-      && forbiddenVariablesPresent(["ANTHROPIC_API_KEY", "DATABASE_URL", "IG_X"]).join() === "ANTHROPIC_API_KEY,DATABASE_URL,IG_X",
-    refusals.join());
+      && forbiddenVariablesPresent(["ANTHROPIC_API_KEY", "DATABASE_URL", "IG_X"]).join() === "DATABASE_URL,IG_X",
+    `${refusals.join()} ${keyed}`);
   const messageOf = (e: Partial<WorkerEnvironment>) => { try { decideWorkerStartup(env(e)); return ""; } catch (x) { return (x as Error).message; } };
   check("SW1a. it also refuses a missing, empty or non-PostgreSQL STUDIO_DATABASE_URL and a commit that is not a full "
     + "40-character SHA; no refusal message echoes a value",
@@ -127,18 +139,20 @@ async function startupChecks(): Promise<void> {
   });
   const runs = [
     await runMain({ DATABASE_URL: "postgresql://live:placeholder-value@127.0.0.1/live" }),
-    await runMain({ ANTHROPIC_API_KEY: "placeholder-value" }),
+    await runMain({ DATABASE_URL: "postgresql://live:placeholder-value@127.0.0.1/live", ANTHROPIC_API_KEY: "placeholder-value" }),
     await runMain({ IG_ACCESS_TOKEN: "" }),
     await runMain({}, ["STUDIO_DATABASE_URL"]),
     await runMain({}, ["RENDER_GIT_COMMIT"]),
   ];
   server.close();
-  check("SW1b. `npm run start:studio-worker` (dist/studio/worker/main.js), executed: DATABASE_URL, ANTHROPIC_API_KEY, an "
-    + "empty IG_ variable, a missing STUDIO_DATABASE_URL and a missing commit each exit 1 with the refusal named, no "
-    + "value echoed, and no connection made to the listening database port",
+  check("SW1b. `npm run start:studio-worker` (dist/studio/worker/main.js), executed: DATABASE_URL (alone, and beside "
+    + "ANTHROPIC_API_KEY, which since S6b refuses nothing), an empty IG_ variable, a missing STUDIO_DATABASE_URL and a "
+    + "missing commit each exit 1 with the refusal named, no value echoed, and no connection made to the listening "
+    + "database port",
     runs.map((r) => `${r.code}:${/refused \(([a-z-]+)\)/.exec(r.stderr)?.[1]}`).join()
       === "1:forbidden-variable,1:forbidden-variable,1:forbidden-variable,1:studio-database-url-missing,1:commit-missing"
-      && runs.every((r) => !r.stderr.includes("placeholder-value")) && connections === 0,
+      && runs.every((r) => !r.stderr.includes("placeholder-value")) && connections === 0
+      && /forbidden variable\(s\) present: DATABASE_URL\./.test(runs[1]!.stderr),
     runs.map((r) => r.stderr.trim()).join(" | "));
 
   // --- SW1c: the environment is decided before anything reads process.env ------------------------------
@@ -158,18 +172,20 @@ async function startupChecks(): Promise<void> {
   const mainStatic = staticGraph("dist/studio/worker/main.js");
   const mainRefs = moduleReferences(readFileSync(resolve(REPO_ROOT, "dist/studio/worker/main.js"), "utf8"));
   const mainSource = readFileSync(resolve(REPO_ROOT, "src/studio/worker/main.ts"), "utf8");
+  const dynamicRefs = mainRefs.filter((r) => r.kind === "dynamic").map((r) => r.specifier).sort();
   check("SW1c. the entry point decides its environment before the library or the live config.ts can load: its static "
-    + "imports reach only startup.ts, money.ts and the S2 runner (no config.ts, sdk.ts, stage module or library), the "
-    + "worker is a literal dynamic import after the decision, and it reads only STUDIO_DATABASE_URL, the two caps and "
-    + "RENDER_GIT_COMMIT, in the dot form",
+    + "imports reach only startup.ts, money.ts and the S2 runner (no config.ts, sdk.ts, stage module or library); the "
+    + "worker and (S6b) the library are its only dynamic imports, literal, after the decision; and it reads only "
+    + "STUDIO_DATABASE_URL, the two caps, RENDER_GIT_COMMIT and (S6b) ANTHROPIC_API_KEY, in the dot form",
     mainStatic.join() === ["dist/studio/db/runner.js", "dist/studio/worker/main.js", "dist/studio/worker/money.js",
       "dist/studio/worker/startup.js"].join()
-      && mainRefs.some((r) => r.kind === "dynamic" && r.specifier === "./worker.js")
+      && dynamicRefs.join() === "../../harness/contentRun/index.js,./worker.js"
       && [...mainSource.matchAll(/process\.env\.([A-Z_]+)/g)].map((m) => m[1]).sort().join()
-        === "RENDER_GIT_COMMIT,STUDIO_DATABASE_URL,STUDIO_MAX_DAILY_USD,STUDIO_MAX_MONTHLY_USD"
+        === "ANTHROPIC_API_KEY,RENDER_GIT_COMMIT,STUDIO_DATABASE_URL,STUDIO_MAX_DAILY_USD,STUDIO_MAX_MONTHLY_USD"
       && !/process\.env\[/.test(mainSource) && mainSource.includes("names: Object.keys(process.env)")
-      && mainSource.indexOf("decideWorkerStartup(") < mainSource.indexOf('await import("./worker.js")'),
-    mainStatic.join());
+      && mainSource.indexOf("decideWorkerStartup(") < mainSource.indexOf('await import("./worker.js")')
+      && mainSource.indexOf("decideWorkerStartup(") < mainSource.indexOf('await import("../../harness/contentRun/index.js")'),
+    `${mainStatic.join()} ${dynamicRefs.join()}`);
 
   // --- SW2: caps and money --------------------------------------------------------------------------
   const zero = decideWorkerStartup(env({ maxDailyUsd: undefined, maxMonthlyUsd: "lots" }));
@@ -408,12 +424,15 @@ async function fakeOnlyChecks(): Promise<void> {
   const dbSources = readdirSync(resolve(REPO_ROOT, "src/studio/db")).filter((n) => n.endsWith(".ts"))
     .map((n) => [n, readFileSync(resolve(REPO_ROOT, "src/studio/db", n), "utf8")] as const);
   const all = [...sources, ...dbSources];
-  const importsStageExecution = all.filter(([, t]) => moduleReferences(t)
+  // The suites and their shared fixtures (testSupport.ts, which S6b's provider-shaped stub puts over sdk.ts) are tests.
+  const isTest = (name: string) => name.endsWith(".selftest.ts") || name === "testSupport.ts";
+  const importsStageExecution = all.filter(([n, t]) => !isTest(n) && moduleReferences(t)
     .some((r) => /stageExecution|\/sdk\.js$|\/config\.js$/.test(r.specifier)));
   // (Suites build their children's environments by name; production modules may not.)
-  const keyReads = all.filter(([n, t]) => !n.endsWith(".selftest.ts") && /process\.env\.ANTHROPIC_API_KEY|process\.env\[/.test(t));
-  // This suite itself calls the worker's REPLACED factory, below; every other module may not call one at all.
-  const factoryCalls = all.filter(([n, t]) => !n.endsWith(".selftest.ts") && /createAnthropicStageRunner\s*\(/.test(t));
+  const keyReads = all.filter(([n, t]) => !isTest(n) && /process\.env\.ANTHROPIC_API_KEY|process\.env\[/.test(t)).map(([n]) => n);
+  // The suites call the worker's REPLACED factory and the stub calls the real one over a scripted stream; of the
+  // production modules, only the entry point calls it, and only through paidRunnerFor (S6b).
+  const factoryCalls = all.filter(([n, t]) => !isTest(n) && /createAnthropicStageRunner\s*\(/.test(t)).map(([n]) => n);
   const factoryNamed = all.filter(([, t]) => t.includes("createAnthropicStageRunner")).map(([n]) => n).sort();
   const mainSource = readFileSync(join(workerDir, "main.ts"), "utf8");
   let baseCalls = 0;
@@ -426,15 +445,18 @@ async function fakeOnlyChecks(): Promise<void> {
   })();
   const fake = (async () => ({ text: "{}" })) as never;
   const given = workerRuntime(counted as never, fake).stageExecution.createAnthropicStageRunner();
-  check("SW8. fake runner only in S3: no Studio module imports stageExecution, sdk or config, and no non-test Studio "
-    + "module reads ANTHROPIC_API_KEY or any variable by computed name, or calls createAnthropicStageRunner; the entry point gives no paid stage runner; "
-    + "and the worker's runtime replaces the provider runner factory — without a paid runner it refuses "
-    + "(live_runs_not_enabled), with one it yields that runner, and the real factory is never called",
-    importsStageExecution.length === 0 && keyReads.length === 0 && factoryCalls.length === 0
-      && factoryNamed.join() === "execute.ts,worker.offline.selftest.ts,worker.postgres.selftest.ts"
-      && !/paidStageRunner\s*:/.test(mainSource) && !mainSource.includes("paidStageRunner")
+  check("SW8. the paid runner's one construction site (S6b): no non-test Studio module imports stageExecution, sdk or "
+    + "config; only the entry point reads ANTHROPIC_API_KEY (no module reads any variable by computed name), and only "
+    + "the entry point calls createAnthropicStageRunner — once, inside paidRunnerFor, passing what it built as the "
+    + "worker's paid stage runner; and the worker's runtime replaces the provider runner factory — without a paid "
+    + "runner it refuses (live_runs_not_enabled), with one it yields that runner, and the real factory is never called",
+    importsStageExecution.length === 0 && keyReads.join() === "main.ts" && factoryCalls.join() === "main.ts"
+      && (mainSource.match(/createAnthropicStageRunner\s*\(/g) ?? []).length === 1
+      && /paidRunnerFor\(startup\.liveRunner, \(\) => lib\.loadRuntime\(\)\.stageExecution\.createAnthropicStageRunner\(\)\)/.test(mainSource)
+      && /\n    paidStageRunner,\n/.test(mainSource)
+      && factoryNamed.join() === "execute.ts,main.ts,testSupport.ts,worker.offline.selftest.ts,worker.postgres.selftest.ts"
       && refusal === "live_runs_not_enabled" && given === fake && baseCalls === 0,
-    `${importsStageExecution.map(([n]) => n)} ${keyReads.map(([n]) => n)} ${factoryCalls.map(([n]) => n)} ${factoryNamed}`);
+    `${importsStageExecution.map(([n]) => n)} ${keyReads} ${factoryCalls} ${factoryNamed}`);
 
   // The sink, over a recording fake session.
   const queries: Array<{ text: string; values: unknown[] }> = [];
@@ -495,12 +517,21 @@ function beforeWorkChecks(): void {
     [of(b((x) => { x.jobKind = "fake"; })), "job_kind_mismatch"],
     [of(b((x) => { x.run!.runner = "fake"; })), "job_kind_mismatch"],
     [of(b((x) => { x.jobKind = "fake"; x.run!.runner = "fake"; x.worker.paidRunner = false; x.quote = undefined; })), "proceed"],
+    // S6b: a live run's source, re-checked by the worker (design §9.1); the key's absence is still refused first.
+    [of(b((x) => { x.source = { runner: "fake", kind: "full", importTier: null }; })), "fake_source"],
+    [of(b((x) => { x.source = { runner: "fake", kind: "imported", importTier: "verified" }; })), "fake_source"],
+    [of(b((x) => { x.source = { runner: "live", kind: "imported", importTier: "archived_unverified" }; })), "source_not_verified"],
+    [of(b((x) => { x.source = { runner: "live", kind: "imported", importTier: null }; })), "source_not_verified"],
+    [of(b((x) => { x.source = { runner: "live", kind: "imported", importTier: "verified" }; })), "proceed"],
+    [of(b((x) => { x.source = { runner: "live", kind: "full", importTier: null }; })), "proceed"],
+    [of(b((x) => { x.source = { runner: "fake", kind: "full", importTier: null }; x.worker.paidRunner = false; })), "live_runs_not_enabled"],
   ];
   const wrong = cases.map(([got, want], i) => (got === want ? "" : `#${i} ${got}≠${want}`)).filter(Boolean);
-  check("SW11. before any work, the worker refuses a live run when it holds no paid runner (every live run in S3: "
-    + "live_runs_not_enabled), a paid job whose quote names another worker commit, approved-facts sha256, fact version "
-    + "or price table (version_skew), a kind it does not run and a job whose kind does not match its run; a fake run "
-    + "proceeds with no paid runner and no quote", wrong.length === 0, wrong.join("; "));
+  check("SW11. before any work, the worker refuses a live run when it holds no paid runner (since S6b, a worker without "
+    + "the key: live_runs_not_enabled), a paid job whose quote names another worker commit, approved-facts sha256, fact "
+    + "version or price table (version_skew), a live run whose source is a fake run (fake_source) or an import that was "
+    + "not revalidated (source_not_verified), a kind it does not run and a job whose kind does not match its run; a "
+    + "fake run proceeds with no paid runner and no quote", wrong.length === 0, wrong.join("; "));
 }
 
 /** A client that answers each statement from a script, by the first matching pattern, and records every statement. */
@@ -1383,6 +1414,324 @@ function s73Checks(): void {
     UNACKNOWLEDGED_OVERRUNS_SQL.replace(/\s+/g, " "));
 }
 
+// --- SW43-SW52 (Content Studio S6b): the live-runner decision and the paid path through the real provider runner -----
+
+/** What one in-memory paid world varies: each field is one gate's input (defaults: everything permits). */
+interface PaidWorldSpec {
+  role?: "owner" | "runner";
+  userCapMicros?: number | null;
+  quoteUser?: string;
+  consumed?: boolean;
+  reserve?: boolean;
+  daySpendMicros?: number;
+  monthSpendMicros?: number;
+  userDaySpendMicros?: number;
+  overruns?: number;
+  cancel?: boolean;
+  quotePriceTableSha256?: string;
+  source?: { runner: string; kind: string; importTier: string | null };
+}
+
+/**
+ * A live full run over an in-memory database answering every statement the worker's paid path makes — the run,
+ * its quote, its source, the fact version, the unit snapshot under the run's lock, the request rows, the sink's
+ * artifacts and completions, the findings and the run's end with its settlement — so `executeJob` itself runs
+ * end to end with no database. Every check, request row and provider open is logged in order, as events.
+ */
+function paidWorld(reservedMicros: number, spec: PaidWorldSpec = {}) {
+  const events: string[] = [];
+  const requests: Array<{ seq: number; stage: string; lens: string | null; model: string; ceiling: number; outcome: string;
+    cost: number | null; input: number | null; output: number | null }> = [];
+  const ledger: Array<{ entry: string; amount: number }> = spec.reserve === false ? [] : [{ entry: "reserve", amount: reservedMicros }];
+  const artifacts = new Map<string, Buffer>();
+  const run: { state: string; failureClass: string | null; actual: string | null } = { state: "running", failureClass: null, actual: null };
+  const charged = () => requests.reduce((t, r) => t + (r.outcome !== "started" && r.cost !== null ? r.cost : r.ceiling), 0);
+  const facts = syntheticFactsBytes();
+  const answer = (text: string, v: unknown[]): Array<Record<string, unknown>> | number => {
+    if (/^SELECT kind, runner, goal/.test(text)) {
+      return [{ kind: "full", runner: "live", goal: GOAL_S6B, platforms: null, scope_tags: null, fact_version_id: "fv-s6b",
+        source_run_id: spec.source ? "source-s6b" : null, quote_id: "q-s6b" }];
+    }
+    if (/^SELECT worker_commit, approved_facts_sha256/.test(text)) {
+      return [{ worker_commit: COMMIT, approved_facts_sha256: APPROVED.sha256, fact_version_id: "fv-s6b",
+        price_table_sha256: spec.quotePriceTableSha256 ?? lib.priceTableSha256() }];
+    }
+    if (/AS source_runner/.test(text)) {
+      return spec.source ? [{ source_runner: spec.source.runner, source_kind: spec.source.kind, source_import_tier: spec.source.importTier }] : [];
+    }
+    if (/FROM studio_fact_versions WHERE id/.test(text)) return [{ content: facts, sha256: createHash("sha256").update(facts).digest("hex") }];
+    if (/FROM studio_runs WHERE id = \$1 FOR UPDATE/.test(text) && /quote_id, requested_by/.test(text)) {
+      events.push("check");
+      return [{ state: run.state, runner: "live", kind: "full", reserved: microsToNumeric(reservedMicros), quote_id: "q-s6b", requested_by: "u" }];
+    }
+    if (/FROM studio_runs WHERE id = \$1 FOR UPDATE/.test(text)) {
+      return [{ runner: "live", kind: "full", state: run.state, reserved: microsToNumeric(reservedMicros) }];
+    }
+    if (/FROM studio_jobs WHERE id = \$1 AND run_id = \$2/.test(text)) return [{ state: "running", cancel: spec.cancel === true }];
+    if (/AS cancel FROM studio_jobs WHERE id = \$1$/.test(text)) return [{ cancel: spec.cancel === true }];
+    if (/^SELECT user_id, consumed_at/.test(text)) return [{ user_id: spec.quoteUser ?? "u", consumed: spec.consumed ?? true, action: "full" }];
+    if (/FROM studio_users WHERE id/.test(text)) {
+      const cap = spec.userCapMicros === undefined ? null : spec.userCapMicros;
+      return [{ status: "active", role: spec.role ?? "owner", cap: cap === null ? null : microsToNumeric(cap) }];
+    }
+    if (/^SELECT entry, amount_usd::text AS amount, day_local/.test(text)) {
+      return ledger.map((e) => ({ entry: e.entry, amount: microsToNumeric(e.amount), day: "2026-10-09" }));
+    }
+    if (/AS charged, count\(\*\) FILTER/.test(text)) {
+      return [{ charged: microsToNumeric(charged()), open: requests.filter((r) => r.outcome === "started").length }];
+    }
+    if (/COALESCE\(SUM\(charged_usd\), 0\)::text AS charged FROM/.test(text)) return [{ charged: microsToNumeric(charged()) }];
+    if (/studio_local_day\(now\(\)\)/.test(text)) return [{ day: "2026-10-09" }];
+    if (/studio_spend_for_day\(\$1::date\)/.test(text)) {
+      return [{ day: microsToNumeric(spec.daySpendMicros ?? reservedMicros), month: microsToNumeric(spec.monthSpendMicros ?? reservedMicros),
+        user_day: microsToNumeric(spec.userDaySpendMicros ?? reservedMicros) }];
+    }
+    if (/FROM studio_settings/.test(text)) return [{ daily: "50.000000", monthly: "200.000000" }];
+    if (text === UNACKNOWLEDGED_OVERRUNS_SQL.trim()) return [{ n: spec.overruns ?? 0 }];
+    if (/COALESCE\(MAX\(seq\), 0\)/.test(text)) return [{ seq: requests.length }];
+    if (/^INSERT INTO studio_run_requests/.test(text)) {
+      events.push(`row:${v[3] ?? v[2]}`);
+      requests.push({ seq: Number(v[1]), stage: String(v[2]), lens: (v[3] as string | null) ?? null, model: String(v[4]),
+        ceiling: numericToMicros(String(v[5]))!, outcome: "started", cost: null, input: null, output: null });
+      return 1;
+    }
+    if (/^UPDATE studio_run_requests SET outcome = \$4/.test(text)) {
+      const rows = requests.filter((r) => r.stage === v[1] && r.lens === (v[2] ?? null) && r.outcome === "started");
+      for (const r of rows) {
+        r.outcome = String(v[3]); r.input = v[4] as number | null; r.output = v[5] as number | null;
+        r.cost = v[6] === null ? null : numericToMicros(String(v[6]));
+      }
+      return rows.length;
+    }
+    if (/^UPDATE studio_run_requests SET outcome = 'failed'/.test(text)) {
+      for (const r of requests) if (r.outcome === "started") r.outcome = "failed";
+      return 1;
+    }
+    if (/^INSERT INTO studio_run_artifacts/.test(text)) { artifacts.set(String(v[1]), v[2] as Buffer); return 1; }
+    if (/^SELECT content FROM studio_run_artifacts/.test(text)) {
+      const bytes = artifacts.get(String(v[1]));
+      return bytes ? [{ content: bytes }] : [];
+    }
+    if (/^SELECT entry FROM studio_spend_ledger/.test(text)) return ledger.map((e) => ({ entry: e.entry }));
+    if (/^INSERT INTO studio_spend_ledger/.test(text)) { ledger.push({ entry: String(v[0]), amount: numericToMicros(String(v[2]))! }); return 1; }
+    if (/^UPDATE studio_runs SET state = \$2/.test(text)) {
+      run.state = String(v[1]); run.failureClass = (v[2] as string | null) ?? null; run.actual = (v[5] as string | null) ?? null;
+      return 1;
+    }
+    return 1;
+  };
+  const client = {
+    query: async (text: string, values: unknown[] = []) => {
+      const got = answer(text.trim(), values);
+      return typeof got === "number" ? { rows: [], rowCount: got } : { rows: got, rowCount: got.length };
+    },
+  };
+  const session = { tx: async (fn: (c: typeof client) => Promise<unknown>) => fn(client), run: async (fn: (c: typeof client) => Promise<unknown>) => fn(client),
+    query: client.query } as unknown as WorkerSession;
+  return { session, events, requests, ledger, artifacts, run, charged };
+}
+
+const GOAL_S6B = "SYNTHETIC S6b worker goal: brake service explained plainly";
+let APPROVED: { bytes: Buffer; sha256: string } = { bytes: Buffer.alloc(0), sha256: "" };
+
+async function s6bChecks(): Promise<void> {
+  // SW43: the test-run guard. The S6b checks inject every runner; none may run beside a real key.
+  const keyInEnvironment = process.env.ANTHROPIC_API_KEY !== undefined;
+  check("SW43. the test-run guard: ANTHROPIC_API_KEY is NOT set in this suite's environment (the S6b checks inject a stub "
+    + "runner and need no key; a key present here fails the suite, and the paid-path checks below do not run)",
+    !keyInEnvironment, keyInEnvironment ? "ANTHROPIC_API_KEY is set: unset it before running the Studio suites" : "");
+  if (keyInEnvironment) return;
+
+  // SW44: the decision table, and the decision inside the start-up.
+  const table: Array<[string | undefined, string]> = [
+    [undefined, "disabled:anthropic_key_absent"], ["", "disabled:anthropic_key_empty"], [" ", "disabled:anthropic_key_whitespace"],
+    [" \t\n\r ", "disabled:anthropic_key_whitespace"], [" ", "disabled:anthropic_key_whitespace"],
+    [KEY_SENTINEL, "enabled:anthropic_key_present"], [` ${KEY_SENTINEL} `, "enabled:anthropic_key_present"], ["x", "enabled:anthropic_key_present"],
+  ];
+  const decided = table.map(([value]) => { const d = decideLiveRunner(value); return `${d.liveRunner}:${d.providerKey}`; });
+  // A refusal is a result here, never a crash: the check fails by name.
+  const named = (value: string | undefined): Record<string, unknown> => {
+    try {
+      return decideWorkerStartup(env({ names: value === undefined ? env().names : [...env().names, "ANTHROPIC_API_KEY"], anthropicApiKey: value })) as never;
+    } catch (error) {
+      return { liveRunner: "refused", providerKey: String((error as { reason?: unknown }).reason ?? (error as Error).message) };
+    }
+  };
+  const starts = [named(undefined), named(""), named("  "), named(KEY_SENTINEL)];
+  check("SW44. the live runner is decided from the key's PRESENCE: absent → disabled (anthropic_key_absent), empty → "
+    + "disabled (anthropic_key_empty), whitespace only → disabled (anthropic_key_whitespace), anything else → enabled "
+    + "(anthropic_key_present); none of them refuses the start, and what the start-up returns holds the class, never the value",
+    decided.join() === table.map(([, want]) => want).join()
+      && starts.map((x) => `${x.liveRunner}:${x.providerKey}`).join()
+        === "disabled:anthropic_key_absent,disabled:anthropic_key_empty,disabled:anthropic_key_whitespace,enabled:anthropic_key_present"
+      && starts.every((x) => !JSON.stringify(x).includes(KEY_SENTINEL) && !("anthropicApiKey" in x)),
+    decided.join());
+
+  // SW45: the runner is constructed only when enabled.
+  let constructed = 0;
+  const built = { built: true };
+  const none = paidRunnerFor("disabled", () => { constructed += 1; return built; });
+  const constructedWhenDisabled = constructed;
+  const one = paidRunnerFor("enabled", () => { constructed += 1; return built; });
+  check("SW45. the paid stage runner is constructed only when the live runner is enabled: disabled → nothing is "
+    + "constructed (0 calls) and no runner is given; enabled → the existing factory is called once and its runner is given",
+    none === undefined && constructedWhenDisabled === 0 && one === built && constructed === 1);
+
+  // SW46: the entry point, executed with each key state: it starts, logs the class, and never the value.
+  const server = createServer((socket) => socket.destroy());
+  await new Promise<void>((settle) => server.listen(0, "127.0.0.1", settle));
+  const port = (server.address() as { port: number }).port;
+  const runKeyed = (key: string | undefined) => new Promise<{ code: number; output: string }>((settle) => {
+    const childEnv: Record<string, string> = { PATH: process.env.PATH ?? "",
+      STUDIO_DATABASE_URL: `postgresql://u:placeholder@127.0.0.1:${port}/gcd_studio`, STUDIO_MAX_DAILY_USD: "75",
+      STUDIO_MAX_MONTHLY_USD: "300", RENDER_GIT_COMMIT: COMMIT };
+    if (key !== undefined) childEnv.ANTHROPIC_API_KEY = key;
+    execFile(process.execPath, [resolve(REPO_ROOT, "dist/studio/worker/main.js")], { env: childEnv, timeout: 30_000 },
+      (error, stdout, stderr) => settle({ code: error ? (typeof error.code === "number" ? error.code : -1) : 0, output: `${stdout}${stderr}` }));
+  });
+  const keyedRuns = [await runKeyed(undefined), await runKeyed(""), await runKeyed("   "), await runKeyed(KEY_SENTINEL)];
+  server.close();
+  const classOf = (output: string) => /\[studio-worker\] live_runner (\{.*\})/.exec(output)?.[1] ?? "none";
+  check("SW46. `npm run start:studio-worker`, executed with the key absent, empty, whitespace only and present: none is "
+    + "refused at start-up; each logs one live_runner line with its class (disabled ×3 with absent / empty / whitespace, "
+    + "then enabled with present) before it connects; and the key's value appears in NO line it prints, stdout or stderr",
+    keyedRuns.map((r) => classOf(r.output)).join(" ") === [
+      '{"live_runner":"disabled","provider_key":"anthropic_key_absent"}', '{"live_runner":"disabled","provider_key":"anthropic_key_empty"}',
+      '{"live_runner":"disabled","provider_key":"anthropic_key_whitespace"}', '{"live_runner":"enabled","provider_key":"anthropic_key_present"}',
+    ].join(" ")
+      && keyedRuns.every((r) => !/refused \(/.test(r.output)) && keyedRuns.every((r) => !r.output.includes(KEY_SENTINEL))
+      && !keyedRuns[3]!.output.includes(KEY_SENTINEL.slice(-12)),
+    keyedRuns.map((r) => r.output.trim().replace(/\s+/g, " ").slice(0, 300)).join(" | "));
+
+  // SW47: the ready line and the heartbeat line say which.
+  check("SW47. the ready line is exactly [studio-worker] ready {\"service\":\"gcd-studio-worker\",\"commit\":<sha>,\"state\":"
+    + "\"postgres\",\"live_runner\":\"enabled\"|\"disabled\"}, and the class follows whether the worker holds a paid runner",
+    readinessLine(COMMIT, "enabled") === `[studio-worker] ready {"service":"gcd-studio-worker","commit":"${COMMIT}","state":"postgres","live_runner":"enabled"}`
+      && readinessLine(COMMIT, "disabled").endsWith(',"live_runner":"disabled"}')
+      && liveRunnerOf(undefined) === "disabled" && liveRunnerOf((async () => ({ text: "" })) as never) === "enabled");
+
+  // The paid path, end to end through executeJob, with the real provider runner over a scripted stream.
+  APPROVED = await loadApprovedFacts(REPO_ROOT);
+  const transcript = await fakeTranscript(REPO_ROOT, GOAL_S6B);
+  const rt = lib.loadRuntime();
+  const lines = lib.computeCostCeiling(rt, lib.allStagePolicies(rt)).lines;
+  const ceilings = lines.map((l) => ceilingMicros(l.costUsd!));
+  const reserved = ceilings.reduce((t, c) => t + c, 0);
+  const execute = async (spec: PaidWorldSpec, paid: "stub" | "none", outcome?: (o: { index: number }) => ProviderOutcome) => {
+    const world = paidWorld(reserved, spec);
+    const runner = providerShapedRunner(transcript, { outcome, onOpen: (open) => world.events.push(`open:${open.lens ?? "stage"}`) });
+    const state = await executeJob({
+      session: world.session, commit: COMMIT, caps: CAPS, runtime: rt, repoRoot: REPO_ROOT, approvedFacts: APPROVED,
+      priceTableSha256: lib.priceTableSha256(), paidStageRunner: paid === "stub" ? runner : undefined, log: () => {},
+    }, { jobId: "job-s6b", kind: "paid", runId: "run-s6b" }).catch((e: Error) => `threw ${e.name}: ${e.message}`);
+    return { state, world, opens: runner.opens };
+  };
+  const ledgerOf = (w: ReturnType<typeof paidWorld>) => w.ledger.map((e) => `${e.entry}:${e.amount}`).join(",");
+  const measured = (o: { model: string; usage: { input_tokens: number; output_tokens: number } } | undefined) =>
+    (o ? usageMicros(o.model, o.usage) ?? Number.NaN : Number.NaN);
+
+  // SW48: a live run reaches the provider only after every gate, and is charged usage × the price table.
+  const ok = await execute({}, "stub");
+  const gated = ok.world.events.filter((e) => /^(check|row:|open:)/.test(e));
+  const stageNames = ["strategy-concept", "automotive-truth", "hook-story-script", "production-direction", "packaging-adaptation"];
+  const lensNames = ["evidence-fidelity", "platform-and-local", "voice-and-craft", "production-coherence"];
+  const wantOrder = ["check", ...stageNames.flatMap((st) => ["check", `row:${st}`, "open:stage"]), "check",
+    ...lensNames.map((l) => `row:${l}`)];
+  const expected = ok.opens.map((o) => usageMicros(o.model, o.usage));
+  const charged = expected.reduce((t: number, c) => t + (c ?? Number.NaN), 0);
+  check("SW48. an enabled worker's live run reaches the provider runner only after every gate: the consent check, then "
+    + "for each of the five stages the unit check (quote, reservation, caps, overrun lock) under the run's lock, its "
+    + "started row, and only then the request; then one check and the panel's four rows before its four lens requests. "
+    + "Nine requests, each sent with maxRetries 0; each row is charged its provider-reported usage × the repository's "
+    + "price table to the micro-dollar, the run is charged their sum, and the unused reservation is released",
+    ok.state === "succeeded" && ok.world.run.state === "succeeded"
+      && JSON.stringify(gated.slice(0, wantOrder.length)) === JSON.stringify(wantOrder)
+      && gated.slice(wantOrder.length).map((e) => e.slice("open:".length)).sort().join() === [...lensNames].sort().join()
+      && ok.opens.length === 9 && ok.opens.every((o) => o.maxRetries === 0)
+      && ok.world.requests.length === 9 && ok.world.requests.every((r) => r.outcome === "succeeded")
+      && ok.world.requests.every((r, i) => r.cost === measured(r.lens === null ? ok.opens[i] : ok.opens.find((o) => o.lens === r.lens)))
+      && ok.world.requests.every((r, i) => r.ceiling === ceilings[i])
+      && Number.isSafeInteger(charged) && charged > 0 && ok.world.charged() === charged
+      && ok.world.run.actual === microsToNumeric(charged)
+      && ledgerOf(ok.world) === `reserve:${reserved},release:${reserved - charged}`,
+    `${ok.state} ${gated.join(" ")} | ${ok.world.requests.map((r) => `${r.cost}`).join(",")} vs ${expected.join(",")} | ${ledgerOf(ok.world)}`);
+
+  // SW49: every refusal before a paid unit makes ZERO provider requests.
+  const refusals: Array<[string, PaidWorldSpec, string]> = [
+    ["the effective daily cap exceeded", { daySpendMicros: 50_000_001 }, "cap_exceeded_daily"],
+    ["the effective monthly cap exceeded", { monthSpendMicros: 200_000_001 }, "cap_exceeded_monthly"],
+    ["the requester's own daily cap exceeded", { role: "runner", userCapMicros: 1_000_000 }, "cap_exceeded_user_daily"],
+    ["a runner with no daily cap", { role: "runner", userCapMicros: null }, "cap_missing"],
+    ["another user's quote", { quoteUser: "someone-else" }, "quote_mismatch"],
+    ["an unconsumed (unbound) quote", { consumed: false }, "quote_mismatch"],
+    ["no reservation", { reserve: false }, "reservation_missing"],
+    ["an unacknowledged overrun", { overruns: 1 }, "confirmations_locked"],
+    ["the job cancelled", { cancel: true }, "job_cancelled"],
+    ["the price table changed since the quote", { quotePriceTableSha256: "f".repeat(64) }, "version_skew"],
+    ["a fake source", { source: { runner: "fake", kind: "full", importTier: null } }, "fake_source"],
+    ["an unverified import as source", { source: { runner: "live", kind: "imported", importTier: "archived_unverified" } }, "source_not_verified"],
+  ];
+  const refused = [];
+  for (const [label, spec, want] of refusals) {
+    const got = await execute(spec, "stub");
+    const release = got.world.ledger.find((e) => e.entry === "release")?.amount;
+    // A cancelled job's run ends cancelled (design §5.3); every other refusal ends refused.
+    const wantState = want === "job_cancelled" ? "cancelled" : "refused";
+    refused.push({ label, want, ok: got.opens.length === 0 && got.world.run.state === wantState && got.world.run.failureClass === want
+      && got.world.requests.length === 0 && (spec.reserve === false || release === reserved),
+    got: `${got.opens.length}:${got.world.run.state}:${got.world.run.failureClass}:${release}` });
+  }
+  check("SW49. on an enabled worker every refusal makes ZERO provider requests, writes no request row and releases the "
+    + "whole reservation: the daily, monthly and per-user caps exceeded, a runner with no cap, another user's or an "
+    + "unconsumed quote, no reservation, an unacknowledged overrun, a cancelled job, a changed price table (version_skew), "
+    + "a fake source and an unverified import as source",
+    refused.length === 12 && refused.every((r) => r.ok), refused.filter((r) => !r.ok).map((r) => `${r.label}: ${r.got}≠${r.want}`).join("; "));
+
+  // SW50: a provider error mid-run.
+  const failed = await execute({}, "stub", ({ index }) => (index === 1 ? "error" : "end_turn"));
+  const c0 = measured(failed.opens[0]);
+  check("SW50. a provider error with no response on the second request fails the run (stage_execution_error) after "
+    + "exactly 2 requests — no retry: each was opened once, with maxRetries 0 — its row completed as failed and charged its "
+    + "full ceiling, the first at its measured cost, and the rest of the reservation released",
+    failed.state === "failed" && failed.world.run.failureClass === "stage_execution_error" && failed.opens.length === 2
+      && failed.opens.every((o) => o.maxRetries === 0) && failed.world.requests.length === 2
+      && failed.world.requests[0]?.cost === c0 && failed.world.requests[1]?.outcome === "failed" && failed.world.requests[1]?.cost === null
+      && failed.world.charged() === c0 + ceilings[1]! && failed.world.run.actual === microsToNumeric(c0 + ceilings[1]!)
+      && ledgerOf(failed.world) === `reserve:${reserved},release:${reserved - c0 - ceilings[1]!}`,
+    `${failed.state} ${failed.world.run.failureClass} ${failed.opens.length} ${JSON.stringify(failed.world.requests)} ${ledgerOf(failed.world)}`);
+
+  // SW51: a refusal stop reason, a truncated response and a stream deadline.
+  const refusal = await execute({}, "stub", ({ index }) => (index === 2 ? "refusal" : "end_turn"));
+  const r0 = measured(refusal.opens[0]);
+  const r1 = measured(refusal.opens[1]);
+  const truncated = await execute({}, "stub", ({ index }) => (index === 0 ? "max_tokens" : "end_turn"));
+  const deadline = await execute({}, "stub", ({ index }) => (index === 0 ? "deadline" : "end_turn"));
+  check("SW51. a response refused by the model (stop_reason \"refusal\") on the third request, one truncated at max_tokens "
+    + "on the first and a stream past its deadline on the first each fail the run (stage_execution_error) with no later "
+    + "request; the refused and truncated responses' token usage is recorded on their rows, which, having no accepted cost, "
+    + "are charged their full ceilings; the response is saved (rejected-responses.json); and each reservation is reconciled",
+    refusal.state === "failed" && refusal.world.run.failureClass === "stage_execution_error" && refusal.opens.length === 3
+      && refusal.world.requests[2]?.outcome === "failed" && refusal.world.requests[2]?.cost === null
+      && refusal.world.requests[2]?.input === refusal.opens[2]?.usage.input_tokens && refusal.world.requests[2]?.output === refusal.opens[2]?.usage.output_tokens
+      && ledgerOf(refusal.world) === `reserve:${reserved},release:${reserved - r0 - r1 - ceilings[2]!}`
+      && refusal.world.artifacts.has("rejected-responses.json")
+      && truncated.state === "failed" && truncated.world.run.failureClass === "stage_execution_error" && truncated.opens.length === 1
+      && truncated.world.requests[0]?.outcome === "failed" && truncated.world.requests[0]?.output === truncated.opens[0]?.usage.output_tokens
+      && ledgerOf(truncated.world) === `reserve:${reserved},release:${reserved - ceilings[0]!}`
+      && deadline.state === "failed" && deadline.world.run.failureClass === "stage_execution_error" && deadline.opens.length === 1
+      && deadline.world.requests[0]?.outcome === "failed" && ledgerOf(deadline.world) === `reserve:${reserved},release:${reserved - ceilings[0]!}`,
+    `${refusal.state}/${refusal.world.run.failureClass}/${refusal.opens.length}/${ledgerOf(refusal.world)} `
+      + `${truncated.state}/${truncated.opens.length}/${ledgerOf(truncated.world)} ${deadline.state}/${deadline.opens.length}/${ledgerOf(deadline.world)}`);
+
+  // SW52: a disabled worker.
+  const disabled = await execute({}, "none");
+  check("SW52. a disabled worker (no key, so no paid runner) still refuses a confirmed live run before any work as "
+    + "live_runs_not_enabled: zero provider requests, no request row, the whole reservation released",
+    disabled.state === "refused" && disabled.world.run.failureClass === "live_runs_not_enabled" && disabled.opens.length === 0
+      && disabled.world.requests.length === 0 && ledgerOf(disabled.world) === `reserve:${reserved},release:${reserved}`,
+    `${disabled.state} ${disabled.world.run.failureClass} ${ledgerOf(disabled.world)}`);
+}
+
 async function main(): Promise<void> {
   await startupChecks();
   beforeWorkChecks();
@@ -1397,6 +1746,7 @@ async function main(): Promise<void> {
   await factCheckChecks();
   await importChecks();
   s73Checks();
+  await s6bChecks();
   console.log(failures === 0 ? `\n[studio-worker] ALL PASS (${total} checks)` : `\n[studio-worker] ${failures} FAILURE(S) of ${total}`);
   process.exit(failures === 0 ? 0 : 1);
 }

@@ -8,8 +8,8 @@
 # enforces both in CI.
 #
 # - No secret value is ever written here: secrets are `sync: false`, entered only in Render.
-# - ANTHROPIC_API_KEY is deliberately absent until S6b (live-runner enablement); until then the
-#   worker refuses to start beside it, and the web refuses it in every phase.
+# - ANTHROPIC_API_KEY (S6b, live-runner enablement) is declared on gcd-studio-worker ONLY, sync: false:
+#   its value is entered only in Render, at O4. The web refuses it in every phase.
 # - Every service sets autoDeployTrigger: 'off' — QUOTED, because an unquoted off is a YAML 1.1
 #   boolean. Studio releases are manual, exact-commit deploys by the owner (design §3.4).
 # - No cron: gcd-studio-cron is built disabled in S9 and is not declared here (design §3.5).
@@ -58,7 +58,7 @@ services:
       - key: STUDIO_MAX_MONTHLY_USD       # deployment ceiling; 300 at O4
         sync: false
 
-  # The worker: the single job consumer. Fake runners only until S6b.
+  # The worker: the single job consumer. It runs live jobs only when ANTHROPIC_API_KEY holds a value (S6b).
   - type: worker
     name: gcd-studio-worker
     runtime: node
@@ -78,4 +78,6 @@ services:
       - key: STUDIO_MAX_DAILY_USD         # the same ceiling, enforced again at each paid call
         sync: false
       - key: STUDIO_MAX_MONTHLY_USD       # the same ceiling, enforced again at each paid call
+        sync: false
+      - key: ANTHROPIC_API_KEY            # from the GCD-Content-Studio workspace, entered only in Render at O4
         sync: false

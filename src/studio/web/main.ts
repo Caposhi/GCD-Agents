@@ -1,8 +1,11 @@
 /**
  * `npm run start:studio-web`: the Content Studio web service
- * (docs/CONTENT_STUDIO_DESIGN.md §3.2, §3.3, §7). **Not deployed:** no Render
- * file names it (S8 adds `render.studio.yaml`; `render.yaml` is never changed).
- * It never calls a model and holds no provider key.
+ * (docs/CONTENT_STUDIO_DESIGN.md §3.2, §3.3, §7). **Not deployed:**
+ * `render.studio.yaml` (Content Studio S8) declares it as `gcd-studio-web`, but
+ * no Render resource exists until owner action O3; `render.yaml` never names
+ * it. It never calls a model and holds no provider key: it refuses to start
+ * beside `ANTHROPIC_API_KEY` in every phase, even after S6b gave the key to the
+ * worker alone.
  *
  * The environment is decided FIRST, by `startup.ts`, before any connection is
  * opened and before the server module loads. It reads: the names of every
