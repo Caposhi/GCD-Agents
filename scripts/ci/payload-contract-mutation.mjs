@@ -480,6 +480,27 @@
  * captured paths are added, the web's users and user-views modules:
  * sixty-nine in all, for 698 mutations.
  *
+ * Content Studio S6b's group, `M699`–`M712`, covers the live-runner
+ * enablement. In the Studio worker's offline suite: the paid runner
+ * constructed when the key is absent (`SW45`); an absent, an empty or a
+ * whitespace-only key enabling the live runner (`SW44`, `SW46`); a cap refusal
+ * before a paid unit still calling the runner (`SW49`); the reservation not
+ * reconciled after a runner error (`SW50`, `SW51`); the key's value written to
+ * the start-up log (`SW1c`, `SW46`); the runner built but not given to the
+ * worker (`SW8`); the ready line dropping `live_runner`, or saying "enabled"
+ * with no paid runner (`SW47`); a live run whose source is a fake run or an
+ * unverified import run anyway (`SW11`, `SW49`); and a provider response's
+ * measured cost not recorded (`SW48`, `SW50`, `SW51`). In the Studio web's
+ * offline suite: the web accepting `ANTHROPIC_API_KEY` because its own list is
+ * not applied (`SA1`, `SA6`). Four S3 mutations are re-pointed BY FACT: `M548`
+ * (until S6b the worker NOT refusing the key was the fault; now the fault is the
+ * worker refusing to start beside it again — `SW1`, `SW1b`, `SW44`, `SW46`),
+ * `M553` (the entry point now passes the runner `paidRunnerFor` builds; the
+ * fault is building it whatever the key says — `SW8`), and `M552` and `M575`,
+ * whose anchors moved (the import line names `paidRunnerFor`; the refusal names
+ * the missing key), with the same edits and checks. No captured path is added:
+ * sixty-nine in all, for 712 mutations.
+ *
  * It is offline and deterministic: no network, no database, no provider, no
  * credential. The mutations run in parallel on up to MAX_WORKERS workers (the
  * runner's available parallelism, capped), each worker in its OWN disposable
@@ -5129,11 +5150,13 @@ const CONTENT_STUDIO_S3_WORKER_MUTATIONS = [
     suite: STUDIO_WORKER_SUITE,
   },
   {
-    name: "the worker stops refusing ANTHROPIC_API_KEY in S3",
+    // Re-pointed BY FACT in Content Studio S6b: until S6b the fault was the worker NOT refusing the key; since S6b the
+    // worker carries it, so the fault is the worker refusing to start beside it again. Same suite; SW44 added.
+    name: "the worker refuses to start beside ANTHROPIC_API_KEY again (S6b undone)",
     file: STUDIO_WORKER_STARTUP,
-    from: "export const S3_FORBIDDEN_VARIABLES = [\"ANTHROPIC_API_KEY\"] as const;",
-    to: "export const S3_FORBIDDEN_VARIABLES = [] as const;",
-    expect: ["SW1.", "SW1b."],
+    from: "  return forbiddenNamesPresent(names, []);",
+    to: "  return forbiddenNamesPresent(names, [\"ANTHROPIC_API_KEY\"]);",
+    expect: ["SW1.", "SW1b.", "SW44.", "SW46."],
     suite: STUDIO_WORKER_SUITE,
   },
   {
@@ -5164,16 +5187,19 @@ const CONTENT_STUDIO_S3_WORKER_MUTATIONS = [
   {
     name: "the entry point loads the worker before deciding its environment",
     file: STUDIO_WORKER_MAIN,
-    from: "import { decideWorkerStartup, WorkerStartupRefusal } from \"./startup.js\";",
-    to: "import { decideWorkerStartup, WorkerStartupRefusal } from \"./startup.js\";\nimport \"./worker.js\";",
+    // S6b: the import line names paidRunnerFor too; same edit, same check.
+    from: "import { decideWorkerStartup, paidRunnerFor, WorkerStartupRefusal } from \"./startup.js\";",
+    to: "import { decideWorkerStartup, paidRunnerFor, WorkerStartupRefusal } from \"./startup.js\";\nimport \"./worker.js\";",
     expect: ["SW1c."],
     suite: STUDIO_WORKER_SUITE,
   },
   {
-    name: "the entry point is given a paid stage runner",
+    // Re-pointed BY FACT in Content Studio S6b: the entry point now passes the runner paidRunnerFor builds, so the
+    // fault is building it whatever the key says. Same suite and check.
+    name: "the entry point is given a paid stage runner whether or not the key is present",
     file: STUDIO_WORKER_MAIN,
-    from: "    ready: (line) => console.log(line),",
-    to: "    ready: (line) => console.log(line),\n    paidStageRunner: (async () => ({ text: \"{}\" })) as never,",
+    from: "  const paidStageRunner = paidRunnerFor(startup.liveRunner, () =>",
+    to: "  const paidStageRunner = paidRunnerFor(\"enabled\", () =>",
     expect: ["SW8."],
     suite: STUDIO_WORKER_SUITE,
   },
@@ -5351,7 +5377,8 @@ const CONTENT_STUDIO_S3_WORKER_MUTATIONS = [
   {
     name: "the worker's runtime builds a provider runner when it was given none",
     file: STUDIO_WORKER_EXECUTE,
-    from: "        if (!paid) throw new WorkerStop(\"live_runs_not_enabled\", \"live runs are not enabled in this worker (until Content Studio S6b)\");",
+    // S6b: the refusal's message names the missing key instead of S6b; same edit, same check.
+    from: "        if (!paid) throw new WorkerStop(\"live_runs_not_enabled\", \"live runs are not enabled in this worker (it holds no ANTHROPIC_API_KEY)\");",
     to: "        if (!paid) return base.stageExecution.createAnthropicStageRunner();",
     expect: ["SW8."],
     suite: STUDIO_WORKER_SUITE,
@@ -6417,6 +6444,125 @@ const CONTENT_STUDIO_S7_3_MUTATIONS = [
   },
 ];
 
+// Content Studio S6b: the live-runner enablement — the key's presence decides the runner, the web still refuses the
+// key, every gate still runs before each paid unit, a runner error still reconciles, and the key is never logged —
+// against the offline suites that prove it. The disposable-PostgreSQL suite proves the same end to end (SWP26,
+// SWP38-SWP42).
+const CONTENT_STUDIO_S6B_MUTATIONS = [
+  {
+    name: "the paid runner is constructed when the key is absent",
+    file: STUDIO_WORKER_STARTUP,
+    from: "  return liveRunner === \"enabled\" ? construct() : undefined;",
+    to: "  return construct();",
+    expect: ["SW45."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "an absent key enables the live runner",
+    file: STUDIO_WORKER_STARTUP,
+    from: "  if (value === undefined) return { liveRunner: \"disabled\", providerKey: \"anthropic_key_absent\" };",
+    to: "  if (value === undefined) return { liveRunner: \"enabled\", providerKey: \"anthropic_key_absent\" };",
+    expect: ["SW44.", "SW46."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "an empty key enables the live runner",
+    file: STUDIO_WORKER_STARTUP,
+    from: "  if (value === \"\") return { liveRunner: \"disabled\", providerKey: \"anthropic_key_empty\" };",
+    to: "  if (value === \"\") return { liveRunner: \"enabled\", providerKey: \"anthropic_key_empty\" };",
+    expect: ["SW44.", "SW46."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "a whitespace-only key enables the live runner",
+    file: STUDIO_WORKER_STARTUP,
+    from: "  if (value.trim() === \"\") return",
+    to: "  if (value.length === 0) return",
+    expect: ["SW44.", "SW46."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "the web accepts ANTHROPIC_API_KEY (its own list is not applied)",
+    file: STUDIO_WEB_STARTUP,
+    from: "  return forbiddenNamesPresent(names, WEB_FORBIDDEN_VARIABLES);",
+    to: "  return forbiddenNamesPresent(names, []);",
+    expect: ["SA1.", "SA6."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "a cap refusal before a paid unit still calls the runner",
+    file: STUDIO_WORKER_EXECUTE,
+    from: "      if (!decision.ok) stop(decision.refusal, decision.message);",
+    to: "      if (!decision.ok && !decision.refusal.startsWith(\"cap_\")) stop(decision.refusal, decision.message);",
+    expect: ["SW49."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "the reservation is not reconciled after a runner error",
+    file: STUDIO_WORKER_JOBS,
+    from: "      if (settlement) {",
+    to: "      if (settlement && end.failureClass !== \"stage_execution_error\") {",
+    expect: ["SW50.", "SW51."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "the key's value is written to the start-up log",
+    file: STUDIO_WORKER_MAIN,
+    from: "  log(\"live_runner\", { live_runner: startup.liveRunner, provider_key: startup.providerKey });",
+    to: "  log(\"live_runner\", { live_runner: startup.liveRunner, provider_key: startup.providerKey, value: process.env.ANTHROPIC_API_KEY });",
+    expect: ["SW1c.", "SW46."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "the entry point builds the runner but does not give it to the worker",
+    file: STUDIO_WORKER_MAIN,
+    from: "    paidStageRunner,\n",
+    to: "",
+    expect: ["SW8."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "the ready line drops live_runner",
+    file: STUDIO_WORKER_LIFECYCLE,
+    from: "state: \"postgres\", live_runner: liveRunner })",
+    to: "state: \"postgres\" })",
+    expect: ["SW47."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "live_runner says enabled on a worker with no paid runner",
+    file: STUDIO_WORKER_LIFECYCLE,
+    from: "(paid === undefined ? \"disabled\" : \"enabled\")",
+    to: "(paid === null ? \"disabled\" : \"enabled\")",
+    expect: ["SW47."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "the worker runs a live run whose source is a fake run",
+    file: STUDIO_WORKER_EXECUTE,
+    from: "  if (b.source?.runner === \"fake\") {",
+    to: "  if (b.source?.runner === \"fake\" && b.run.kind === \"no-such-kind\") {",
+    expect: ["SW11.", "SW49."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "the worker runs a live run whose source is an unverified import",
+    file: STUDIO_WORKER_EXECUTE,
+    from: "  if (b.source?.kind === \"imported\" && b.source.importTier !== \"verified\") {",
+    to: "  if (b.source?.kind === \"imported\" && b.source.importTier === \"no-such-tier\") {",
+    expect: ["SW11.", "SW49."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "a provider response's measured cost is not recorded, so every request is charged its ceiling",
+    file: STUDIO_WORKER_SINK,
+    from: "cost === null ? null : microsToNumeric(cost)]);",
+    to: "null]);",
+    expect: ["SW48.", "SW50.", "SW51."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+];
+
 // Every group, in order. MUTATIONS is their concatenation; the groups exist
 // only so `M-inc-sample` can spread its sample across them.
 const MUTATION_GROUPS = [
@@ -6432,7 +6578,7 @@ const MUTATION_GROUPS = [
   ["Content Studio S4", CONTENT_STUDIO_S4_MUTATIONS], ["Content Studio S5", CONTENT_STUDIO_S5_MUTATIONS],
   ["Content Studio S6.1", CONTENT_STUDIO_S6_1_MUTATIONS], ["Content Studio S6.2", CONTENT_STUDIO_S6_2_MUTATIONS],
   ["Content Studio S7.1", CONTENT_STUDIO_S7_1_MUTATIONS], ["Content Studio S7.2", CONTENT_STUDIO_S7_2_MUTATIONS],
-  ["Content Studio S7.3", CONTENT_STUDIO_S7_3_MUTATIONS],
+  ["Content Studio S7.3", CONTENT_STUDIO_S7_3_MUTATIONS], ["Content Studio S6b", CONTENT_STUDIO_S6B_MUTATIONS],
 ];
 const MUTATIONS = MUTATION_GROUPS.flatMap(([, group]) => group);
 

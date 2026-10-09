@@ -17,14 +17,22 @@
  * from the ledger. Only then are the unit's `started` request rows, each with
  * its own ceiling, committed — before the request is sent.
  *
- * **Fake runner only (S3, and S6.2).** A job whose run names the `live` runner
- * is refused before any work unless the worker was given a paid stage runner,
- * and `start:studio-worker` gives none (`main.ts`): live runs are enabled in
- * S6b (owner decision of 2026-10-05). The runtime the library receives
- * replaces `createAnthropicStageRunner`, so no worker path can build the
- * provider runner either. The disposable
- * PostgreSQL suite gives a counting fake runner in its place, which is how the
- * paid path's checks are proven with no provider.
+ * **The paid runner (Content Studio S6b).** A job whose run names the `live`
+ * runner is refused before any work (`live_runs_not_enabled`) unless the worker
+ * was given a paid stage runner. `start:studio-worker` gives the existing
+ * provider runner only when `ANTHROPIC_API_KEY` is present and not blank
+ * (`main.ts`); until S6b it gave none. The runtime the library receives
+ * replaces `createAnthropicStageRunner` with one that yields only the runner
+ * the worker was given, so no path in here builds a provider runner of its
+ * own. Every check above still runs, in the same order, before each paid unit,
+ * whichever runner it is. The suites give fakes in its place — a counting
+ * replay runner, and (S6b) the real provider runner over a scripted stream —
+ * which is how the paid path is proven with no provider and no network.
+ *
+ * A runner error — a provider error, a refusal or truncated stop reason, a
+ * stream deadline — is the stage's own failure: the run fails with its class,
+ * nothing is retried (the stage request sends `maxRetries: 0`), and the run's
+ * end reconciles its reservation from the durable request rows.
  */
 
 import { readFile } from "node:fs/promises";
@@ -45,7 +53,7 @@ import type { WorkerSession } from "./session.js";
 import { decidePaidUnit, readPaidUnitSnapshot, type PaidRefusal, type SqlClient } from "./spend.js";
 import type { WorkerCaps } from "./startup.js";
 
-/** The stage runner a paid path uses: in S3, only ever a fake supplied by the PostgreSQL suite. */
+/** The stage runner a paid path uses: the provider runner from `main.ts` (S6b), or a suite's fake. */
 export type PaidStageRunner = ReturnType<ContentRunRuntime["stageExecution"]["createAnthropicStageRunner"]>;
 
 export type WorkerLog = (event: string, fields?: Record<string, unknown>) => void;
@@ -59,7 +67,7 @@ export interface WorkerJobContext {
   repoRoot: string;
   approvedFacts: { bytes: Buffer; sha256: string };
   priceTableSha256: string;
-  /** S3: never set by `start:studio-worker`. */
+  /** Set by `start:studio-worker` only when `ANTHROPIC_API_KEY` is present and not blank (S6b). */
   paidStageRunner?: PaidStageRunner;
   /** Overrides the computed wall-clock limit (tests). */
   jobTimeoutMs?: number;
@@ -90,15 +98,21 @@ export interface BeforeWork {
   run: { kind: string; runner: string; factVersionId: string | null } | undefined;
   quote: { workerCommit: string; approvedFactsSha256: string; factVersionId: string; priceTableSha256: string } | undefined;
   worker: { paidRunner: boolean; commit: string; approvedFactsSha256: string; priceTableSha256: string };
+  /** The run's source run (a revise, replay or resume), as the worker read it; undefined for a full run. */
+  source?: { runner: string; kind: string; importTier: string | null } | undefined;
 }
 
 /**
  * The refusals made before any work — before facts are read, before the
  * library is called, before any runner exists: a run kind the worker does not
  * run, a job whose kind does not match its run's runner, a live run on a worker
- * with no paid runner (every live run in S3), and a paid job whose quote names
- * another worker commit, approved-facts sha256, fact version or price table
- * (design §5.3, version skew). Null when the job may proceed.
+ * with no paid runner (every live run until S6b, and since S6b every live run
+ * on a worker without the key), a paid job whose quote names another worker
+ * commit, approved-facts sha256, fact version or price table (design §5.3,
+ * version skew), and (S6b, re-checked here as design §9.1 asks of the worker) a
+ * live run whose source is a fake run or an import that was not revalidated —
+ * the free preflight and migration 0004 refuse both already, so only a row
+ * written past them reaches this. Null when the job may proceed.
  */
 export function decideBeforeWork(b: BeforeWork): { failureClass: string; message: string } | null {
   if (!b.run || !(b.run.kind in ACTIONS)) return { failureClass: "not_executable", message: "this run's kind is not one the worker runs" };
@@ -107,12 +121,18 @@ export function decideBeforeWork(b: BeforeWork): { failureClass: string; message
   }
   if (b.run.runner !== "live") return null;
   if (!b.worker.paidRunner) {
-    return { failureClass: "live_runs_not_enabled", message: "live runs are not enabled in this worker (until Content Studio S6b); nothing was run" };
+    return { failureClass: "live_runs_not_enabled", message: "live runs are not enabled in this worker (it holds no ANTHROPIC_API_KEY); nothing was run" };
   }
   const q = b.quote;
   if (!q || q.workerCommit !== b.worker.commit || q.approvedFactsSha256 !== b.worker.approvedFactsSha256
     || q.factVersionId !== b.run.factVersionId || q.priceTableSha256 !== b.worker.priceTableSha256) {
     return { failureClass: "version_skew", message: "the run's quote names another worker commit, approved-facts sha256, fact version or price table" };
+  }
+  if (b.source?.runner === "fake") {
+    return { failureClass: "fake_source", message: "a fake run can never be the source of a paid action; nothing was run" };
+  }
+  if (b.source?.kind === "imported" && b.source.importTier !== "verified") {
+    return { failureClass: "source_not_verified", message: "an import that was not revalidated can never be the source of a paid action; nothing was run" };
   }
   return null;
 }
@@ -131,7 +151,7 @@ export function workerRuntime(base: ContentRunRuntime, paid: PaidStageRunner | u
     stageExecution: {
       ...base.stageExecution,
       createAnthropicStageRunner: () => {
-        if (!paid) throw new WorkerStop("live_runs_not_enabled", "live runs are not enabled in this worker (until Content Studio S6b)");
+        if (!paid) throw new WorkerStop("live_runs_not_enabled", "live runs are not enabled in this worker (it holds no ANTHROPIC_API_KEY)");
         return paid;
       },
     } as ContentRunRuntime["stageExecution"],
@@ -223,10 +243,14 @@ export async function executeJob(
     ctx.log("job.finished", { job: job.jobId, run: runId, state: ended.runState, failure_class: failureClass });
     return ended.runState;
   };
-  // --- before any work: live runs are S6b's; and a paid job's quote must name this worker exactly ------
+  // --- before any work: a live run needs a paid runner, its quote must name this worker exactly, and its ---
+  // --- source must be neither a fake run nor an unverified import ----------------------------------------------
   const quote = run?.quote_id ? (await session.query(
     "SELECT worker_commit, approved_facts_sha256, fact_version_id, price_table_sha256 FROM studio_quotes WHERE id = $1",
     [run.quote_id])).rows[0] : undefined;
+  const sourceRow = run?.runner === "live" && run.source_run_id ? (await session.query(
+    "SELECT runner AS source_runner, kind AS source_kind, import_tier AS source_import_tier FROM studio_runs WHERE id = $1",
+    [run.source_run_id])).rows[0] : undefined;
   const refusal = decideBeforeWork({
     jobKind: job.kind,
     run: run ? { kind: run.kind, runner: run.runner, factVersionId: run.fact_version_id } : undefined,
@@ -234,6 +258,8 @@ export async function executeJob(
       factVersionId: quote.fact_version_id, priceTableSha256: quote.price_table_sha256 } : undefined,
     worker: { paidRunner: ctx.paidStageRunner !== undefined, commit: ctx.commit, approvedFactsSha256: ctx.approvedFacts.sha256,
       priceTableSha256: ctx.priceTableSha256 },
+    source: sourceRow ? { runner: sourceRow.source_runner, kind: sourceRow.source_kind, importTier: sourceRow.source_import_tier ?? null }
+      : undefined,
   });
   if (refusal) return refuseNow(refusal.failureClass, refusal.message);
   const kind = run.kind as RunKind;

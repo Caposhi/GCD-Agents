@@ -12,8 +12,11 @@
  *    the one session every later statement uses. A worker that does not hold
  *    it consumes nothing and emits no readiness; it retries until it does.
  * 3. **Recovery: refuse, don't resume** (`jobs.ts`).
- * 4. **The heartbeat** row, at once and then every 30 seconds.
- * 5. **Readiness**, one structured line, only now.
+ * 4. **The heartbeat** row, at once and then every 30 seconds, each beat also
+ *    logged as one `heartbeat` line naming `live_runner` (Content Studio S6b:
+ *    the row's columns are migration 0002's and are not changed).
+ * 5. **Readiness**, one structured line, only now; it names `live_runner`
+ *    too: "enabled" when the worker holds a paid stage runner, else "disabled".
  * 6. **The queue:** sweep expired and cancelled queued jobs, claim one, run it
  *    (`execute.ts`), repeat. One job at a time. A lost session stops the
  *    worker: it can no longer prove ownership.
@@ -32,6 +35,15 @@ import { decideSchemaVersion, decideWorkerIdentity, type WorkerCaps } from "./st
 
 /** The heartbeat interval (design §3.3). The web shows "worker offline" past two minutes. */
 export const HEARTBEAT_INTERVAL_MS: number = 30_000;
+
+/** Content Studio S6b: whether this worker holds a paid stage runner — a class, never a key. */
+export const liveRunnerOf = (paid: unknown): "enabled" | "disabled" => (paid === undefined ? "disabled" : "enabled");
+
+/** The one readiness line: the service, its commit, the store, and (S6b) `live_runner`. */
+export function readinessLine(commit: string, liveRunner: "enabled" | "disabled"): string {
+  return `[studio-worker] ready ${JSON.stringify({ service: STUDIO_WORKER_SERVICE, commit, state: "postgres", live_runner: liveRunner })}`;
+}
+
 export const STUDIO_WORKER_SERVICE = "gcd-studio-worker";
 
 export interface WorkerOptions {
@@ -45,7 +57,10 @@ export interface WorkerOptions {
   pollMs?: number;
   heartbeatMs?: number;
   ownershipRetryMs?: number;
-  /** S3: `start:studio-worker` never sets this; the PostgreSQL suite gives a counting fake. */
+  /**
+   * The paid stage runner. Since Content Studio S6b `start:studio-worker` sets it — the existing
+   * provider runner — only when `ANTHROPIC_API_KEY` is present and not blank; the suites give fakes.
+   */
   paidStageRunner?: PaidStageRunner;
   /** The library runtime to start from (tests wrap it to count calls). */
   runtime?: ContentRunRuntime;
@@ -121,6 +136,7 @@ export function startWorker(options: WorkerOptions): WorkerHandle {
       options.log("recovery.finished", { interrupted: interrupted.length, runs: interrupted });
 
       // 4. the heartbeat
+      const liveRunner = liveRunnerOf(options.paidStageRunner);
       const beat = () => session!.query(
         `INSERT INTO studio_worker_heartbeat (singleton, commit, schema_version, approved_facts_sha256,
                                               approved_facts_tag_counts, price_table_sha256, beat_at)
@@ -131,15 +147,15 @@ export function startWorker(options: WorkerOptions): WorkerHandle {
            price_table_sha256 = EXCLUDED.price_table_sha256, beat_at = now()`,
         [options.commit, schemaVersion, approvedFacts.sha256, JSON.stringify(Object.fromEntries(tagCounts.counts)),
           priceTableSha256])
-        .then(() => session!.query("UPDATE studio_jobs SET heartbeat_at = now() WHERE state = 'running'"));
+        .then(() => session!.query("UPDATE studio_jobs SET heartbeat_at = now() WHERE state = 'running'"))
+        .then(() => options.log("heartbeat", { live_runner: liveRunner }));
       await beat();
       heartbeat = setInterval(() => {
         beat().catch((error) => options.log("heartbeat.failed", { error_class: (error as Error)?.name ?? "Error" }));
       }, options.heartbeatMs ?? HEARTBEAT_INTERVAL_MS);
 
       // 5. readiness, and only now
-      const line = `[studio-worker] ready ${JSON.stringify({ service: STUDIO_WORKER_SERVICE, commit: options.commit, state: "postgres" })}`;
-      options.ready?.(line);
+      options.ready?.(readinessLine(options.commit, liveRunner));
       markReady();
 
       // 6. the queue

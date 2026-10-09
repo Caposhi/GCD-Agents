@@ -32,7 +32,7 @@ const refuse = (reason: string, message: string): never => {
 /**
  * Refused on the web in EVERY phase, beside the shared list (design §3.1,
  * §9.1): the web service never calls a model, so it never carries a provider
- * key, whatever the worker may carry later.
+ * key — including since Content Studio S6b, which lets the worker alone carry it.
  */
 export const WEB_FORBIDDEN_VARIABLES = ["ANTHROPIC_API_KEY"] as const;
 

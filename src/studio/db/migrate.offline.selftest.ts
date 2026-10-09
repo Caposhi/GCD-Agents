@@ -231,8 +231,9 @@ async function main(): Promise<void> {
   const entryReads = [...entry.matchAll(/process\.env\.([A-Za-z_][A-Za-z0-9_]*)/g)].map((match) => match[0]);
   const runtimeSources = [...studioSources].filter(([path]) => !path.endsWith(".selftest.ts"));
   // Since S3 the Studio has a second entry point, the worker's (design §3.2), held to its own exact list:
-  // the names present (for its refusal), STUDIO_DATABASE_URL, the two caps and RENDER_GIT_COMMIT —
-  // never DATABASE_URL, never a computed name. Every other Studio runtime module still reads nothing.
+  // the names present (for its refusal), STUDIO_DATABASE_URL, the two caps and RENDER_GIT_COMMIT — and, since
+  // Content Studio S6b, ANTHROPIC_API_KEY, once, handed to the start-up's live-runner decision — never
+  // DATABASE_URL, never a computed name. Every other Studio runtime module still reads nothing.
   const WORKER_ENTRY = "src/studio/worker/main.ts";
   // Its code, without its comments (which name what it never reads).
   const worker = (studioSources.get(WORKER_ENTRY) ?? "").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
@@ -248,8 +249,8 @@ async function main(): Promise<void> {
     .filter(([, text]) => /process\.env|process\[|\benv\s*\[/.test(text)).map(([path]) => path);
   check("SM2b. the entry point reads exactly STUDIO_DATABASE_URL's value and DATABASE_URL's presence "
     + "(`process.env.DATABASE_URL !== undefined`, never its value), in the dot form; the worker's entry point "
-    + "(S3) reads exactly the names present, STUDIO_DATABASE_URL, the two caps and RENDER_GIT_COMMIT, in the dot "
-    + "form, and never DATABASE_URL; the web's entry point (S4) reads exactly the names present, STUDIO_DATABASE_URL, "
+    + "(S3) reads exactly the names present, STUDIO_DATABASE_URL, the two caps, RENDER_GIT_COMMIT and (S6b) "
+    + "ANTHROPIC_API_KEY — once, as the start-up's anthropicApiKey — in the dot form, and never DATABASE_URL; the web's entry point (S4) reads exactly the names present, STUDIO_DATABASE_URL, "
     + "STUDIO_PUBLIC_ORIGIN, STUDIO_ALLOWED_HD, the client id and secret, STUDIO_BOOTSTRAP_OWNER_EMAIL, PORT, "
     + "RENDER_GIT_COMMIT and (S6.2) the two caps STUDIO_MAX_DAILY_USD and STUDIO_MAX_MONTHLY_USD, in the dot form, and "
     + "never DATABASE_URL; no other Studio runtime module reads the environment; and no Studio module "
@@ -260,8 +261,9 @@ async function main(): Promise<void> {
     && /databaseUrlPresent:\s*process\.env\.DATABASE_URL\s*!==\s*undefined,/.test(entry)
     && !/process\.env\.DATABASE_URL(?!\s*!==\s*undefined)/.test(entry)
     && !/process\.env\[/.test(entry)
-    && JSON.stringify(workerReads.sort()) === JSON.stringify(["process.env.RENDER_GIT_COMMIT",
+    && JSON.stringify(workerReads.sort()) === JSON.stringify(["process.env.ANTHROPIC_API_KEY", "process.env.RENDER_GIT_COMMIT",
       "process.env.STUDIO_DATABASE_URL", "process.env.STUDIO_MAX_DAILY_USD", "process.env.STUDIO_MAX_MONTHLY_USD"])
+    && /\n    anthropicApiKey: process\.env\.ANTHROPIC_API_KEY,\n/.test(worker)
     && (worker.match(/process\.env\b(?!\.)/g) ?? []).length === 1 && /names:\s*Object\.keys\(process\.env\),/.test(worker)
     && worker.includes("process.env.STUDIO_DATABASE_URL")
     && !/process\.env\[|process\[|\benv\s*\[|DATABASE_URL/.test(worker.replace(/STUDIO_DATABASE_URL/g, ""))

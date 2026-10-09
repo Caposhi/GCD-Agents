@@ -3,9 +3,10 @@
  * (docs/CONTENT_STUDIO_DESIGN.md §3.2, §3.3, §5.3, §6.2):
  * `npm run test:studio-worker-postgres`, run on PostgreSQL 16 and 18 in CI's
  * existing *Content Studio* step of the `postgres-integration` job, after the
- * schema suite. **Fake runner only:** no provider, no key, no network beyond
- * the loopback database. Where a paid path is proven, a replaying fake stage
- * runner stands in for the provider; `start:studio-worker` gives none.
+ * schema suite. **No provider, no real key, no network beyond the loopback
+ * database.** Where a paid path is proven, a replaying fake stage runner — or
+ * (S6b) the real provider runner over a scripted stream — stands in for the
+ * provider.
  *
  * Safety contract (the schema suite's): STUDIO_DISPOSABLE_POSTGRES=1 and a
  * loopback-only STUDIO_POSTGRES_ADMIN_URL are required; DATABASE_URL and
@@ -20,7 +21,14 @@
  * `imports`: the fact check and the import's revalidation, each staged through
  * the web's own store and answered by the worker; and (S7.3) `caps`: a runner
  * with no daily cap refused before any paid unit, and an overrun's
- * acknowledgement surviving its owner's later demotion.
+ * acknowledgement surviving its owner's later demotion; and (S6b) `live`: the
+ * real provider runner — the library's factory over sdk.ts's own stream
+ * handling, with only the stream scripted (`providerShapedRunner`) — through
+ * every gate, its charge (usage × the price table) and its failures reconciled,
+ * and the production entry point holding a stand-in key: ready and
+ * heartbeat lines `live_runner: "enabled"`, the value never printed, and a
+ * preloaded fetch trap proving no request leaves the process. No key is ever
+ * read from this suite's own environment: one set there fails the group.
  */
 
 import { execFile, spawn, type ChildProcess } from "node:child_process";
@@ -41,16 +49,19 @@ import { CRITIC_ARTIFACT } from "./findings.js";
 import { ceilingMicros, microsToNumeric, numericToMicros } from "./money.js";
 import { studioOwnershipKey } from "./session.js";
 import { confirmationsLocked, OVERRUN_ACKNOWLEDGED } from "./spend.js";
-import { fakeTranscript, memoryIo, memorySink, replayRunner, repoFacts, syntheticFactsBytes, type ReplayCall } from "./testSupport.js";
+import {
+  fakeTranscript, memoryIo, memorySink, providerShapedRunner, replayRunner, repoFacts, syntheticFactsBytes, usageMicros,
+  type ProviderOutcome, type ReplayCall,
+} from "./testSupport.js";
 import { startWorker, type WorkerHandle, type WorkerOptions } from "./worker.js";
 import { localDay, preflightRequest } from "../web/actions.js";
 import { PgWebStore } from "../web/store.js";
 import { importRunner, lineageKey } from "../web/bundle.js";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
-const GROUPS = ["startup", "queue", "paid", "identical", "findings", "actions", "facts", "imports", "caps"] as const;
+const GROUPS = ["startup", "queue", "paid", "identical", "findings", "actions", "facts", "imports", "caps", "live"] as const;
 type Group = typeof GROUPS[number];
-const counts: Record<Group, number> = { startup: 0, queue: 0, paid: 0, identical: 0, findings: 0, actions: 0, facts: 0, imports: 0, caps: 0 };
+const counts: Record<Group, number> = { startup: 0, queue: 0, paid: 0, identical: 0, findings: 0, actions: 0, facts: 0, imports: 0, caps: 0, live: 0 };
 let failures = 0;
 function check(group: Group, name: string, cond: boolean, detail = ""): void {
   console.log(`${cond ? "PASS" : "FAIL"}  [${group}] ${name}${cond || !detail ? "" : ` — ${detail}`}`);
@@ -239,6 +250,10 @@ interface PaidSpec {
   /** Triggers disabled around the insert: a row written directly, past the schema's own checks. */
   disable?: Array<[string, string]>;
   expiresInMs?: number;
+  /** S6b: the quote's price-table sha256 (default: this commit's), the run's kind and its source run. */
+  quotePriceTableSha256?: string;
+  kind?: "full" | "replay_critic";
+  sourceRunId?: string;
 }
 
 let fullCeiling: { micros: number; breakdown: string } = { micros: 0, breakdown: "[]" };
@@ -255,13 +270,15 @@ async function paidJob(st: Studio, spec: PaidSpec = {}): Promise<{ runId: string
     const quoteId = (await client.query(
       `INSERT INTO studio_quotes (user_id, action, params_sha256, worker_commit, approved_facts_sha256, fact_version_id,
                                   price_table_sha256, ceiling_usd, breakdown)
-       VALUES ($1, 'full', $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
+       VALUES ($1, $9, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
       [quoteUser, hex(randomBytes(8).toString("hex")), spec.workerCommit ?? COMMIT, approvedSha, st.factVersion,
-        lib.priceTableSha256(), microsToNumeric(reserved), fullCeiling.breakdown])).rows[0].id;
+        spec.quotePriceTableSha256 ?? lib.priceTableSha256(), microsToNumeric(reserved), fullCeiling.breakdown, spec.kind ?? "full"])).rows[0].id;
     const runId = (await client.query(
-      `INSERT INTO studio_runs (kind, requested_by, runner, goal, fact_version_id, automotive_facts_sha256, quote_id, reserved_usd)
-       VALUES ('full', $1, 'live', $2, $3, $4, $5, $6) RETURNING id`,
-      [requester, GOAL, st.factVersion, st.factSha, quoteId, microsToNumeric(reserved)])).rows[0].id;
+      `INSERT INTO studio_runs (kind, requested_by, runner, goal, fact_version_id, automotive_facts_sha256, quote_id, reserved_usd,
+                                source_run_id)
+       VALUES ($7, $1, 'live', $2, $3, $4, $5, $6, $8) RETURNING id`,
+      [requester, spec.kind && spec.kind !== "full" ? null : GOAL, st.factVersion, st.factSha, quoteId, microsToNumeric(reserved),
+        spec.kind ?? "full", spec.sourceRunId ?? null])).rows[0].id;
     if (spec.reserve !== false) {
       await client.query("INSERT INTO studio_spend_ledger (entry, run_id, amount_usd) VALUES ('reserve', $1, $2)", [runId, microsToNumeric(reserved)]);
     }
@@ -331,10 +348,10 @@ function inProcess(st: Studio, extra: Partial<WorkerOptions> = {}): WorkerHandle
 }
 
 interface Child { process: ChildProcess; output: string[]; exited: Promise<number | null> }
-function childWorker(url: string, extraArgs: string[] = []): Child {
+function childWorker(url: string, extraArgs: string[] = [], extraEnv: Record<string, string> = {}): Child {
   const env: Record<string, string> = {
     PATH: process.env.PATH ?? "", STUDIO_DATABASE_URL: url, STUDIO_MAX_DAILY_USD: "75", STUDIO_MAX_MONTHLY_USD: "300",
-    RENDER_GIT_COMMIT: COMMIT,
+    RENDER_GIT_COMMIT: COMMIT, ...extraEnv,
   };
   for (const name of ["LANG", "TZ", "TMPDIR"]) { const v = process.env[name]; if (v !== undefined) env[name] = v; }
   const child = spawn(process.execPath, [...extraArgs, resolve(REPO_ROOT, "dist/studio/worker/main.js")], { env, stdio: ["ignore", "pipe", "pipe"] });
@@ -477,10 +494,10 @@ async function queueGroup(dbs: Databases): Promise<void> {
     // Readiness only after ownership and recovery.
     const order = owner.output.map((l) => l.split(" ")[1]);
     check("queue", "SWP2a. readiness is emitted only after ownership is held and recovery has finished, as the one "
-      + "structured ready line",
+      + "structured ready line, which (S6b) says live_runner \"disabled\" on a worker started with no key",
       order.indexOf("ownership.held") >= 0 && order.indexOf("ownership.held") < order.indexOf("recovery.finished")
         && order.indexOf("recovery.finished") < order.indexOf("ready")
-        && owner.output.includes(`[studio-worker] ready {"service":"gcd-studio-worker","commit":"${COMMIT}","state":"postgres"}`));
+        && owner.output.includes(`[studio-worker] ready {"service":"gcd-studio-worker","commit":"${COMMIT}","state":"postgres","live_runner":"disabled"}`));
 
     // SWP3: kill the owner mid-run. Its first artifact write is held by a table lock, so the run is running.
     const locker = await st.pool.connect();
@@ -1295,21 +1312,30 @@ async function actionsGroup(dbs: Databases): Promise<void> {
     const childEnd = childRun.ok ? await terminal(st, childId) : { state: `not confirmed: ${childRun.refusal}`, failure_class: null };
     child.process.kill("SIGTERM");
     await child.exited;
-    const keyed = spawn(process.execPath, [resolve(REPO_ROOT, "dist/studio/worker/main.js")], {
-      env: { PATH: process.env.PATH ?? "", STUDIO_DATABASE_URL: st.url, STUDIO_MAX_DAILY_USD: "75", STUDIO_MAX_MONTHLY_USD: "300",
-        RENDER_GIT_COMMIT: COMMIT, ANTHROPIC_API_KEY: "" }, stdio: ["ignore", "pipe", "pipe"] });
-    let keyedErr = "";
-    keyed.stderr!.on("data", (c: Buffer) => { keyedErr += c.toString("utf8"); });
-    const keyedCode = await new Promise<number | null>((settle) => keyed.once("exit", settle));
-    check("actions", "SWP26. on the production wiring — npm run start:studio-worker, which builds no paid runner — the worker "
-      + "answers a price request, and the run confirmed from its quote is refused before any work as live_runs_not_enabled, "
-      + "its whole reservation released and no request made; beside ANTHROPIC_API_KEY (even empty) the entry point still "
-      + "refuses to start",
+    // Since S6b an EMPTY key (as Render may hold before O4) refuses nothing and enables nothing: the worker starts disabled.
+    const empty = childWorker(st.url, [], { ANTHROPIC_API_KEY: "" });
+    await waitFor("the empty-key child to be ready", async () => has(empty, "[studio-worker] ready"), 60_000);
+    const emptyAnswer = await answered((await ask(st.runner)).requestId);
+    const emptyRun = await web.confirmQuote({ quoteId: emptyAnswer.quote!.id, userId: st.runner, ceilings: WIDE });
+    const emptyId = emptyRun.ok ? emptyRun.runId : "";
+    const emptyEnd = emptyRun.ok ? await terminal(st, emptyId) : { state: `not confirmed: ${emptyRun.refusal}`, failure_class: null };
+    empty.process.kill("SIGTERM");
+    const emptyCode = await empty.exited;
+    check("actions", "SWP26. on the production wiring without the key — npm run start:studio-worker with no ANTHROPIC_API_KEY, "
+      + "and (S6b) again with an EMPTY one, which no longer refuses the start — the worker answers a price request, and each "
+      + "run confirmed from its quote is refused before any work as live_runs_not_enabled, its whole reservation released "
+      + "and no request made; the empty-key worker says live_runner \"disabled\" (anthropic_key_empty) in its start-up and "
+      + "ready lines",
       childAnswer.outcome === "quoted" && childRun.ok && childEnd.state === "refused" && childEnd.failure_class === "live_runs_not_enabled"
         && childRun.ok && (await requestsOf(st, childId)).length === 0
         && (await ledgerOf(st, childId)) === `release:${microsToNumeric(fullCeiling.micros)},reserve:${microsToNumeric(fullCeiling.micros)}`
-        && keyedCode === 1 && /refused \(forbidden-variable\)/.test(keyedErr) && /ANTHROPIC_API_KEY/.test(keyedErr),
-      `${childAnswer.outcome} ${JSON.stringify(childEnd)} ${keyedCode} ${keyedErr.trim()}`);
+        && emptyAnswer.outcome === "quoted" && emptyRun.ok && emptyEnd.state === "refused" && emptyEnd.failure_class === "live_runs_not_enabled"
+        && (await requestsOf(st, emptyId)).length === 0
+        && (await ledgerOf(st, emptyId)) === `release:${microsToNumeric(fullCeiling.micros)},reserve:${microsToNumeric(fullCeiling.micros)}`
+        && empty.output.includes('[studio-worker] live_runner {"live_runner":"disabled","provider_key":"anthropic_key_empty"}')
+        && empty.output.some((l) => l.startsWith("[studio-worker] ready ") && l.endsWith(',"live_runner":"disabled"}'))
+        && !empty.output.some((l) => /refused \(/.test(l)) && emptyCode !== null,
+      `${childAnswer.outcome} ${JSON.stringify(childEnd)} ${JSON.stringify(emptyEnd)} ${empty.output.join(" / ")}`);
   } finally {
     await worker?.stop();
     await st.close();
@@ -1598,6 +1624,192 @@ async function importsGroup(dbs: Databases): Promise<void> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// live (Content Studio S6b): the real provider runner over a scripted stream, and the keyed entry point
+// ---------------------------------------------------------------------------
+
+/** A preload that makes any HTTP request from the child fail loudly, before it leaves the process. */
+const FETCH_TRAP = "globalThis.fetch = async () => { process.stderr.write('S6B-NETWORK-ATTEMPT\\n'); "
+  + "throw new Error('the S6b suite refuses every network request'); };\n";
+
+async function liveGroup(dbs: Databases): Promise<void> {
+  // SWP38: the test-run guard.
+  const keyInEnvironment = process.env.ANTHROPIC_API_KEY !== undefined;
+  check("live", "SWP38. the test-run guard: ANTHROPIC_API_KEY is NOT set in this suite's environment (every paid-path "
+    + "check injects its runner; a key here fails the suite and the rest of this group does not run)", !keyInEnvironment,
+    keyInEnvironment ? "ANTHROPIC_API_KEY is set: unset it before running the Studio suites" : "");
+  if (keyInEnvironment) return;
+
+  const st = await studio(dbs, "live");
+  const transcript = await fakeTranscript(REPO_ROOT, GOAL);
+  let outcome: (o: { index: number }) => ProviderOutcome = () => "end_turn";
+  let runId = "";
+  const seen: string[] = [];
+  let current = providerShapedRunner(transcript);
+  const fresh = () => {
+    current = providerShapedRunner(transcript, {
+      outcome: (o) => outcome(o),
+      // Seen from the suite's own session as each request's stream opens: this request's row, committed and started.
+      during: async (open) => {
+        const rows = (await st.pool.query(
+          "SELECT stage, lens, outcome FROM studio_run_requests WHERE run_id = $1 ORDER BY seq", [runId])).rows;
+        const own = open.lens ? rows.find((r) => r.lens === open.lens) : rows[rows.length - 1];
+        seen.push(`${open.index}:${own ? `${own.lens ?? own.stage}=${own.outcome}` : "none"}`);
+      },
+    });
+  };
+  fresh();
+  const dispatch = (async (request: never) => current(request)) as unknown as PaidStageRunner;
+  let worker = inProcess(st, { paidStageRunner: dispatch, heartbeatMs: 200 });
+  const job = async (spec: PaidSpec = {}) => {
+    fresh();
+    seen.length = 0;
+    const made = await paidJob(st, { ...spec, after: async (c, ids) => { runId = ids.runId; await spec.after?.(c, ids); } });
+    runId = made.runId;
+    return made;
+  };
+  const claimsOf = async (jobId: string) => (await st.pool.query(
+    "SELECT count(*)::int AS n FROM studio_audit_log WHERE action = 'job.claim' AND target_id = $1", [jobId])).rows[0].n as number;
+  const tokensOf = async (id: string) => (await st.pool.query(
+    "SELECT input_tokens, output_tokens FROM studio_run_requests WHERE run_id = $1 ORDER BY seq", [id])).rows;
+  try {
+    await asActor(st.pool, st.owner, "UPDATE studio_settings SET daily_cap_usd = 1000, monthly_cap_usd = 10000, updated_by = $1", [st.owner]);
+    await worker.ready;
+    const lines = lib.computeCostCeiling(lib.loadRuntime(), lib.allStagePolicies(lib.loadRuntime())).lines;
+    const ceil = lines.map((l) => ceilingMicros(l.costUsd!));
+
+    // SWP39: a live run through the real provider runner, charged usage × the price table.
+    outcome = () => "end_turn";
+    const p39 = await job();
+    const r39 = await terminal(st, p39.runId);
+    const rows39 = await requestsOf(st, p39.runId);
+    const opens39 = current.opens;
+    const want39 = rows39.map((r, i) => usageMicros(lines[i]!.model, (r.lens ? opens39.find((o) => o.lens === r.lens) : opens39[i])!.usage));
+    const sum39 = want39.reduce((t: number, c) => t + (c ?? Number.NaN), 0);
+    check("live", "SWP39. an enabled worker runs a confirmed live run through the REAL provider runner (only the stream "
+      + "scripted): each request opened once (maxRetries 0) only after its own row was committed and visible to another "
+      + "session; each row's cost is its provider-reported usage × the repository's price table, to the micro-dollar; the "
+      + "run is charged their sum and the unused reservation released, in PostgreSQL",
+      r39.state === "succeeded" && opens39.length === 9 && opens39.every((o) => o.maxRetries === 0)
+        && seen.length === 9 && seen.every((x) => /=started$/.test(x))
+        && rows39.length === 9 && rows39.every((r, i) => r.outcome === "succeeded" && numericToMicros(r.cost) === want39[i]
+          && numericToMicros(r.charged) === want39[i] && numericToMicros(r.ceiling) === ceil[i])
+        && Number.isSafeInteger(sum39) && sum39 > 0 && numericToMicros(r39.actual) === sum39
+        && await ledgerOf(st, p39.runId) === `release:${microsToNumeric(p39.reserved - sum39)},reserve:${microsToNumeric(p39.reserved)}`,
+      `${JSON.stringify(r39)} ${seen.join(" ")} ${JSON.stringify(rows39)} ${want39.join(",")} ${await ledgerOf(st, p39.runId)}`);
+
+    // SWP40: a provider error, and a refusal stop reason, each fail the run cleanly and reconcile.
+    outcome = ({ index }) => (index === 1 ? "error" : "end_turn");
+    const p40 = await job();
+    const r40 = await terminal(st, p40.runId);
+    await sleep(400);
+    const rows40 = await requestsOf(st, p40.runId);
+    const opens40 = current.opens;
+    const c40 = usageMicros(opens40[0]!.model, opens40[0]!.usage)!;
+    outcome = ({ index }) => (index === 2 ? "refusal" : "end_turn");
+    const p40b = await job();
+    const r40b = await terminal(st, p40b.runId);
+    const rows40b = await requestsOf(st, p40b.runId);
+    const tokens40b = await tokensOf(p40b.runId);
+    const opens40b = current.opens;
+    const c40b = usageMicros(opens40b[0]!.model, opens40b[0]!.usage)! + usageMicros(opens40b[1]!.model, opens40b[1]!.usage)!;
+    check("live", "SWP40. a provider error with no response on request 2 fails the run (stage_execution_error) after exactly "
+      + "2 requests, never retried and the job never claimed again, request 2 charged its full ceiling; a response refused "
+      + "by the model (stop_reason \"refusal\") on request 3 fails its run likewise after 3, its usage recorded on the row and "
+      + "the row charged its ceiling; each run's reservation is reconciled in the ledger (released less the charge)",
+      r40.state === "failed" && r40.failure_class === "stage_execution_error" && opens40.length === 2 && await claimsOf(p40.jobId) === 1
+        && rows40.length === 2 && numericToMicros(rows40[0]!.cost) === c40 && rows40[1]!.outcome === "failed" && rows40[1]!.cost === null
+        && numericToMicros(rows40[1]!.charged) === ceil[1] && numericToMicros(r40.actual) === c40 + ceil[1]!
+        && await ledgerOf(st, p40.runId) === `release:${microsToNumeric(p40.reserved - c40 - ceil[1]!)},reserve:${microsToNumeric(p40.reserved)}`
+        && r40b.state === "failed" && r40b.failure_class === "stage_execution_error" && opens40b.length === 3 && rows40b.length === 3
+        && rows40b[2]!.outcome === "failed" && rows40b[2]!.cost === null && numericToMicros(rows40b[2]!.charged) === ceil[2]
+        && tokens40b[2]!.input_tokens === opens40b[2]!.usage.input_tokens && tokens40b[2]!.output_tokens === opens40b[2]!.usage.output_tokens
+        && await ledgerOf(st, p40b.runId) === `release:${microsToNumeric(p40b.reserved - c40b - ceil[2]!)},reserve:${microsToNumeric(p40b.reserved)}`
+        && (await artifactNames(st, p40b.runId)).includes("rejected-responses.json"),
+      `${JSON.stringify(r40)} ${JSON.stringify(rows40)} ${JSON.stringify(r40b)} ${JSON.stringify(rows40b)} ${await ledgerOf(st, p40b.runId)}`);
+
+    // SWP41: every gate, before any request, through the real provider runner: zero opens each.
+    outcome = () => "end_turn";
+    const zero: string[] = [];
+    const attempt = async (label: string, spec: PaidSpec, want: string) => {
+      const made = await job(spec);
+      const row = await terminal(st, made.runId);
+      const released = await ledgerOf(st, made.runId) === `release:${microsToNumeric(made.reserved)},reserve:${microsToNumeric(made.reserved)}`;
+      const got = `${current.opens.length}:${row.state}:${row.failure_class}:${(await requestsOf(st, made.runId)).length}:${released}`;
+      zero.push(got === want ? "" : `${label}: ${got}≠${want}`);
+    };
+    // A cap exceeded: the owner's daily cap set below what is already booked today.
+    await asActor(st.pool, st.owner, "UPDATE studio_settings SET daily_cap_usd = 1, updated_by = $1", [st.owner]);
+    await attempt("the effective daily cap exceeded", {}, "0:refused:cap_exceeded_daily:0:true");
+    await asActor(st.pool, st.owner, "UPDATE studio_settings SET daily_cap_usd = 1000, updated_by = $1", [st.owner]);
+    await attempt("an expired job (its quote's confirmation)", { expiresInMs: 1, after: async (c) => { await c.query("SELECT pg_sleep(0.05)"); } },
+      "0:cancelled:job_expired:0:true");
+    await attempt("another user's quote, written past the schema", { requestedBy: "runner", quoteUser: "owner",
+      disable: [["studio_runs", "studio_runs_before_insert"]] }, "0:refused:quote_mismatch:0:true");
+    await attempt("a changed price table", { quotePriceTableSha256: hex("another price table") }, "0:refused:version_skew:0:true");
+    // A reused quote: a second run naming a quote another run consumed is refused by the schema, so no job exists.
+    const reused = await job();
+    await terminal(st, reused.runId);
+    const quoteOf = (await st.pool.query("SELECT quote_id FROM studio_runs WHERE id = $1", [reused.runId])).rows[0].quote_id as string;
+    const reuse = await st.pool.query(
+      `INSERT INTO studio_runs (kind, requested_by, runner, goal, fact_version_id, automotive_facts_sha256, quote_id, reserved_usd)
+       VALUES ('full', $1, 'live', $2, $3, $4, $5, $6) RETURNING id`,
+      [st.owner, GOAL, st.factVersion, st.factSha, quoteOf, microsToNumeric(fullCeiling.micros)]).then(() => "accepted", (e: Error) => e.message);
+    const opensAfterReuse = current.opens.length;
+    // A fake source: refused by the schema at the run's insert; written past it, refused by the worker before any work.
+    const fakeSource = await fakeJob(st);
+    await terminal(st, fakeSource.runId);
+    const viaSchema = await job({ kind: "replay_critic", sourceRunId: fakeSource.runId }).then(() => "accepted", (e: Error) => e.message);
+    await attempt("a fake source, written past the schema", { kind: "replay_critic", sourceRunId: fakeSource.runId,
+      disable: [["studio_runs", "studio_runs_before_insert"]] }, "0:refused:fake_source:0:true");
+    check("live", "SWP41. through the real provider runner every gate holds with ZERO requests: an exceeded cap, an expired "
+      + "job, another user's quote (written past the schema's trigger), a price table changed since the quote (version_skew) "
+      + "and a fake source written past the schema (fake_source) each make 0 requests and 0 request rows and release the "
+      + "reservation in full; a reused quote and a fake source through the normal path are refused by the schema before any "
+      + "job exists",
+      zero.every((z) => z === "") && /quote/i.test(reuse) && reuse !== "accepted" && opensAfterReuse === 9
+        && /fake run can never be a paid action's source/.test(viaSchema),
+      `${zero.filter(Boolean).join("; ")} | reuse: ${reuse} | schema: ${viaSchema}`);
+    await worker.stop();
+
+    // SWP42: the production entry point holding a stand-in key: enabled, the value never printed, no request made.
+    const sentinel = ["s6b", "postgres", "sentinel", "not", "a", "key", randomBytes(6).toString("hex")].join("-");
+    const queued = (await st.pool.query("SELECT count(*)::int AS n FROM studio_jobs WHERE state = 'queued'")).rows[0].n as number;
+    const trapDir = mkdtempSync(join(tmpdir(), "gcd-s6b-trap-"));
+    const trap = join(trapDir, "fetch-trap.mjs");
+    writeFileSync(trap, FETCH_TRAP);
+    let keyed: Child | undefined;
+    let beats = 0;
+    try {
+      keyed = queued === 0 ? childWorker(st.url, [`--import=${trap}`], { ANTHROPIC_API_KEY: sentinel }) : undefined;
+      if (keyed) {
+        await waitFor("the keyed child to be ready", async () => has(keyed!, "[studio-worker] ready"), 60_000);
+        await waitFor("a heartbeat line", async () => has(keyed!, "[studio-worker] heartbeat"), 60_000);
+        beats = keyed.output.filter((l) => l === '[studio-worker] heartbeat {"live_runner":"enabled"}').length;
+        keyed.process.kill("SIGTERM");
+        await keyed.exited;
+      }
+    } finally {
+      if (keyed && keyed.process.exitCode === null) keyed.process.kill("SIGKILL");
+      rmSync(trapDir, { recursive: true, force: true });
+    }
+    const out = keyed?.output ?? [];
+    check("live", "SWP42. npm run start:studio-worker with ANTHROPIC_API_KEY set to a stand-in value (no job queued, a "
+      + "preloaded fetch trap): it constructs the provider runner and says so — the start-up line live_runner \"enabled\" "
+      + "(anthropic_key_present), the ready line and every heartbeat line live_runner \"enabled\" — the value appears in no "
+      + "line it prints, and no network request was attempted",
+      queued === 0 && out.includes('[studio-worker] live_runner {"live_runner":"enabled","provider_key":"anthropic_key_present"}')
+        && out.includes(`[studio-worker] ready {"service":"gcd-studio-worker","commit":"${COMMIT}","state":"postgres","live_runner":"enabled"}`)
+        && beats >= 1 && out.filter((l) => l.startsWith("[studio-worker] heartbeat")).every((l) => l.endsWith('{"live_runner":"enabled"}'))
+        && !out.some((l) => l.includes(sentinel) || l.includes(sentinel.slice(-12)))
+        && !out.some((l) => l.includes("S6B-NETWORK-ATTEMPT")) && !out.some((l) => /refused \(|fatal \(/.test(l)),
+      `${queued} ${out.join(" / ").replaceAll(sentinel, "<SENTINEL>")}`);
+  } finally {
+    await worker.stop();
+    await st.close();
+  }
+}
+
 async function main(): Promise<void> {
   const admin = adminUrl();
   const adminPool = openPool("admin", { connectionString: admin, max: 3, connectionTimeoutMillis: 10_000 });
@@ -1623,6 +1835,7 @@ async function main(): Promise<void> {
     await actionsGroup(dbs);
     await factsGroup(dbs);
     await importsGroup(dbs);
+    await liveGroup(dbs);
   } finally {
     for (const name of [...dbs.created]) await dbs.drop(name).catch((e) => console.error(`[studio-worker-postgres] drop ${name}: ${(e as Error).message}`));
     await closePool(adminPool);
