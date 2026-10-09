@@ -1,7 +1,8 @@
 # frozen_string_literal: true
 
 # Content Studio S8's static check over the two Render Blueprint files
-# (docs/CONTENT_STUDIO_DESIGN.md §3.2, §3.4, §3.5, §3.6, §9.5).
+# (docs/CONTENT_STUDIO_DESIGN.md §3.2, §3.4, §3.5, §3.6, §9.5), with S6b's
+# provider-key rule and S8.1's database-storage rule.
 #
 # render.yaml declares the live services and is never changed by a Studio PR;
 # render.studio.yaml declares the Content Studio and nothing else. This check
@@ -25,6 +26,10 @@
 #     unquoted off is a YAML 1.1 boolean false, and an omitted field means
 #     auto-deploy on), and no autoDeploy key appears anywhere in the file;
 #   - gcd-studio-db sets ipAllowList: [] and databaseName: gcd_studio;
+#   - gcd-studio-db sets diskSizeGB to exactly the integer 5 (Content Studio
+#     S8.1; the owner-approved size for O3). Omitted, Render gives a new
+#     Basic-tier database 15 GB, and a disk size can be increased but never
+#     decreased (render.com/docs/blueprint-spec, read 2026-10-09);
 #   - no cron resource exists (gcd-studio-cron is S9's, never declared here),
 #     and the file declares exactly gcd-studio-db, gcd-studio-web (web) and
 #     gcd-studio-worker (worker), under databases and services only;
@@ -62,6 +67,11 @@ RUNNER_PATH = "src/studio/db/runner.ts"
 
 STUDIO_DB = "gcd-studio-db"
 STUDIO_DATABASE_NAME = "gcd_studio"
+# Content Studio S8.1: the database's disk size in GB, owner-approved for O3.
+# Render: "This value must be either 1 or a multiple of 5"; "You can increase
+# disk size, but you can't decrease it"; omitted, a new Basic-tier database
+# gets 15 GB (render.com/docs/blueprint-spec, read 2026-10-09).
+STUDIO_DISK_SIZE_GB = 5
 STUDIO_PREFIX = "gcd-studio-"
 LIVE_PREFIX = "gcd-social-"
 # The resources render.studio.yaml declares, and their kinds: no more, no fewer.
@@ -277,6 +287,11 @@ def database_problems(block)
   unless block["ipAllowList"].is_a?(Array) && block["ipAllowList"].empty?
     problems << "#{STUDIO_DB} must set ipAllowList: [] (an omitted list allows every external connection)"
   end
+  if !block.key?("diskSizeGB")
+    problems << "#{STUDIO_DB} omits diskSizeGB: it must be #{STUDIO_DISK_SIZE_GB} (omitted, Render gives a new Basic-tier database 15 GB, and a disk size can never be decreased)"
+  elsif !(block["diskSizeGB"].is_a?(Integer) && block["diskSizeGB"] == STUDIO_DISK_SIZE_GB)
+    problems << "#{STUDIO_DB}'s diskSizeGB is #{block["diskSizeGB"].inspect}, not #{STUDIO_DISK_SIZE_GB} (the owner-approved size for O3)"
+  end
   problems
 end
 
@@ -475,6 +490,12 @@ FAULTS = [
   ["ipAllowList opened to everyone", :studio,
    "    ipAllowList: []", "    ipAllowList:\n      - source: 0.0.0.0/0\n        description: everywhere",
    "gcd-studio-db must set ipAllowList: []"],
+  ["diskSizeGB omitted from the database", :studio,
+   "    diskSizeGB: 5 ", "    # (no disk size) ",
+   "gcd-studio-db omits diskSizeGB: it must be 5"],
+  ["diskSizeGB set to a different size", :studio,
+   "    diskSizeGB: 5 ", "    diskSizeGB: 15",
+   "gcd-studio-db's diskSizeGB is 15, not 5"],
   ["the database's databaseName changed", :studio,
    "    databaseName: gcd_studio ", "    databaseName: gcd_studio_db ",
    "gcd-studio-db's databaseName is \"gcd_studio_db\", not gcd_studio"],

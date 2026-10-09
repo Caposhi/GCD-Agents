@@ -20,6 +20,7 @@ databases:
   - name: gcd-studio-db
     databaseName: gcd_studio      # the Studio runner and both services refuse any other database
     plan: basic-256mb             # legacy name of 0.1c-256mb; price TO VERIFY at O3
+    diskSizeGB: 5                 # 5 GB, owner-approved size for O3; $0.30/GB-month as shown 2026-10-09 (Render: 1 or a multiple of 5; never decreased)
     ipAllowList: []               # block all external connections (private network only)
 
 services:
