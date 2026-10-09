@@ -1,0 +1,81 @@
+# GCD Content Studio — Render Blueprint (a SEPARATE file from render.yaml)
+#
+# The review-only Content Studio (docs/CONTENT_STUDIO_DESIGN.md §3): its web service, its worker
+# and its own PostgreSQL database. Nothing here is live: creating these resources is owner action
+# O3, separately authorized, after the release freeze and the Blueprint gate (docs/OPERATIONS.md,
+# "Content Studio release checklist"). This file names ONLY gcd-studio-* resources, and render.yaml
+# (the live services) is never changed by a Studio PR; scripts/ci/check-studio-blueprint.rb
+# enforces both in CI.
+#
+# - No secret value is ever written here: secrets are `sync: false`, entered only in Render.
+# - ANTHROPIC_API_KEY is deliberately absent until S6b (live-runner enablement); until then the
+#   worker refuses to start beside it, and the web refuses it in every phase.
+# - Every service sets autoDeployTrigger: 'off' — QUOTED, because an unquoted off is a YAML 1.1
+#   boolean. Studio releases are manual, exact-commit deploys by the owner (design §3.4).
+# - No cron: gcd-studio-cron is built disabled in S9 and is not declared here (design §3.5).
+# Field names and plan names re-confirmed against Render's public docs on 2026-10-08:
+# render.com/docs/blueprint-spec and render.com/docs/compute-plans (see docs/DEPLOYMENT.md).
+
+databases:
+  - name: gcd-studio-db
+    databaseName: gcd_studio      # the Studio runner and both services refuse any other database
+    plan: basic-256mb             # legacy name of 0.1c-256mb; price TO VERIFY at O3
+    ipAllowList: []               # block all external connections (private network only)
+
+services:
+  # The web service: sign-in, screens, quotes and confirmations, uploads and imports.
+  # It never calls a model and holds no provider key. It runs the Studio migrations.
+  - type: web
+    name: gcd-studio-web
+    runtime: node
+    plan: starter                 # legacy name of 0.5c-512mb (512 MB)
+    autoDeployTrigger: 'off'      # web: manual exact-commit deploys only
+    buildCommand: npm ci --include=dev && npm run build
+    preDeployCommand: npm run studio:migrate   # the Studio runner only: studio/migrations/**
+    startCommand: npm run start:studio-web
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_OPTIONS         # cap V8 heap under the 512 MB instance, as the live API
+        value: --max-old-space-size=400
+      - key: STUDIO_DATABASE_URL
+        fromDatabase:
+          name: gcd-studio-db
+          property: connectionString
+      - key: STUDIO_PUBLIC_ORIGIN         # the exact https origin Render assigns (O3/O4)
+        sync: false
+      - key: STUDIO_ALLOWED_HD
+        value: germancardepot.com
+      - key: STUDIO_GOOGLE_CLIENT_ID      # the Studio's own OAuth client (O1), never the GBP one
+        sync: false
+      - key: STUDIO_GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: STUDIO_BOOTSTRAP_OWNER_EMAIL # a Workspace user account (O4)
+        sync: false
+      - key: STUDIO_MAX_DAILY_USD         # deployment ceiling; 75 at O4
+        sync: false
+      - key: STUDIO_MAX_MONTHLY_USD       # deployment ceiling; 300 at O4
+        sync: false
+
+  # The worker: the single job consumer. Fake runners only until S6b.
+  - type: worker
+    name: gcd-studio-worker
+    runtime: node
+    plan: standard                # legacy name of 1c-2g (2 GB); owner decision of 2026-09-29
+    autoDeployTrigger: 'off'      # worker: manual exact-commit deploys only, after the web
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: npm run start:studio-worker
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_OPTIONS         # heap headroom on the 2 GB instance, as the live worker
+        value: --max-old-space-size=1536
+      - key: STUDIO_DATABASE_URL
+        fromDatabase:
+          name: gcd-studio-db
+          property: connectionString
+      - key: STUDIO_MAX_DAILY_USD         # the same ceiling, enforced again at each paid call
+        sync: false
+      - key: STUDIO_MAX_MONTHLY_USD       # the same ceiling, enforced again at each paid call
+        sync: false

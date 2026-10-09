@@ -37,6 +37,27 @@
 
 **The web refuses to start** (S4, `src/studio/web/startup.ts`) — before connecting to anything — beside the same shared list (now held in `src/studio/db/runner.ts`, which both services use) and **`ANTHROPIC_API_KEY`, which is forbidden on the web in every phase**, whatever the value, even empty; and on an inexact `STUDIO_PUBLIC_ORIGIN`, any `STUDIO_ALLOWED_HD` but `germancardepot.com`, or a missing client id or secret. It reads only `STUDIO_DATABASE_URL`, `STUDIO_PUBLIC_ORIGIN`, `STUDIO_ALLOWED_HD`, `STUDIO_GOOGLE_CLIENT_ID`, `STUDIO_GOOGLE_CLIENT_SECRET`, `STUDIO_BOOTSTRAP_OWNER_EMAIL`, `PORT`, `RENDER_GIT_COMMIT` and, since S6.2, `STUDIO_MAX_DAILY_USD` and `STUDIO_MAX_MONTHLY_USD` (`SM2b` holds that exact list). Google's OpenID endpoints and issuers are code constants; no variable can change them. Once connected, it refuses any database but the migrated `gcd_studio` at the expected schema version, as the worker does.
 
+**Declared in `render.studio.yaml`** (Content Studio S8, `IMPLEMENTED`, not merged, 2026-10-08; **nothing is created** — O3 and O4 are owner actions, separately authorized; see [Operations](OPERATIONS.md#content-studio-release-checklist--owner-actions-each-separately-authorized)). Exactly design §3.2's lists, adjusted as below; no value of any secret is in the file, and CI's `scripts/ci/check-studio-blueprint.rb` refuses a literal one:
+
+| Service | Variable | Declared as |
+|---|---|---|
+| `gcd-studio-web` | `NODE_ENV` | `production` |
+| `gcd-studio-web` | `NODE_OPTIONS` | `--max-old-space-size=400` (the `starter` plan is 512 MB) |
+| `gcd-studio-web` | `STUDIO_DATABASE_URL` | `fromDatabase: gcd-studio-db`, `connectionString` (Render's private-network URL) |
+| `gcd-studio-web` | `STUDIO_PUBLIC_ORIGIN` | `sync: false` — Render assigns the address at O3 |
+| `gcd-studio-web` | `STUDIO_ALLOWED_HD` | `germancardepot.com` |
+| `gcd-studio-web` | `STUDIO_GOOGLE_CLIENT_ID`, `STUDIO_GOOGLE_CLIENT_SECRET`, `STUDIO_BOOTSTRAP_OWNER_EMAIL` | `sync: false` (O1, O4) |
+| `gcd-studio-web` | `STUDIO_MAX_DAILY_USD`, `STUDIO_MAX_MONTHLY_USD` | `sync: false`; 75 and 300 at O4 |
+| `gcd-studio-worker` | `NODE_ENV` | `production` |
+| `gcd-studio-worker` | `NODE_OPTIONS` | `--max-old-space-size=1536` (the `standard` plan is 1 CPU, 2 GB; [render.com/docs/compute-plans](https://render.com/docs/compute-plans), read 2026-10-08) |
+| `gcd-studio-worker` | `STUDIO_DATABASE_URL` | `fromDatabase: gcd-studio-db`, `connectionString` |
+| `gcd-studio-worker` | `STUDIO_MAX_DAILY_USD`, `STUDIO_MAX_MONTHLY_USD` | `sync: false`; 75 and 300 at O4 |
+
+- **`ANTHROPIC_API_KEY` is declared on no Studio service.** S6b (the live-runner enablement) adds it to the worker only; until then the worker refuses to start beside it, the web refuses it in every phase, and the static check refuses it in any Studio block.
+- `PORT`, `RENDER_GIT_COMMIT` and `RENDER` are injected by Render and are not declared: a web service's default `PORT` is 10000, `RENDER_GIT_COMMIT` is "the commit SHA for a service or deploy", and `RENDER` "is always true" ([render.com/docs/environment-variables](https://render.com/docs/environment-variables), read 2026-10-08).
+- `sync: false` values are prompted only when the Blueprint is first created, and later syncs ignore them ([render.com/docs/blueprint-spec](https://render.com/docs/blueprint-spec), read 2026-10-08), so a value set in the dashboard is never overwritten by a sync.
+- **Finding, not built (design §9.1):** a least-privilege role for the web would be a `CREATE USER` role — a Render-managed user would become the database's default and move both services' `fromDatabase` URLs to itself on the next sync — so the web's `STUDIO_DATABASE_URL` would become `sync: false`. See [Roadmap](ROADMAP.md).
+
 The Studio's remaining variable, `STUDIO_SCHEDULED_RUNS_ENABLED`, is `PLANNED` in design §3.2 (the cron, S9); no code reads it, so it is not in `.env.example`. The disposable-test inputs `STUDIO_DISPOSABLE_POSTGRES` and `STUDIO_POSTGRES_ADMIN_URL` are read only by `npm run test:studio-postgres`, `npm run test:studio-worker-postgres` and `npm run test:studio-web-postgres`, and are classified as test-only by the coverage check ([Testing](TESTING.md)).
 
 ## Model, image, and harness
@@ -86,7 +107,7 @@ After approval, the worker attempts Google access-token refresh only when the ex
 
 ## Checked-in Render service scope
 
-The checked-in Blueprint keeps `ANTHROPIC_API_KEY`, `IMAGEGEN_API_KEY`, and `APPROVAL_CHANNEL_WEBHOOK` on the worker, not the API. The API retains Meta/Google credentials and identifiers only because its authenticated diagnostics use them; the scheduler receives only `NODE_ENV` and `DATABASE_URL`. Read-only production discovery verified service identity, branch, command, health/schedule, native auto-deploy off, and database metadata, but did not retrieve application environment values. `render.yaml` remains intent rather than complete proof of secret scope.
+The checked-in Blueprint keeps `ANTHROPIC_API_KEY`, `IMAGEGEN_API_KEY`, and `APPROVAL_CHANNEL_WEBHOOK` on the worker, not the API. The API retains Meta/Google credentials and identifiers only because its authenticated diagnostics use them; the scheduler receives only `NODE_ENV` and `DATABASE_URL`. Read-only production discovery verified service identity, branch, command, health/schedule, native auto-deploy off, and database metadata, but did not retrieve application environment values. `render.yaml` remains intent rather than complete proof of secret scope. *(Content Studio S8, `IMPLEMENTED`, not merged, 2026-10-08: the separate `render.studio.yaml` declares the Studio's services, never a live one; `render.yaml` is unchanged — see [Content Studio](#content-studio-separate-from-every-variable-above) above.)*
 
 ## GitHub production deployment configuration
 
