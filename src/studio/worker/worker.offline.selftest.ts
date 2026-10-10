@@ -1546,7 +1546,12 @@ async function s6bChecks(): Promise<void> {
   const table: Array<[string | undefined, string]> = [
     [undefined, "disabled:anthropic_key_absent"], ["", "disabled:anthropic_key_empty"], [" ", "disabled:anthropic_key_whitespace"],
     [" \t\n\r ", "disabled:anthropic_key_whitespace"], [" ", "disabled:anthropic_key_whitespace"],
-    [KEY_SENTINEL, "enabled:anthropic_key_present"], [` ${KEY_SENTINEL} `, "enabled:anthropic_key_present"], ["x", "enabled:anthropic_key_present"],
+    [KEY_SENTINEL, "enabled:anthropic_key_present"], ["x", "enabled:anthropic_key_present"], ["x y", "enabled:anthropic_key_present"],
+    // S8.2: a key that is not blank but carries leading or trailing whitespace — a paste with a space or a line break —
+    // is padded, never present. Until S8.2 ` ${KEY_SENTINEL} ` enabled the runner (changed by fact).
+    [` ${KEY_SENTINEL} `, "disabled:anthropic_key_padded"], [`${KEY_SENTINEL}\n`, "disabled:anthropic_key_padded"],
+    [`${KEY_SENTINEL}\r\n`, "disabled:anthropic_key_padded"], [`\t${KEY_SENTINEL}`, "disabled:anthropic_key_padded"],
+    [`${KEY_SENTINEL}\u00a0`, "disabled:anthropic_key_padded"], [" x", "disabled:anthropic_key_padded"], ["x ", "disabled:anthropic_key_padded"],
   ];
   const decided = table.map(([value]) => { const d = decideLiveRunner(value); return `${d.liveRunner}:${d.providerKey}`; });
   // A refusal is a result here, never a crash: the check fails by name.
@@ -1557,13 +1562,15 @@ async function s6bChecks(): Promise<void> {
       return { liveRunner: "refused", providerKey: String((error as { reason?: unknown }).reason ?? (error as Error).message) };
     }
   };
-  const starts = [named(undefined), named(""), named("  "), named(KEY_SENTINEL)];
+  const starts = [named(undefined), named(""), named("  "), named(` ${KEY_SENTINEL}\n`), named(KEY_SENTINEL)];
   check("SW44. the live runner is decided from the key's PRESENCE: absent → disabled (anthropic_key_absent), empty → "
-    + "disabled (anthropic_key_empty), whitespace only → disabled (anthropic_key_whitespace), anything else → enabled "
-    + "(anthropic_key_present); none of them refuses the start, and what the start-up returns holds the class, never the value",
+    + "disabled (anthropic_key_empty), whitespace only → disabled (anthropic_key_whitespace), not blank but with leading or "
+    + "trailing whitespace → disabled (anthropic_key_padded, S8.2), anything else → enabled (anthropic_key_present); none "
+    + "of them refuses the start, and what the start-up returns holds the class, never the value",
     decided.join() === table.map(([, want]) => want).join()
       && starts.map((x) => `${x.liveRunner}:${x.providerKey}`).join()
-        === "disabled:anthropic_key_absent,disabled:anthropic_key_empty,disabled:anthropic_key_whitespace,enabled:anthropic_key_present"
+        === "disabled:anthropic_key_absent,disabled:anthropic_key_empty,disabled:anthropic_key_whitespace,"
+          + "disabled:anthropic_key_padded,enabled:anthropic_key_present"
       && starts.every((x) => !JSON.stringify(x).includes(KEY_SENTINEL) && !("anthropicApiKey" in x)),
     decided.join());
 
@@ -1589,18 +1596,21 @@ async function s6bChecks(): Promise<void> {
     execFile(process.execPath, [resolve(REPO_ROOT, "dist/studio/worker/main.js")], { env: childEnv, timeout: 30_000 },
       (error, stdout, stderr) => settle({ code: error ? (typeof error.code === "number" ? error.code : -1) : 0, output: `${stdout}${stderr}` }));
   });
-  const keyedRuns = [await runKeyed(undefined), await runKeyed(""), await runKeyed("   "), await runKeyed(KEY_SENTINEL)];
+  const keyedRuns = [await runKeyed(undefined), await runKeyed(""), await runKeyed("   "), await runKeyed(` ${KEY_SENTINEL}\n`),
+    await runKeyed(KEY_SENTINEL)];
   server.close();
   const classOf = (output: string) => /\[studio-worker\] live_runner (\{.*\})/.exec(output)?.[1] ?? "none";
-  check("SW46. `npm run start:studio-worker`, executed with the key absent, empty, whitespace only and present: none is "
-    + "refused at start-up; each logs one live_runner line with its class (disabled ×3 with absent / empty / whitespace, "
-    + "then enabled with present) before it connects; and the key's value appears in NO line it prints, stdout or stderr",
+  check("SW46. `npm run start:studio-worker`, executed with the key absent, empty, whitespace only, padded (S8.2: a space "
+    + "before it and a line break after it) and present: none is refused at start-up; each logs one live_runner line with "
+    + "its class (disabled ×4 with absent / empty / whitespace / padded, then enabled with present) before it connects; and "
+    + "the key's value appears in NO line it prints, stdout or stderr",
     keyedRuns.map((r) => classOf(r.output)).join(" ") === [
       '{"live_runner":"disabled","provider_key":"anthropic_key_absent"}', '{"live_runner":"disabled","provider_key":"anthropic_key_empty"}',
-      '{"live_runner":"disabled","provider_key":"anthropic_key_whitespace"}', '{"live_runner":"enabled","provider_key":"anthropic_key_present"}',
+      '{"live_runner":"disabled","provider_key":"anthropic_key_whitespace"}', '{"live_runner":"disabled","provider_key":"anthropic_key_padded"}',
+      '{"live_runner":"enabled","provider_key":"anthropic_key_present"}',
     ].join(" ")
       && keyedRuns.every((r) => !/refused \(/.test(r.output)) && keyedRuns.every((r) => !r.output.includes(KEY_SENTINEL))
-      && !keyedRuns[3]!.output.includes(KEY_SENTINEL.slice(-12)),
+      && !keyedRuns[3]!.output.includes(KEY_SENTINEL.slice(-12)) && !keyedRuns[4]!.output.includes(KEY_SENTINEL.slice(-12)),
     keyedRuns.map((r) => r.output.trim().replace(/\s+/g, " ").slice(0, 300)).join(" | "));
 
   // SW47: the ready line and the heartbeat line say which.
