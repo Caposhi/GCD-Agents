@@ -155,6 +155,9 @@ among the rejected alternatives.
    standing prohibition reads "no unrelated release may occur, of any service, for any reason" (see
    §10 for the Studio's freeze gate). The Studio needs no live release, no live
    migration (008 or later) and no change to any live control.
+   *(Dated note, owner decision of 2026-10-10, recorded by Content Studio S8.3: that prohibition
+   is narrowed so that it no longer covers the Studio's own new resources; the live services
+   stay frozen exactly as before. See §10's freeze gate.)*
 
 §5.2's reasoning, to reuse the worker's ownership, recovery and credentials, still holds for
 **live** wiring. This deviation covers only a review-only tool that must never gain those
@@ -418,6 +421,8 @@ before O3):**
 *(Dated note, Content Studio S8, 2026-10-08, from Render's public documentation, read that day — not observed in the dashboard. **A non-default path is supported:** "specify a custom file path to your Blueprint's YAML file in the Blueprint Path field", and setup shows "the list of the changes that Render will apply" before *Deploy Blueprint* ([render.com/docs/infrastructure-as-code](https://render.com/docs/infrastructure-as-code)). Auto Sync is set to No on the Blueprint's Settings page (whether the creation form offers it is TO VERIFY); with it on, a push that modifies the file "triggers a deploy of any added or modified resources"; removing a resource from the file never deletes it. **Whether creating a service deploys it at once stays TO VERIFY** (Render "begins provisioning"); the release checklist in [Operations](OPERATIONS.md) assumes it does. Item 1 above is S8's **BLOCKING merge gate, OPEN** until the owner's dated check is recorded, and it is repeated before O3.)*
 
 *(Dated note, Content Studio S8.1, 2026-10-09 — **a separate Render project.** At O3 the Studio's three resources are placed in a **new** Render project, "GCD Content Studio" — never in the GCD Social project or its Production environment, which holds exactly the four `gcd-social-*` resources (OWNER-OBSERVED 2026-10-09). Render documents a Blueprint `projects` key for placement at creation, and moving services afterwards with *Move*; root-level definitions "keep their currently assigned environment (if any)" on later syncs ([render.com/docs/projects](https://render.com/docs/projects), [render.com/docs/blueprint-spec](https://render.com/docs/blueprint-spec), read 2026-10-09). `render.studio.yaml` gets no `projects` key (S8.1's scope; the static check allows only `databases` and `services`), so the owner moves the three resources into the project in the dashboard immediately after creation. TO VERIFY at O3: whether *New > Blueprint* offers a project for root-level resources, and whether a database moves by the same action. Item 2 above applies to that move as to everything else.)*
+
+*(Dated note, Content Studio S8.3, 2026-10-10 — **the owner's narrowing of the release freeze.** Under the owner's decision of 2026-10-10 ([Status](STATUS.md#m1m2-interval--owner-decision-narrowing-the-release-freeze-live-services-check-recorded-2026-10-10)), the M1→M2 interval's standing prohibition no longer covers the Studio's own resources, so O3 may proceed during the interval under the owner's own authorization (§10's freeze gate). **This gate is unchanged and is not relaxed by that decision:** item 1, the dated read-only Blueprint check, is performed **immediately before O3** (step 1 of the release checklist in [Operations](OPERATIONS.md#content-studio-release-checklist--owner-actions-each-separately-authorized)); items 2 and 3 apply in full; the `gcd-agents` Blueprint is never synced, edited or re-linked; and any line or action naming a `gcd-social-*` resource remains a stop condition.)*
 
 ### 3.7 Studio migrations — kept strictly separate from the live migrations
 
@@ -1555,6 +1560,20 @@ prohibition reads "no unrelated release may occur, of any service, for any reaso
 - **No exception is in force.** On 2026-09-29 the owner kept the default: the freeze covers new
   services. Any later change to that is a new owner decision, recorded in [Status](STATUS.md)
   before O3.
+  *(Dated note, owner decision of 2026-10-10, recorded by Content Studio S8.3 in
+  [Status](STATUS.md#m1m2-interval--owner-decision-narrowing-the-release-freeze-live-services-check-recorded-2026-10-10) before O3: **an exception is now
+  in force.** The interval's standing prohibition is narrowed so that it no longer covers the
+  Studio's own new resources — `gcd-studio-web`, `gcd-studio-worker` and `gcd-studio-db`, created
+  from `render.studio.yaml` in their own Render project; this amends decision 3 of 2026-09-29
+  (§11.1a). Unchanged and in force: every `gcd-social-*` service and `gcd-social-db` stays frozen
+  exactly as before (no release, deploy, restart, sync, setting change or migration); no sync,
+  edit or re-link of the `gcd-agents` Blueprint; `deploy-production` stays disabled; the bound,
+  the owner, the recovery path and the monitoring are unchanged, and the decision at the bound
+  (M2, re-authorization, or the recovery path) is still the owner's. Conditions: each Studio step
+  (O3, O1, O4) needs the owner's own authorization and follows the release checklist in order,
+  including the §3.6 Blueprint gate immediately before O3; no Anthropic key is entered (O4 without
+  the key); O5 waits for S8b's merge; O6 waits for O5. The rule and the bullet above are kept as
+  first written.)*
 
 The interval's expiry is itself a decision point for the owner, and its outcome may change this
 gate.
@@ -1619,6 +1638,9 @@ Recorded as the owner's decisions of 2026-09-29.
 3. **The freeze covers new services: the default is kept.** No Studio service is created (O3) until
    the M1→M2 interval (bound `2026-10-22T18:52Z`) is closed, or under whatever terms are then in
    force.
+   *(Dated amendment, owner decision of 2026-10-10, recorded by Content Studio S8.3: the freeze no
+   longer covers the Studio's own resources; the live services stay frozen exactly as before. The
+   terms are at §10's freeze gate and in [Status](STATUS.md#m1m2-interval--owner-decision-narrowing-the-release-freeze-live-services-check-recorded-2026-10-10).)*
 4. **Caps:**
    - owner caps: **$50 a day, $200 a month**;
    - deployment ceilings: **`STUDIO_MAX_DAILY_USD` = 75, `STUDIO_MAX_MONTHLY_USD` = 300**;
