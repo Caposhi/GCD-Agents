@@ -16,9 +16,10 @@
  * `STUDIO_DATABASE_URL`, `STUDIO_MAX_DAILY_USD`, `STUDIO_MAX_MONTHLY_USD`,
  * Render's `RENDER_GIT_COMMIT`, and (Content Studio S6b) `ANTHROPIC_API_KEY`,
  * whose value `decideLiveRunner` looks at only to tell present from absent,
- * empty or blank. It never reads `DATABASE_URL`'s value.
+ * empty, blank or (Content Studio S8.2) padded with leading or trailing
+ * whitespace. It never reads `DATABASE_URL`'s value.
  *
- * S6b: when the key is present and not blank, it constructs the EXISTING
+ * S6b: when the key is present, not blank and not padded, it constructs the EXISTING
  * provider runner — the library runtime's `createAnthropicStageRunner`, called
  * with no argument, exactly as `pipeline.ts` calls it — and passes it as the
  * worker's paid stage runner; every gate before each paid unit still runs (`execute.ts`).

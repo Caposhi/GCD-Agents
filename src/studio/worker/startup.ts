@@ -12,10 +12,10 @@
  * itself: the entry point hands it what it read.
  *
  * Content Studio S6b: it also decides whether the worker holds a paid stage
- * runner (`decideLiveRunner`), from whether `ANTHROPIC_API_KEY` is present and
- * not blank. The key's value is looked at for that and nothing else: it is
- * never returned, stored, logged, hashed or put in any message; only its class
- * is.
+ * runner (`decideLiveRunner`), from whether `ANTHROPIC_API_KEY` is present, not
+ * blank and (Content Studio S8.2) not padded with whitespace. The key's value
+ * is looked at for that and nothing else: it is never returned, stored, logged,
+ * hashed or put in any message; only its class is.
  */
 
 import {
@@ -49,20 +49,26 @@ export { FORBIDDEN_PREFIXES, FORBIDDEN_VARIABLES, STUDIO_EXPECTED_MIGRATIONS, ST
  * log carry these words only.
  */
 export type LiveRunner = "enabled" | "disabled";
-export type ProviderKeyClass = "anthropic_key_present" | "anthropic_key_absent" | "anthropic_key_empty" | "anthropic_key_whitespace";
+export type ProviderKeyClass =
+  "anthropic_key_present" | "anthropic_key_absent" | "anthropic_key_empty" | "anthropic_key_whitespace" | "anthropic_key_padded";
 
 /**
- * `ANTHROPIC_API_KEY` absent, empty or whitespace only: no paid runner, and
- * every live job is refused (`live_runs_not_enabled`). Never a refusal to
- * start: Render may hold an empty `sync: false` value before the owner enters
- * the key (O4). Anything else: the worker constructs the existing provider
- * runner (`main.ts`). Until S6b the worker refused to start beside the key at
- * all (`S3_FORBIDDEN_VARIABLES`); the web still refuses it in every phase.
+ * `ANTHROPIC_API_KEY` absent, empty, whitespace only or (Content Studio S8.2)
+ * padded — not blank, but with leading or trailing whitespace, as a key pasted
+ * with a space or a line break would be: no paid runner, and every live job is
+ * refused (`live_runs_not_enabled`). Never a refusal to start: Render may hold
+ * an empty `sync: false` value before the owner enters the key (O4), and the
+ * owner reads the class from the start-up line and re-enters a padded key.
+ * Anything else: the worker constructs the existing provider runner
+ * (`main.ts`). Until S6b the worker refused to start beside the key at all
+ * (`S3_FORBIDDEN_VARIABLES`); the web still refuses it in every phase. Until
+ * S8.2 a padded key was `anthropic_key_present` and enabled the runner.
  */
 export function decideLiveRunner(value: string | undefined): { liveRunner: LiveRunner; providerKey: ProviderKeyClass } {
   if (value === undefined) return { liveRunner: "disabled", providerKey: "anthropic_key_absent" };
   if (value === "") return { liveRunner: "disabled", providerKey: "anthropic_key_empty" };
   if (value.trim() === "") return { liveRunner: "disabled", providerKey: "anthropic_key_whitespace" };
+  if (value !== value.trim()) return { liveRunner: "disabled", providerKey: "anthropic_key_padded" };
   return { liveRunner: "enabled", providerKey: "anthropic_key_present" };
 }
 

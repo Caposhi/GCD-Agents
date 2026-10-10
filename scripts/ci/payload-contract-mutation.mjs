@@ -501,6 +501,12 @@
  * the missing key), with the same edits and checks. No captured path is added:
  * sixty-nine in all, for 712 mutations.
  *
+ * Content Studio S8.2's group, `M713`, covers the padded key: a key that is not
+ * blank but carries leading or trailing whitespace (a paste with a space or a
+ * line break) enabling the live runner instead of being classed
+ * `anthropic_key_padded` (`SW44`, `SW46`). No captured path is added:
+ * sixty-nine in all, for 713 mutations.
+ *
  * It is offline and deterministic: no network, no database, no provider, no
  * credential. The mutations run in parallel on up to MAX_WORKERS workers (the
  * runner's available parallelism, capped), each worker in its OWN disposable
@@ -6474,6 +6480,9 @@ const CONTENT_STUDIO_S6B_MUTATIONS = [
     suite: STUDIO_WORKER_SUITE,
   },
   {
+    // Since Content Studio S8.2 the mutated whitespace-only key reaches the padded row and is classed
+    // `anthropic_key_padded` (still disabled) instead of `anthropic_key_whitespace`: same edit, same checks, which
+    // fail on the class.
     name: "a whitespace-only key enables the live runner",
     file: STUDIO_WORKER_STARTUP,
     from: "  if (value.trim() === \"\") return",
@@ -6563,6 +6572,19 @@ const CONTENT_STUDIO_S6B_MUTATIONS = [
   },
 ];
 
+// Content Studio S8.2: a key pasted with leading or trailing whitespace leaves the live runner disabled, classed
+// `anthropic_key_padded` — against the decision table and the real entry point (SW44, SW46).
+const CONTENT_STUDIO_S8_2_MUTATIONS = [
+  {
+    name: "a padded key enables the runner",
+    file: STUDIO_WORKER_STARTUP,
+    from: "  if (value !== value.trim()) return { liveRunner: \"disabled\", providerKey: \"anthropic_key_padded\" };",
+    to: "  if (value !== value.trim()) return { liveRunner: \"enabled\", providerKey: \"anthropic_key_padded\" };",
+    expect: ["SW44.", "SW46."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+];
+
 // Every group, in order. MUTATIONS is their concatenation; the groups exist
 // only so `M-inc-sample` can spread its sample across them.
 const MUTATION_GROUPS = [
@@ -6579,6 +6601,7 @@ const MUTATION_GROUPS = [
   ["Content Studio S6.1", CONTENT_STUDIO_S6_1_MUTATIONS], ["Content Studio S6.2", CONTENT_STUDIO_S6_2_MUTATIONS],
   ["Content Studio S7.1", CONTENT_STUDIO_S7_1_MUTATIONS], ["Content Studio S7.2", CONTENT_STUDIO_S7_2_MUTATIONS],
   ["Content Studio S7.3", CONTENT_STUDIO_S7_3_MUTATIONS], ["Content Studio S6b", CONTENT_STUDIO_S6B_MUTATIONS],
+  ["Content Studio S8.2", CONTENT_STUDIO_S8_2_MUTATIONS],
 ];
 const MUTATIONS = MUTATION_GROUPS.flatMap(([, group]) => group);
 
