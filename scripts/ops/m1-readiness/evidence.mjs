@@ -24,7 +24,8 @@
  *
  *   1. **construction.** The document is built field by field against a closed
  *      schema. Free-form external text has no field to land in: every job name
- *      is pinned to the fixed enumeration of expected names, every check name to
+ *      is pinned to the fixed enumeration of the accepted job sets' names, every
+ *      job-set label to the accepted labels, every check name to
  *      the fixed 23, every error to a fixed category, and the run URL is built
  *      from constants and a numeric id rather than copied from the response.
  *   2. **a final scan.** {@link assertNoCredentialLeak} re-reads the serialized
@@ -32,13 +33,25 @@
  *      password, its host, or the token appears. The scan is case-sensitive and
  *      exact; a match fails the run rather than redacting, because a document
  *      that needed redacting was built wrong.
+ *
+ * The closed schema bounds each field alone. {@link validateEvidence} adds the
+ * one rule that relates fields: the recorded `job_set` must agree with
+ * `expected_jobs` and with the recorded jobs (see {@link assertJobSetConsistency}),
+ * and {@link renderEvidenceDocument} applies both before and after serializing.
  */
 
 import { ALL_ERROR_CATEGORIES } from "../lib/errorCategories.mjs";
 import { EXPECTED_CHECK_NAMES } from "../lib/aggregateAudit.mjs";
 import { COMPARISON_KEYS, MIGRATION_007_STATES } from "../lib/migrationState.mjs";
 import { DEADLINES_MS } from "./deadlines.mjs";
-import { EXPECTED_JOB_NAMES, OWNER, REPO, WORKFLOW_NAME } from "./github.mjs";
+import {
+  ACCEPTED_JOB_SETS,
+  ACCEPTED_JOB_SET_LABELS,
+  ALL_ACCEPTED_JOB_NAMES,
+  OWNER,
+  REPO,
+  WORKFLOW_NAME,
+} from "./github.mjs";
 import { HANDLED_SIGNALS } from "./runtime.mjs";
 import {
   StrictDataError,
@@ -48,8 +61,10 @@ import {
   int,
   nullable,
   obj,
+  readStrictJson,
   serializeChecked,
   str,
+  validate,
 } from "./strictData.mjs";
 
 export const EVIDENCE_SCHEMA_NAME = "gcd.m1-readiness-evidence";
@@ -96,6 +111,13 @@ export const MAX_EVIDENCE_BYTES = 524_288;
 export const MAX_SUMMARY_BYTES = 32_768;
 
 const SHA = str({ min: 40, max: 40 });
+
+// Derived from the accepted job sets, never written as literals: a set added
+// to or changed in github.mjs moves every bound and enumeration with it.
+const JOB_NAME = enumOf(ALL_ACCEPTED_JOB_NAMES);
+const JOB_SET = enumOf(ACCEPTED_JOB_SET_LABELS);
+const MIN_JOB_SET_SIZE = Math.min(...ACCEPTED_JOB_SETS.map((set) => set.names.length));
+const MAX_JOB_SET_SIZE = Math.max(...ACCEPTED_JOB_SETS.map((set) => set.names.length));
 const CATEGORY = enumOf(ALL_ERROR_CATEGORIES);
 const MIGRATION_NAME = str({ min: 1, max: 256 });
 const SERVER_SETTING = str({ max: 64 });
@@ -168,9 +190,25 @@ export const EVIDENCE_SCHEMA = obj({
       expected_branch: str({ max: 64 }),
       expected_repository: str({ max: 256 }),
       expected_run_attempt: int({ min: 1, max: 1 }),
-      expected_jobs: arr(enumOf(EXPECTED_JOB_NAMES), { min: 5, max: 5 }),
+      // Every accepted set, each exactly its own size; their contents are held
+      // to github.mjs by assertJobSetConsistency.
+      accepted_job_sets: obj(
+        Object.fromEntries(
+          ACCEPTED_JOB_SETS.map((set) => [
+            set.job_set,
+            arr(enumOf(set.names), { min: set.names.length, max: set.names.length }),
+          ]),
+        ),
+      ),
+      // The matched set's names, or null when no set matched.
+      expected_jobs: nullable(arr(JOB_NAME, { min: MIN_JOB_SET_SIZE, max: MAX_JOB_SET_SIZE })),
       identity_source: str({ max: 128 }),
     }),
+    // Which accepted set the run's job names equal exactly, or null.
+    job_set: nullable(JOB_SET),
+    // The set the missing names are reported against (the matched one, or the
+    // nearest); null when the run's jobs were never read.
+    compared_job_set: nullable(JOB_SET),
     authenticated: bool(),
     reason: nullable(str({ max: 256 })),
     run_id: nullable(int({ min: 1 })),
@@ -179,21 +217,21 @@ export const EVIDENCE_SCHEMA = obj({
     matching_run_count: nullable(int({ min: 0, max: 100 })),
     retried_run_count: nullable(int({ min: 0, max: 100 })),
     job_count: nullable(int({ min: 0, max: 100 })),
-    // Only jobs whose name is one of the five expected names are recorded, so
-    // no external string reaches the document.
+    // Only jobs whose name belongs to an accepted set are recorded, so no
+    // external string reaches the document.
     jobs: arr(
       obj({
-        name: enumOf(EXPECTED_JOB_NAMES),
+        name: JOB_NAME,
         status: str({ max: 32 }),
         conclusion: nullable(str({ max: 32 })),
         run_attempt: int({ min: 1, max: 100_000 }),
       }),
-      { max: 5 },
+      { max: MAX_JOB_SET_SIZE },
     ),
     duplicate_job_name_count: int({ min: 0, max: 100 }),
     unexpected_job_name_count: int({ min: 0, max: 100 }),
-    missing_job_names: arr(enumOf(EXPECTED_JOB_NAMES), { max: 5 }),
-    jobs_not_succeeded_on_attempt_1: arr(enumOf(EXPECTED_JOB_NAMES), { max: 5 }),
+    missing_job_names: arr(JOB_NAME, { max: MAX_JOB_SET_SIZE }),
+    jobs_not_succeeded_on_attempt_1: arr(JOB_NAME, { max: MAX_JOB_SET_SIZE }),
     failures: arr(str({ max: 128 }), { max: 16 }),
     discarded_unknown_fields: int({ min: 0, max: 1_000_000 }),
   }),
@@ -289,6 +327,84 @@ export const EVIDENCE_SCHEMA = obj({
   non_actions: arr(str({ max: 128 }), { min: NON_ACTIONS.length, max: NON_ACTIONS.length }),
 });
 
+/** @param {readonly string[]} a @param {readonly string[]} b */
+const sameList = (a, b) => a.length === b.length && a.every((value, index) => value === b[index]);
+
+/**
+ * The cross-field rule the closed schema cannot state alone: the recorded job
+ * set, the expected jobs and the recorded jobs must agree.
+ *
+ *   - `accepted_job_sets` is exactly {@link ACCEPTED_JOB_SETS}, set by set and
+ *     name by name;
+ *   - `job_set` and `expected_jobs` are null together, or `expected_jobs` is
+ *     exactly the named set's names, with that set's length;
+ *   - with a `job_set`, every recorded job and every missing or unsucceeded
+ *     name belongs to that set, and `compared_job_set` is the same set;
+ *   - `ESTABLISHED` requires a `job_set`, one recorded job per member of it
+ *     (every member, none repeated), each `completed` and `success` on attempt
+ *     1, and no failure, missing, duplicate or unexpected name.
+ *
+ * @param {any} ci a schema-valid `ci` section
+ */
+export const assertJobSetConsistency = (ci) => {
+  const refuse = (reason) => {
+    throw new StrictDataError(`job set: ${reason}`, "$.ci");
+  };
+  for (const set of ACCEPTED_JOB_SETS) {
+    if (!sameList(ci.identity.accepted_job_sets[set.job_set], set.names)) {
+      refuse(`accepted_job_sets.${set.job_set} is not the accepted set`);
+    }
+  }
+  if ((ci.job_set === null) !== (ci.identity.expected_jobs === null)) {
+    refuse("job_set and expected_jobs must be null together");
+  }
+  if (ci.job_set !== null) {
+    const set = ACCEPTED_JOB_SETS.find((candidate) => candidate.job_set === ci.job_set);
+    if (!set) refuse("job_set names no accepted set");
+    if (!sameList(ci.identity.expected_jobs, set.names)) {
+      refuse("expected_jobs is not exactly the named job set");
+    }
+    if (ci.compared_job_set !== ci.job_set) refuse("compared_job_set differs from job_set");
+    const outside = [
+      ...ci.jobs.map((j) => j.name),
+      ...ci.missing_job_names,
+      ...ci.jobs_not_succeeded_on_attempt_1,
+    ].filter((name) => !set.names.includes(name));
+    if (outside.length > 0) refuse("a recorded job is outside the named job set");
+  }
+  if (ci.status === "ESTABLISHED") {
+    if (ci.job_set === null) refuse("ESTABLISHED without a matched job set");
+    const set = ACCEPTED_JOB_SETS.find((candidate) => candidate.job_set === ci.job_set);
+    const names = ci.jobs.map((j) => j.name);
+    const complete =
+      ci.job_count === set.names.length &&
+      names.length === set.names.length &&
+      new Set(names).size === names.length &&
+      set.names.every((name) => names.includes(name));
+    const succeeded = ci.jobs.every(
+      (j) => j.status === "completed" && j.conclusion === "success" && j.run_attempt === 1,
+    );
+    const clean =
+      ci.failures.length === 0 &&
+      ci.missing_job_names.length === 0 &&
+      ci.jobs_not_succeeded_on_attempt_1.length === 0 &&
+      ci.duplicate_job_name_count === 0 &&
+      ci.unexpected_job_name_count === 0;
+    if (!complete || !succeeded || !clean) refuse("ESTABLISHED, but the jobs are not exactly the named set, all succeeded");
+  }
+};
+
+/**
+ * Validate an evidence document: the closed schema, then the job-set rule.
+ *
+ * @param {unknown} document
+ */
+export const validateEvidence = (document) => {
+  const value = /** @type {any} */ (validate(document, EVIDENCE_SCHEMA));
+  assertJobSetConsistency(value.ci);
+  return value;
+};
+
 /**
  * Refuse to emit a document that contains a credential.
  *
@@ -347,7 +463,7 @@ export const buildEvidence = ({
   aggregateAudit,
 }) => {
   const recordedJobs = Array.isArray(ci.jobs)
-    ? ci.jobs.filter((j) => EXPECTED_JOB_NAMES.includes(j.name))
+    ? ci.jobs.filter((j) => ALL_ACCEPTED_JOB_NAMES.includes(j.name))
     : [];
   return {
     schema: EVIDENCE_SCHEMA_NAME,
@@ -402,9 +518,12 @@ export const buildEvidence = ({
         expected_branch: ci.identity.expected_branch,
         expected_repository: ci.identity.expected_repository,
         expected_run_attempt: ci.identity.expected_run_attempt,
+        accepted_job_sets: ci.identity.accepted_job_sets,
         expected_jobs: ci.identity.expected_jobs,
         identity_source: ci.identity.identity_source,
       },
+      job_set: ci.job_set ?? null,
+      compared_job_set: ci.compared_job_set ?? null,
       authenticated: ci.identity.authenticated,
       reason: ci.reason ?? null,
       run_id: ci.run?.id ?? null,
@@ -424,7 +543,7 @@ export const buildEvidence = ({
       unexpected_job_name_count: ci.unexpected_job_names?.length ?? 0,
       missing_job_names: ci.missing_job_names ?? [],
       jobs_not_succeeded_on_attempt_1: (ci.jobs_not_succeeded_on_attempt_1 ?? []).filter((n) =>
-        EXPECTED_JOB_NAMES.includes(n),
+        ALL_ACCEPTED_JOB_NAMES.includes(n),
       ),
       failures: ci.failures ?? [],
       discarded_unknown_fields: ci.discarded_unknown_fields ?? 0,
@@ -480,7 +599,9 @@ export const buildEvidence = ({
  * @param {{ connectionString?: string, token?: string }} secrets
  */
 export const renderEvidenceDocument = (document, secrets) => {
-  const { text } = serializeChecked(document, EVIDENCE_SCHEMA, MAX_EVIDENCE_BYTES);
+  validateEvidence(document);
+  const { text, bytes } = serializeChecked(document, EVIDENCE_SCHEMA, MAX_EVIDENCE_BYTES);
+  validateEvidence(readStrictJson(bytes, { maxBytes: MAX_EVIDENCE_BYTES }));
   assertNoCredentialLeak(text, secrets);
   return text;
 };
@@ -519,7 +640,8 @@ export const renderSummary = (d, secrets) => {
     `  Required repository / branch  ${d.ci.identity.expected_repository} / ${d.ci.identity.expected_branch}`,
     `  Run                           ${d.ci.run_url ?? "none accepted"}`,
     `  Attempt                       ${d.ci.run_attempt ?? "n/a"}`,
-    `  Jobs succeeded on attempt 1   ${d.ci.jobs.length} of ${d.ci.identity.expected_jobs.length}`,
+    `  Job set                       ${d.ci.job_set ?? "none matched exactly"}`,
+    `  Jobs succeeded on attempt 1   ${d.ci.jobs.length} of ${d.ci.identity.expected_jobs?.length ?? "no matched set"}`,
     ...(d.ci.reason ? [`  Reason                        ${d.ci.reason}`] : []),
     "",
     "MIGRATION STATE",

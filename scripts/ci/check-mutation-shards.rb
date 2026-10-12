@@ -18,11 +18,14 @@
 # in a harness command -- is refused, never guessed.
 #
 # After checking the given workflow, it proves itself: it applies injected
-# faults to that workflow's text (a shard missing -- any one of the quality
-# job's three shard steps --, a shard duplicated, a different n, k out of range,
-# the harness without `--shard`, an unresolved shard value, an unsupported
-# matrix form) and requires each to be refused with the expected reason. Each fault's anchor text must occur exactly once, so the
-# self-test fails rather than passes vacuously if the workflow drifts.
+# faults to that workflow's text (a shard missing -- shard 0, 3, 4 or the last
+# value, 9, dropped from the shard jobs' matrix --, a shard duplicated -- one
+# matrix value replaced by another, a value listed twice, or the command given
+# a fixed shard --, a different n in another job, k out of range, the harness
+# without `--shard`, an unresolved shard value, an unsupported matrix form) and
+# requires each to be refused with the expected reason. Each fault's anchor
+# text must occur exactly once, so the self-test fails rather than passes
+# vacuously if the workflow drifts.
 #
 # Run: ruby scripts/ci/check-mutation-shards.rb .github/workflows/ci.yml
 
@@ -150,49 +153,57 @@ def check_workflow(text)
     runs.sort_by { |_, k, _| k }.map { |where, k, _| "#{k} (#{where})" }.join(", ")
 end
 
+MATRIX = "        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]\n"
+COMMAND = "        run: npm run test:payload-mutation -- --shard ${{ matrix.shard }}/10\n"
+
 FAULTS = [
-  ["a shard missing: the quality job's shard 0/5 step removed",
-   "        run: npm run test:payload-mutation -- --shard 0/5\n", "",
-   "shard 0/5 is not run"],
-  ["a shard duplicated: the PostgreSQL 18 job given shard 1",
-   "          - postgres-version: \"18\"\n            mutation-shard: \"2\"",
-   "          - postgres-version: \"18\"\n            mutation-shard: \"1\"",
-   "shard 1/5 is run 2 times; shard 2/5 is not run"],
-  ["a shard duplicated: the quality job's first step given shard 2",
-   "--shard 0/5\n", "--shard 2/5\n",
-   "shard 0/5 is not run; shard 2/5 is run 2 times"],
-  ["a different n in one job",
-   "--shard 0/5\n", "--shard 0/3\n",
-   "shards disagree on n: 3, 5"],
+  ["a shard missing: shard 0 dropped from the shard jobs' matrix",
+   MATRIX, "        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9]\n",
+   "shard 0/10 is not run"],
+  ["a shard duplicated: the matrix's shard 2 replaced by a second shard 1",
+   MATRIX, "        shard: [0, 1, 1, 3, 4, 5, 6, 7, 8, 9]\n",
+   "shard 1/10 is run 2 times; shard 2/10 is not run"],
+  ["a shard duplicated: the harness command given a fixed shard 2 instead of the matrix value",
+   COMMAND, "        run: npm run test:payload-mutation -- --shard 2/10\n",
+   "shard 2/10 is run 10 times"],
+  ["a different n in another job",
+   "          npm run test:studio-worker-postgres\n",
+   "          npm run test:studio-worker-postgres && npm run test:payload-mutation -- --shard 0/3\n",
+   "shards disagree on n: 3, 10"],
   ["k out of range",
-   "--shard 0/5\n", "--shard 5/5\n",
+   MATRIX, "        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 10]\n",
    "has k >= n"],
   ["the harness run without --shard",
-   "npm run test:payload-mutation -- --shard 0/5\n", "npm run test:payload-mutation\n",
+   COMMAND, "        run: npm run test:payload-mutation\n",
    "runs the harness without --shard"],
   ["the harness run directly, without --shard, in another job",
    "          npm run test:studio-worker-postgres\n",
    "          npm run test:studio-worker-postgres && node scripts/ci/payload-contract-mutation.mjs\n",
    "runs the harness without --shard"],
   ["--shard= instead of --shard k/n",
-   "--shard 0/5\n", "--shard=0/5\n",
+   COMMAND, "        run: npm run test:payload-mutation -- --shard=${{ matrix.shard }}/10\n",
    "uses --shard="],
   ["a shard value no matrix entry defines",
-   "--shard ${{ matrix.mutation-shard }}/5", "--shard ${{ matrix.mutation-shards }}/5",
-   "matrix.mutation-shards is not defined"],
+   "--shard ${{ matrix.shard }}/10", "--shard ${{ matrix.shards }}/10",
+   "matrix.shards is not defined"],
   ["a shard value left as an expression",
-   "--shard ${{ matrix.mutation-shard }}/5", "--shard ${{ github.run_attempt }}/5",
+   "--shard ${{ matrix.shard }}/10", "--shard ${{ github.run_attempt }}/10",
    "is not resolved to k/n"],
   ["an unsupported matrix form",
-   "        postgres-version: [\"16\", \"18\"]\n",
-   "        postgres-version: [\"16\", \"18\"]\n        exclude:\n          - postgres-version: \"16\"\n",
+   MATRIX, "#{MATRIX}        exclude:\n          - shard: 9\n",
    "matrix exclude is not supported"],
-  ["a shard missing: the quality job's shard 3/5 step removed",
-   "        run: npm run test:payload-mutation -- --shard 3/5\n", "",
-   "shard 3/5 is not run"],
-  ["a shard missing: the quality job's shard 4/5 step removed",
-   "        run: npm run test:payload-mutation -- --shard 4/5\n", "",
-   "shard 4/5 is not run"],
+  ["a shard missing: shard 3 dropped from the shard jobs' matrix",
+   MATRIX, "        shard: [0, 1, 2, 4, 5, 6, 7, 8, 9]\n",
+   "shard 3/10 is not run"],
+  ["a shard missing: shard 4 dropped from the shard jobs' matrix",
+   MATRIX, "        shard: [0, 1, 2, 3, 5, 6, 7, 8, 9]\n",
+   "shard 4/10 is not run"],
+  ["the shard matrix missing one value: its last, shard 9",
+   MATRIX, "        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8]\n",
+   "shard 9/10 is not run"],
+  ["a shard value appearing twice in the matrix: shard 9 listed again",
+   MATRIX, "        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 9]\n",
+   "shard 9/10 is run 2 times"],
 ].freeze
 
 path = ARGV.fetch(0) { abort "usage: ruby scripts/ci/check-mutation-shards.rb .github/workflows/ci.yml" }

@@ -56,9 +56,12 @@ import {
   buildEvidence,
   renderEvidenceDocument,
   renderSummary,
+  validateEvidence,
 } from "./evidence.mjs";
 import {
+  ACCEPTED_JOB_SETS,
   EXPECTED_JOB_NAMES,
+  PARALLEL_MUTATION_JOB_NAMES,
   MAX_RESPONSE_BYTES,
   OWNER,
   REPO,
@@ -1988,6 +1991,98 @@ const ciWith = async ({ runs, jobs, runsTotal, jobsTotal, runtime = new Runtime(
   const missing = await ciWith({ runs: [makeRun()], jobs: makeJobs(EXPECTED_JOB_NAMES.slice(0, 4)) });
   check("github", "a missing job is named from the fixed set", missing.result.missing_job_names.length === 1);
 
+  // --- two exact accepted job sets: the legacy five, or the parallel fifteen --
+  //
+  // A run's job names must equal exactly ONE accepted set. Each case below
+  // names its verdict; nothing is filtered and no subset or mixture passes.
+  const SHARD_JOB_NAMES = PARALLEL_MUTATION_JOB_NAMES.filter((n) => !EXPECTED_JOB_NAMES.includes(n));
+  check(
+    "github",
+    "the accepted job sets are exactly the legacy five and the parallel fifteen, in that order",
+    ACCEPTED_JOB_SETS.length === 2 &&
+      ACCEPTED_JOB_SETS[0].job_set === "legacy-five" && ACCEPTED_JOB_SETS[0].names === EXPECTED_JOB_NAMES &&
+      ACCEPTED_JOB_SETS[1].job_set === "parallel-mutation" && ACCEPTED_JOB_SETS[1].names === PARALLEL_MUTATION_JOB_NAMES &&
+      EXPECTED_JOB_NAMES.length === 5 && PARALLEL_MUTATION_JOB_NAMES.length === 15 &&
+      new Set(PARALLEL_MUTATION_JOB_NAMES).size === 15 &&
+      Object.isFrozen(EXPECTED_JOB_NAMES) && Object.isFrozen(PARALLEL_MUTATION_JOB_NAMES) && Object.isFrozen(ACCEPTED_JOB_SETS),
+  );
+  check(
+    "github",
+    "the parallel set is the legacy five plus exactly the ten shard jobs 0/10 to 9/10",
+    EXPECTED_JOB_NAMES.every((n) => PARALLEL_MUTATION_JOB_NAMES.includes(n)) &&
+      SHARD_JOB_NAMES.length === 10 &&
+      SHARD_JOB_NAMES.every((n, k) => n === `Payload-contract mutations ${k}/10`),
+  );
+  {
+    const { result } = await ciWith({ runs: [makeRun()], jobs: makeJobs(EXPECTED_JOB_NAMES) });
+    check(
+      "github",
+      "the legacy five is ESTABLISHED and recorded as job_set legacy-five with five expected jobs",
+      result.status === "ESTABLISHED" && result.job_set === "legacy-five" &&
+        result.identity.expected_jobs.length === 5 && result.failures.length === 0,
+    );
+  }
+  {
+    const { result } = await ciWith({ runs: [makeRun()], jobs: makeJobs(PARALLEL_MUTATION_JOB_NAMES) });
+    check(
+      "github",
+      "the full parallel set is ESTABLISHED and recorded as job_set parallel-mutation with fifteen expected jobs",
+      result.status === "ESTABLISHED" && result.job_set === "parallel-mutation" &&
+        result.identity.expected_jobs.length === 15 && result.jobs.length === 15 && result.failures.length === 0,
+    );
+  }
+  {
+    // Order is not membership: the same fifteen in reverse still match.
+    const { result } = await ciWith({ runs: [makeRun()], jobs: makeJobs([...PARALLEL_MUTATION_JOB_NAMES].reverse()) });
+    check("github", "the parallel set in another order is still ESTABLISHED", result.status === "ESTABLISHED" && result.job_set === "parallel-mutation");
+  }
+  for (const dropped of PARALLEL_MUTATION_JOB_NAMES) {
+    const { result } = await ciWith({ runs: [makeRun()], jobs: makeJobs(PARALLEL_MUTATION_JOB_NAMES.filter((n) => n !== dropped)) });
+    check(
+      "github",
+      `the parallel set without "${dropped}" is NOT ESTABLISHED, naming it missing`,
+      result.status === "NOT ESTABLISHED" && result.job_set === null && result.identity.expected_jobs === null &&
+        result.missing_job_names.length === 1 && result.missing_job_names[0] === dropped &&
+        result.failures.includes("missing job names"),
+    );
+  }
+  /** @type {Array<[string, string[], string]>} */
+  const mixtures = [
+    ["the legacy five plus one shard job", [...EXPECTED_JOB_NAMES, SHARD_JOB_NAMES[0]], "unexpected job names"],
+    ["the legacy five plus a different shard job", [...EXPECTED_JOB_NAMES, SHARD_JOB_NAMES[9]], "unexpected job names"],
+    ["a 50/50 mix: half the legacy five and half the shard jobs", [...EXPECTED_JOB_NAMES.slice(0, 3), ...SHARD_JOB_NAMES.slice(0, 5)], "missing job names"],
+    ["a 50/50 mix: the legacy five and half the shard jobs (a tie, reported against the legacy five)", [...EXPECTED_JOB_NAMES, ...SHARD_JOB_NAMES.slice(5)], "unexpected job names"],
+    ["the parallel set plus a duplicated shard job", [...PARALLEL_MUTATION_JOB_NAMES, SHARD_JOB_NAMES[3]], "duplicate job names"],
+    ["fifteen jobs, one shard job duplicated in place of another", [...PARALLEL_MUTATION_JOB_NAMES.filter((n) => n !== SHARD_JOB_NAMES[4]), SHARD_JOB_NAMES[3]], "duplicate job names"],
+    ["the parallel set with an eleventh shard job", [...PARALLEL_MUTATION_JOB_NAMES, "Payload-contract mutations 10/10"], "unexpected job names"],
+    ["the parallel set with a shard job renamed to /5", [...PARALLEL_MUTATION_JOB_NAMES.filter((n) => n !== SHARD_JOB_NAMES[0]), "Payload-contract mutations 0/5"], "unexpected job names"],
+    ["the parallel set plus an unexpected job", [...PARALLEL_MUTATION_JOB_NAMES, "Surprise"], "unexpected job names"],
+  ];
+  for (const [label, names, reason] of mixtures) {
+    const { result } = await ciWith({ runs: [makeRun()], jobs: makeJobs(names) });
+    check(
+      "github",
+      `${label} is NOT ESTABLISHED (${reason}; no set matched)`,
+      result.status === "NOT ESTABLISHED" && result.job_set === null && result.identity.expected_jobs === null &&
+        result.failures.includes(reason) && result.failures.includes("the job names match no accepted job set exactly"),
+    );
+  }
+  for (const [label, over] of [
+    ["one shard job concluded skipped", { conclusion: "skipped" }],
+    ["one shard job succeeded only on attempt 2", { run_attempt: 2 }],
+    ["one shard job failed", { conclusion: "failure" }],
+  ]) {
+    const jobs = makeJobs(PARALLEL_MUTATION_JOB_NAMES).map((j) => (j.name === SHARD_JOB_NAMES[6] ? { ...j, ...over } : j));
+    const { result } = await ciWith({ runs: [makeRun()], jobs });
+    check(
+      "github",
+      `${label}: NOT ESTABLISHED, the set matched but the job named as not succeeded`,
+      result.status === "NOT ESTABLISHED" && result.job_set === "parallel-mutation" &&
+        result.jobs_not_succeeded_on_attempt_1.length === 1 && result.jobs_not_succeeded_on_attempt_1[0] === SHARD_JOB_NAMES[6] &&
+        result.failures.length === 1 && result.failures[0] === "a job did not succeed on attempt 1",
+    );
+  }
+
   for (const status of [401, 403, 404, 422, 500, 502]) {
     const { result } = await withFetch(
       async () => new Response(new TextEncoder().encode("{}"), { status }),
@@ -2495,6 +2590,63 @@ const sampleRepository = {
   check("evidence", "an extra field fails the closed evidence schema", threw(() => validate(extra, EVIDENCE_SCHEMA)) !== null);
 
   check("evidence", "only expected job names can appear in the document", threw(() => validate({ ...document, ci: { ...document.ci, jobs: [{ name: "Surprise", status: "completed", conclusion: "success", run_attempt: 1 }] } }, EVIDENCE_SCHEMA)) !== null);
+
+  // --- the job set recorded in evidence agrees with its jobs -----------------
+  const buildWith = (ciResult) =>
+    buildEvidence({
+      generatedAt: "2026-10-12T00:00:00.000Z",
+      entrypoint: "scripts/ops/m1-readiness/cli.mjs",
+      runtime: { interrupted: false, interruptedBy: null },
+      repository: sampleRepository,
+      ci: ciResult,
+      migrationState,
+      aggregateAudit,
+    });
+  const legacyDoc = buildWith(ci);
+  const { result: parallelCi } = await ciWith({ runs: [makeRun()], jobs: makeJobs(PARALLEL_MUTATION_JOB_NAMES) });
+  const parallelDoc = buildWith(parallelCi);
+  check("evidence", "the legacy-five document records job_set legacy-five and five expected jobs", validateEvidence(legacyDoc).ci.job_set === "legacy-five" && legacyDoc.ci.identity.expected_jobs.length === 5);
+  check(
+    "evidence",
+    "the parallel document validates and renders, recording job_set parallel-mutation, fifteen expected jobs and fifteen jobs",
+    validateEvidence(parallelDoc).ci.job_set === "parallel-mutation" && parallelDoc.ci.identity.expected_jobs.length === 15 &&
+      parallelDoc.ci.jobs.length === 15 && renderEvidenceDocument(parallelDoc, {}).includes('"job_set": "parallel-mutation"'),
+  );
+  check("evidence", "every accepted set is recorded verbatim in the identity", ACCEPTED_JOB_SETS.every((set) => JSON.stringify(parallelDoc.ci.identity.accepted_job_sets[set.job_set]) === JSON.stringify(set.names)));
+  {
+    const { result: shortCi } = await ciWith({ runs: [makeRun()], jobs: makeJobs(PARALLEL_MUTATION_JOB_NAMES.slice(0, 14)) });
+    const shortDoc = buildWith(shortCi);
+    check("evidence", "a run matching no set is recorded NOT ESTABLISHED with job_set and expected_jobs null, and validates", validateEvidence(shortDoc).ci.status === "NOT ESTABLISHED" && shortDoc.ci.job_set === null && shortDoc.ci.identity.expected_jobs === null && shortDoc.ci.compared_job_set === "parallel-mutation");
+  }
+  check("evidence", "a document never read from GitHub records no job set and validates", validateEvidence(failedDocument).ci.job_set === null && failedDocument.ci.compared_job_set === null);
+  const withCi = (doc, ciOver, identityOver = {}) => ({ ...doc, ci: { ...doc.ci, ...ciOver, identity: { ...doc.ci.identity, ...identityOver } } });
+  /** @type {Array<[string, object]>} */
+  const inconsistent = [
+    ["fifteen parallel jobs labelled legacy-five", withCi(parallelDoc, { job_set: "legacy-five", compared_job_set: "legacy-five" })],
+    ["fifteen parallel jobs labelled legacy-five with the legacy five as expected jobs", withCi(parallelDoc, { job_set: "legacy-five", compared_job_set: "legacy-five" }, { expected_jobs: [...EXPECTED_JOB_NAMES] })],
+    ["five legacy jobs labelled parallel-mutation", withCi(legacyDoc, { job_set: "parallel-mutation", compared_job_set: "parallel-mutation" })],
+    ["five legacy jobs labelled parallel-mutation with fifteen expected jobs", withCi(legacyDoc, { job_set: "parallel-mutation", compared_job_set: "parallel-mutation" }, { expected_jobs: [...PARALLEL_MUTATION_JOB_NAMES] })],
+    ["ESTABLISHED with no job set", withCi(parallelDoc, { job_set: null }, { expected_jobs: null })],
+    ["a job set with no expected jobs", withCi(parallelDoc, {}, { expected_jobs: null })],
+    ["expected jobs with no job set", withCi(parallelDoc, { job_set: null })],
+    ["expected jobs one short of the named set", withCi(parallelDoc, {}, { expected_jobs: PARALLEL_MUTATION_JOB_NAMES.slice(0, 14) })],
+    ["ESTABLISHED parallel-mutation with a shard job missing from its jobs", withCi(parallelDoc, { jobs: parallelDoc.ci.jobs.slice(0, 14), job_count: 14 })],
+    ["ESTABLISHED parallel-mutation with a shard job listed twice", withCi(parallelDoc, { jobs: [...parallelDoc.ci.jobs.slice(0, 14), parallelDoc.ci.jobs[3]] })],
+    ["ESTABLISHED parallel-mutation with a skipped shard job", withCi(parallelDoc, { jobs: parallelDoc.ci.jobs.map((j, i) => (i === 3 ? { ...j, conclusion: "skipped" } : j)) })],
+    ["an accepted set altered in the identity", withCi(parallelDoc, {}, { accepted_job_sets: { ...parallelDoc.ci.identity.accepted_job_sets, "legacy-five": [...EXPECTED_JOB_NAMES].reverse() } })],
+    ["a compared job set that differs from the matched one", withCi(parallelDoc, { compared_job_set: "legacy-five" })],
+  ];
+  for (const [label, doc] of inconsistent) {
+    check(
+      "evidence",
+      `evidence naming ${label} is refused by the schema and never rendered`,
+      threw(() => validateEvidence(doc)) instanceof StrictDataError && threw(() => renderEvidenceDocument(doc, {})) instanceof StrictDataError,
+    );
+  }
+  check("evidence", "a job-set label outside the accepted labels fails the closed schema", threw(() => validate(withCi(parallelDoc, { job_set: "parallel-mutation-v2" }), EVIDENCE_SCHEMA)) !== null);
+  check("evidence", "an unknown field in the CI section still fails the closed schema", threw(() => validate(withCi(parallelDoc, { job_set_note: "x" }), EVIDENCE_SCHEMA)) !== null);
+  check("evidence", "an unknown accepted set in the identity fails the closed schema", threw(() => validate(withCi(parallelDoc, {}, { accepted_job_sets: { ...parallelDoc.ci.identity.accepted_job_sets, extra: [] } }), EVIDENCE_SCHEMA)) !== null);
+  check("evidence", "the summary names the matched job set and counts against its size", renderSummary(parallelDoc, {}).includes("parallel-mutation") && renderSummary(parallelDoc, {}).includes("15 of 15"));
 }
 
 if (INHERITED_TOKEN !== undefined) process.env.GITHUB_TOKEN = INHERITED_TOKEN;

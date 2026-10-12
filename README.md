@@ -403,6 +403,10 @@ Content Studio S8.1 adds no mutation: 712 over 69.)*
 *(Content Studio S8.2, `IMPLEMENTED`: 713 mutations over 69 captured paths; `M713` makes a padded key enable the
 live runner (`SW44`, `SW46`); it runs in shard 2/5.)* *(`MERGED` through PR #118. Content Studio S8.3 is
 documentation only: 713 over 69.)*
+*(2026-10-12, the CI parallel-mutation change, `IMPLEMENTED`, not merged: CI runs `n = 10`, each shard its own
+parallel job — *Payload-contract mutations 0/10* … *9/10* — instead of steps inside the quality and PostgreSQL
+jobs, so CI has fifteen jobs; the M1 readiness gate accepts exactly the legacy five or exactly these fifteen. Still
+713 over 69; see [Testing](docs/TESTING.md) and [M1 readiness runner](docs/M1_READINESS_RUNNER.md).)*
 
 This is repository-content authority only. It cannot prevent a reviewer-approved coordinated
 malicious change, prove deployment, or establish production database state. Neither SQL artifact
