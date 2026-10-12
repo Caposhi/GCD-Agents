@@ -1343,6 +1343,10 @@ and never before `L` is in hand.
   - **ordinary automated deployment is prohibited** — the controller would stop, and it must not be
     forced past;
   - **no unrelated release may occur**, of any service, for any reason;
+    *(Dated pointer, owner decision of 2026-10-10 for the current interval: narrowed so that it no
+    longer covers the Content Studio's own `gcd-studio-*` resources, which are outside production
+    wiring; every `gcd-social-*` service and `gcd-social-db` stays covered exactly as before. See
+    [Status](STATUS.md#m1m2-interval--owner-decision-narrowing-the-release-freeze-live-services-check-recorded-2026-10-10).)*
   - the interval must be **explicitly time-bounded**, actively **monitored**, and **owned by the named
     operator** who performed M1;
   - **M2 is the controlled reconciliation step** that returns all three services to one commit;
