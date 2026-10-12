@@ -8,7 +8,8 @@
 > document's own scope and is not a statement about the current state of migration 007 or M1.
 
 > **Update — 2026-10-12: two exact accepted CI job sets** (the CI parallel-mutation change,
-> `IMPLEMENTED`, not merged; owner-authorized "authorize m1-readiness change"). CI now runs the
+> `IMPLEMENTED`, not merged; owner-authorized "authorize m1-readiness change"; *`MERGED` through PR #121
+> at `d545e14…` since 2026-10-12*). CI now runs the
 > payload-contract mutation harness as ten parallel jobs, *Payload-contract mutations 0/10* …
 > *9/10*, so a run on the new layout has fifteen jobs. `github.mjs` keeps `EXPECTED_JOB_NAMES` as the
 > frozen legacy five, adds the frozen `PARALLEL_MUTATION_JOB_NAMES` (those five plus the ten shard
