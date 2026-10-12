@@ -70,7 +70,19 @@ The current partial-release interval, bound `2026-10-22T18:52Z`, prohibits every
 
 See [Roadmap](ROADMAP.md).
 
+### Content Studio S8.4 — the browser form-POST fix: the pages' `Referrer-Policy` is `same-origin` — repository only
+
+**`IMPLEMENTED`, not merged; not deployed.** Based directly on `ec8ec99dbc8daae28d7fd15a8c74f4b6678c009c`, the merge of PR #122 (the shared-sign-in-limits record). [PR #123](https://github.com/Caposhi/GCD-Agents/pull/123). Recorded 2026-10-12.
+
+- **The defect (OWNER-OBSERVED in production, reviewer-verified 2026-10-12):** every Studio page sent `Referrer-Policy: no-referrer`. Under the Fetch standard a browser's form POST (a navigate-mode request) then carries `Origin: null`; `originAllowed` (`src/studio/web/sessions.ts`) refuses `"null"`, so **every browser POST was refused 403 "Forbidden" before its handler ran**. The owner hit it on `POST /settings/caps` at `gcd-studio-web` on `d545e14`; the reviewer reproduced it in headless Chromium. The offline suites could not see it: their requests set the Origin header themselves.
+- **The fix:** `SECURITY_HEADERS["referrer-policy"]` in `src/studio/web/app.ts` is `same-origin`, with the reason beside it. **The Origin and CSRF checks are unchanged** — `"null"` and a missing Origin are still refused (`SA46`); the CSP, `form-action`, HSTS and every other header are unchanged; a cross-origin request still carries no referrer. Downloads (`src/studio/web/downloads.ts`) keep `no-referrer`: an attachment is never rendered as a page and holds no form.
+- **Tests:** `SA56` expects `same-origin`; **`SA154`** (new) requires the page policy never to be `no-referrer`, with the reason; `test:offline` **2,098 → 2,099** (Studio web 174 → 175); the Studio PostgreSQL suites on 16 **384 / 49 / 40**, unchanged; the mutation harness **713 over 69 captured paths**, unchanged (no mutation anchors on the changed text). **`scripts/local/studio-form-post-check.mjs`** (new, **local only, not in CI** — the M1 readiness runner pins CI's exact job sets) drives the real caps form in Chromium: on the fix the POST carries the page's own origin and is answered 303 with the caps stored and audited; a control copy whose pages send `no-referrer` reproduces `Origin: null` and the 403. Figures in [Testing](TESTING.md).
+- **Not deployed.** On `d545e14`, live today, every browser form POST is still refused. **After S8.4 merges, both Studio services are redeployed at its merge commit, web first** (the worker claims only jobs of its own commit) — [Operations](OPERATIONS.md#content-studio-release-checklist--owner-actions-each-separately-authorized) step 6; then O5 is finished, then O6.
+- **This change's merge SHA, its `main` CI and the `deploy-production` refusal for its merge are blocking follow-ups**, verified by the reviewer after the merge. See [Roadmap](ROADMAP.md).
+
 ### Records — shared sign-in limits accepted for the MVP, S8b post-MVP; the Render documentation search of 2026-10-12; PR #121 reconciled — repository only
+
+*(Reconciled 2026-10-12 by Content Studio S8.4, REVIEWER-VERIFIED in GitHub: **`MERGED`** through [PR #122](https://github.com/Caposhi/GCD-Agents/pull/122) at **`ec8ec99dbc8daae28d7fd15a8c74f4b6678c009c`** (2026-10-12T18:48:31Z), content identical to its head `c7cce00`; PR CI run 282 (`38292481371`) and `main` CI run 283 (`38293408123`) fifteen jobs each, all `success` on attempt 1; `deploy-production` run 87 (`38294310638`) — gate job `114961605305` on runner `1000001712` failed at *Refuse while production automation is disabled*, release job `114961636831` skipped. **Its follow-ups are DISCHARGED.** As recorded until then:)*
 
 **`IMPLEMENTED`, not merged; documentation only — `git diff --stat origin/main -- ':!*.md'` is empty.** Based directly on `d545e14eddde7f719b8188707f19d239f8665ceb`, the merge of PR #121 (the CI parallel-mutation change). It records decisions and evidence; it performs nothing on Render, Google or Anthropic, and calls no model.
 
@@ -487,6 +499,44 @@ The row above marked "not reverified" — the GitHub `production` environment va
 
 **No money can be spent:** no Anthropic key exists on any service, and the running worker's caps are zero.
 
+### Content Studio on Render — O5 partially performed (2026-10-12) and the form-POST defect
+
+**Recorded 2026-10-12 by Content Studio S8.4 (a repository change; it performed nothing on Render, Google or Anthropic).** The owner performed part of O5 on 2026-10-12 under the owner's own authorization, given verbatim as **"O5 authorized at d545e14"** at **2026-10-12T18:31Z**, following step 6 of the release checklist in [Operations](OPERATIONS.md#content-studio-release-checklist--owner-actions-each-separately-authorized). **The Studio is separate from the live system**; none of this changes the `gcd-social-*` rows above. **Every fact below is OWNER-OBSERVED** — seen by the owner in Render's dashboard and the Studio, shown to the reviewer by log or screenshot; the reviewer read the logs and screenshots and had no Render, Google or Anthropic access.
+
+**`gcd-studio-web`, deployed manually at `d545e14`:**
+
+- The pre-deploy `studio:migrate` **skipped 0001–0004** (already applied, sha256 matches).
+- **Ready at 18:33:46Z** with state `postgres` and schema `0004`.
+- `/healthz` showed the `d545e14` commit and `state: "postgres"`.
+- One `http.denied` 405 at start-up — a probe.
+
+**`gcd-studio-worker`, deployed manually at `d545e14`:**
+
+- `live_runner` **disabled** / `anthropic_key_absent`.
+- **No `caps.zero` line** — the 75/300 ceilings O4 saved are loaded.
+- `ownership.waiting` at 18:37:19Z, then `ownership.held` at 18:38:17Z.
+- `recovery.finished` with **0** interrupted.
+- Ready with `d545e14`, `postgres`, `disabled`.
+
+**The first sign-in, as the bootstrap owner:** "Signed in as Michael Capote — role: owner".
+
+**Caps:** $50 / $200 are the migration defaults (`0002`, `studio_settings`). The settings page showed the owner's cap **50/200**, the ceiling **75/300** and the effective cap **50/200**, so no save was needed.
+
+**The form-POST defect, found here.** Every Studio page sent `Referrer-Policy: no-referrer`; under the Fetch standard a browser's form POST then carries `Origin: null`, which the exact-Origin check refuses, so **`POST /settings/caps` — and every other browser form POST — returned 403 "Forbidden" before its handler ran**. Reviewer-verified 2026-10-12, and reproduced in headless Chromium (no-referrer → Origin `null`; same-origin → the real origin). **No write was made through the web; nothing was weakened in production.** The fix is Content Studio S8.4 (`IMPLEMENTED`, not merged — [Roadmap](ROADMAP.md)).
+
+**The rest of O5 waits for S8.4 to merge and be deployed:** the facts upload and its activation; the restore drill and adding staff, which can come after O6. After S8.4 merges, **both services are redeployed at its merge commit, web first** — the worker claims only jobs of its own commit ([Operations](OPERATIONS.md#content-studio-release-checklist--owner-actions-each-separately-authorized) step 6).
+
+**The Studio's state labels (2026-10-12, after this partial O5):**
+
+| Resource | State |
+|---|---|
+| `gcd-studio-db` | **`CONFIGURED`** — Studio migrations 0001–0004 applied; unchanged |
+| `gcd-studio-web` | **`DEPLOYED`** at `d545e14` — sign-in and read-only pages served; **every browser form POST refused 403** (S8.4); not `PRODUCTION-VALIDATED` |
+| `gcd-studio-worker` | **`DEPLOYED`** at `d545e14`, live runner **disabled** — **not `ENABLED`**; ceilings 75/300 loaded |
+| The Studio as a whole | **Nothing is `PRODUCTION-VALIDATED`** |
+
+**No money can be spent:** no Anthropic key exists on any service.
+
 ### Observed: normal scheduled run of the Phase 0D production SHA
 
 **Closed 2026-08-25.** The scheduler resource `crn-d8ulb4rtqb8s73bdjctg`, with its live deploy still at `10098de73667797120da8c7dfa4da83f336ff6ba`, executed a normal scheduled run:
@@ -561,8 +611,9 @@ This closes the previously open item requiring observation of a normal scheduled
 | Content Studio S8.3 — the owner's decision of 2026-10-10 narrowing the release freeze to exclude the Studio's own resources (`gcd-studio-*`); the live-services check of 2026-10-10; Operations' freeze-gate step rewritten — [PR #119](https://github.com/Caposhi/GCD-Agents/pull/119), merge `68ba72c20cc5908cf687ba8302f4aeb136afd4b9` | **`MERGED`** — documentation only, nothing to deploy; PR CI run 38083155773 and `main` push run 38252338460 green on attempt 1; `deploy-production` run 84 refused at the disabled gate, release skipped; merge-SHA follow-up discharged *(until 2026-10-12: `IMPLEMENTED`, not merged)*. See [Roadmap](ROADMAP.md) |
 | Content Studio O3/O1/O4 record — the owner actions of 2026-10-12 (the §3.6 Blueprint gate, O3, O1, O4 without the key) recorded with evidence labels; the migration deviation; the O3 lessons in the release checklist; the TLS decision opened — [PR #120](https://github.com/Caposhi/GCD-Agents/pull/120), merge `88b097e20a0cc4efd965acf4b1a8f694d33a0810` | **`MERGED`** — documentation only, nothing to deploy; `main` CI run 278 green on attempt 1; `deploy-production` run 85 refused at the disabled gate, release skipped *(until 2026-10-12: `IMPLEMENTED`, not merged)*. See [Roadmap](ROADMAP.md) |
 | CI — the payload-contract mutation harness as ten parallel shard jobs (*Payload-contract mutations 0/10* … *9/10*; fifteen CI jobs); the M1 readiness runner accepting exactly one of two job sets, `job_set` in its evidence; `check-mutation-shards.rb` 15 faults | **`MERGED`** through [PR #121](https://github.com/Caposhi/GCD-Agents/pull/121), merge `d545e14eddde7f719b8188707f19d239f8665ceb` — CI tooling, no deployable change, so not deployed; PR CI run 280 and `main` CI run 281 fifteen jobs each, all `success` on attempt 1; `deploy-production` run 86 refused at the disabled gate, release skipped; follow-ups DISCHARGED (REVIEWER-VERIFIED). *(Until 2026-10-12: `IMPLEMENTED`, not merged; merge SHA, its `main` CI and its `deploy-production` refusal blocking follow-ups.)* See [Roadmap](ROADMAP.md) |
-| Records — the owner's decision of 2026-10-12 accepting shared sign-in limits for the MVP and moving S8b post-MVP; option A's reading verified; the reviewer's Render documentation search of 2026-10-12; PR #121 reconciled | **`IMPLEMENTED`**, not merged; documentation only; merge SHA, its `main` CI and its `deploy-production` refusal are blocking follow-ups. See [Roadmap](ROADMAP.md) |
-| **Content Studio on Render** (owner actions of 2026-10-12) | `gcd-studio-db` **`CONFIGURED`** (migrated 0001–0004); `gcd-studio-worker` **`DEPLOYED`** at `68ba72c`, live runner disabled, **not `ENABLED`**; `gcd-studio-web` **`CONFIGURED`**, not running; **nothing `PRODUCTION-VALIDATED`**; no Anthropic key; OWNER-OBSERVED — see [Content Studio on Render](#content-studio-on-render--the-owner-actions-of-2026-10-12-o3-o1-o4-without-the-key) |
+| Records — the owner's decision of 2026-10-12 accepting shared sign-in limits for the MVP and moving S8b post-MVP; option A's reading verified; the reviewer's Render documentation search of 2026-10-12; PR #121 reconciled — [PR #122](https://github.com/Caposhi/GCD-Agents/pull/122), merge `ec8ec99dbc8daae28d7fd15a8c74f4b6678c009c` | **`MERGED`** — documentation only, nothing to deploy; PR CI run 282 and `main` CI run 283 green on attempt 1 (fifteen jobs each); `deploy-production` run 87 refused at the disabled gate, release skipped; follow-ups DISCHARGED *(until 2026-10-12: `IMPLEMENTED`, not merged)*. See [Roadmap](ROADMAP.md) |
+| **Content Studio S8.4 — the browser form-POST fix:** the pages' `Referrer-Policy` `no-referrer` → `same-origin` (under `no-referrer` a browser's form POST carries `Origin: null`, which the unchanged exact-Origin check refuses); `SA154`; the local Chromium check `scripts/local/studio-form-post-check.mjs` | **`IMPLEMENTED`**, not merged; **not `DEPLOYED`** — on `d545e14`, live, every browser form POST is refused 403; merge SHA, its `main` CI and its `deploy-production` refusal are blocking follow-ups. See [Roadmap](ROADMAP.md) |
+| **Content Studio on Render** (owner actions of 2026-10-12) | `gcd-studio-db` **`CONFIGURED`** (migrated 0001–0004); `gcd-studio-web` **`DEPLOYED`** at `d545e14` (O5, partially performed) — sign-in and read-only pages served, **every browser form POST refused 403** (the S8.4 defect); `gcd-studio-worker` **`DEPLOYED`** at `d545e14`, live runner disabled, **not `ENABLED`**, ceilings 75/300 loaded; **nothing `PRODUCTION-VALIDATED`**; no Anthropic key; OWNER-OBSERVED — see [O5 partially performed](#content-studio-on-render--o5-partially-performed-2026-10-12-and-the-form-post-defect) *(until 2026-10-12, O5: the worker `DEPLOYED` at `68ba72c` and the web `CONFIGURED`, not running — [O3/O1/O4](#content-studio-on-render--the-owner-actions-of-2026-10-12-o3-o1-o4-without-the-key))* |
 | Content Studio S9 — the cron, built disabled | **`DEFERRED`** until after O6 (owner decision of 2026-10-10): not needed for the first live run (scheduled runs off at launch); the only path that would spend without a person confirming each run; needs a pricing-and-reservation design decision and a new migration (no pre-authorization table exists; a live run requires a user-bound, expiring, single-use quote). See [Roadmap](ROADMAP.md) |
 | Content Studio S8b — the O5 client-address fix (S4's sign-in rate limits keyed on Render's documented client address), split from S8 by the owner on 2026-10-08 | **`PLANNED`, `BLOCKED`** on a written statement from Render support naming the client-address header and whether `X-Forwarded-For` is appended or replaced; **required before O5** *(2026-10-09: Render support's reply came from an AI agent, not a human engineer, and is not that statement; the owner has asked for a human engineer)* *(2026-10-12, owner decision "accept shared sign-in limits for MVP; S8b post-MVP": still `PLANNED` and `BLOCKED`, but **post-MVP — no longer required before O5**; the client-address gate is CLOSED by acceptance as an accepted MVP limitation, not fixed)*. See [Roadmap](ROADMAP.md) |
 | Content Studio — encryption of the Studio's database connections (found 2026-10-12) | **DECIDED 2026-10-12 by the owner: option A for the MVP**; option B, encrypting without certificate verification, is `PLANNED` post-MVP (see [Roadmap](ROADMAP.md); option A's reading is TO CONFIRM there *(2026-10-12, the shared-sign-in-limits record: REVIEWER-VERIFIED — the internal connections stay unencrypted for the MVP)*). *(Until that decision: **OPEN owner decision, BLOCKING before O5**: the worker's connection is logged without "SSL enabled" (OWNER-OBSERVED); no Studio code or design text requires TLS (REVIEWER-VERIFIED in the repository); whether Render's internal certificate matches the internal hostname is to be researched. No change made. See [Roadmap](ROADMAP.md))* |

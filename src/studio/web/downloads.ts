@@ -48,6 +48,7 @@ export function downloadHeaders(name: string, byteLength: number): Record<string
     "content-security-policy": DOWNLOAD_CSP,
     "cache-control": "no-store",
     "strict-transport-security": "max-age=63072000; includeSubDomains",
+    // S8.4 kept no-referrer here: an attachment is never rendered as a page, so it holds no form whose Origin it sets.
     "referrer-policy": "no-referrer",
   };
 }

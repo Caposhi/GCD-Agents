@@ -102,7 +102,9 @@ export const CONTENT_SECURITY_POLICY =
 export const SECURITY_HEADERS: Readonly<Record<string, string>> = Object.freeze({
   "content-security-policy": CONTENT_SECURITY_POLICY,
   "strict-transport-security": "max-age=63072000; includeSubDomains",
-  "referrer-policy": "no-referrer",
+  // S8.4: same-origin, not no-referrer. Under no-referrer a browser's form POST carries `Origin: null`, which the
+  // exact-Origin check (originAllowed) refuses, so every real form was 403. Cross-origin requests still get no referrer.
+  "referrer-policy": "same-origin",
   "x-content-type-options": "nosniff",
   "cache-control": "no-store",
 });
