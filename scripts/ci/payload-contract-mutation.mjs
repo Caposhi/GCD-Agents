@@ -520,12 +520,12 @@
  *
  * SHARDS. `--shard k/n` runs exactly the mutations whose zero-based index
  * modulo n is k (see `parseShard`), so shards 0 to n-1 are disjoint and together
- * run every mutation. CI runs n = 4 (n = 3 until Content Studio S5): shards 0 and
- * 3 as two steps of the Node 22 quality job, shards 1 and 2 in the PostgreSQL 16
- * and 18 jobs, and the workflow-validation job's
- * `scripts/ci/check-mutation-shards.rb` refuses a `ci.yml` that does not run each
- * shard exactly once with the same n, or that runs the harness without
- * `--shard`. Every per-run proof runs in every shard. `M-inc-sample` keeps its
+ * run every mutation. CI runs n = 10 (n = 3 from PR #106, 4 from Content Studio
+ * S5, 5 from S7.3): each shard is its own job, "Payload-contract mutations k/10",
+ * one expansion of a `shard: [0..9]` matrix, the ten in parallel; and the
+ * workflow-validation job's `scripts/ci/check-mutation-shards.rb` refuses a
+ * `ci.yml` that does not run each shard exactly once with the same n, or that
+ * runs the harness without `--shard`. Every per-run proof runs in every shard. `M-inc-sample` keeps its
  * global seeded sample and compares only the ids the shard owns. `M-shard`
  * prints k, n, the mutation count and the ids the shard ran, and checks them
  * against the closed-form count of indices congruent to k. With no `--shard`
@@ -6653,9 +6653,11 @@ const INC_SAMPLE_IDS = [...INC_SAMPLE.keys()].sort((a, b) => a - b).map((index) 
 /**
  * `--shard k/n`: run exactly the mutations whose zero-based index modulo `n` is
  * `k`. The selection depends on the index alone, so shards `0` to `n - 1` are
- * disjoint and together run every mutation; CI runs five (Content Studio
- * S7.3): three as steps of the quality job and one in each PostgreSQL job,
- * and `scripts/ci/check-mutation-shards.rb` checks that
+ * disjoint and together run every mutation; CI runs ten, each its own job
+ * ("Payload-contract mutations k/10", one per value of the job's `shard`
+ * matrix, all in parallel; five, inside the quality and PostgreSQL jobs, from
+ * Content Studio S7.3 until then), and `scripts/ci/check-mutation-shards.rb`
+ * checks that
  * `.github/workflows/ci.yml` runs each exactly once with the same `n`. Without
  * `--shard` the run is shard 0/1: every mutation, as before. Every per-run proof
  * (`M0`, `M-isolation`, `M-kill`, `M-capture`, the `M-inc` checks, `M-end`,

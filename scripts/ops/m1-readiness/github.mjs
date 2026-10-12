@@ -4,8 +4,8 @@
  * ## The workflow identity is fixed in source
  *
  * The owner, repository, workflow id, workflow path, workflow name and the
- * complete set of expected job names are constants below. There is no flag and
- * no environment variable that can replace any of them: an operator pointing
+ * complete, exact job sets the gate accepts are constants below. There is no
+ * flag and no environment variable that can replace any of them: an operator pointing
  * this at a different workflow would be pointing it at different evidence, and
  * a gate whose subject is configurable is not a gate. The only value read from
  * the environment anywhere in this module is an optional API token, which is
@@ -26,9 +26,15 @@
  * attempt-1 evidence either stands on its own or the gate is not met. Two
  * matching runs are a refusal, not a choice.
  *
- * Its attempt-1 jobs must then be exactly the five expected jobs — no missing
- * job, no duplicate name, no unexpected name — each `completed` and `success`
- * on attempt 1.
+ * Its attempt-1 job names must then equal EXACTLY ONE of the accepted job sets
+ * ({@link ACCEPTED_JOB_SETS}): the legacy five, or the fifteen of the
+ * parallel-mutation layout — the same count, the same members, no duplicate
+ * name, no unexpected name, no missing name — and every job must be
+ * `completed` and `success` on attempt 1. A set is matched whole or not at
+ * all: a mixture of the two, the legacy five plus one shard job, the fifteen
+ * minus one, or any job outside both sets is NOT ESTABLISHED. Nothing is
+ * filtered and no subset is accepted. The evidence records which set matched
+ * (`job_set`).
  *
  * ## Fail-closed
  *
@@ -63,8 +69,12 @@ export const WORKFLOW_PATH = ".github/workflows/ci.yml";
 export const WORKFLOW_NAME = "CI";
 
 /**
- * The five jobs `.github/workflows/ci.yml` produces. The two PostgreSQL entries
- * are the expansions of its `postgres-version: ["16", "18"]` matrix.
+ * The legacy five jobs `.github/workflows/ci.yml` produced until the
+ * payload-contract mutation harness moved into its own parallel shard jobs.
+ * The two PostgreSQL entries are the expansions of its
+ * `postgres-version: ["16", "18"]` matrix. Frozen and still accepted, so a
+ * commit whose CI ran the earlier layout (every `main` commit before that
+ * change, and a revert of it) keeps exactly the evidence it had.
  */
 export const EXPECTED_JOB_NAMES = Object.freeze([
   "Node 22 offline quality gates",
@@ -72,6 +82,49 @@ export const EXPECTED_JOB_NAMES = Object.freeze([
   "PostgreSQL 18 integration",
   "AgentShield 1.4.0",
   "Workflow and YAML static validation",
+]);
+
+/**
+ * The fifteen jobs `.github/workflows/ci.yml` produces with the mutation
+ * harness as ten parallel shard jobs: the legacy five, unchanged in name, and
+ * the ten expansions of the `payload-mutation` job's `shard: [0..9]` matrix,
+ * named "Payload-contract mutations k/10". Listed literally, not generated, so
+ * the accepted names can be read here and compared with the workflow by eye.
+ */
+export const PARALLEL_MUTATION_JOB_NAMES = Object.freeze([
+  "Node 22 offline quality gates",
+  "PostgreSQL 16 integration",
+  "PostgreSQL 18 integration",
+  "Payload-contract mutations 0/10",
+  "Payload-contract mutations 1/10",
+  "Payload-contract mutations 2/10",
+  "Payload-contract mutations 3/10",
+  "Payload-contract mutations 4/10",
+  "Payload-contract mutations 5/10",
+  "Payload-contract mutations 6/10",
+  "Payload-contract mutations 7/10",
+  "Payload-contract mutations 8/10",
+  "Payload-contract mutations 9/10",
+  "AgentShield 1.4.0",
+  "Workflow and YAML static validation",
+]);
+
+/**
+ * Every job set the gate accepts, each matched whole: a run's attempt-1 job
+ * names must equal exactly one of them. `job_set` is the label recorded in
+ * evidence. Adding a set is a reviewed change to this file, never a flag.
+ */
+export const ACCEPTED_JOB_SETS = Object.freeze([
+  Object.freeze({ job_set: "legacy-five", names: EXPECTED_JOB_NAMES }),
+  Object.freeze({ job_set: "parallel-mutation", names: PARALLEL_MUTATION_JOB_NAMES }),
+]);
+
+/** The accepted sets' labels, in order. */
+export const ACCEPTED_JOB_SET_LABELS = Object.freeze(ACCEPTED_JOB_SETS.map((set) => set.job_set));
+
+/** Every name that appears in any accepted set, once each. */
+export const ALL_ACCEPTED_JOB_NAMES = Object.freeze([
+  ...new Set(ACCEPTED_JOB_SETS.flatMap((set) => set.names)),
 ]);
 
 export const EXPECTED_EVENT = "push";
@@ -218,7 +271,11 @@ export const ciIdentity = (authenticated) => ({
   workflow_id: WORKFLOW_ID,
   workflow_path: WORKFLOW_PATH,
   workflow_name: WORKFLOW_NAME,
-  expected_jobs: [...EXPECTED_JOB_NAMES],
+  // Every set the gate accepts, verbatim; which one matched is `job_set`.
+  accepted_job_sets: Object.fromEntries(ACCEPTED_JOB_SETS.map((set) => [set.job_set, [...set.names]])),
+  // The matched set's names, or null until (and unless) a run's job names
+  // equal one accepted set exactly.
+  expected_jobs: null,
   expected_event: EXPECTED_EVENT,
   expected_branch: EXPECTED_BRANCH,
   expected_repository: REPOSITORY_FULL_NAME,
@@ -428,8 +485,36 @@ export const verifyExactHeadCi = async ({ artifact, runtime }) => {
 
       const names = jobs.map((j) => j.name);
       const duplicates = names.filter((n, i) => names.indexOf(n) !== i);
-      const unexpected = names.filter((n) => !EXPECTED_JOB_NAMES.includes(n));
-      const missing = EXPECTED_JOB_NAMES.filter((n) => !names.includes(n));
+      // Each accepted set is compared whole. A set matches only when the job
+      // count equals its size, no name repeats, and its members are exactly the
+      // names seen; there is no partial, "at least" or filtered match.
+      const comparisons = ACCEPTED_JOB_SETS.map((set) => ({
+        set,
+        unexpected: names.filter((n) => !set.names.includes(n)),
+        missing: set.names.filter((n) => !names.includes(n)),
+      }));
+      const matched = comparisons.filter(
+        (c) =>
+          jobs.length === c.set.names.length &&
+          duplicates.length === 0 &&
+          c.unexpected.length === 0 &&
+          c.missing.length === 0,
+      );
+      if (matched.length > 1) {
+        // Unreachable while the sets differ; refused rather than chosen if a
+        // future edit ever made two of them equal.
+        throw new GithubEvidenceError("the job list matches more than one accepted job set");
+      }
+      // The set the missing and unexpected names are reported against: the
+      // matched set, otherwise the nearest (fewest missing plus unexpected;
+      // the earlier set on a tie). Reporting only — it never establishes.
+      const compared =
+        matched[0] ??
+        comparisons.reduce((best, c) =>
+          c.unexpected.length + c.missing.length < best.unexpected.length + best.missing.length ? c : best,
+        );
+      const unexpected = compared.unexpected;
+      const missing = compared.missing;
       const notSucceeded = jobs
         .filter(
           (j) =>
@@ -440,18 +525,22 @@ export const verifyExactHeadCi = async ({ artifact, runtime }) => {
         .map((j) => j.name);
 
       const failures = [];
-      if (jobs.length !== EXPECTED_JOB_NAMES.length) {
-        failures.push(`expected ${EXPECTED_JOB_NAMES.length} jobs, saw ${jobs.length}`);
+      if (jobs.length !== compared.set.names.length) {
+        failures.push(`expected ${compared.set.names.length} jobs (${compared.set.job_set}), saw ${jobs.length}`);
       }
       if (duplicates.length > 0) failures.push("duplicate job names");
       if (unexpected.length > 0) failures.push("unexpected job names");
       if (missing.length > 0) failures.push("missing job names");
+      if (matched.length === 0) failures.push("the job names match no accepted job set exactly");
       if (notSucceeded.length > 0) failures.push("a job did not succeed on attempt 1");
+      const jobSet = matched[0]?.set ?? null;
 
       return {
-        status: failures.length === 0 ? "ESTABLISHED" : "NOT ESTABLISHED",
-        identity,
+        status: failures.length === 0 && jobSet !== null ? "ESTABLISHED" : "NOT ESTABLISHED",
+        identity: jobSet === null ? identity : { ...identity, expected_jobs: [...jobSet.names] },
         artifact,
+        job_set: jobSet?.job_set ?? null,
+        compared_job_set: compared.set.job_set,
         run: {
           id: run.id,
           // The name that was actually compared, recorded alongside the rest of

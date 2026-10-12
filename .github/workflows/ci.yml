@@ -37,19 +37,6 @@ jobs:
       - name: Offline self-tests
         run: npm run test:offline
 
-      # The mutation harness runs as five shards: three in this job (0/5, 3/5
-      # and 4/5, under its 60-minute limit) and one in each PostgreSQL job;
-      # scripts/ci/check-mutation-shards.rb (workflow validation job) requires
-      # shards 0..n-1 exactly once with one n.
-      - name: Payload-contract mutation tests, shard 0/5
-        run: npm run test:payload-mutation -- --shard 0/5
-
-      - name: Payload-contract mutation tests, shard 3/5
-        run: npm run test:payload-mutation -- --shard 3/5
-
-      - name: Payload-contract mutation tests, shard 4/5
-        run: npm run test:payload-mutation -- --shard 4/5
-
       - name: M1 readiness runner offline tests
         run: npm run test:m1-readiness
 
@@ -82,12 +69,6 @@ jobs:
       fail-fast: false
       matrix:
         postgres-version: ["16", "18"]
-        # Each PostgreSQL job also runs one payload-contract mutation shard.
-        include:
-          - postgres-version: "16"
-            mutation-shard: "1"
-          - postgres-version: "18"
-            mutation-shard: "2"
     services:
       postgres:
         image: postgres:${{ matrix.postgres-version }}
@@ -150,8 +131,38 @@ jobs:
           npm run test:studio-worker-postgres
           npm run test:studio-web-postgres
 
-      - name: Payload-contract mutation tests, shard ${{ matrix.mutation-shard }}/5
-        run: npm run test:payload-mutation -- --shard ${{ matrix.mutation-shard }}/5
+  # The payload-contract mutation harness, as ten parallel shard jobs. Each
+  # job runs the mutations whose zero-based index modulo 10 is its shard, so
+  # the ten are disjoint and together run every mutation;
+  # scripts/ci/check-mutation-shards.rb (workflow validation job) requires
+  # shards 0..n-1 exactly once with one n. The harness copies the checkout
+  # without dist/ and builds each copy itself, so no build step runs here; it
+  # needs the Git checkout (it reads `git status`) and the locked
+  # node_modules. The M1 readiness runner accepts this job set or the legacy
+  # five exactly (scripts/ops/m1-readiness/github.mjs).
+  payload-mutation:
+    name: Payload-contract mutations ${{ matrix.shard }}/10
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Payload-contract mutation tests
+        run: npm run test:payload-mutation -- --shard ${{ matrix.shard }}/10
 
   agentshield:
     name: AgentShield 1.4.0

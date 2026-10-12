@@ -7,6 +7,22 @@
 > references to a fixed `M1 BLOCKED / NO-GO` verdict, is preserved as the historical record of this
 > document's own scope and is not a statement about the current state of migration 007 or M1.
 
+> **Update — 2026-10-12: two exact accepted CI job sets** (the CI parallel-mutation change,
+> `IMPLEMENTED`, not merged; owner-authorized "authorize m1-readiness change"). CI now runs the
+> payload-contract mutation harness as ten parallel jobs, *Payload-contract mutations 0/10* …
+> *9/10*, so a run on the new layout has fifteen jobs. `github.mjs` keeps `EXPECTED_JOB_NAMES` as the
+> frozen legacy five, adds the frozen `PARALLEL_MUTATION_JOB_NAMES` (those five plus the ten shard
+> jobs) and `ACCEPTED_JOB_SETS = [legacy-five, parallel-mutation]`. A run is ESTABLISHED only if its
+> attempt-1 job names, with no duplicate, equal **exactly one** accepted set — the same count and the
+> same members — and every job is `completed` and `success` on attempt 1. A mixture of the two sets,
+> the legacy five plus one shard job, the fifteen minus any job, any unexpected name or any
+> duplicate is NOT ESTABLISHED. The evidence records `job_set` (`legacy-five` | `parallel-mutation`,
+> or null), `compared_job_set`, and `accepted_job_sets` in the identity; `expected_jobs` is the
+> matched set's names (or null). `evidence.mjs` derives every job-name enumeration and bound from the
+> accepted sets, keeps the schema closed, and refuses a document whose `job_set` disagrees with its
+> jobs. The offline suite is **515** checks (461 before). Every other rule below is unchanged; the
+> "five" in *CI evidence* and *Tests* below is the legacy set, kept as written.
+
 A small, repository-native Node 22 command that collects the **repository and
 database portions** of M1 readiness evidence from a normal clean checkout.
 
@@ -176,6 +192,10 @@ Exactly one run may satisfy those conditions; two are an ambiguity, not a choice
 A run whose `run_attempt` is greater than 1 has been re-run, so **a later
 successful retry can never satisfy the gate**. A missing, duplicated, unexpected
 or unsuccessful job is a refusal.
+
+*(2026-10-12: the job rule is now "exactly one of two accepted sets" — the five above, or the
+fifteen of the parallel-mutation layout — see the update note at the top. A missing, duplicated,
+unexpected or unsuccessful job is still a refusal, judged against the whole set.)*
 
 Both list responses must be **internally consistent**: the declared `total_count`
 must equal the number of items actually returned, in either direction, and a
@@ -610,7 +630,8 @@ npm run test:m1-readiness-postgres   # requires a disposable server; see below
 Both run in CI inside the **existing** jobs — the offline suite in `Node 22
 offline quality gates`, the PostgreSQL suite in the `PostgreSQL 16/18
 integration` matrix. No job was added, so the five-job CI contract the runner
-itself verifies is unchanged.
+itself verifies is unchanged. *(2026-10-12: both still run there; the CI parallel-mutation change
+added ten shard jobs, and the contract is now the legacy five or exactly the fifteen.)*
 
 The offline suite is **461 checks** across thirteen groups: macOS/Linux-independent
 operation, execution-capable Git configuration, the deadline, atomic no-overwrite
