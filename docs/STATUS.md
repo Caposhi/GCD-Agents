@@ -72,7 +72,7 @@ See [Roadmap](ROADMAP.md).
 
 ### Content Studio S8.4 — the browser form-POST fix: the pages' `Referrer-Policy` is `same-origin` — repository only
 
-**`IMPLEMENTED`, not merged; not deployed.** Based directly on `ec8ec99dbc8daae28d7fd15a8c74f4b6678c009c`, the merge of PR #122 (the shared-sign-in-limits record). Recorded 2026-10-12.
+**`IMPLEMENTED`, not merged; not deployed.** Based directly on `ec8ec99dbc8daae28d7fd15a8c74f4b6678c009c`, the merge of PR #122 (the shared-sign-in-limits record). [PR #123](https://github.com/Caposhi/GCD-Agents/pull/123). Recorded 2026-10-12.
 
 - **The defect (OWNER-OBSERVED in production, reviewer-verified 2026-10-12):** every Studio page sent `Referrer-Policy: no-referrer`. Under the Fetch standard a browser's form POST (a navigate-mode request) then carries `Origin: null`; `originAllowed` (`src/studio/web/sessions.ts`) refuses `"null"`, so **every browser POST was refused 403 "Forbidden" before its handler ran**. The owner hit it on `POST /settings/caps` at `gcd-studio-web` on `d545e14`; the reviewer reproduced it in headless Chromium. The offline suites could not see it: their requests set the Origin header themselves.
 - **The fix:** `SECURITY_HEADERS["referrer-policy"]` in `src/studio/web/app.ts` is `same-origin`, with the reason beside it. **The Origin and CSRF checks are unchanged** — `"null"` and a missing Origin are still refused (`SA46`); the CSP, `form-action`, HSTS and every other header are unchanged; a cross-origin request still carries no referrer. Downloads (`src/studio/web/downloads.ts`) keep `no-referrer`: an attachment is never rendered as a page and holds no form.
