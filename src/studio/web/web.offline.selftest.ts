@@ -38,8 +38,8 @@ import {
 } from "./oidc.js";
 import { CALLBACK_LIMIT, FAILED_SIGN_IN_LIMIT, LOGIN_LIMIT, WindowLimiter } from "./rateLimit.js";
 import {
-  csrfTokenFor, decideSession, LOGIN_COOKIE, planSignIn, roleAllows, SESSION_ABSOLUTE_MS, SESSION_COOKIE, SESSION_IDLE_MS,
-  sessionIdHash, type SessionRow, type StudioUserRow,
+  csrfTokenFor, decideSession, LOGIN_COOKIE, originAllowed, planSignIn, roleAllows, SESSION_ABSOLUTE_MS, SESSION_COOKIE,
+  SESSION_IDLE_MS, sessionIdHash, type SessionRow, type StudioUserRow,
 } from "./sessions.js";
 import {
   decideWebIdentity, decideWebSchemaVersion, decideWebStartup, exactHttpsOrigin, STUDIO_ALLOWED_HD, WEB_FORBIDDEN_VARIABLES,
@@ -876,16 +876,27 @@ const undeclaredRole: Route = { method: "GET", path: "/test/undeclared-role", mi
   const statuses = replies.map(([, r]) => r.status).join();
   check("SA56. every response carries the security headers — CSP default-src 'self'; script-src 'self'; object-src "
     + "'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none', Strict-Transport-Security, Referrer-Policy "
-    + "no-referrer, nosniff — on success, 401, 403, 404, 405, 429, 500 and /healthz (200 and 503), and none carries a CORS "
+    + "same-origin, nosniff — on success, 401, 403, 404, 405, 429, 500 and /healthz (200 and 503), and none carries a CORS "
     + "header, even to a preflight",
     statuses === "200,200,404,405,405,403,403,401,403,200,503,500,429"
       && replies.every(([, r]) => r.headers.get("content-security-policy") === CONTENT_SECURITY_POLICY
         && r.headers.get("strict-transport-security") === "max-age=63072000; includeSubDomains"
-        && r.headers.get("referrer-policy") === "no-referrer" && r.headers.get("x-content-type-options") === "nosniff"
+        && r.headers.get("referrer-policy") === "same-origin" && r.headers.get("x-content-type-options") === "nosniff"
         && [...r.headers.keys()].every((k) => !k.startsWith("access-control-")))
       && CONTENT_SECURITY_POLICY === "default-src 'self'; script-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
       && Object.keys(SECURITY_HEADERS).length === 5,
     statuses);
+  // S8.4: the page policy must never be no-referrer. Under it a browser's form POST (a navigate-mode request) carries
+  // `Origin: null` (Fetch standard), which originAllowed refuses (SA46), so every real form was refused 403 in
+  // production. This suite's requests set Origin themselves and cannot see that; scripts/local/studio-form-post-check.mjs
+  // proves it in Chromium.
+  check("SA154. the pages' Referrer-Policy is same-origin and never no-referrer — under no-referrer a browser's form "
+    + "POST carries Origin: null, which the unchanged exact-Origin check refuses (SA46) — on every response above",
+    SECURITY_HEADERS["referrer-policy"] === "same-origin"
+      && replies.every(([, r]) => r.headers.get("referrer-policy") !== "no-referrer"
+        && r.headers.get("referrer-policy") === SECURITY_HEADERS["referrer-policy"])
+      && !originAllowed("null", "https://studio.test") && !originAllowed(undefined, "https://studio.test"),
+    replies.map(([, r]) => r.headers.get("referrer-policy")).join());
   const health = JSON.parse(replies.find(([n]) => n === "healthz")![1].body) as Record<string, unknown>;
   const down = JSON.parse(replies.find(([n]) => n === "healthz 503")![1].body) as Record<string, unknown>;
   const body = replies.find(([n]) => n === "healthz")![1].body;
