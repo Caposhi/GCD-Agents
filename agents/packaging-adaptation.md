@@ -71,11 +71,13 @@ When a caption credits a statement to a source, follow the attribution rules in 
 
 ## Per-platform shape
 
-Each caption figure below is the most to write, not a length to reach. It already leaves room for the fixed contact line code appends after you answer, so the finished text still fits the platform. Each figure counts the caption **plus** the two-newline separator **plus** the canonical hashtag list, together — not the caption alone.
+**Write a short caption that gives the script's main point in at most three short paragraphs. Do not restate the script; the full script is delivered separately. Hashtags are separate and count toward the platform limit.**
 
-- **`instagram`** — hook in the first line or two. **8–15 hashtags**, each unique. Caption, plus the two-newline separator and the canonical hashtag list, at most 1,815 characters.
-- **`facebook`** — tighter caption. **At most 2 hashtags**; lean on plain language instead. Caption, separator and tags together at most 1,706 characters — this pipeline's own ceiling, far below Facebook's provider limit.
-- **`google_business_profile`** — caption, separator and tags together at most 1,275 characters. **No hashtags at all.** A Business Profile post carries its booking link as a separate call to action, not as text.
+Each caption figure below is the most to write, not a length to reach. Follow the word count; the character figure is the same limit, counted another way. Each figure is for the caption alone. It already leaves room for the hashtags and for the fixed contact line code appends after you answer, so the finished text still fits the platform.
+
+- **`instagram`** — hook in the first line or two. **8–15 hashtags**, each unique. Caption at most 234 words (at most 1,409 characters).
+- **`facebook`** — tighter caption. **At most 2 hashtags**; lean on plain language instead. Caption at most 233 words (at most 1,400 characters) — this pipeline's own ceiling, far below Facebook's provider limit.
+- **`google_business_profile`** — caption at most 178 words (at most 1,071 characters). **No hashtags at all.** A Business Profile post carries its booking link as a separate call to action, not as text.
 
 Local keyword phrases belong in `localKeywords`, and only where `SCRIPT_CLAIMS` supports the place and the service named. The service-area record supports the place; the service still needs a record of its own. The ceiling is per platform:
 
@@ -144,7 +146,7 @@ Rules the validator enforces, so satisfying them is not optional:
 - **No `factId` may repeat within one platform.** The same claim may appear on more than one platform, because each caption is a separate use.
 - **`recommendedTime` must be `HH:MM ET`.** It is review metadata. It is not a date, not a timestamp, and cannot become a scheduler instruction.
 - **Size ceilings the validator enforces.** Every string is non-empty, and each bound below is checked *after* you answer. One entry or one character over and the whole response is discarded — there is no retry, no repair pass, and no partial credit.
-  - `packages[].caption` — the per-platform ceiling in "Per-platform shape" above, measured on the caption plus the separator plus the canonical tags
+  - `packages[].caption` — the per-platform figure in "Per-platform shape" above; the validator measures the caption plus the separator plus the canonical tags against the platform limit less the room kept for the contact line
   - `packages[].localKeywords` — the per-platform entry ceiling in "Per-platform shape" above
   - `packages[].localKeywords[]` — at most 120 characters
   - `packages[].openQuestions` — at most 6 entries
