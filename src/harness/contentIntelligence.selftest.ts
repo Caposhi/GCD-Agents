@@ -258,6 +258,12 @@ import {
   effectiveLocalKeywordMax,
   effectiveCaptionBudget,
   statedCaptionBudget,
+  statedCaptionWordBudget,
+  statedCaptionTargetChars,
+  statedCaptionWords,
+  MEASURED_HASHTAG_ALLOWANCE,
+  STATED_CAPTION_OVERSHOOT_PERCENT,
+  CAPTION_CHARS_PER_WORD,
   proposedProviderText,
   contactReserveChars,
   RECOMMENDED_TIME_PATTERN,
@@ -6509,11 +6515,12 @@ async function run(): Promise<void> {
       // The response schema, the prompt and the validator agree on each budget.
       const captionDescription = String(((PACKAGING_ADAPTATION_RESPONSE_FORMAT as Record<string, any>)
         .properties.packages.items.properties.caption.description));
-      check("CK14. stage 5's response schema states each platform's caption target — the figure the "
-        + "prompt states, derived below the budget the validator applies — never the budget itself, and "
-        + "tells the model code appends the contact line",
+      check("CK14. stage 5's response schema states each platform's caption target — the figures the "
+        + "prompt states, words then characters, derived below the budget the validator applies — never "
+        + "the budget itself, and tells the model code appends the contact line",
         PACKAGING_PLATFORMS.every((platform) => captionDescription.includes(
-          `at most ${statedCaptionBudget(platform).toLocaleString("en-US")} characters on ${platform}`)
+          `at most ${statedCaptionWordBudget(platform).toLocaleString("en-US")} words `
+            + `(at most ${statedCaptionBudget(platform).toLocaleString("en-US")} characters) on ${platform}`)
           && !captionDescription.includes(
             `at most ${effectiveCaptionBudget(platform).toLocaleString("en-US")} characters`))
           && /code appends a fixed contact line/.test(captionDescription));
@@ -10822,22 +10829,37 @@ async function run(): Promise<void> {
     // and the model returned 2,442 on caption plus separator plus hashtags. The
     // prompt now states a target derived below the budget; the validator still
     // enforces the budget, unchanged.
+    //
+    // Content Studio S8.5 (2026-10-12): S8.4's 85% target was overshot in
+    // production by 118%, 122% and 134%, each time the caption alone. The
+    // target is now the budget less the measured hashtag text, over 1.4, and
+    // the prompt leads with a word count.
     {
       const cqEnforced = { instagram: 2_136, facebook: 2_008, google_business_profile: 1_500 } as const;
-      const cqStated = { instagram: 1_815, facebook: 1_706, google_business_profile: 1_275 } as const;
+      const cqStated = { instagram: 1_409, facebook: 1_400, google_business_profile: 1_071 } as const;
+      const cqWords = { instagram: 234, facebook: 233, google_business_profile: 178 } as const;
       const cqPackSource = await readFile(resolve(REPO_ROOT, "src/harness/agents/packagingAdaptation.ts"), "utf8");
       const cqValidatorStart = cqPackSource.indexOf("export function validatePackagingAdaptationOutput(");
       const cqValidator = cqValidatorStart >= 0
         ? cqPackSource.slice(cqValidatorStart, cqPackSource.indexOf("\nexport ", cqValidatorStart + 1)) : "";
-      check("CQ1. each platform's stated caption target is derived — the enforced budget times "
-        + "STATED_CAPTION_TARGET_PERCENT, floored — not hand-kept: 1,815 / 1,706 / 1,275",
-        Number(STATED_CAPTION_TARGET_PERCENT) === 85
+      check("CQ1. each platform's stated caption target is derived — the enforced budget less "
+        + "MEASURED_HASHTAG_ALLOWANCE, over STATED_CAPTION_OVERSHOOT_PERCENT, floored — not hand-kept: "
+        + "1,409 / 1,400 / 1,071; its word count is that over CAPTION_CHARS_PER_WORD, floored: 234 / 233 / 178",
+        Number(STATED_CAPTION_OVERSHOOT_PERCENT) === 140
+          && Number(CAPTION_CHARS_PER_WORD) === 6
           && PACKAGING_PLATFORMS.every((platform) =>
-            statedCaptionBudget(platform) === Math.floor(effectiveCaptionBudget(platform) * STATED_CAPTION_TARGET_PERCENT / 100)
-              && statedCaptionBudget(platform) === statedCaptionTarget(effectiveCaptionBudget(platform))
-              && statedCaptionBudget(platform) === cqStated[platform])
-          && /return statedCaptionTarget\(effectiveCaptionBudget\(platform\)\);/.test(cqPackSource)
-          && /return Math\.floor\(\(enforcedBudget \* STATED_CAPTION_TARGET_PERCENT\) \/ 100\);/.test(payloadSource));
+            statedCaptionBudget(platform) === Math.floor(
+              (effectiveCaptionBudget(platform) - MEASURED_HASHTAG_ALLOWANCE[platform]) * 100 / STATED_CAPTION_OVERSHOOT_PERCENT)
+              && statedCaptionBudget(platform)
+                === statedCaptionTargetChars(effectiveCaptionBudget(platform), MEASURED_HASHTAG_ALLOWANCE[platform])
+              && statedCaptionBudget(platform) === cqStated[platform]
+              && statedCaptionWordBudget(platform) === Math.floor(statedCaptionBudget(platform) / CAPTION_CHARS_PER_WORD)
+              && statedCaptionWordBudget(platform) === statedCaptionWords(statedCaptionBudget(platform))
+              && statedCaptionWordBudget(platform) === cqWords[platform])
+          && /return statedCaptionTargetChars\(effectiveCaptionBudget\(platform\), MEASURED_HASHTAG_ALLOWANCE\[platform\]\);/
+            .test(cqPackSource)
+          && /return Math\.floor\(\(\(enforcedBudget - measuredHashtagAllowance\) \* 100\) \/ STATED_CAPTION_OVERSHOOT_PERCENT\);/
+            .test(cqPackSource));
       check("CQ2. the enforced caption budget is unchanged — the platform limit (or the pipeline's, if "
         + "smaller) less the contact reserve, never above the platform limit — and the validator reads "
         + "the budget, never the stated target",
@@ -10886,20 +10908,25 @@ async function run(): Promise<void> {
             && cqOutcome(platform, enforced + 1).startsWith(`refused: `)
             && cqOutcome(platform, enforced + 1).includes(`exceeds ${enforced} characters`);
         }));
-      // The measurement the fraction is sized on: Instagram's caption plus
-      // separator plus hashtags 2,442 against a stated 2,136 (1.143x), the
-      // caption alone 2,279 (1.067x), so 163 characters of separator and tags.
-      const cqObserved = { total: 2_442, caption: 2_279, stated: 2_136 } as const;
-      const cqFits = (target: number) =>
-        target * cqObserved.total / cqObserved.stated <= effectiveCaptionBudget("instagram")
-          && target * cqObserved.caption / cqObserved.stated + (cqObserved.total - cqObserved.caption)
-            <= effectiveCaptionBudget("instagram");
-      check("CQ4. the stated fraction clears the overshoot measured on 2026-09-26T17-04-00-636Z under both "
-        + "readings — proportional on the stated total, or the caption alone aimed at it plus the tags — "
-        + "and the 88% alternative would not have",
-        cqObserved.stated === effectiveCaptionBudget("instagram")
-          && cqFits(statedCaptionBudget("instagram"))
-          && !cqFits(Math.floor(effectiveCaptionBudget("instagram") * 88 / 100)));
+      // The production overshoots the factor is sized on (2026-10-12), each the
+      // caption alone against the target the prompt stated: Instagram run
+      // f23120bd about 2,140, its resume 2,217, both against 1,815; Facebook run
+      // da471606 2,294 against 1,706.
+      const cqOvershoots = [
+        { caption: 2_140, stated: 1_815 },
+        { caption: 2_217, stated: 1_815 },
+        { caption: 2_294, stated: 1_706 },
+      ] as const;
+      const cqClears = (percent: number) =>
+        cqOvershoots.every((o) => o.caption * 100 <= o.stated * percent);
+      check("CQ4. the overshoot factor is the worst measured in production — Facebook da471606, "
+        + "2,294 / 1,706 = 134% — rounded up to 140; it clears every measured overshoot (118%, 122%, 134%), "
+        + "and neither S8.4's 85% target (1.176x of room) nor the 1.25 first proposed would have",
+        cqClears(STATED_CAPTION_OVERSHOOT_PERCENT)
+          && Math.ceil(Math.max(...cqOvershoots.map((o) => o.caption * 100 / o.stated)) / 10) * 10
+            === Number(STATED_CAPTION_OVERSHOOT_PERCENT)
+          && !cqClears(125)
+          && !cqClears(100 * 100 / 85));
       check("CQ5. the classification extension is exactly stage 5's caption: product-bearing, a platform "
         + "field, stated below its enforced limit on every platform, carried by no STATED_FIELD_CEILINGS "
         + "entry — stated below, never enforced above",
@@ -10915,6 +10942,75 @@ async function run(): Promise<void> {
         ccPackagingAtBudget
           && ccPackaging.provisional.packages.every((pkg) =>
             proposedProviderText(pkg.caption, pkg.hashtags).length === effectiveCaptionBudget(pkg.platform)));
+      // The owner's inequality (S8.5), in integers: 1.4 x target + the measured
+      // hashtag text <= the enforced budget. The 1.4 is the owner's literal, not
+      // the constant, so changing the constant cannot make this tautological.
+      check("CQ8. on every platform 1.4 x the stated caption target plus the platform's measured hashtag "
+        + "text fits the enforced budget — 1.4 x 1,409 + 163 <= 2,136, 1.4 x 1,400 + 48 <= 2,008, "
+        + "1.4 x 1,071 + 0 <= 1,500 — and one character more of target would not",
+        PACKAGING_PLATFORMS.every((platform) => {
+          const target = statedCaptionBudget(platform);
+          const allowance = MEASURED_HASHTAG_ALLOWANCE[platform];
+          const budget = effectiveCaptionBudget(platform);
+          return target * 140 + allowance * 100 <= budget * 100
+            && (target + 1) * 140 + allowance * 100 > budget * 100;
+        }));
+      check("CQ9. MEASURED_HASHTAG_ALLOWANCE is keyed by exactly stage 5's platforms and holds the measured "
+        + "figures — Instagram 163, Facebook 48 (2 tags of 46 characters plus the 2-character separator), "
+        + "zero exactly where the platform allows no hashtag — documented as measured, not enforced, and "
+        + "the validator never reads it",
+        Object.keys(MEASURED_HASHTAG_ALLOWANCE).sort().join() === [...PACKAGING_PLATFORMS].sort().join()
+          && MEASURED_HASHTAG_ALLOWANCE.instagram === 163
+          && MEASURED_HASHTAG_ALLOWANCE.facebook === 46 + 2
+          && PACKAGING_PLATFORMS.every((platform) =>
+            (Math.min(PLATFORM_PACKAGING_POLICY[platform].hashtagMax, PACKAGING_LIMITS.maxHashtags) === 0)
+              === (MEASURED_HASHTAG_ALLOWANCE[platform] === 0))
+          && cqPackSource.includes("**Measured, not enforced.** The validator never reads it")
+          && !/MEASURED_HASHTAG_ALLOWANCE|statedCaption/.test(cqValidator));
+      const cqPrompt = await readFile(resolve(REPO_ROOT, "agents/packaging-adaptation.md"), "utf8");
+      const cqDescription = String(((PACKAGING_ADAPTATION_RESPONSE_FORMAT as Record<string, any>)
+        .properties.packages.items.properties.caption.description));
+      const cqPhrase = (platform: PackagingPlatform) =>
+        `at most ${statedCaptionWordBudget(platform).toLocaleString("en-US")} words `
+          + `(at most ${statedCaptionBudget(platform).toLocaleString("en-US")} characters)`;
+      check("CQ10. the prompt and the response schema state each platform's target exactly as the code "
+        + "derives it — the word count first, the characters second, and no other word count — and both "
+        + "say to give the script's main point in at most three short paragraphs, not to restate it, and "
+        + "that hashtags are separate and count toward the platform limit",
+        PACKAGING_PLATFORMS.every((platform) =>
+          cqDescription.includes(`${cqPhrase(platform)} on ${platform}`)
+            && cqPrompt.split("\n").some((line) =>
+              line.startsWith(`- **\`${platform}\`**`) && line.includes(cqPhrase(platform))))
+          && (cqPrompt.match(/at most [\d,]+ words/g) ?? []).length === PACKAGING_PLATFORMS.length
+          && (cqDescription.match(/at most [\d,]+ words/g) ?? []).length === PACKAGING_PLATFORMS.length
+          && cqPrompt.includes("**Write a short caption that gives the script's main point in at most three short "
+            + "paragraphs. Do not restate the script; the full script is delivered separately. Hashtags are "
+            + "separate and count toward the platform limit.**")
+          && cqPrompt.includes("Follow the word count; the character figure is the same limit, counted another way.")
+          && cqPrompt.includes("Each figure is for the caption alone.")
+          && cqDescription.includes("gives the script's main point in at most three short paragraphs; "
+            + "do not restate the script, which is delivered separately.")
+          && cqDescription.includes("Hashtags are separate and count toward the platform limit."));
+      // S8.5 left `payloadContract.ts` byte-identical (a live-loaded module:
+      // editing it would fail the Studio release checklist's live-path rule),
+      // so its 85% target still exists. Nothing outside it may use it.
+      const cqSrcRoot = resolve(REPO_ROOT, "src");
+      const cqSupersededUsers: string[] = [];
+      for (const entry of await readdir(cqSrcRoot, { recursive: true })) {
+        const file = String(entry);
+        if (!file.endsWith(".ts") || file.endsWith(".selftest.ts") || file === join("harness", "agents", "payloadContract.ts")) continue;
+        const code = (await readFile(join(cqSrcRoot, file), "utf8")).split("\n")
+          .filter((line) => !/^\s*(\*|\/\/|\/\*)/.test(line)).join("\n");
+        if (/\bSTATED_CAPTION_TARGET_PERCENT\b|\bstatedCaptionTarget\b/.test(code)) cqSupersededUsers.push(file);
+      }
+      check("CQ11. the superseded 85% target stays in payloadContract.ts (left byte-identical: it is live-loaded) "
+        + "but no other source module uses STATED_CAPTION_TARGET_PERCENT or statedCaptionTarget; stage 5 states "
+        + "the S8.5 target, not the 85% one"
+        + (cqSupersededUsers.length ? ` — used by: ${cqSupersededUsers.join(", ")}` : ""),
+        cqSupersededUsers.length === 0
+          && Number(STATED_CAPTION_TARGET_PERCENT) === 85
+          && PACKAGING_PLATFORMS.every((platform) =>
+            statedCaptionBudget(platform) !== statedCaptionTarget(effectiveCaptionBudget(platform))));
     }
   }
 
@@ -11594,7 +11690,8 @@ async function run(): Promise<void> {
         elsewhere: [
           // The caption figure the prompt states is the stated target, derived
           // below the enforced budget (`statedCaptionTarget`), never the budget.
-          ...PACKAGING_PLATFORMS.map((p) => [statedCaptionTarget(effectiveCaptionMax(p)), "characters"] as const),
+          ...PACKAGING_PLATFORMS.map((p) =>
+            [statedCaptionTargetChars(effectiveCaptionMax(p), MEASURED_HASHTAG_ALLOWANCE[p]), "characters"] as const),
           // Instagram's is a stated range and Google Business Profile's is
           // zero ("no hashtags at all"); only Facebook's reads as "at most N".
           [effectiveHashtagMax("facebook"), "hashtags"],
@@ -11823,7 +11920,8 @@ async function run(): Promise<void> {
       const captions = statedFor(packagingPrompt, platform, "characters");
       check(`CD6 (${platform}). the caption target derived from the enforced budget is stated for this `
         + "platform, and the enforced budget itself is not",
-        captions.length === 1 && captions[0] === groupDigits(statedCaptionTarget(effectiveCaptionMax(platform)))
+        captions.length === 1
+          && captions[0] === groupDigits(statedCaptionTargetChars(effectiveCaptionMax(platform), MEASURED_HASHTAG_ALLOWANCE[platform]))
           && !packagingPrompt.join("\n").includes(`at most ${groupDigits(effectiveCaptionMax(platform))} characters`));
     }
     // Local keyword entries are per platform too: Google Business Profile's

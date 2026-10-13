@@ -238,7 +238,8 @@
  *
  * The next appended group (M454-M465) covers stage 5's caption target stated
  * below its enforced budget, and `--resume-from packaging-adaptation`: the
- * target collapsing onto the budget, moving to 88% or rounding up; the
+ * target collapsing onto the budget, moving to 88% or rounding up (re-anchored
+ * by S8.5: the factor dropped to 100, moved to 125, or rounding up); the
  * validator enforcing the target instead of the budget; the response schema or
  * the prompt stating the budget; the run's measurement reporting the budget as
  * the stated figure; and a resume no longer requiring the pack fingerprint,
@@ -506,6 +507,18 @@
  * line break) enabling the live runner instead of being classed
  * `anthropic_key_padded` (`SW44`, `SW46`). No captured path is added:
  * sixty-nine in all, for 713 mutations.
+ *
+ * Content Studio S8.5 re-anchors `M454`–`M459` in place, with the same ids:
+ * stage 5's 85% target became the budget less `MEASURED_HASHTAG_ALLOWANCE`,
+ * over `STATED_CAPTION_OVERSHOOT_PERCENT` (140), derived in
+ * `packagingAdaptation.ts` — `payloadContract.ts` is live-loaded and stays
+ * byte-identical, so `M454`–`M456` move to the packaging module, a path already
+ * captured — and the prompt leads with a word count. `M454` drops the factor
+ * to 100, `M455` moves it to the 1.25 production disproved, `M456` rounds up,
+ * `M457` has the validator enforce the target, `M458` has the schema state the
+ * budget, and `M459` has the prompt state Instagram's budget; each also names
+ * the new checks it breaks (`CQ8`–`CQ10`). No mutation is added or removed and
+ * no captured path is added: sixty-nine in all, still 713 mutations.
  *
  * It is offline and deterministic: no network, no database, no provider, no
  * credential. The mutations run in parallel on up to MAX_WORKERS workers (the
@@ -4410,47 +4423,51 @@ const PACKAGING_CLAIM_USE_CAP_MUTATIONS = [
 // Stage 5's stated caption target and `--resume-from packaging-adaptation`.
 // Appended after every earlier group so no existing mutation id moves.
 const STATED_CAPTION_AND_RESUME_MUTATIONS = [
+  // Re-anchored in place by Content Studio S8.5: the same ids, the 85% target
+  // replaced by the measured hashtag allowance and the 1.4x factor. M454-M456
+  // move from payloadContract.ts to packagingAdaptation.ts, where the target is
+  // now derived (payloadContract.ts is live-loaded and left byte-identical).
   {
-    name: "stage 5's caption target collapses back onto the enforced budget",
-    file: PAYLOAD,
-    from: "export const STATED_CAPTION_TARGET_PERCENT = 85;",
-    to: "export const STATED_CAPTION_TARGET_PERCENT = 100;",
-    expect: ["CQ1.", "CQ5."],
+    name: "stage 5's caption target drops its overshoot factor, collapsing Google Business Profile's onto its budget",
+    file: PACKAGING,
+    from: "export const STATED_CAPTION_OVERSHOOT_PERCENT = 140;",
+    to: "export const STATED_CAPTION_OVERSHOOT_PERCENT = 100;",
+    expect: ["CQ1.", "CQ5.", "CQ8."],
   },
   {
-    name: "stage 5's caption target moves to the 88% the measurement does not support",
-    file: PAYLOAD,
-    from: "export const STATED_CAPTION_TARGET_PERCENT = 85;",
-    to: "export const STATED_CAPTION_TARGET_PERCENT = 88;",
-    expect: ["CQ1.", "CQ4."],
+    name: "stage 5's overshoot factor moves to the 1.25 that the production overshoots disproved",
+    file: PACKAGING,
+    from: "export const STATED_CAPTION_OVERSHOOT_PERCENT = 140;",
+    to: "export const STATED_CAPTION_OVERSHOOT_PERCENT = 125;",
+    expect: ["CQ1.", "CQ4.", "CQ8."],
   },
   {
     name: "stage 5's caption target rounds up toward the budget",
-    file: PAYLOAD,
-    from: "  return Math.floor((enforcedBudget * STATED_CAPTION_TARGET_PERCENT) / 100);",
-    to: "  return Math.ceil((enforcedBudget * STATED_CAPTION_TARGET_PERCENT) / 100);",
-    expect: ["CQ1."],
+    file: PACKAGING,
+    from: "  return Math.floor(((enforcedBudget - measuredHashtagAllowance) * 100) / STATED_CAPTION_OVERSHOOT_PERCENT);",
+    to: "  return Math.ceil(((enforcedBudget - measuredHashtagAllowance) * 100) / STATED_CAPTION_OVERSHOOT_PERCENT);",
+    expect: ["CQ1.", "CQ8."],
   },
   {
     name: "stage 5's validator enforces the stated target instead of the budget",
     file: PACKAGING,
     from: "    const captionBudget = captionMax - contactReserve;",
-    to: "    const captionBudget = statedCaptionTarget(captionMax - contactReserve);",
-    expect: ["CQ2.", "CQ3.", "CQ7.", "BQ33."],
+    to: "    const captionBudget = statedCaptionTargetChars(captionMax - contactReserve, MEASURED_HASHTAG_ALLOWANCE[platform]);",
+    expect: ["CQ2.", "CQ3.", "CQ7.", "CQ9.", "BQ33."],
   },
   {
     name: "stage 5's response schema states the enforced budget instead of the target",
     file: PACKAGING,
-    from: "  return statedCaptionTarget(effectiveCaptionBudget(platform));",
+    from: "  return statedCaptionTargetChars(effectiveCaptionBudget(platform), MEASURED_HASHTAG_ALLOWANCE[platform]);",
     to: "  return effectiveCaptionBudget(platform);",
-    expect: ["CQ1.", "CK14."],
+    expect: ["CQ1.", "CK14.", "CQ10."],
   },
   {
     name: "stage 5's prompt states Instagram's enforced budget again",
     file: PACKAGING_PROMPT,
-    from: "and the canonical hashtag list, at most 1,815 characters.",
-    to: "and the canonical hashtag list, at most 2,136 characters.",
-    expect: ["CD6 (instagram).", "CD3 (packaging-adaptation)."],
+    from: "Caption at most 234 words (at most 1,409 characters).",
+    to: "Caption at most 234 words (at most 2,136 characters).",
+    expect: ["CD6 (instagram).", "CD3 (packaging-adaptation).", "CQ10."],
   },
   {
     name: "the run's caption measurement reports the budget as the stated figure",

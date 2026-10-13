@@ -135,7 +135,7 @@ import {
 } from "./stageExecution.js";
 import {
   PACKAGING_FIELD_LIMITS, EVIDENCE_LIMITS, HANDOFF_GUARDS, PACKAGING_OUTPUT, isBoundedSerializableText,
-  statedCeiling, statedCaptionTarget, CONTACT_LINE_RESERVE_CHARS,
+  statedCeiling, CONTACT_LINE_RESERVE_CHARS,
 } from "./payloadContract.js";
 import { proposedProviderText } from "./providerText.js";
 
@@ -285,14 +285,117 @@ export function effectiveCaptionBudget(platform: PackagingPlatform): number {
 }
 
 /**
- * The caption figure the prompt and the response schema state on `platform`:
- * a fixed fraction of `effectiveCaptionBudget`, derived in `payloadContract.ts`
- * (`statedCaptionTarget`). Deliberately below the budget — the model's aim
- * point, not the limit. The validator never reads it: it enforces
- * `effectiveCaptionBudget`, unchanged, so a caption between the two is valid.
+ * The hashtag text — the two-newline separator plus the canonical hashtag
+ * list — that stage 5's stated caption target leaves room for, per platform.
+ * **Measured, not enforced.** The validator never reads it: it still measures
+ * caption, separator and hashtags together against the enforced budget, and no
+ * hashtag has a length limit (`HASHTAG_TOKEN_PATTERN` limits which characters
+ * a tag may contain, not its length). A run with longer tags than these is
+ * still refused by that budget check, never truncated.
+ *
+ *  - `instagram` — 163: 161 characters of hashtags plus the separator, run
+ *    `2026-09-26T17-04-00-636Z` (2,442 total less a 2,279 caption).
+ *  - `facebook` — 48: production run `da471606-d421-49c9-8494-9eddbb7fc479`
+ *    (2026-10-12), 2 tags of 46 characters plus the separator.
+ *  - `google_business_profile` — 0: the platform carries no hashtags
+ *    (`GBP_HASHTAG_MAX`), so this one is exact.
+ *
+ * Keyed by this stage's closed platform enum; a regression asserts the keys
+ * are exactly that enum. Owner decision, 2026-10-12 (Content Studio S8.5): the
+ * measured figure, not a new per-tag limit.
+ */
+export const MEASURED_HASHTAG_ALLOWANCE: Record<PackagingPlatform, number> = {
+  instagram: 163,
+  facebook: 48,
+  google_business_profile: 0,
+};
+
+/**
+ * The overshoot stage 5's stated caption target is sized to absorb, as a
+ * percentage of the target: **140** (1.4×).
+ *
+ * **The worst production overshoot seen, rounded up.** Every stage 5 failure
+ * so far was the caption alone over the budget, and each was well above the
+ * figure the model was shown:
+ *
+ *  - Instagram, run `f23120bd-7cff-441e-885c-a60f8de9f0b1` (2026-10-12): caption
+ *    about 2,140 against a stated 1,815 — 118%;
+ *  - its resume from packaging: caption 2,217 against 1,815 — 122%;
+ *  - Facebook, run `da471606-d421-49c9-8494-9eddbb7fc479` (2026-10-12): caption
+ *    2,294 against a stated 1,706 — **134%**.
+ *
+ * Captions landed at 2,140–2,300 characters whatever the target, so a
+ * proportional factor bounds what has been seen; it guarantees nothing. The
+ * word count the prompt now leads with (`CAPTION_CHARS_PER_WORD`) and its
+ * instruction to condense rather than restate the script are the other half
+ * of the change. S8.4's 85% and the 1.25 first proposed for S8.5 both sit below
+ * the 134% measured.
+ *
+ * **Where this lives, and what it supersedes.** Until S8.5 the target was
+ * `STATED_CAPTION_TARGET_PERCENT` (85) and `statedCaptionTarget` in
+ * `payloadContract.ts`. That module is loaded by the live services' entry
+ * points (`scripts/ci/live-path-manifest.json`), and editing it would make the
+ * Studio's next deploy fail the release checklist's "touches no live-service
+ * path" rule, so the owner decided (2026-10-12) to leave it byte-identical and
+ * derive the target here, in a module only the Studio worker and the local
+ * CLI load. **The 85% constant and its function are superseded and read by
+ * nothing in stage 5**; removing them is a live-path change for after the
+ * freeze.
+ */
+export const STATED_CAPTION_OVERSHOOT_PERCENT = 140;
+
+/**
+ * Characters per word for the word count stage 5's prompt leads with: **6**,
+ * about five letters and a space in English. The owner's rule (2026-10-12):
+ * the word figure is the character target divided by six, rounded down.
+ */
+export const CAPTION_CHARS_PER_WORD = 6;
+
+/**
+ * The caption figure a model-facing channel — the prompt and the response
+ * schema `description` — states for an enforced caption budget: the largest
+ * whole number of characters whose 1.4× overshoot, plus the platform's
+ * measured hashtag text, still fits the budget.
+ *
+ *     target = ⌊(budget − MEASURED_HASHTAG_ALLOWANCE) × 100 / 140⌋
+ *
+ *  - `instagram` — ⌊(2,136 − 163) / 1.4⌋ = ⌊1,409.3⌋ = **1,409** (234 words);
+ *    1.4 × 1,409 + 163 = 2,135.6 ≤ 2,136.
+ *  - `facebook` — ⌊(2,008 − 48) / 1.4⌋ = **1,400** (233 words);
+ *    1.4 × 1,400 + 48 = 2,008 ≤ 2,008.
+ *  - `google_business_profile` — ⌊(1,500 − 0) / 1.4⌋ = ⌊1,071.4⌋ = **1,071**
+ *    (178 words); 1.4 × 1,071 = 1,499.4 ≤ 1,500.
+ *
+ * Integer arithmetic, floored: the target never rounds up toward the budget.
+ * The validator never reads this; it enforces the budget.
+ */
+export function statedCaptionTargetChars(enforcedBudget: number, measuredHashtagAllowance: number): number {
+  return Math.floor(((enforcedBudget - measuredHashtagAllowance) * 100) / STATED_CAPTION_OVERSHOOT_PERCENT);
+}
+
+/** The word count a model-facing channel states for a caption target, rounded down. */
+export function statedCaptionWords(statedTarget: number): number {
+  return Math.floor(statedTarget / CAPTION_CHARS_PER_WORD);
+}
+
+/**
+ * The caption figure the prompt and the response schema state on `platform`,
+ * for the caption alone (`statedCaptionTargetChars`). Deliberately below the
+ * budget — the model's aim point, not the limit. The validator never reads it:
+ * it enforces `effectiveCaptionBudget`, unchanged, so a caption between the two
+ * is valid.
  */
 export function statedCaptionBudget(platform: PackagingPlatform): number {
-  return statedCaptionTarget(effectiveCaptionBudget(platform));
+  return statedCaptionTargetChars(effectiveCaptionBudget(platform), MEASURED_HASHTAG_ALLOWANCE[platform]);
+}
+
+/**
+ * The word count the prompt and the response schema lead with on `platform`:
+ * `statedCaptionBudget` divided by `CAPTION_CHARS_PER_WORD`, rounded down. The
+ * character figure follows it, second.
+ */
+export function statedCaptionWordBudget(platform: PackagingPlatform): number {
+  return statedCaptionWords(statedCaptionBudget(platform));
 }
 
 /** The local keyword cap the validator applies on `platform`. */
@@ -338,9 +441,10 @@ const ALLOWED_CLAIM_USE_FIELDS = ["platform", "factId", "summary"] as const;
  * The caption ceiling is per platform and is the smaller of the provider policy
  * and this pipeline's narrowing, so it cannot be one number in a description
  * here; the prompt states it per platform and the validator computes it. The
- * description states each platform's **stated target** (`statedCaptionBudget`),
- * the same figure the prompt states, never the enforced budget: a description
- * is a model-facing channel.
+ * description states each platform's **stated target** — the word count
+ * first (`statedCaptionWordBudget`), then the characters (`statedCaptionBudget`)
+ * — the same figures the prompt states, never the enforced budget: a
+ * description is a model-facing channel.
  *
  * Internal-plumbing fields state `statedCeiling`, not the enforced limit: a
  * `description` is a model-facing channel, so it states what the prompt states.
@@ -351,11 +455,14 @@ export const PACKAGING_ADAPTATION_RESPONSE_FORMAT = schemaObject({
     schemaObject({
       platform: schemaEnum(PACKAGING_PLATFORMS, "Exactly one package per requested platform, in order"),
       caption: schemaString(
-        "No hashtag tokens; no recognizable URL syntax; no contact or booking channel "
-          + "(code appends a fixed contact line); caption plus separator plus hashtags, per-platform "
-          + "ceiling: "
+        "A short caption that gives the script's main point in at most three short paragraphs; "
+          + "do not restate the script, which is delivered separately. No hashtag tokens; no "
+          + "recognizable URL syntax; no contact or booking channel (code appends a fixed contact "
+          + "line). Hashtags are separate and count toward the platform limit. Per-platform "
+          + "caption length: "
           + PACKAGING_PLATFORMS
-            .map((platform) => `at most ${statedCaptionBudget(platform).toLocaleString("en-US")} characters on ${platform}`)
+            .map((platform) => `at most ${statedCaptionWordBudget(platform).toLocaleString("en-US")} words `
+              + `(at most ${statedCaptionBudget(platform).toLocaleString("en-US")} characters) on ${platform}`)
             .join(", "),
       ),
       hashtags: schemaArray({ type: "string" }, '"#token" form; [] where the platform allows none'),
