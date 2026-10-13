@@ -8474,13 +8474,24 @@ async function run(): Promise<void> {
             `framed ${lrFramed} of ${pc.MAX_PAYLOAD_CHARS}; worst ${lrWorst.length} (floor ${lrFloor}) vs ${lensOutputs.map((o) => o.transportChars).join(",")}`);
 
           // The paths: the plain full run, then a replay of it, through the CLI.
+          // Guarded, so a mutation that stops the plain run is reported here by name instead of
+          // aborting the suite before the checks after it (CG1, CE9 among them) can report.
           const lrPlainSaved = crJson(join(plainRun, "07-legal-review.json"));
-          const lrPlainSummary = readFileSync(join(plainRun, "summary.md"), "utf8");
-          const lrReplaySource = crCopy("lr-replay", plainRun);
-          const lrReplayBefore = crTree(lrReplaySource);
-          const lrReplay = await runCn(["--replay-critic", lrReplaySource, "--automotive-facts", factsPath]);
-          const lrReplayDir = crSibling(lrReplaySource);
-          const lrReplayRows = lrReplayDir ? crJson(join(lrReplayDir, "field-measurements.json")) : undefined;
+          const lrPlainSummary = existsSync(join(plainRun, "summary.md")) ? readFileSync(join(plainRun, "summary.md"), "utf8") : "";
+          let lrReplay: { ok: boolean; error: string } = { ok: false, error: "the plain run left no directory to replay" };
+          let lrReplayDir: string | undefined;
+          let lrReplayRows: unknown;
+          let lrReplayUnchanged = false;
+          try {
+            const lrReplaySource = crCopy("lr-replay", plainRun);
+            const lrReplayBefore = crTree(lrReplaySource);
+            lrReplay = await runCn(["--replay-critic", lrReplaySource, "--automotive-facts", factsPath]);
+            lrReplayDir = crSibling(lrReplaySource);
+            lrReplayRows = lrReplayDir ? crJson(join(lrReplayDir, "field-measurements.json")) : undefined;
+            lrReplayUnchanged = crTree(lrReplaySource) === lrReplayBefore;
+          } catch (e) {
+            lrReplay = { ok: false, error: `the replay setup threw: ${String(e)}` };
+          }
           lrCheck("LR10. a full run and a critic replay each write 07-legal-review.json after the panel — the review revalidates "
             + "against the package it reviewed — and measure its response; the full run's summary.md shows the Legal review "
             + "section with the not-legal-advice line and the run's verdict; the replay leaves its source unchanged",
@@ -8493,7 +8504,7 @@ async function run(): Promise<void> {
               && lrPlainSummary.indexOf("## Critic panel") < lrPlainSummary.indexOf("## Legal review")
               && lrReplay.ok && lrReplayDir !== undefined && existsSync(join(lrReplayDir, "07-legal-review.json"))
               && Array.isArray(lrReplayRows) && lrReplayRows.some((r: { stage: string; field: string }) => r.stage === "legal-review" && r.field === "summary")
-              && crTree(lrReplaySource) === lrReplayBefore,
+              && lrReplayUnchanged,
             lrReplay.error);
 
           const makes = (JSON.parse(readFileSync(resolve(REPO_ROOT, "config/approved-facts.json"), "utf8")).makes ?? []) as string[];
@@ -12717,8 +12728,9 @@ async function run(): Promise<void> {
         + "replay, and both hand the critic the attached packages",
         contactPreflight > 0 && contactPreflight < costGate
           && replayContactPreflight > 0 && replayAttach > replayContactPreflight && replayAttach < replayCostCE
-          && /packagingOutput: contacted,/.test(mainBody)
-          && /packagingOutput: contacted,/.test(replayBodyCE)
+          // (S8.6) the critic's own call, not merely some call: the legal review's repeats the line.
+          && /executeFinalCritic\(\{\n[^\n]*packagingOutput: contacted,/.test(mainBody)
+          && /executeFinalCritic\(\{\n[^\n]*packagingOutput: contacted,/.test(replayBodyCE)
           && mainBody.indexOf("rt.contact.attachContactLines(packaging.output, pack)")
             > mainBody.indexOf('await writeStage("05-packaging-adaptation", packaging);'));
     }

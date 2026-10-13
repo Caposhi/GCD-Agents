@@ -532,9 +532,11 @@
  * revalidation and stored verdict; 0005's two authorized changes and nothing
  * else; the web's shared copies; and the report's Legal review section. `M630`–
  * `M632` ("the expected migrations lose their last") are re-pointed to 0005 in
- * place, with the same ids. Four captured paths are added (`legalReview.ts`,
- * `agents/legal-review.md`, `skills/legal-risk/SKILL.md` and migration 0005):
- * seventy-three in all, for 757 mutations.
+ * place, with the same ids. `M365` and `M489` are re-anchored in place, with the
+ * same ids, edits and checks: the legal review's call repeats `M365`'s line, and
+ * the revision's return now carries the verdicts. Four captured paths are
+ * added (`legalReview.ts`, `agents/legal-review.md`, `skills/legal-risk/SKILL.md`
+ * and migration 0005): seventy-three in all, for 757 mutations.
  *
  * It is offline and deterministic: no network, no database, no provider, no
  * credential. The mutations run in parallel on up to MAX_WORKERS workers (the
@@ -3736,8 +3738,10 @@ const CONTACT_LINE_MUTATIONS = [
   {
     name: "the full run hands the critic stage 5's output without its contact lines",
     file: CONTENT_RUN_PIPELINE,
-    from: "    scriptOutput: script.output, directionOutput: direction.output, packagingOutput: contacted,",
-    to: "    scriptOutput: script.output, directionOutput: direction.output, packagingOutput: packaging.output as never,",
+    // Re-anchored in place by Content Studio S8.6 (same edit, same checks): the legal review's
+    // call now repeats this line, so the site names the critic's call above it.
+    from: "  const critic = await rt.critic.executeFinalCritic({\n    scriptOutput: script.output, directionOutput: direction.output, packagingOutput: contacted,",
+    to: "  const critic = await rt.critic.executeFinalCritic({\n    scriptOutput: script.output, directionOutput: direction.output, packagingOutput: packaging.output as never,",
     expect: ["CG1.", "CE9."],
   },
   {
@@ -4736,8 +4740,10 @@ const REVISION_PASS_MUTATIONS = [
     // asserts — one plan, one revised directory, each request once — is what
     // it breaks.
     file: CONTENT_RUN_PIPELINE,
-    from: "  return { revised: true, dir: sink.label, sink, plan };",
-    to: "  return origin === \"again\" ? { revised: true, dir: sink.label, sink, plan } : reviseRun(rt, args, source, \"again\", io);",
+    // Re-anchored in place by Content Studio S8.6 (same edit, same check): the result now also
+    // carries the run's, the critic's and the legal review's verdicts.
+    from: "  return { revised: true, dir: sink.label, sink, plan, verdict, criticVerdict: critic.output.provisional.verdict, legalVerdict: legal.output.verdict };",
+    to: "  return origin === \"again\" ? { revised: true, dir: sink.label, sink, plan, verdict, criticVerdict: critic.output.provisional.verdict, legalVerdict: legal.output.verdict } : reviseRun(rt, args, source, \"again\", io);",
     expect: ["CV17."],
   },
   {
