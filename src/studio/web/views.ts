@@ -16,8 +16,8 @@
 
 import { escapeHtml } from "./html.js";
 import {
-  groupFindings, KIND_LABELS, LENS_ORDER, needsDecision, OWNER_ORDER, PLATFORM_LABELS, POLL_SECONDS, POLLING_STATES,
-  RUN_KINDS, RUN_STATES, RUNS_PAGE_SIZE, readCaptions, readScript, readShotList, stoppedAt,
+  groupFindings, groupLegalFindings, KIND_LABELS, LENS_ORDER, needsDecision, OWNER_ORDER, PLATFORM_LABELS, POLL_SECONDS,
+  POLLING_STATES, RUN_KINDS, RUN_STATES, RUNS_PAGE_SIZE, readCaptions, readLegalReview, readScript, readShotList, stoppedAt,
   type ArtifactMeta, type CaptionCard, type Displayable, type FindingRow, type RequestRow, type RunFilters, type RunLineage,
   type RunListRow, type RunRow,
 } from "./runs.js";
@@ -33,6 +33,15 @@ export const COPY_BANNER = "The contact line is copied from approved facts, not 
   + "Nothing here is approved, scheduled or published.";
 export const CANNOT_DISPLAY = "Cannot display; download the file.";
 export const REQUIREMENT_UNVERIFIED = "to be confirmed by a person";
+/**
+ * The legal review's line (Content Studio S8.6), from code, never from the
+ * stored file: the skill's first line, word for word (the web's suite holds it
+ * equal to the library's `LEGAL_REVIEW_DISCLAIMER`).
+ */
+export const LEGAL_NOT_ADVICE = "Screening aid, not legal advice. Serious findings go to the owner's attorney before posting.";
+export const LEGAL_VERDICT_LABELS: Readonly<Record<string, string>> = Object.freeze({
+  no_legal_finding: "No legal finding", needs_owner_decision: "Needs your decision", blocked: "Blocked",
+});
 
 /** An attribute value: `escapeHtml`, and a carriage return kept as a reference so the parser cannot fold it. */
 export const escapeAttribute = (value: string): string => escapeHtml(value).replace(/\r/g, "&#13;");
@@ -155,6 +164,7 @@ export interface ReportInput {
 /** The artifacts the report reads to render itself. */
 export const REPORT_ARTIFACTS = [
   "03-hook-story-script.json", "04-production-direction.json", "05-packaging-adaptation.json", "05b-contact-lines.json",
+  "07-legal-review.json",
 ] as const;
 
 const absentOrCannot = (shown: Displayable<unknown>, file: string, sourceRunId: string | null): string =>
@@ -277,14 +287,43 @@ export function reportBody(input: ReportInput): string {
       + g.findings.map((f) => findingItem(f, group === "owner" ? "lens" : "owner")).join("") + "</ul>").join("")
     + "</section>";
 
+  // S8.6: the legal review, from its own stored file. Blocking categories first; nothing here is legal advice.
+  const legal = readLegalReview(content.get("07-legal-review.json"));
+  const legalItem = (f: { blocking: boolean; severity: string; category: string; location: string; quote: string; issue: string; fix: string }) =>
+    `<li class="finding finding-${f.blocking ? "blocking" : "advisory"}"><span class="sev">${f.blocking ? "blocking" : "your decision"}</span> `
+    + `<span class="meta">${escapeHtml(f.category)} · ${escapeHtml(f.severity)} · ${escapeHtml(f.location)}</span>`
+    + `<p class="quote prose">“${escapeHtml(f.quote)}”</p><p class="prose">${escapeHtml(f.issue)}</p>`
+    + `<p class="prose">Fix: ${escapeHtml(f.fix)}</p></li>`;
+  const legalSection = "<section class=\"legal\" id=\"legal\"><h2>Legal review</h2>"
+    + `<p class="banner banner-bad">${escapeHtml(LEGAL_NOT_ADVICE)}</p>`
+    + (legal.ok
+      ? `<p>Verdict: <strong>${label(LEGAL_VERDICT_LABELS, legal.value.verdict)}</strong> · `
+        + `${legal.value.findings.filter((f) => f.blocking).length} blocking · `
+        + `${legal.value.findings.filter((f) => !f.blocking).length} for your decision</p>`
+        + "<p class=\"note\">A finding in a blocking category keeps the run's verdict from passing; every other finding "
+        + "is listed under “Needs your decision”.</p>"
+        + `<p class="prose">${escapeHtml(legal.value.summary)}</p>`
+        + groupLegalFindings(legal.value.findings).map((g) => `<h3>${escapeHtml(g.category)} — ${g.blocking ? "blocking" : "needs your decision"}</h3><ul>`
+          + g.findings.map(legalItem).join("") + "</ul>").join("")
+      : legal.reason === "absent"
+        ? "<p class=\"note\">This run has no legal review: it was made before the review existed, or it did not reach it.</p>"
+        : `<p class="note">${CANNOT_DISPLAY}</p>`)
+    + "</section>";
+  const legalDecisions = legal.ok ? legal.value.findings.filter((f) => !f.blocking) : [];
+
   const decisions = needsDecision(findings);
-  const decisionSection = `<section class="decisions${decisions.length ? " decisions-open" : ""}"><h2>Needs your decision</h2>`
+  const decisionSection = `<section class="decisions${decisions.length || legalDecisions.length ? " decisions-open" : ""}"><h2>Needs your decision</h2>`
     + (decisions.length
       ? "<p>No model is ever sent these: a person decides each one.</p><ul>"
         + decisions.map((f) => `<li class="finding finding-${escapeAttribute(f.severity)}"><span class="sev">${escapeHtml(f.severity)}</span> `
           + `<span class="meta">${escapeHtml(f.lens)} · ${escapeHtml(f.category)} · ${escapeHtml(f.owner)}</span>`
           + `<p class="prose">${escapeHtml(f.issue)}</p></li>`).join("") + "</ul>"
-      : "<p>Nothing needs your decision.</p>")
+      : "")
+    + (legalDecisions.length
+      ? `<h3>From the legal review</h3><p class="note">${escapeHtml(LEGAL_NOT_ADVICE)}</p><ul>`
+        + legalDecisions.map(legalItem).join("") + "</ul>"
+      : "")
+    + (decisions.length || legalDecisions.length ? "" : "<p>Nothing needs your decision.</p>")
     + "</section>";
 
   const costSection = "<section class=\"cost\"><h2>Cost</h2><dl class=\"facts\">"
@@ -309,9 +348,9 @@ export function reportBody(input: ReportInput): string {
       + "bundle in the import's format: it re-imports byte for byte</span></p>" : "")
     + "</section>";
 
-  // Design order: header, captions, script, shot list, findings, needs your decision, cost, files.
+  // Design order: header, captions, script, shot list, findings, legal review (S8.6), needs your decision, cost, files.
   return `<article class="report">${header(run, lineage, names, requests)}${input.importInfo ?? ""}${input.actions ?? ""}<div class="sections">`
-    + captionSection + scriptSection + shotSection + findingsSection + decisionSection + costSection + filesSection
+    + captionSection + scriptSection + shotSection + findingsSection + legalSection + decisionSection + costSection + filesSection
     + "</div></article>";
 }
 

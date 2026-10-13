@@ -18,6 +18,15 @@
  * deterministically by the executor. Full runs and `--replay-critic` both run
  * the whole panel.
  *
+ * After the panel, every path that runs it — a full run, `--replay-critic`,
+ * `--resume-from` and a revision round — runs the legal-risk review (Content
+ * Studio S8.6): one more request under the critic lenses' policy, priced in the
+ * printed ceiling as its own `legal-review` line, written to
+ * `07-legal-review.json`. A finding in a blocking category (trademark
+ * affiliation, defamation risk, copyright reproduction) keeps the run's verdict
+ * from passing; every other finding is for the owner to decide. Screening aid,
+ * not legal advice. See `src/harness/contentRun/legalReview.ts`.
+ *
  * After stage 5 validates, a deterministic step attaches each package's fixed
  * contact line — copied byte for byte from the evidence pack's approved-facts
  * shop-name, phone and booking-link records, never written by a model — and the critic
@@ -104,7 +113,7 @@
  *   --i-understand-this-costs-money
  *                              Required to use --runner live.
  *   --replay-critic <run-dir>  Run ONLY final-critic — all four lens requests —
- *                              against an existing run
+ *                              and the legal review against an existing run
  *                              directory's saved stage 1-5 outputs. Writes to a
  *                              new sibling directory and never touches the
  *                              source run. Refuses unless the rebuilt evidence
@@ -114,8 +123,8 @@
  *                              run-meta.json when present, else from its
  *                              summary.md, else from the positional argument.
  *   --resume-from packaging-adaptation <run-dir>
- *                              Run stage 5, the contact lines and final-critic
- *                              (five model requests) against an existing run's
+ *                              Run stage 5, the contact lines, final-critic and
+ *                              the legal review (six model requests) against an existing run's
  *                              saved stage 1-4 outputs; stages 1-4 make no
  *                              request. Writes to a new sibling directory and
  *                              never touches the source run. Refuses unless
@@ -194,13 +203,15 @@ Options:
   --runner fake|live               Default "fake". "live" requires --i-understand-this-costs-money,
                                    then typing LIVE at the prompt.
   --i-understand-this-costs-money  Required to use --runner live.
-  --replay-critic <run-dir>        Run only final-critic against a saved run; writes a new sibling directory.
+  --replay-critic <run-dir>        Run only final-critic and the legal review against a saved run; writes a new
+                                   sibling directory.
   --resume-from packaging-adaptation <run-dir>
-                                   Run stage 5 and final-critic against a saved run's stage 1-4 outputs;
+                                   Run stage 5, final-critic and the legal review against a saved run's stage 1-4 outputs;
                                    writes a new sibling directory. packaging-adaptation is the only resume point.
   --revise-from <run-dir>          One revision round on a completed run: re-run the earliest writing stage that owns
-                                   a blocking finding and every later one, then the critic panel fresh. Human items
-                                   never reach a model. Writes <run-dir>-revised-<timestamp>.
+                                   a blocking finding and every later one, then the critic panel and the legal review
+                                   fresh. Human items and legal findings never reach a model. Writes
+                                   <run-dir>-revised-<timestamp>.
   --revise-once                    With a goal: a full run, then the same single revision round on it.
   --scope-tags a,b,c               Narrow the evidence pack to records with any of these tags. Contact-line and
                                    identity records are always included. Default: no scope (every record).
@@ -485,8 +496,9 @@ export const contentRunLibrary = lib;
 // The library's pure helpers, re-exported so the offline suite can exercise
 // them through this CLI (it may import the library only through here).
 export const {
-  allStagePolicies, criticLensPolicies, resumePolicies, revisionPolicies, alwaysIncludedIds,
-  effectiveEvidenceScope, evidencePackFingerprint, markdownSummary, summaryFooter, revisionSummaryLines,
+  allStagePolicies, criticLensPolicies, criticReplayPolicies, legalReviewPolicies, resumePolicies, revisionPolicies,
+  alwaysIncludedIds, effectiveEvidenceScope, evidencePackFingerprint, markdownSummary, summaryFooter, revisionSummaryLines,
+  legalSummaryLines,
 } = lib ?? {};
 
 /**
@@ -626,7 +638,7 @@ function reportFailure(err) {
   } else if (err?.name === "EvidenceValidationError") {
     console.error(`${err.name}: ${err.message}`);
     if (Array.isArray(err.issues)) for (const i of err.issues) console.error(`  - ${i}`);
-  } else if (err?.name === "StageExecutionError" || err?.name === "CriticPanelError") {
+  } else if (err?.name === "StageExecutionError" || err?.name === "CriticPanelError" || err?.name === "LegalReviewError") {
     console.error(`${err.name}: ${err.message}`);
   } else if (["StageOutputTruncatedError", "StageRefusalError", "StageUnexpectedStopError", "ContactLineError",
     "IdentityFactError", "EvidenceScopeError", "RevisionCapError"].includes(err?.name)) {

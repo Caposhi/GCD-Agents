@@ -76,7 +76,7 @@ const hex = (seed: string) => createHash("sha256").update(seed).digest("hex");
 const commit = (seed: string) => hex(seed).slice(0, 40);
 const repoRoot = process.cwd();
 const EXPECTED_FILES = ["0001_studio_identity_and_tripwire.sql", "0002_studio_schema.sql", "0003_studio_preflight_requests.sql",
-  "0004_studio_fact_checks_and_imports.sql"];
+  "0004_studio_fact_checks_and_imports.sql", "0005_studio_legal_review.sql"];
 
 // ---------------------------------------------------------------------------
 // Environment and disposable databases
@@ -605,9 +605,10 @@ async function upgradeFromSchema0003(dbs: Databases): Promise<void> {
     const added = await one(`SELECT to_regclass('public.studio_fact_checks') IS NOT NULL AS checks,
                                     (SELECT count(*) FROM studio_users WHERE updated_by IS NOT NULL) AS stamped,
                                     (SELECT count(*) FROM studio_fact_versions WHERE status_changed_by IS NOT NULL) AS changed`);
+    // (Until Content Studio S8.6 this said "applies 0004 alone"; 0005 now follows it, SP20.)
     check("runner", "SP18. migration 0004 applies on top of a populated database at 0003 — users, a fact version, the "
       + "settings pointing at it, a finished fake run with a file, an archived import with its reason, a queued preflight "
-      + "job and its request: the runner skips 0001-0003 (their recorded sha256 values unchanged), applies 0004 alone, "
+      + "job and its request: the runner skips 0001-0003 (their recorded sha256 values unchanged), applies 0004 (then 0005), "
       + "records its sha256, every existing row satisfies 0004's new CHECKs, and the 0003-era rows are as they were (the "
       + "new actor columns empty)",
     older.code === 0 && JSON.stringify(ledgerAt0003.map((row) => row.name)) === JSON.stringify(EXPECTED_FILES.slice(0, 3))
@@ -622,6 +623,77 @@ async function upgradeFromSchema0003(dbs: Databases): Promise<void> {
     const again = await studioRunner(url);
     check("runner", "SP19. after that upgrade a further run is idempotent: every file skipped with a matching sha256, "
       + "and the schema, ledger and identity byte-for-byte unchanged",
+    again.code === 0 && EXPECTED_FILES.every((name) => again.stdout.includes(`[studio-migrate] skip ${name}`))
+      && !again.stdout.includes("[studio-migrate] applied") && before === await snapshot(pool), again.stderr);
+  } finally {
+    await closePool(pool);
+    await rm(olderRoot, { recursive: true, force: true });
+    await dbs.drop(STUDIO_DATABASE_NAME);
+  }
+}
+
+/**
+ * Content Studio S8.6: production's path — a populated database at 0004 takes 0005 alone, and only then accepts the
+ * legal review's file in an import.
+ */
+async function upgradeFromSchema0004(dbs: Databases): Promise<void> {
+  const url = await dbs.create(STUDIO_DATABASE_NAME);
+  const pool = openPool("Studio gcd_studio at 0004", { connectionString: url, max: 2 });
+  const olderRoot = await mkdtemp(join(tmpdir(), "gcd-studio-0004-"));
+  try {
+    await mkdir(join(olderRoot, STUDIO_MIGRATIONS_DIRECTORY), { recursive: true });
+    for (const name of EXPECTED_FILES.slice(0, 4)) {
+      await cp(resolve(repoRoot, STUDIO_MIGRATIONS_DIRECTORY, name), join(olderRoot, STUDIO_MIGRATIONS_DIRECTORY, name));
+    }
+    const older = await studioRunner(url, olderRoot);
+    const ledgerAt0004 = (await pool.query("SELECT name, sha256 FROM studio_schema_migrations ORDER BY name")).rows;
+    const one = async (sql: string, params: unknown[] = []) => (await pool.query(sql, params)).rows[0] ?? {};
+    const owner = String((await one("INSERT INTO studio_users (email, role, google_sub) VALUES ($1, 'owner', 'sub-upgrade4-owner') RETURNING id",
+      [mail("upgrade4.owner")])).id);
+    // A queued import, as 0004 writes one: its run, its import job and a known file, in one transaction.
+    const file = async (c: pg.PoolClient, run: string, name: string) => {
+      const bytes = Buffer.from(`{"synthetic":"${name}"}`, "utf8");
+      await c.query("INSERT INTO studio_run_artifacts (run_id, name, content, sha256, byte_length) VALUES ($1, $2, $3, $4, $5)",
+        [run, name, bytes, createHash("sha256").update(bytes).digest("hex"), bytes.length]);
+    };
+    let queued = "";
+    const created = await tx(pool, async (c) => {
+      queued = String((await c.query("INSERT INTO studio_runs (kind, requested_by, runner) VALUES ('imported', $1, 'live') RETURNING id",
+        [owner])).rows[0]?.id);
+      await c.query("INSERT INTO studio_jobs (run_id, kind) VALUES ($1, 'import')", [queued]);
+      await file(c, queued, "run-meta.json");
+    });
+    const refusedAt0004 = await tx(pool, (c) => file(c, queued, "07-legal-review.json"));
+    const rows = async () => JSON.stringify([
+      (await pool.query("SELECT id, email, role, status FROM studio_users ORDER BY id")).rows,
+      (await pool.query("SELECT id, kind, state, runner FROM studio_runs ORDER BY id")).rows,
+      (await pool.query("SELECT run_id, name, sha256 FROM studio_run_artifacts ORDER BY run_id, name")).rows,
+      (await pool.query("SELECT id, kind, state, run_id FROM studio_jobs ORDER BY id")).rows,
+    ]);
+    const rowsBefore = await rows();
+    const upgrade = await studioRunner(url);
+    const files = await readStudioMigrationFiles(resolve(repoRoot, STUDIO_MIGRATIONS_DIRECTORY));
+    const ledger = (await pool.query("SELECT name, sha256 FROM studio_schema_migrations ORDER BY name")).rows;
+    const rowsAfter = await rows();
+    const acceptedAt0005 = await tx(pool, (c) => file(c, queued, "07-legal-review.json"));
+    const stillRefused = await tx(pool, (c) => file(c, queued, "08-legal-review.json"));
+    check("runner", "SP20. migration 0005 applies on top of a populated database at 0004 — production's path at the S8.6 "
+      + "deploy: the runner skips 0001-0004 (their recorded sha256 values unchanged), applies 0005 alone and records its "
+      + "sha256; every existing row is as it was; a queued import that 0004 refused 07-legal-review.json takes it once 0005 "
+      + "is applied, and an unknown name is still refused",
+    older.code === 0 && JSON.stringify(ledgerAt0004.map((row) => row.name)) === JSON.stringify(EXPECTED_FILES.slice(0, 4))
+      && created === "" && /only the CLI's known file names/.test(refusedAt0004)
+      && upgrade.code === 0 && EXPECTED_FILES.slice(0, 4).every((name) => upgrade.stdout.includes(`[studio-migrate] skip ${name}`))
+      && upgrade.stdout.includes(`[studio-migrate] applied ${EXPECTED_FILES[4]}`)
+      && (upgrade.stdout.match(/\[studio-migrate\] applied /g) ?? []).length === 1
+      && JSON.stringify(ledger) === JSON.stringify(files.map((f) => ({ name: f.name, sha256: f.sha256 })))
+      && JSON.stringify(ledger.slice(0, 4)) === JSON.stringify(ledgerAt0004) && rowsBefore === rowsAfter
+      && acceptedAt0005 === "" && /only the CLI's known file names/.test(stillRefused),
+    `${older.stderr} ${created} ${refusedAt0004} ${upgrade.stderr} ${acceptedAt0005} ${stillRefused}`);
+    const before = await snapshot(pool);
+    const again = await studioRunner(url);
+    check("runner", "SP21. after that upgrade a further run is idempotent: every file skipped with a matching sha256, and the "
+      + "schema, ledger and identity byte-for-byte unchanged",
     again.code === 0 && EXPECTED_FILES.every((name) => again.stdout.includes(`[studio-migrate] skip ${name}`))
       && !again.stdout.includes("[studio-migrate] applied") && before === await snapshot(pool), again.stderr);
   } finally {
@@ -2056,6 +2128,44 @@ async function invariants(pool: pg.Pool): Promise<void> {
     (c) => confirm(c, fakeResumeQuote, runner, { kind: "resume_packaging", source: fakeImport, fact: factVersion2 }));
   await accepts("a fake run's own fake child — a fake revise of a fake run, owner-only and free — is still allowed",
     (c) => fakeRun(c, owner, "revise", fakeA));
+
+  // ---- Content Studio S8.6 (migration 0005): the legal review's request and file; nothing else widened ----------------
+  let legalRun = "";
+  {
+    const message = await tx(pool, async (c) => {
+      legalRun = await fakeRun(c, owner);
+      await c.query("INSERT INTO studio_jobs (run_id, kind) VALUES ($1, 'fake')", [legalRun]);
+    });
+    if (message) throw new Error(`fixture refused: ${message}`);
+  }
+  await pool.query("UPDATE studio_jobs SET state = 'running' WHERE run_id = $1", [legalRun]);
+  await pool.query("UPDATE studio_runs SET state = 'running', started_at = now(), code_commit = $2 WHERE id = $1", [legalRun, commit("worker")]);
+  await accepts("migration 0005: the legal review's started row — stage legal-review, no lens — for a running run",
+    (c) => request(c, legalRun, 1, "legal-review"));
+  await refuses("migration 0005: a lens on the legal review's request", /lens_only_for_critic/,
+    (c) => request(c, legalRun, 2, "legal-review", "evidence-fidelity"));
+  await refuses("migration 0005: a critic request still needs its lens", /lens_only_for_critic/,
+    (c) => request(c, legalRun, 2, "final-critic"));
+  await refuses("migration 0005: a stage the pipeline does not have", /studio_run_requests_stage/,
+    (c) => request(c, legalRun, 2, "legal-reviews"));
+  await refuses("migration 0005: a lens the panel does not have, on a critic request", /studio_run_requests_lens/,
+    (c) => request(c, legalRun, 2, "final-critic", "legal-review"));
+  await accepts("migration 0005: an import holding 07-legal-review.json beside run-meta.json",
+    async (c) => importFiles(c, await importRun(c), ["run-meta.json", "07-legal-review.json"]));
+  await accepts("migration 0005: an import holding all seventeen known file names", async (c) => importFiles(c, await importRun(c), [
+    "run-meta.json", "resume-meta.json", "replay-meta.json", "revision-meta.json", "01-strategy-concept.json",
+    "02-automotive-truth.json", "03-hook-story-script.json", "04-production-direction.json", "05-packaging-adaptation.json",
+    "05b-contact-lines.json", "06-final-critic.json", "round-1-06-final-critic.json", "07-legal-review.json", "summary.md",
+    "field-measurements.json", "field-measurements.md", "rejected-responses.json"]));
+  await refuses("migration 0005: an import holding a review-like name it did not add", /only the CLI's known file names/,
+    async (c) => importFiles(c, await importRun(c), ["08-legal-review.json"]));
+  const stageDef = String((await one("SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conname = 'studio_run_requests_stage'")).def);
+  const lensDef = String((await one("SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conname = 'studio_run_requests_lens'")).def);
+  holds("migration 0005: the stage constraint in force names exactly 0002's six stages and legal-review, and the lens "
+    + "constraint is unchanged (the four lenses)",
+  ["strategy-concept", "automotive-truth", "hook-story-script", "production-direction", "packaging-adaptation", "final-critic",
+    "legal-review"].every((stage) => stageDef.includes(`'${stage}'`)) && (stageDef.match(/'[a-z-]+'/g) ?? []).length === 7
+    && (lensDef.match(/'[a-z-]+'/g) ?? []).length === 4 && !lensDef.includes("legal"), `${stageDef} | ${lensDef}`);
 }
 
 async function main(): Promise<void> {
@@ -2074,6 +2184,7 @@ async function main(): Promise<void> {
     await studioDatabase(dbs);
     await upgradeFromSchema0002(dbs);
     await upgradeFromSchema0003(dbs);
+    await upgradeFromSchema0004(dbs);
   } finally {
     const leftovers = [...dbs.created];
     for (const name of leftovers) await dbs.drop(name).catch((error) => console.error(`[studio-postgres] drop ${name}: ${(error as Error).message}`));

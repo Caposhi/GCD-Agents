@@ -20,11 +20,15 @@ export function summaryFooter(runner: unknown): string {
  * caption, labelled as code-attached rather than model-written. The critic
  * panel is rendered as the panel's computed verdict and counts, then one
  * section per lens: that lens's verdict, its own summary, and its findings.
+ * Since Content Studio S8.6 the legal review follows (`legalSummaryLines`),
+ * with the run's verdict — the panel's, combined with the review's — when the
+ * caller passes one.
  */
 export function markdownSummary({
-  goal, runner, timestamp, script, direction, packaging, critic, resumedFrom, revision,
+  goal, runner, timestamp, script, direction, packaging, critic, legal, verdict, resumedFrom, revision,
 }: {
   goal: string; runner: string; timestamp: string; script: any; direction: any; packaging: any; critic: any;
+  legal?: any; verdict?: string;
   resumedFrom?: { stage: string; sourceRunDir: string };
   revision?: any;
 }): string {
@@ -39,8 +43,10 @@ export function markdownSummary({
   }
   if (revision) {
     lines.push(`- Revised from ${revision.sourceRunDir} (one round, ${revision.origin}): re-ran `
-      + `${revision.rerunStages.join(", ")} and the critic panel; everything else reused byte for byte`);
+      + `${revision.rerunStages.join(", ")} and the critic panel${legal ? " and the legal review" : ""}; `
+      + "everything else reused byte for byte");
   }
+  if (verdict) lines.push(`- Run verdict: ${verdict} (the critic panel's, combined with the legal review's)`);
   lines.push("", "## Hook", "", script.provisional.hook, "");
   lines.push("## Script", "", script.provisional.script, "");
   lines.push("## Shot list", "");
@@ -72,6 +78,7 @@ export function markdownSummary({
     });
     if (own.length) lines.push("");
   }
+  if (legal) lines.push(...legalSummaryLines(legal));
   if (revision) lines.push(...revisionSummaryLines(revision));
   lines.push("---", summaryFooter(runner));
   return lines.join("\n");
@@ -124,3 +131,34 @@ export function revisionSummaryLines({ round1, round2, plan, reusedFiles }: any)
   lines.push("");
   return lines;
 }
+
+/**
+ * The legal review's section (Content Studio S8.6): the "not legal advice"
+ * line, the computed verdict, the model's own summary, then the findings by
+ * category — blocking categories first, each finding labelled blocking or
+ * "needs your decision", with its exact quote and its one fix.
+ */
+export function legalSummaryLines(legal: any): string[] {
+  const lines = ["## Legal review", ""];
+  lines.push(`_${legal.disclaimer}_`, "");
+  lines.push(`**${legal.verdict}** — ${legal.findings.length} finding(s): `
+    + `${legal.findings.filter((f: any) => f.blocking).length} blocking, `
+    + `${legal.findings.filter((f: any) => !f.blocking).length} for your decision.`, "");
+  lines.push("_The verdict is computed by code: a finding in a blocking category (trademark_affiliation, defamation_risk, "
+    + "copyright_reproduction) blocks the run from passing; every other finding needs your decision._", "");
+  lines.push(legal.summary, "");
+  if (!legal.findings.length) lines.push("No findings.", "");
+  const categories: string[] = [];
+  for (const f of legal.findings) if (!categories.includes(f.category)) categories.push(f.category);
+  categories.sort((a, b) => Number(isBlocking(legal, b)) - Number(isBlocking(legal, a)));
+  for (const category of categories) {
+    const own = legal.findings.filter((f: any) => f.category === category);
+    lines.push(`### ${category} — ${own[0].blocking ? "blocking" : "needs your decision"}`, "");
+    own.forEach((f: any) => lines.push(`- [${f.severity}/${f.location}] "${f.quote}" — ${f.issue} Fix: ${f.fix}`));
+    lines.push("");
+  }
+  return lines;
+}
+
+const isBlocking = (legal: any, category: string): boolean =>
+  legal.findings.some((f: any) => f.category === category && f.blocking);

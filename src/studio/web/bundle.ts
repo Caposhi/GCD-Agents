@@ -36,7 +36,7 @@ import { FACT_UPLOAD_MAX_BYTES, STUDIO_IMPORT_FILE_NAMES } from "../db/runner.js
 export const RUN_BUNDLE_SCHEMA = "gcd-studio-run-bundle/1";
 /** The posted import document's bound, checked before parsing: 10 MiB. */
 export const IMPORT_MAX_DOCUMENT_BYTES = 10 * 1024 * 1024;
-/** Design §8.6's file bound (0004's sixteen known names bound it tighter). */
+/** Design §8.6's file bound (the seventeen known names in force since 0005, S8.6, bound it tighter). */
 export const IMPORT_MAX_FILES = 20;
 /** A fact upload's document: 1 MiB as base64 (1,398,104 characters) and its sha256, with room for the JSON around them. */
 export const FACT_UPLOAD_MAX_DOCUMENT_BYTES = 1_400_000;

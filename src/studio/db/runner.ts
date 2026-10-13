@@ -330,6 +330,7 @@ export const STUDIO_EXPECTED_MIGRATIONS = [
   "0002_studio_schema.sql",
   "0003_studio_preflight_requests.sql",
   "0004_studio_fact_checks_and_imports.sql",
+  "0005_studio_legal_review.sql",
 ] as const;
 export const STUDIO_SCHEMA_VERSION = STUDIO_EXPECTED_MIGRATIONS[STUDIO_EXPECTED_MIGRATIONS.length - 1]!;
 
@@ -559,14 +560,29 @@ export const UNACKNOWLEDGED_OVERRUNS_SQL = `
  * The file names an import may hold and a whole-run bundle carries: the CLI's
  * known files (design §8.6). The web may not load the library, so it reads
  * this copy; the worker's offline suite holds it equal to the library's
- * `RUN_ARTIFACT_NAMES` and to migration 0004's list (`SW25`, `SW27`).
+ * `RUN_ARTIFACT_NAMES` and to the import-bounds list of the latest migration
+ * that defines it — 0005's since Content Studio S8.6, which added
+ * `07-legal-review.json` (`SW25`, `SW27`).
  */
 export const STUDIO_IMPORT_FILE_NAMES: readonly string[] = Object.freeze([
   "01-strategy-concept.json", "02-automotive-truth.json", "03-hook-story-script.json", "04-production-direction.json",
-  "05-packaging-adaptation.json", "05b-contact-lines.json", "06-final-critic.json", "field-measurements.json",
+  "05-packaging-adaptation.json", "05b-contact-lines.json", "06-final-critic.json", "07-legal-review.json", "field-measurements.json",
   "field-measurements.md", "rejected-responses.json", "replay-meta.json", "resume-meta.json", "revision-meta.json",
   "round-1-06-final-critic.json", "run-meta.json", "summary.md",
 ]);
+
+/**
+ * The legal review's blocking categories (Content Studio S8.6; the owner's
+ * defaults of 2026-10-13). The web may not load the library, so it reads this
+ * copy to show a stored finding in one of them as blocking whatever the stored
+ * file says; the worker's offline suite holds it equal to the library's
+ * `LEGAL_BLOCKING_CATEGORIES`.
+ */
+export const STUDIO_LEGAL_BLOCKING_CATEGORIES: readonly string[] = Object.freeze([
+  "trademark_affiliation", "defamation_risk", "copyright_reproduction",
+]);
+/** The legal review's file, as the library names it (`LEGAL_REVIEW_ARTIFACT`; held equal by the same suite). */
+export const STUDIO_LEGAL_REVIEW_ARTIFACT = "07-legal-review.json";
 
 /** A fact upload's bound (design §8.5's 1 MB; `studio_fact_uploads_bounded`). */
 export const FACT_UPLOAD_MAX_BYTES = 1_048_576;

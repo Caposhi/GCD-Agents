@@ -312,15 +312,16 @@ async function main(): Promise<void> {
     + "sha256 of its exact bytes, and plans cleanly from an empty ledger",
   JSON.stringify(repositoryFiles.map((file) => file.name))
       === JSON.stringify(["0001_studio_identity_and_tripwire.sql", "0002_studio_schema.sql",
-        "0003_studio_preflight_requests.sql", "0004_studio_fact_checks_and_imports.sql"])
+        "0003_studio_preflight_requests.sql", "0004_studio_fact_checks_and_imports.sql", "0005_studio_legal_review.sql"])
     && repositoryFiles.every((file) => file.sha256
       === sha256Hex(readFileSync(resolve(root, STUDIO_MIGRATIONS_DIRECTORY, file.name))))
     && planStudioMigrations(repositoryFiles, []).pending.length === repositoryFiles.length);
-  check("SM3c. every runtime's expected migrations are exactly the repository's files, 0001, 0002, 0003 and 0004, in "
-    + "order, and the schema version they expect is 0004_studio_fact_checks_and_imports.sql",
+  // (Until Content Studio S8.6 this check named 0001-0004 and the version 0004_studio_fact_checks_and_imports.sql.)
+  check("SM3c. every runtime's expected migrations are exactly the repository's files, 0001, 0002, 0003, 0004 and 0005, "
+    + "in order, and the schema version they expect is 0005_studio_legal_review.sql",
   JSON.stringify([...STUDIO_EXPECTED_MIGRATIONS]) === JSON.stringify(repositoryFiles.map((file) => file.name))
-    && STUDIO_EXPECTED_MIGRATIONS.length === 4 && STUDIO_SCHEMA_VERSION === "0004_studio_fact_checks_and_imports.sql"
-    && planStudioMigrations(repositoryFiles, repositoryFiles.slice(0, 3)).pending.join(",") === STUDIO_SCHEMA_VERSION);
+    && STUDIO_EXPECTED_MIGRATIONS.length === 5 && STUDIO_SCHEMA_VERSION === "0005_studio_legal_review.sql"
+    && planStudioMigrations(repositoryFiles, repositoryFiles.slice(0, 4)).pending.join(",") === STUDIO_SCHEMA_VERSION);
 
   // --- SM4: the identity decision ---------------------------------------------
   check("SM4. the identity decision refuses any database not named gcd_studio",
@@ -421,8 +422,9 @@ async function main(): Promise<void> {
     && liveRunner.includes("INSERT INTO _migrations (name) VALUES ($1)")
     && repositoryFiles.every((file) => file.sql.includes(`IF current_database() <> '${STUDIO_DATABASE_NAME}' THEN`)));
 
+  // The definition in force: the LAST migration's (Content Studio S8.6: 0005 redefines the stage set).
   const sqlSet = (constraint: string): string[] => {
-    const match = new RegExp(`CONSTRAINT ${constraint} CHECK \\(\\w+ IN \\(([^)]*)\\)\\)`).exec(studioSql);
+    const match = [...studioSql.matchAll(new RegExp(`CONSTRAINT ${constraint} CHECK \\(\\w+ IN \\(([^)]*)\\)\\)`, "g"))].at(-1);
     return match ? [...match[1]!.matchAll(/'([^']*)'/g)].map((value) => value[1]!).sort() : [];
   };
   const same = (a: readonly string[], b: readonly string[]) => JSON.stringify([...a].sort()) === JSON.stringify([...b].sort());
@@ -430,9 +432,9 @@ async function main(): Promise<void> {
     const match = new RegExp(`lens = '${lens}' AND category IN \\(([^)]*)\\)`).exec(studioSql);
     return match ? [...match[1]!.matchAll(/'([^']*)'/g)].map((value) => value[1]!) : [];
   };
-  check("SM6b. the Studio schema's closed sets match the pipeline's: stages, lenses, finding severities, "
-    + "categories, owners, each lens's categories and the critic's verdicts",
-  same(sqlSet("studio_run_requests_stage"), TARGET_STAGE_IDS)
+  check("SM6b. the Studio schema's closed sets match the pipeline's: stages (the six, and since S8.6 the legal review), "
+    + "lenses, finding severities, categories, owners, each lens's categories and the critic's verdicts",
+  same(sqlSet("studio_run_requests_stage"), [...TARGET_STAGE_IDS, "legal-review"])
     && same(sqlSet("studio_run_requests_lens"), CRITIC_LENSES) && same(sqlSet("studio_findings_lens"), CRITIC_LENSES)
     && same(sqlSet("studio_findings_severity"), CRITIC_FINDING_SEVERITIES)
     && same(sqlSet("studio_findings_category"), CRITIC_FINDING_CATEGORIES)

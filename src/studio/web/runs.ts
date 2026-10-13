@@ -21,6 +21,7 @@
  */
 
 import { providerTextWithContact, type ContactLine } from "../../harness/agents/providerText.js";
+import { STUDIO_LEGAL_BLOCKING_CATEGORIES } from "../db/runner.js";
 
 // --- The schema's own shapes ---------------------------------------------------
 
@@ -368,11 +369,12 @@ export function readCaptions(packaging: Buffer | undefined, contacts: Buffer | u
   }
 }
 
-/** The stage files in pipeline order, for "the stage it stopped at". */
+/** The stage files in pipeline order, for "the stage it stopped at" — since S8.6 ending with the legal review's. */
 export const STAGE_FILES = [
   ["strategy-concept", "01-strategy-concept.json"], ["automotive-truth", "02-automotive-truth.json"],
   ["hook-story-script", "03-hook-story-script.json"], ["production-direction", "04-production-direction.json"],
   ["packaging-adaptation", "05-packaging-adaptation.json"], ["final-critic", "06-final-critic.json"],
+  ["legal-review", "07-legal-review.json"],
 ] as const;
 
 /**
@@ -386,4 +388,71 @@ export function stoppedAt(kind: string, names: readonly string[], requests: read
   if (unfinished) return unfinished.lens ? `${unfinished.stage} (${unfinished.lens})` : unfinished.stage;
   const files = kind === "replay_critic" ? STAGE_FILES.slice(5) : STAGE_FILES;
   return files.find(([, file]) => !names.includes(file))?.[0] ?? null;
+}
+
+// --- The legal review (Content Studio S8.6) ----------------------------------------
+
+/** The review's three verdicts, as the library computes them. Anything else is not displayed. */
+export const LEGAL_VERDICTS = ["no_legal_finding", "needs_owner_decision", "blocked"] as const;
+const LEGAL_SEVERITIES = ["high", "medium", "low"];
+const LEGAL_LOCATIONS = ["script", "production", "captions", "claims"];
+const LEGAL_CATEGORY_SHAPE = /^[a-z][a-z_]{0,63}$/;
+
+export interface LegalFindingView {
+  category: string;
+  /** Stored `blocking`, or a category the owner's defaults block — never shown as anything less. */
+  blocking: boolean;
+  severity: string;
+  location: string;
+  quote: string;
+  issue: string;
+  fix: string;
+}
+
+export interface LegalReviewView {
+  verdict: string;
+  summary: string;
+  disclaimer: string;
+  findings: LegalFindingView[];
+}
+
+/**
+ * §8.2's legal review, from `07-legal-review.json`, field by field. A finding
+ * in one of the owner's blocking categories is shown as blocking whatever the
+ * stored file says, so an unrevalidated import cannot show one as less.
+ */
+export function readLegalReview(bytes: Buffer | undefined): Displayable<LegalReviewView> {
+  return shaped(bytes, (parsed) => {
+    const output = need(record(need(record(parsed))?.output));
+    const verdict = need(text(output.verdict));
+    if (!(LEGAL_VERDICTS as readonly string[]).includes(verdict)) throw new Unexpected();
+    const findings = need(list(output.findings)).map((entry) => {
+      const f = need(record(entry));
+      const category = need(text(f.category));
+      const severity = need(text(f.severity));
+      const location = need(text(f.location));
+      if (!LEGAL_CATEGORY_SHAPE.test(category) || !LEGAL_SEVERITIES.includes(severity) || !LEGAL_LOCATIONS.includes(location)) {
+        throw new Unexpected();
+      }
+      if (typeof f.blocking !== "boolean") throw new Unexpected();
+      return {
+        category, severity, location,
+        blocking: f.blocking || STUDIO_LEGAL_BLOCKING_CATEGORIES.includes(category),
+        quote: need(text(f.quote)), issue: need(text(f.issue)), fix: need(text(f.fix)),
+      };
+    });
+    return { verdict, summary: need(text(output.summary)), disclaimer: need(text(output.disclaimer)), findings };
+  });
+}
+
+/** The legal review's findings by category, blocking categories first, each in the review's own order. */
+export function groupLegalFindings(findings: readonly LegalFindingView[]): Array<{ category: string; blocking: boolean; findings: LegalFindingView[] }> {
+  const order: string[] = [];
+  for (const f of findings) if (!order.includes(f.category)) order.push(f.category);
+  return order
+    .map((category) => {
+      const own = findings.filter((f) => f.category === category);
+      return { category, blocking: own.some((f) => f.blocking), findings: own };
+    })
+    .sort((a, b) => Number(b.blocking) - Number(a.blocking));
 }

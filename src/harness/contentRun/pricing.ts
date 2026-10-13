@@ -6,6 +6,7 @@
 
 import { createHash } from "node:crypto";
 
+import { LEGAL_REVIEW_POLICY, LEGAL_REVIEW_STAGE } from "./legalReview.js";
 import type { ContentRunRuntime } from "./runtime.js";
 import type { CostCeiling } from "./types.js";
 
@@ -37,8 +38,9 @@ export function priceTableSha256(): string {
 
 /**
  * The rough ceiling for the given model requests. Each entry is one request:
- * a full run is five stage requests plus the critic panel's four lens
- * requests, and a critic-only replay is the four lens requests.
+ * a full run is five stage requests, the critic panel's four lens requests and
+ * the legal review's one (Content Studio S8.6), and a critic-only replay is the
+ * four lens requests and the legal review's.
  */
 export function computeCostCeiling(
   rt: Pick<ContentRunRuntime, "modelPolicy" | "payloadContract">,
@@ -75,19 +77,33 @@ export function criticLensPolicies(rt: { payloadContract: { CRITIC_LENSES: reado
   return rt.payloadContract.CRITIC_LENSES.map((lens) => [`final-critic:${lens}`, "critic"]);
 }
 
-/** Every model request one full run makes: five stages, then the four critic lenses. */
+/**
+ * The legal review (Content Studio S8.6): one request under the critic lenses'
+ * own policy, so its line is computed exactly as a lens's is. It follows the
+ * critic panel on every action that reaches the panel.
+ */
+export function legalReviewPolicies(): Array<[string, string]> {
+  return [[LEGAL_REVIEW_STAGE, LEGAL_REVIEW_POLICY]];
+}
+
+/** A critic-only replay: the four critic lenses, then the legal review. */
+export function criticReplayPolicies(rt: { payloadContract: { CRITIC_LENSES: readonly string[] } }): Array<[string, string]> {
+  return [...criticLensPolicies(rt), ...legalReviewPolicies()];
+}
+
+/** Every model request one full run makes: five stages, the four critic lenses, then the legal review. */
 export function allStagePolicies(rt: { payloadContract: { CRITIC_LENSES: readonly string[] } }): Array<[string, string]> {
   return [
     ["strategy-concept", "reasoning-heavy"], ["automotive-truth", "reasoning-heavy"],
     ["hook-story-script", "reasoning-standard"], ["production-direction", "reasoning-standard"],
-    ["packaging-adaptation", "reasoning-standard"], ...criticLensPolicies(rt),
+    ["packaging-adaptation", "reasoning-standard"], ...criticLensPolicies(rt), ...legalReviewPolicies(),
   ];
 }
 
 /**
  * The model requests a run resumed at `stage` makes: every request from that
  * stage on, as a full run would make them, and none before it. For
- * packaging-adaptation, stage 5 and the four critic lenses.
+ * packaging-adaptation, stage 5, the four critic lenses and the legal review.
  */
 export function resumePolicies(rt: { payloadContract: { CRITIC_LENSES: readonly string[] } }, stage: string): Array<[string, string]> {
   const all = allStagePolicies(rt);
@@ -99,7 +115,8 @@ export function resumePolicies(rt: { payloadContract: { CRITIC_LENSES: readonly 
 /**
  * The model requests one revision round starting at `startStage` makes: that
  * writing stage and every later one through stage 5, then the four critic
- * lenses — a full run's requests from `startStage` on. Never stage 1 or 2.
+ * lenses and the legal review — a full run's requests from `startStage` on.
+ * Never stage 1 or 2.
  */
 export function revisionPolicies(
   rt: { payloadContract: { CRITIC_LENSES: readonly string[] }; revision: { REVISABLE_STAGES: readonly string[] } },

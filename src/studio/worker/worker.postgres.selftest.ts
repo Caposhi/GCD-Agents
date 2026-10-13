@@ -405,13 +405,14 @@ async function startupGroup(dbs: Databases): Promise<void> {
     mkdirSync(join(root, "config"), { recursive: true });
     cpSync(resolve(REPO_ROOT, "config/approved-facts.json"), join(root, "config/approved-facts.json"));
     cpSync(resolve(REPO_ROOT, "studio/migrations"), join(root, "studio/migrations"), { recursive: true });
-    writeFileSync(join(root, "studio/migrations/0004_later.sql"), "SELECT 1;\n");
+    // (Until Content Studio S8.6 the extra file and row were 0004_later.sql; 0005 now exists, so the extra is 0006.)
+    writeFileSync(join(root, "studio/migrations/0006_later.sql"), "SELECT 1;\n");
     const extraFile = await refusalOf(inProcess(st, { repoRoot: root }));
-    rmSync(join(root, "studio/migrations/0004_later.sql"));
+    rmSync(join(root, "studio/migrations/0006_later.sql"));
     writeFileSync(join(root, "studio/migrations/0002_studio_schema.sql"),
       `${readFileSync(join(root, "studio/migrations/0002_studio_schema.sql"), "utf8")}\n-- edited\n`);
     const changed = await refusalOf(inProcess(st, { repoRoot: root }));
-    await st.pool.query("INSERT INTO studio_schema_migrations (name, sha256) VALUES ('0004_later.sql', $1)", [hex("later")]);
+    await st.pool.query("INSERT INTO studio_schema_migrations (name, sha256) VALUES ('0006_later.sql', $1)", [hex("later")]);
     const extraRow = await refusalOf(inProcess(st));
     const beats = (await st.pool.query("SELECT count(*)::int AS n FROM studio_worker_heartbeat")).rows[0].n;
     check("startup", "SWP1b. the worker refuses any schema version but the one its code expects — an extra migration in "
@@ -424,7 +425,7 @@ async function startupGroup(dbs: Databases): Promise<void> {
     await st.close();
   }
 
-  // Content Studio S6.1: a database migrated to 0002 alone, then (S7.1) to 0003 alone, then to 0004.
+  // Content Studio S6.1: a database migrated to 0002 alone, then (S7.1) to 0003 alone, then (S8.6) to 0004 alone, then to 0005.
   const older = await studio(dbs, "schema-0002", { migrated: false });
   const only0002 = mkdtempSync(join(tmpdir(), "gcd-studio-0002-"));
   try {
@@ -438,6 +439,11 @@ async function startupGroup(dbs: Databases): Promise<void> {
     await migrate(older.url, only0002);
     const ledgerAt0003 = (await older.pool.query("SELECT name FROM studio_schema_migrations ORDER BY name")).rows.map((r) => r.name);
     const refused0003 = await refusalOf(inProcess(older));
+    // S8.6: a database at 0004 alone — production before the S8.6 deploy — is refused by a worker at S8.6.
+    cpSync(resolve(REPO_ROOT, "studio/migrations", STUDIO_EXPECTED_MIGRATIONS[3]), join(only0002, STUDIO_EXPECTED_MIGRATIONS[3]));
+    await migrate(older.url, only0002);
+    const ledgerAt0004 = (await older.pool.query("SELECT name FROM studio_schema_migrations ORDER BY name")).rows.map((r) => r.name);
+    const refused0004 = await refusalOf(inProcess(older));
     const beatsBefore = (await older.pool.query("SELECT count(*)::int AS n FROM studio_worker_heartbeat")).rows[0].n;
     const heldBefore = await holders(older.pool);
     await migrate(older.url);
@@ -446,13 +452,15 @@ async function startupGroup(dbs: Databases): Promise<void> {
     const beat = (await older.pool.query("SELECT schema_version FROM studio_worker_heartbeat")).rows[0];
     await worker.stop();
     check("startup", "SWP18. a database migrated to 0002 alone is refused at start-up (schema-version), and so is the "
-      + "same database at 0003 alone — before ownership, writing no heartbeat — and once 0004 is applied on top it is "
-      + `accepted: the worker becomes ready and its heartbeat names ${STUDIO_SCHEMA_VERSION}`,
+      + "same database at 0003 alone and (S8.6) at 0004 alone — before ownership, writing no heartbeat — and once 0005 is "
+      + `applied on top it is accepted: the worker becomes ready and its heartbeat names ${STUDIO_SCHEMA_VERSION}`,
       JSON.stringify(ledgerBefore) === JSON.stringify(STUDIO_EXPECTED_MIGRATIONS.slice(0, 2)) && refused === "schema-version"
         && JSON.stringify(ledgerAt0003) === JSON.stringify(STUDIO_EXPECTED_MIGRATIONS.slice(0, 3)) && refused0003 === "schema-version"
+        && JSON.stringify(ledgerAt0004) === JSON.stringify(STUDIO_EXPECTED_MIGRATIONS.slice(0, 4)) && refused0004 === "schema-version"
         && beatsBefore === 0 && heldBefore === 0 && accepted && beat?.schema_version === STUDIO_SCHEMA_VERSION
-        && STUDIO_SCHEMA_VERSION === "0004_studio_fact_checks_and_imports.sql",
-      `${JSON.stringify(ledgerBefore)} ${refused} ${JSON.stringify(ledgerAt0003)} ${refused0003} ${beatsBefore} ${heldBefore} ${accepted} ${beat?.schema_version}`);
+        && STUDIO_SCHEMA_VERSION === "0005_studio_legal_review.sql",
+      `${JSON.stringify(ledgerBefore)} ${refused} ${JSON.stringify(ledgerAt0003)} ${refused0003} ${JSON.stringify(ledgerAt0004)} `
+        + `${refused0004} ${beatsBefore} ${heldBefore} ${accepted} ${beat?.schema_version}`);
   } finally {
     rmSync(only0002, { recursive: true, force: true });
     await older.close();
@@ -489,7 +497,7 @@ async function queueGroup(dbs: Databases): Promise<void> {
         && owner.output.filter((l) => l.startsWith("[studio-worker] job.claimed")).length === 4
         && lockHolders.length === 1 && lockHolders[0]!.application_name === "gcd-studio-worker"
         && states.every((s) => s.state === "succeeded" && s.verdict) && claims === 4
-        && names.every((n) => n.length === 11 && n.includes("summary.md") && n.includes("run-meta.json")),
+        && names.every((n) => n.length === 12 && n.includes("summary.md") && n.includes("run-meta.json") && n.includes("07-legal-review.json")),
       `${children.map((c) => c.output.join(" / ")).join(" || ")}`);
     // Readiness only after ownership and recovery.
     const order = owner.output.map((l) => l.split(" ")[1]);
@@ -616,21 +624,24 @@ async function paidGroup(dbs: Databases): Promise<void> {
     const r4 = await terminal(st, p4.runId);
     const rows4 = await requestsOf(st, p4.runId);
     const lensNames = ["evidence-fidelity", "platform-and-local", "voice-and-craft", "production-coherence"];
+    // (Until Content Studio S8.6 the panel was the last unit: nine rows.)
     check("paid", "SWP4. a request row carrying its own ceiling is committed — visible to another session — before each "
       + "request is sent: each stage's started row, one more each time, then the critic panel's four lens rows together, "
-      + "written as one unit, each still started while its own request is in flight",
+      + "written as one unit, each still started while its own request is in flight, then (S8.6) the legal review's row",
       seen.slice(0, 5).join() === ["0:1:strategy-concept=started", "1:2:automotive-truth=started", "2:3:hook-story-script=started",
         "3:4:production-direction=started", "4:5:packaging-adaptation=started"].join()
-        && seen.length === 9 && seen.slice(5).every((s) => /^\d:9:[a-z-]+=started$/.test(s))
-        && lensNames.every((lens) => seen.slice(5).some((s) => s.includes(`:${lens}=`)))
-        && rows4.length === 9 && rows4.map((r) => r.seq).join() === "1,2,3,4,5,6,7,8,9"
+        && seen.length === 10 && seen.slice(5, 9).every((s) => /^\d:9:[a-z-]+=started$/.test(s))
+        && lensNames.every((lens) => seen.slice(5, 9).some((s) => s.includes(`:${lens}=`)))
+        && seen[9] === "9:10:legal-review=started"
+        && rows4.length === 10 && rows4.map((r) => r.seq).join() === "1,2,3,4,5,6,7,8,9,10"
+        && rows4[9]?.stage === "legal-review" && rows4[9]?.lens === null
         && rows4.every((r, i) => numericToMicros(r.ceiling) === ceil[i]),
       seen.join(" "));
     check("paid", "SWP4a. a completed paid run is reconciled: each row completed with its measured cost, the run charged "
       + "their sum, and the unused reservation released",
       r4.state === "succeeded" && rows4.every((r) => r.outcome === "succeeded" && r.cost === "0.010000" && r.charged === "0.010000")
-        && r4.actual === "0.090000" && await ledgerOf(st, p4.runId) === `release:${microsToNumeric(p4.reserved - 90_000)},reserve:${microsToNumeric(p4.reserved)}`
-        && (await artifactNames(st, p4.runId)).length === 11,
+        && r4.actual === "0.100000" && await ledgerOf(st, p4.runId) === `release:${microsToNumeric(p4.reserved - 100_000)},reserve:${microsToNumeric(p4.reserved)}`
+        && (await artifactNames(st, p4.runId)).length === 12,
       `${JSON.stringify(r4)} ${await ledgerOf(st, p4.runId)}`);
 
     // SWP5: no request after cancel.
@@ -733,7 +744,7 @@ async function paidGroup(dbs: Databases): Promise<void> {
         && await ledgerOf(st, p7.runId) === `overrun:0.500000,reserve:${microsToNumeric(p7.reserved)}`
         && r7.actual === microsToNumeric(p7.reserved + 500_000) && lockedAfter
         && calls7b === 0 && r7b.state === "refused" && r7b.failure_class === "confirmations_locked"
-        && !lockedAfterAck && r7c.state === "succeeded" && current.calls.length === 9,
+        && !lockedAfterAck && r7c.state === "succeeded" && current.calls.length === 10,
       `${calls7} ${JSON.stringify(r7)} ${await ledgerOf(st, p7.runId)} ${lockedAfter} ${calls7b} ${JSON.stringify(r7b)} ${lockedAfterAck} ${JSON.stringify(r7c)}`);
 
     // SWP36-SWP37 (Content Studio S7.3): the runner's missing cap before a paid unit, and an acknowledgement that
@@ -753,10 +764,10 @@ async function paidGroup(dbs: Databases): Promise<void> {
     await asActor(st.pool, st.owner, "UPDATE studio_users SET daily_cap_usd = 75, updated_by = $2 WHERE id = $1", [st.runner, st.owner]);
     check("caps", "SWP36. before every paid unit, a run whose requester is a runner with no daily cap (NULL) is refused "
       + "(cap_missing) with ZERO fake-runner calls, no request row, and its reservation released in full; the owner, whose own "
-      + "cap is NULL too, runs to the end (9 calls)",
+      + "cap is NULL too, runs to the end (10 calls since S8.6's legal review)",
       calls36 === 0 && r36.state === "refused" && r36.failure_class === "cap_missing" && rows36 === 0
         && await ledgerOf(st, p36.runId) === `release:${microsToNumeric(p36.reserved)},reserve:${microsToNumeric(p36.reserved)}`
-        && ownerCap36 === null && r36b.state === "succeeded" && current.calls.length === 9,
+        && ownerCap36 === null && r36b.state === "succeeded" && current.calls.length === 10,
       `${calls36} ${JSON.stringify(r36)} ${rows36} ${ownerCap36} ${JSON.stringify(r36b)} ${current.calls.length}`);
 
     const owner2 = (await st.pool.query("INSERT INTO studio_users (email, role, created_by) VALUES ($1, 'owner', $2) RETURNING id",
@@ -776,7 +787,7 @@ async function paidGroup(dbs: Databases): Promise<void> {
     check("caps", "SWP37. an overrun acknowledged by an owner who is later demoted stays acknowledged: the worker's own query "
       + "(the one it reads before every unit) no longer depends on the acknowledger's CURRENT role, so confirmations stay "
       + "unlocked and the next confirmed run is not refused as confirmations_locked",
-      locked37 && !lockedAfterDemotion && r37b.state === "succeeded" && current.calls.length === 9,
+      locked37 && !lockedAfterDemotion && r37b.state === "succeeded" && current.calls.length === 10,
       `${locked37} ${lockedAfterDemotion} ${JSON.stringify(r37b)} ${current.calls.length}`);
 
     // SWP8: no retries.
@@ -887,7 +898,7 @@ async function paidGroup(dbs: Databases): Promise<void> {
     const beat2 = (await st.pool.query("SELECT beat_at::text AS at FROM studio_worker_heartbeat")).rows[0];
     check("paid", "SWP12. the worker writes the singleton heartbeat — its commit, the schema version, the approved-facts "
       + "sha256 and tag counts, and the price table's sha256 — and keeps it fresh on its interval",
-      beat1.commit === COMMIT && beat1.schema_version === "0004_studio_fact_checks_and_imports.sql" && beat1.approved_facts_sha256 === approvedSha
+      beat1.commit === COMMIT && beat1.schema_version === "0005_studio_legal_review.sql" && beat1.approved_facts_sha256 === approvedSha
         && beat1.price_table_sha256 === lib.priceTableSha256() && Object.keys(beat1.approved_facts_tag_counts).length > 0
         && beat2.at > beat1.at);
     check("paid", "SWP13. fake runner only: across every worker in this suite the real provider runner factory was "
@@ -953,8 +964,10 @@ async function identicalGroup(dbs: Databases): Promise<void> {
     const differences = [...new Set([...cliFiles.keys(), ...workerFiles.keys()])].sort()
       .filter((name) => !cliFiles.get(name)?.equals(workerFiles.get(name) ?? Buffer.alloc(0)) || !workerFiles.has(name));
     check("identical", "SWP14. a full fake run through the worker stores artifacts byte-identical to the CLI's files for "
-      + "the same inputs: the same 11 file names and every byte, run-meta.json's fingerprints included",
-      cli.code === 0 && row.state === "succeeded" && cliFiles.size === 11 && workerFiles.size === 11 && differences.length === 0,
+      + "the same inputs: the same 12 file names (07-legal-review.json among them, S8.6) and every byte, run-meta.json's "
+      + "fingerprints included",
+      cli.code === 0 && row.state === "succeeded" && cliFiles.size === 12 && workerFiles.size === 12 && differences.length === 0
+        && cliFiles.has("07-legal-review.json"),
       `cli ${cli.code} ${cli.stderr.slice(0, 300)}; worker ${JSON.stringify(row)}; differ: ${differences.join(", ")}`);
   } finally {
     if (child) { child.process.kill("SIGTERM"); await child.exited; }
@@ -1098,14 +1111,15 @@ async function actionsGroup(dbs: Databases): Promise<void> {
     check("actions", "SWP19. the worker answers a price request written by the web's store with its free preflight: one quote "
       + "bound to the requester, the action, the request's params_sha256, the worker's commit, the approved-facts sha256, the "
       + "fact version and the price table, expiring 10 minutes after it was made, its breakdown computeCostCeiling's lines "
-      + "with the critic panel one item; the request names it, the job is finished, no request row exists and the provider "
+      + "with the critic panel one item and (S8.6) the legal review its own; the request names it, the job is finished, no "
+      + "request row exists and the provider "
       + "factory was never called",
       view.outcome === "quoted" && quote?.uid === st.runner && quote.action === "full" && quote.params_sha256 === quote.request_sha
         && quote.worker_commit === COMMIT && quote.approved_facts_sha256 === approvedSha && quote.fv === st.factVersion
         && quote.price_table_sha256 === lib.priceTableSha256() && quote.ttl === 600 && quote.job === "finished"
         && numericToMicros(quote.ceiling) === fullCeiling.micros
         && isDeepStrictEqual(items.flatMap((i) => i.lines), JSON.parse(JSON.stringify(expectedLines)))
-        && items.filter((i) => i.unit === "critic-panel").length === 1 && items.length === 6
+        && items.filter((i) => i.unit === "critic-panel").length === 1 && items.length === 7
         && (await st.pool.query("SELECT count(*)::int AS n FROM studio_run_requests")).rows[0].n === 0 && realFactoryCalls === factoryBefore,
       `${view.outcome} uid=${quote?.uid === st.runner} sha=${quote?.params_sha256 === quote?.request_sha} commit=${quote?.worker_commit} `
         + `facts=${quote?.approved_facts_sha256 === approvedSha} fv=${quote?.fv === st.factVersion} prices=${quote?.price_table_sha256 === lib.priceTableSha256()} `
@@ -1172,9 +1186,9 @@ async function actionsGroup(dbs: Databases): Promise<void> {
     const rows = await requestsOf(st, runId);
     const charged = rows.reduce((t, r) => t + numericToMicros(r.charged)!, 0);
     check("actions", "SWP21. a quote confirmed through the web's store runs on the injected counting fake paid runner: every "
-      + "request is charged (nine rows, nine runner calls), the run is reconciled to its charged cost and the unused "
+      + "request is charged (ten rows, ten runner calls, the legal review's included), the run is reconciled to its charged cost and the unused "
       + "reservation released; the real provider factory is never called",
-      paid.result.ok && ended.state === "succeeded" && rows.length === 9 && counting.calls.length === 9
+      paid.result.ok && ended.state === "succeeded" && rows.length === 10 && counting.calls.length === 10
         && rows.every((r) => r.outcome === "succeeded") && ended.actual === microsToNumeric(charged)
         && (await ledgerOf(st, runId)) === `release:${microsToNumeric(fullCeiling.micros - charged)},reserve:${microsToNumeric(fullCeiling.micros)}`
         && realFactoryCalls === factoryBefore,
@@ -1690,9 +1704,9 @@ async function liveGroup(dbs: Databases): Promise<void> {
       + "scripted): each request opened once (maxRetries 0) only after its own row was committed and visible to another "
       + "session; each row's cost is its provider-reported usage × the repository's price table, to the micro-dollar; the "
       + "run is charged their sum and the unused reservation released, in PostgreSQL",
-      r39.state === "succeeded" && opens39.length === 9 && opens39.every((o) => o.maxRetries === 0)
-        && seen.length === 9 && seen.every((x) => /=started$/.test(x))
-        && rows39.length === 9 && rows39.every((r, i) => r.outcome === "succeeded" && numericToMicros(r.cost) === want39[i]
+      r39.state === "succeeded" && opens39.length === 10 && opens39.every((o) => o.maxRetries === 0)
+        && seen.length === 10 && seen.every((x) => /=started$/.test(x))
+        && rows39.length === 10 && rows39.every((r, i) => r.outcome === "succeeded" && numericToMicros(r.cost) === want39[i]
           && numericToMicros(r.charged) === want39[i] && numericToMicros(r.ceiling) === ceil[i])
         && Number.isSafeInteger(sum39) && sum39 > 0 && numericToMicros(r39.actual) === sum39
         && await ledgerOf(st, p39.runId) === `release:${microsToNumeric(p39.reserved - sum39)},reserve:${microsToNumeric(p39.reserved)}`,
@@ -1767,7 +1781,7 @@ async function liveGroup(dbs: Databases): Promise<void> {
       + "and a fake source written past the schema (fake_source) each make 0 requests and 0 request rows and release the "
       + "reservation in full; a reused quote and a fake source through the normal path are refused by the schema before any "
       + "job exists",
-      zero.every((z) => z === "") && /quote/i.test(reuse) && reuse !== "accepted" && opensAfterReuse === 9
+      zero.every((z) => z === "") && /quote/i.test(reuse) && reuse !== "accepted" && opensAfterReuse === 10
         && /fake run can never be a paid action's source/.test(viaSchema),
       `${zero.filter(Boolean).join("; ")} | reuse: ${reuse} | schema: ${viaSchema}`);
     await worker.stop();

@@ -35,8 +35,9 @@
  * no context — or with an object that is not one — refuses before consent,
  * before any runner exists and before any output is created. When a context is
  * supplied, the library calls its `checkRequests` immediately before every
- * request unit — each stage request, and the critic panel's four lens requests
- * as one unit — and a refusal means that unit, and every later one, is never
+ * request unit — each stage request, the critic panel's four lens requests
+ * as one unit, and (Content Studio S8.6) the legal review's one request — and
+ * a refusal means that unit, and every later one, is never
  * sent. The CLI's check allows every unit (its consent was the typed LIVE); the
  * Studio worker's re-checks the job and the reservation (design §6.2).
  *
@@ -62,7 +63,7 @@ export interface ReviewOnlyRequestUnit {
   /** The paid action the unit belongs to. */
   action: PaidActionKind;
   runner: RunnerKind;
-  /** The stage the unit runs: a stage id, or `final-critic` for the panel. */
+  /** The stage the unit runs: a stage id, `final-critic` for the panel, or `legal-review` (S8.6). */
   stage: string;
   /** The priced request(s) this unit sends. */
   requests: readonly CostCeilingLine[];

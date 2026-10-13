@@ -31,6 +31,7 @@ import * as payloadContract from "../agents/payloadContract.js";
 import * as contact from "../agents/contactLine.js";
 import * as identity from "../agents/identityFacts.js";
 import * as revision from "../agents/revision.js";
+import * as legal from "./legalReview.js";
 
 export interface ContentRunRuntime {
   approved: typeof approved;
@@ -48,12 +49,14 @@ export interface ContentRunRuntime {
   contact: typeof contact;
   identity: typeof identity;
   revision: typeof revision;
+  /** Content Studio S8.6: the legal-risk review step, run after the critic panel. */
+  legal: typeof legal;
 }
 
 /** A fresh runtime object over the compiled modules. */
 export function loadRuntime(): ContentRunRuntime {
   return {
     approved, packModule, registryModule, stageExecution, strategy, truth, script, direction,
-    packaging, critic, modelPolicy, payloadContract, contact, identity, revision,
+    packaging, critic, modelPolicy, payloadContract, contact, identity, revision, legal,
   };
 }
