@@ -859,6 +859,49 @@ Nothing below is built; P2 needs its own authorization.**
 
 ---
 
+### 5.5 The legal-risk review (Content Studio S8.6)
+
+**`IMPLEMENTED`, not merged, not deployed** (2026-10-13; the owner's decision "legal lens:
+defaults" and the owner's authorization of Studio migration 0005, both that day; the record is in
+[Roadmap](ROADMAP.md)). A screening aid, never legal advice and never a clearance.
+
+- **Where it runs.** After the critic panel, on every run that reaches it — a full run, a resume,
+  a critic replay and a revision round (round 2 reviewed afresh) — in the shared library
+  (`src/harness/contentRun/legalReview.ts`), so the worker and the local CLI run the same step.
+- **What it is.** Exactly one tool-free request on the critic lenses' policy (`claude-opus-5-5`,
+  128,000 output tokens, adaptive thinking, effort high), with its own prompt
+  (`agents/legal-review.md`) and rubric (`skills/legal-risk/SKILL.md`, which begins "Screening aid,
+  not legal advice. Serious findings go to the owner's attorney before posting."). It is **not** a
+  registry stage and not a fifth lens: `registry.ts`, `payloadContract.ts` and `modelPolicy.ts` are
+  live-loaded and stay byte-identical, so it makes its request through its own boundary, with the
+  same runner type, the same data-block framing and the size ceilings those modules already derive.
+- **What it reads.** Exactly the five blocks the critic panel reads, through the critic's own
+  renderers: `SCRIPT_COPY`, `PRODUCTION_OUTPUT` (shots, overlays, production requirements),
+  `PACKAGING_COPY` (captions with their contact lines), `SCRIPT_CLAIMS` and `PLATFORM_CLAIMS`.
+  Every prior-stage value is revalidated first, as the panel does.
+- **What it returns, and what code decides.** A summary and findings — each a category, a
+  severity, a location, the **exact quote** (checked to occur in the block its location names),
+  an issue and one fix. **Code** marks a finding blocking by its category — `trademark_affiliation`,
+  `defamation_risk`, `copyright_reproduction` block; `comparative_claim`, `manufacturer_quotation`,
+  `endorsement_or_testimonial`, `people_and_releases`, `privacy_exposure`,
+  `advertising_disclosure` and `other_legal_question` go to "Needs your decision" — and computes
+  the review's verdict (`blocked`, `needs_owner_decision`, `no_legal_finding`). Nominative use of a
+  brand name is not a finding.
+- **The run's verdict.** The critic panel's, combined: a `blocked` review turns
+  `provisional_pass` into `needs_human_review`; the stored verdict stays one of the critic's three.
+- **Failing closed.** A runner error, a refused or truncated response, non-strict JSON or any
+  validation failure fails the run (`legal_review_error`), with no retry, exactly like a lens. The
+  run has no recovery action, as for a failed critic panel.
+- **Cost.** One more priced line, `legal-review`, computed exactly as a lens's ($2.97): a full
+  run's ceiling $21.65 → $24.62 ([§6.1](#61-a-price-ceiling-confirmation-before-every-paid-action)).
+  The unit check of [§6.2](#62-daily-and-monthly-caps--enforced-before-every-paid-call) runs
+  before it, and its `started` row is committed first.
+- **Where it is kept.** `07-legal-review.json`, beside the stage files — not `studio_findings`,
+  whose constraints are the critic's. Migration 0005 adds the request stage `legal-review` and the
+  import name (17 names); the report reads the file field by field ([§8.2](#82-run-report)).
+- **The posting gate (owner rule, 2026-10-13):** "nothing from the Studio gets posted until the
+  legal lens exists" — a process gate on people ([Operations](OPERATIONS.md) step 7).
+
 ## 6. Cost controls
 
 ### 6.1 A price-ceiling confirmation before every paid action
@@ -959,6 +1002,11 @@ though the actual cost would fit. With the owner's $50 daily cap, two full runs 
 reservations at once, at about $43.30 of an otherwise unspent day's $50. A third waits until one settles and
 releases its unused reservation. **The reservation stays at the full printed ceiling** (owner
 decision of 2026-09-29). Tightening the estimate is a separate, reviewed future change.
+
+*(Dated note, Content Studio S8.6, 2026-10-13 — `IMPLEMENTED`, not merged. The legal review
+([§5.5](#55-the-legal-risk-review-content-studio-s86)) adds one request, priced as a lens's: a full
+run's printed ceiling is **$24.62**. Two full runs still fit the $50 daily cap, at $49.24 reserved;
+a third waits as above.)*
 
 ### 6.3 Who may start a paid run
 
@@ -1178,6 +1226,15 @@ its reason (*too large to re-import*) rather than offered a bundle that cannot b
 An imported run's report adds its own section: the tier, the archived reason, and the files its
 `run-meta.json` records by base name only.)*
 
+*(Dated note, Content Studio S8.6, 2026-10-13 — `IMPLEMENTED`, not merged. A **Legal review**
+section follows Findings ([§5.5](#55-the-legal-risk-review-content-studio-s86)): the line "Screening
+aid, not legal advice. Serious findings go to the owner's attorney before posting." (from code), the
+review's verdict, and its findings grouped by category — blocking categories first and shown as
+blocking — each with its exact quote, severity, location, issue and fix. **Item 6** also lists the
+review's non-blocking findings, under "From the legal review"; its blocking findings are not listed
+there. **Item 7's** table shows the `legal-review` request row. A run made before S8.6, or stopped
+before the review, says it has no legal review; "the stage it stopped at" can be `legal-review`.)*
+
 ### 8.3 New run
 
 For an `owner` or a `runner`:
@@ -1205,7 +1262,8 @@ From a succeeded run's report, for an `owner` or a `runner`:
   which findings go to each stage, which advisory findings are dropped over a cap, and which items
   are held back for the owner. The plan comes from `planRevision` on the worker, in the free
   preflight. If no revisable blocking finding exists, the screen says so and offers no quote.
-- **Critic replay** re-runs the four lenses only, priced as four requests.
+- **Critic replay** re-runs the four lenses only, priced as four requests. *(Content Studio S8.6,
+  2026-10-13: then the legal review, priced as a fifth — $14.85 in all.)*
 
 Both create a child run, and the source run is never modified.
 
@@ -1296,6 +1354,12 @@ source's — and recorded only when exactly one non-deleted import matches, the 
 source's fact version (upload the facts before importing); only complete folders can verify, so
 replay folders and failed runs are always archived; and **"10 MB" is the posted JSON document's
 bound, 10 MiB, checked before parsing**, with 0004's limit on the stored bytes as a backstop.)*
+
+*(Dated note, Content Studio S8.6, 2026-10-13 — `IMPLEMENTED`, not merged. Migration 0005 adds
+one known name, `07-legal-review.json` ([§5.5](#55-the-legal-risk-review-content-studio-s86)):
+seventeen names, so at most seventeen files; every other bound is unchanged. A folder carrying it has
+the review revalidated against its own package before it can verify; a folder from before S8.6,
+without it, still imports.)*
 
 *(Dated note, Content Studio S7.2, 2026-10-07 — `IMPLEMENTED`, not merged; where S7.2 interprets
 this section. **Transport:** as §8.5's, the bundle travels in the form's `document` field and the
@@ -1521,6 +1585,8 @@ email edit; 0004 enforces the first two in the database. See [Roadmap](ROADMAP.m
 
 *(Dated note, 2026-10-12, Content Studio S8.5. **S8.4 is `MERGED`** (PR #123, `fbf3fcc…`), deployed on both Studio services and **`PRODUCTION-VALIDATED`**; **O5 is performed** except the restore drill and adding staff (after O6); **O6 has begun and is not complete** — the worker's live runner is `ENABLED`, and three attempts failed at stage 5's caption check. **Content Studio S8.5** (stage 5's stated caption target, the word count first) is `IMPLEMENTED`, not merged; it changes no live-loaded module, so the Studio's redeploy at its merge commit meets §3.4's live-path rule. See [Status](STATUS.md#content-studio-on-render--o5-performed-2026-10-12-and-o6-so-far) and [Roadmap](ROADMAP.md).)*
 
+*(Dated note, 2026-10-13, Content Studio S8.6. **S8.5 is `MERGED`** (PR #124, `89e798a…`; `main` CI run 289 green, `deploy-production` run 89 refused at the disabled gate), not recorded as deployed. **Content Studio S8.6** — inserted by the owner (the decision "legal lens: defaults", 2026-10-13); not a row of the table above — is `IMPLEMENTED`, not merged: the legal-risk review after the critic panel ([§5.5](#55-the-legal-risk-review-content-studio-s86)) and **Studio migration 0005**, the request stage `legal-review` and the import name `07-legal-review.json`, owner-authorized. It touches no live-loaded module. **Its deploy applies 0005 under its own owner authorization at deploy time, with the web and the worker deployed together at its merge commit.** The owner's rule of the same day: **nothing from the Studio is posted until the legal lens exists.**)*
+
 **Documents each PR must update**, beyond [Roadmap](ROADMAP.md), [Status](STATUS.md) and the root
 [README](../README.md), under [`AGENTS.md`](../AGENTS.md)'s binding rule. This change adds only a labelled planned note to
 Architecture and a validation record to Testing. Otherwise it leaves these documents as they are,
@@ -1534,6 +1600,7 @@ because they describe current reality:
 | S5–S7 | [Testing](TESTING.md), plus [Security and continuity](SECURITY_AND_CONTINUITY.md) for S7's upload and import |
 | S8 | [Deployment control](DEPLOYMENT.md), [Operations](OPERATIONS.md), [Environment](ENVIRONMENT.md), and a dated note in [PRODUCTION_WIRING_DESIGN.md](PRODUCTION_WIRING_DESIGN.md) §4.4 and §5.1. Those sections name `gcd-social-api` as `render.yaml`'s only `preDeployCommand`, which stays true, but the Studio web has its own in `render.studio.yaml` |
 | S8.1 (inserted 2026-10-09) | [Deployment control](DEPLOYMENT.md), [Operations](OPERATIONS.md), [Testing](TESTING.md), [Security and continuity](SECURITY_AND_CONTINUITY.md), [Environment](ENVIRONMENT.md) |
+| S8.6 (inserted 2026-10-13) | [Data model](DATA_MODEL.md), [Operations](OPERATIONS.md), [Architecture](ARCHITECTURE.md), [Security and continuity](SECURITY_AND_CONTINUITY.md), [Testing](TESTING.md) |
 | S9 | [Operations](OPERATIONS.md) |
 
 **Owner actions, each named and separately authorized:**

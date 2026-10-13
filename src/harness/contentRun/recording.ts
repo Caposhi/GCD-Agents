@@ -5,6 +5,7 @@
  * through the run's `RunSink`.
  */
 
+import { LEGAL_REVIEW_FIELD_BOUNDS } from "./legalReview.js";
 import type { ContentRunRuntime } from "./runtime.js";
 import type { MeasurementRow, MeasurementWrite, RecordedRequest, RunSink } from "./types.js";
 
@@ -38,7 +39,8 @@ export function createRunRecorder(rt: Pick<ContentRunRuntime, "payloadContract" 
   // another paid round trip.
   const writeMeasurements = (): MeasurementWrite => {
     const rows = measureFields(transcript, {
-      bounds: OUTPUT_FIELD_BOUNDS, statedCeiling, providerText: proposedProviderText,
+      // The stages' and lenses' bounds, and (Content Studio S8.6) the legal review's own.
+      bounds: { ...OUTPUT_FIELD_BOUNDS, ...LEGAL_REVIEW_FIELD_BOUNDS }, statedCeiling, providerText: proposedProviderText,
       // The same caps the stage 5 validator applies: the caption budget is the
       // smaller of the provider and pipeline limits, less the contact-line
       // reserve that the deterministic contact line is appended into. The

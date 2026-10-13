@@ -1,6 +1,7 @@
 /**
- * The fake runner: canned, deterministic responses for every stage and critic
- * lens, so a run can be exercised end to end with no network and no cost.
+ * The fake runner: canned, deterministic responses for every stage, critic
+ * lens and (since Content Studio S8.6) the legal review, so a run can be
+ * exercised end to end with no network and no cost.
  * Moved unchanged from `scripts/local/content-run.mjs` (Content Studio S1).
  */
 
@@ -192,6 +193,23 @@ export function buildFakeStageResponses(goal: string, pack: any) {
         default:
           throw new Error(`fake runner: no canned answer for critic lens ${JSON.stringify(lens)}`);
       }
+    },
+    /**
+     * The legal review's canned answer (Content Studio S8.6): one non-blocking
+     * finding, so a fake run exercises "Needs your decision" end to end. Its
+     * quote is the canned shot plan's own production requirement, copied
+     * exactly, as the validator requires.
+     */
+    legalReview() {
+      return {
+        summary: "Fake-runner legal review: canned output, not a reviewed piece of content. Screening aid, not legal advice.",
+        findings: [{
+          category: "people_and_releases", severity: "medium", location: "production",
+          quote: "Written customer/vehicle consent to film in the bay.",
+          issue: "Canned fake-runner finding: the shot plan films in the bay, where a customer, a technician or a customer's vehicle may be identifiable.",
+          fix: "Obtain a signed release from everyone identifiable on camera before posting.",
+        }],
+      };
     },
   };
 }

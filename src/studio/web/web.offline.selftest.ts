@@ -55,7 +55,7 @@ import { attachmentDisposition, DOWNLOAD_CSP, verifiedBytes } from "./downloads.
 import { escapeHtml } from "./html.js";
 import {
   MAX_DISPLAY_ARTIFACT_BYTES, needsDecision, parseRunFilters, POLL_SECONDS, readCaptions, readScript, readShotList, RUN_KINDS,
-  RUN_STATES, type FindingRow, type RunRow,
+  RUN_STATES, STAGE_FILES, stoppedAt, type FindingRow, type RunRow,
 } from "./runs.js";
 import { STATIC_ASSETS } from "./static.js";
 import { capBoundMicros, decideUserChange, losesOwnSeat, normalizeNewUserEmail, parseAuditFilters, parseCapInput, parseRole } from "./users.js";
@@ -69,7 +69,7 @@ import { sourceActions } from "./actions.js";
 import { downloadHeaders } from "./downloads.js";
 import { FACT_UPLOAD_MAX_BYTES, STUDIO_IMPORT_FILE_NAMES } from "../db/runner.js";
 import {
-  CANNOT_DISPLAY, COPY_BANNER, FINGERPRINT_SHORT_CHARS, GOAL_PREVIEW_CHARS, GROUP_ORDERS, REQUIREMENT_UNVERIFIED,
+  CANNOT_DISPLAY, COPY_BANNER, FINGERPRINT_SHORT_CHARS, GOAL_PREVIEW_CHARS, GROUP_ORDERS, LEGAL_NOT_ADVICE, REQUIREMENT_UNVERIFIED,
 } from "./views.js";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -349,7 +349,7 @@ const env = (extra: Partial<WebEnvironment> = {}): WebEnvironment => ({
 
   // (e) the database identity and the schema version: the worker's check.
   const files = ["0001_studio_identity_and_tripwire.sql", "0002_studio_schema.sql", "0003_studio_preflight_requests.sql",
-    "0004_studio_fact_checks_and_imports.sql"]
+    "0004_studio_fact_checks_and_imports.sql", "0005_studio_legal_review.sql"]
     .map((name) => ({ name, sha256: createHash("sha256").update(name).digest("hex") }));
   const ledger = files.map(({ name, sha256 }) => ({ name, sha256 }));
   const probe = (extra: Record<string, unknown> = {}) => ({
@@ -357,8 +357,8 @@ const env = (extra: Partial<WebEnvironment> = {}): WebEnvironment => ({
     identityRows: [{ database_name: "gcd_studio", marker: "gcd-studio:database-identity:v1" }], ledger, ...extra,
   });
   check("SA7. (e) the web makes the worker's database check: it refuses another database name, a live table, a live "
-    + "ledger, a missing identity row or nothing migrated, and any schema version but 0004_studio_fact_checks_and_imports.sql "
-    + "(a 0002-only and a 0003-only ledger among them)",
+    + "ledger, a missing identity row or nothing migrated, and any schema version but 0005_studio_legal_review.sql "
+    + "(a 0002-only, a 0003-only and, since S8.6, a 0004-only ledger among them)",
     refusalOf(() => decideWebIdentity(probe() as never)) === "accepted"
       && refusalOf(() => decideWebIdentity(probe({ currentDatabase: "gcd_social" }) as never)) === "wrong-database"
       && refusalOf(() => decideWebIdentity(probe({ liveTables: ["public.approval_queue"] }) as never)) === "live-schema"
@@ -367,18 +367,21 @@ const env = (extra: Partial<WebEnvironment> = {}): WebEnvironment => ({
       && refusalOf(() => decideWebIdentity(probe({ ledger: null, identityRows: null, studioTables: [], migrationsTable: "absent" }) as never))
         === "not-migrated"
       && refusalOf(() => decideWebSchemaVersion(ledger, files)) === "accepted"
-      && decideWebSchemaVersion(ledger, files) === "0004_studio_fact_checks_and_imports.sql"
+      && decideWebSchemaVersion(ledger, files) === "0005_studio_legal_review.sql"
       && refusalOf(() => decideWebSchemaVersion(ledger.slice(0, 1), files)) === "schema-version"
       && refusalOf(() => decideWebSchemaVersion(ledger.slice(0, 2), files)) === "schema-version"
       && refusalOf(() => decideWebSchemaVersion(ledger.slice(0, 3), files)) === "schema-version"
       && refusalOf(() => decideWebSchemaVersion(ledger.slice(0, 2), files.slice(0, 2))) === "schema-version"
       && refusalOf(() => decideWebSchemaVersion(null, files)) === "schema-version"
-      && refusalOf(() => decideWebSchemaVersion([ledger[0]!, { ...ledger[1]!, sha256: "0".repeat(64) }, ledger[2]!, ledger[3]!], files))
+      && refusalOf(() => decideWebSchemaVersion([ledger[0]!, { ...ledger[1]!, sha256: "0".repeat(64) }, ledger[2]!, ledger[3]!, ledger[4]!], files))
         === "migration-changed"
-      && refusalOf(() => decideWebSchemaVersion([ledger[0]!, ledger[1]!, { ...ledger[2]!, sha256: "0".repeat(64) }, ledger[3]!], files))
+      && refusalOf(() => decideWebSchemaVersion([ledger[0]!, ledger[1]!, { ...ledger[2]!, sha256: "0".repeat(64) }, ledger[3]!, ledger[4]!], files))
         === "migration-changed"
-      && refusalOf(() => decideWebSchemaVersion([ledger[0]!, ledger[1]!, ledger[2]!, { ...ledger[3]!, sha256: "0".repeat(64) }], files))
-        === "migration-changed");
+      && refusalOf(() => decideWebSchemaVersion([ledger[0]!, ledger[1]!, ledger[2]!, { ...ledger[3]!, sha256: "0".repeat(64) }, ledger[4]!], files))
+        === "migration-changed"
+      && refusalOf(() => decideWebSchemaVersion([ledger[0]!, ledger[1]!, ledger[2]!, ledger[3]!, { ...ledger[4]!, sha256: "0".repeat(64) }], files))
+        === "migration-changed"
+      && refusalOf(() => decideWebSchemaVersion(ledger.slice(0, 4), files)) === "schema-version");
 
   // The entry point, read: it reads only its variables, decides first, and passes no provider.
   const strip = (text: string) => text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
@@ -905,7 +908,7 @@ const undeclaredRole: Route = { method: "GET", path: "/test/undeclared-role", mi
     JSON.stringify(Object.keys(health).sort()) === JSON.stringify(["commit", "schema_version", "service", "state",
       "worker_heartbeat_age_seconds"])
       && health.service === "gcd-studio-web" && health.commit === COMMIT && health.state === "postgres"
-      && health.schema_version === "0004_studio_fact_checks_and_imports.sql" && health.worker_heartbeat_age_seconds === 42
+      && health.schema_version === "0005_studio_legal_review.sql" && health.worker_heartbeat_age_seconds === 42
       && down.state === "unavailable" && !/@|owner|viewer|runner|display|email|usd|cost|run_id/i.test(body));
 }
 
@@ -3154,6 +3157,134 @@ const S73_ROUTES: Array<[string, string]> = [
       && filters("") === JSON.stringify({ action: null, page: 1 }) && filters("action=user.update&page=3") === JSON.stringify({ action: "user.update", page: 3 })
       && filters("action=") === JSON.stringify({ action: null, page: 1 }) && filters("page=0") === "invalid_filter"
       && filters("page=100000") === "invalid_filter" && filters("action=X") === "invalid_filter" && filters("q=1") === "invalid_filter");
+}
+
+// =====================================================================================================
+// Content Studio S8.6: the legal review on the report, in "Needs your decision", the cost table, the stopped-at
+// stage and the whole-run bundle (owner decision "legal lens: defaults", 2026-10-13)
+// =====================================================================================================
+
+/** `07-legal-review.json` as the library writes it: the output, with code's flags, and its metadata. */
+const legalReviewFile = (verdict: string, findings: Array<Record<string, unknown>>, summary = "Synthetic legal summary.") =>
+  JSON.stringify({ output: { kind: "provisional_legal_review", authoritative: false, approvalGranted: false, publishable: false,
+    executable: false, productionValidated: false, legalAdvice: false, disclaimer: LEGAL_NOT_ADVICE, verdict, summary,
+    findings: findings.map((f) => ({ severity: "high", location: "captions", authoritative: false, ...f })) },
+  metadata: { stage: "legal-review", synthetic: true } }, null, 2);
+const sectionOf = (html: string, klass: string) => {
+  const start = html.indexOf(`<section class="${klass}`);
+  return start < 0 ? "" : html.slice(start, html.indexOf("</section>", start));
+};
+
+{
+  const { w, jar, run } = await s5World();
+  w.store.addArtifact(run.id, "07-legal-review.json", legalReviewFile("blocked", [
+    { category: "privacy_exposure", blocking: false, quote: `${HOSTILE}[quote-pv]`, issue: `${HOSTILE}[issue-pv]`, fix: `${HOSTILE}[fix-pv]` },
+    { category: "trademark_affiliation", blocking: true, quote: `${HOSTILE}[quote-tm]`, issue: `${HOSTILE}[issue-tm]`, fix: `${HOSTILE}[fix-tm]` },
+  ], `${HOSTILE}[legal-summary]`));
+  const page = await request(w, `/runs/${run.id}`, { jar });
+  const legal = sectionOf(page.body, "legal");
+  const decisions = sectionOf(page.body, "decisions");
+  const skillFirstLine = readFileSync(resolve(REPO_ROOT, "skills/legal-risk/SKILL.md"), "utf8").split("\n")[0];
+  check("SA155. the report's Legal review section (after Findings, before \"Needs your decision\") shows the not-legal-advice "
+    + "line from code — the skill's first line, word for word — the computed verdict, and the findings by category with the "
+    + "blocking category first and shown as blocking; the non-blocking finding is listed under \"Needs your decision\", the "
+    + "blocking one is not; every stored legal field stays inert",
+    page.status === 200 && LEGAL_NOT_ADVICE === skillFirstLine
+      && page.body.indexOf('<section class="findings"') < page.body.indexOf('<section class="legal"')
+      && page.body.indexOf('<section class="legal"') < page.body.indexOf('<section class="decisions')
+      && legal.includes(`<p class="banner banner-bad">${escapeHtml(LEGAL_NOT_ADVICE)}</p>`)
+      && legal.includes("Verdict: <strong>Blocked</strong> · 1 blocking · 1 for your decision")
+      && legal.indexOf("<h3>trademark_affiliation — blocking</h3>") > 0
+      && legal.indexOf("<h3>trademark_affiliation — blocking</h3>") < legal.indexOf("<h3>privacy_exposure — needs your decision</h3>")
+      && /<li class="finding finding-blocking"><span class="sev">blocking<\/span> <span class="meta">trademark_affiliation/.test(legal)
+      && decisions.includes('class="decisions decisions-open"') && decisions.includes("<h3>From the legal review</h3>")
+      && decisions.includes("[quote-pv]") && decisions.includes("[fix-pv]") && !decisions.includes("[quote-tm]")
+      && ["quote-pv", "issue-pv", "fix-pv", "quote-tm", "issue-tm", "fix-tm", "legal-summary"]
+        .every((m) => page.body.includes(`${escapeHtml(HOSTILE)}[${m}]`))
+      && !page.body.includes("<script>alert(1)") && !page.body.includes("<img src=x"),
+    legal.slice(0, 600));
+  await w.close();
+}
+
+{
+  const { w, jar, run } = await s5World();
+  const none = await request(w, `/runs/${run.id}`, { jar });
+  const broken = w.store.addRun(w.owner, {});
+  w.store.addArtifact(broken.id, "07-legal-review.json", "{ not json");
+  const brokenPage = await request(w, `/runs/${broken.id}`, { jar });
+  const lowered = w.store.addRun(w.owner, {});
+  w.store.addArtifact(lowered.id, "07-legal-review.json", legalReviewFile("blocked", [
+    { category: "copyright_reproduction", blocking: false, quote: "q", issue: "i", fix: "f" }]));
+  const loweredPage = await request(w, `/runs/${lowered.id}`, { jar });
+  const decisionOnly = w.store.addRun(w.owner, {});
+  w.store.addArtifact(decisionOnly.id, "07-legal-review.json", legalReviewFile("needs_owner_decision", [
+    { category: "people_and_releases", blocking: false, quote: "q-release", issue: "i", fix: "f" }]));
+  const decisionPage = await request(w, `/runs/${decisionOnly.id}`, { jar });
+  const unknown = w.store.addRun(w.owner, {});
+  w.store.addArtifact(unknown.id, "07-legal-review.json", legalReviewFile("cleared", []));
+  const unknownPage = await request(w, `/runs/${unknown.id}`, { jar });
+  check("SA156. a run with no legal review (made before S8.6, or stopped before it) says so; an unreadable file, or one "
+    + "naming no known verdict, is not displayed; a finding in a blocking category is shown as blocking even when the stored "
+    + "file says otherwise; a decision-only review opens \"Needs your decision\" with nothing from the critic",
+    sectionOf(none.body, "legal").includes("This run has no legal review")
+      && sectionOf(none.body, "decisions").includes("<p>Nothing needs your decision.</p>")
+      && sectionOf(brokenPage.body, "legal").includes(CANNOT_DISPLAY) && sectionOf(unknownPage.body, "legal").includes(CANNOT_DISPLAY)
+      && sectionOf(loweredPage.body, "legal").includes("<h3>copyright_reproduction — blocking</h3>")
+      && !sectionOf(loweredPage.body, "decisions").includes("q-release") && !sectionOf(loweredPage.body, "decisions").includes("From the legal review")
+      && sectionOf(decisionPage.body, "decisions").includes('class="decisions decisions-open"')
+      && sectionOf(decisionPage.body, "decisions").includes("q-release")
+      && !sectionOf(decisionPage.body, "decisions").includes("Nothing needs your decision"));
+  await w.close();
+}
+
+{
+  const { w, jar } = await s5World();
+  const live = w.store.addRun(w.owner, { runner: "live", state: "failed", failure_class: "legal_review_error",
+    failure_message: "legal-review: model request failed", verdict: null, reserved_usd: "24.620000", actual_usd: "21.650000" });
+  w.store.requests.set(live.id, [
+    { seq: 1, stage: "final-critic", lens: "voice-and-craft", model: "claude-opus-5-5", ceiling_usd: "2.970000", input_tokens: 10,
+      output_tokens: 20, cost_usd: "0.010000", charged_usd: "0.010000", outcome: "succeeded" },
+    { seq: 2, stage: "legal-review", lens: null, model: "claude-opus-5-5", ceiling_usd: "2.970000", input_tokens: null,
+      output_tokens: null, cost_usd: null, charged_usd: "2.970000", outcome: "failed" },
+  ]);
+  const page = await request(w, `/runs/${live.id}`, { jar });
+  const cost = sectionOf(page.body, "cost");
+  const all7 = STAGE_FILES.map(([, file]) => file);
+  check("SA157. the cost table gains the legal review's row (its stage, no lens, its model, ceiling and outcome), and the "
+    + "stage a run stopped at can be the legal review: its failed request, or — with no request — the first stage file not "
+    + "saved after the critic's; a run holding all seven stage files stopped after every stage",
+    /<tr><td>2<\/td><td>legal-review<\/td><td>claude-opus-5-5<\/td><td>—<\/td><td>—<\/td><td>—<\/td><td>\$2\.970000<\/td><td>failed<\/td><\/tr>/.test(cost)
+      && sectionOf(page.body, "failure").includes("<dd>legal-review</dd>")
+      && STAGE_FILES.at(-1)?.join() === "legal-review,07-legal-review.json"
+      && stoppedAt("full", all7.slice(0, 6), []) === "legal-review" && stoppedAt("replay_critic", all7.slice(5, 6), []) === "legal-review"
+      && stoppedAt("replay_critic", [], []) === "final-critic" && stoppedAt("full", all7, []) === null,
+    cost.slice(0, 400));
+  await w.close();
+}
+
+{
+  const s = await s62World();
+  const review = Buffer.from(legalReviewFile("needs_owner_decision", [{ category: "privacy_exposure", blocking: false, quote: "q", issue: "i", fix: "f" }]), "utf8");
+  const withReview: Array<[string, Buffer]> = [...s72Folder(), ["07-legal-review.json", review]];
+  const created = await sendDocument(s.w, "/imports", s.owner, bundleText(withReview));
+  const runId = /^\/runs\/([0-9a-f-]{36})$/.exec(created.location ?? "")?.[1] ?? "";
+  const download = await request(s.w, `/runs/${runId}/bundle`, { jar: s.viewer });
+  const decoded = decodeRunBundle(download.raw);
+  const reimport = await sendDocument(s.w, "/imports", s.owner, download.raw.toString("utf8"));
+  const reimportId = /^\/runs\/([0-9a-f-]{36})$/.exec(reimport.location ?? "")?.[1] ?? "";
+  const older = await sendDocument(s.w, "/imports", s.owner, bundleText(s72Folder()));
+  const olderId = /^\/runs\/([0-9a-f-]{36})$/.exec(older.location ?? "")?.[1] ?? "";
+  check("SA158. the whole-run bundle carries 07-legal-review.json: an import holding it stores it byte for byte, its "
+    + "download carries it, and that re-imports byte for byte; a bundle from before S8.6, without it, still imports; the "
+    + "known names are seventeen",
+    created.status === 303 && s.w.store.artifacts.get(runId)?.get("07-legal-review.json")?.content.equals(review) === true
+      && decoded.ok && decoded.value.some((f) => f.name === "07-legal-review.json" && f.content.equals(review))
+      && reimport.status === 303 && s.w.store.artifacts.get(reimportId)?.get("07-legal-review.json")?.content.equals(review) === true
+      && older.status === 303 && s.w.store.runs.get(olderId)?.kind === "imported"
+      && !s.w.store.artifacts.get(olderId)?.has("07-legal-review.json")
+      && STUDIO_IMPORT_FILE_NAMES.length === 17 && STUDIO_IMPORT_FILE_NAMES.includes("07-legal-review.json"),
+    `${created.status} ${download.status} ${reimport.status} ${older.status}`);
+  await s.w.close();
 }
 
 {

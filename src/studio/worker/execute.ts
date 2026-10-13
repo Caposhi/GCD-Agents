@@ -29,6 +29,13 @@
  * replay runner, and (S6b) the real provider runner over a scripted stream —
  * which is how the paid path is proven with no provider and no network.
  *
+ * **The legal review (Content Studio S8.6).** Every kind that runs the critic
+ * panel then makes the legal review's one request, priced as its own
+ * `legal-review` line and checked like every other unit; its `started` row is
+ * the stage migration 0005 adds. The run's stored verdict is the library's:
+ * the panel's, combined with the review's, so a blocking legal finding keeps a
+ * run from `provisional_pass`.
+ *
  * A runner error — a provider error, a refusal or truncated stop reason, a
  * stream deadline — is the stage's own failure: the run fails with its class,
  * nothing is retried (the stage request sends `maxRetries: 0`), and the run's
@@ -164,9 +171,12 @@ const stageOf = (line: CostCeilingLine) => {
   return { stage: stage!, lens: lens ?? null };
 };
 
-/** Every request a kind of run can make, in order: a revision's start stage is unknown until verified, so all of them. */
+/**
+ * Every request a kind of run can make, in order: a revision's start stage is unknown until verified, so all of them.
+ * Since Content Studio S8.6 each kind ends with the legal review's request.
+ */
 function actionPolicies(rt: ContentRunRuntime, kind: RunKind): Array<[string, string]> {
-  if (kind === "replay_critic") return lib.criticLensPolicies(rt);
+  if (kind === "replay_critic") return lib.criticReplayPolicies(rt);
   if (kind === "resume_packaging") return lib.resumePolicies(rt, "packaging-adaptation");
   return lib.allStagePolicies(rt);
 }
@@ -369,7 +379,8 @@ export async function executeJob(
       case "resume_packaging": return (await lib.resumeFromPackaging(rt, options, source(), "packaging-adaptation", io)).verdict;
       case "revise": {
         const revised = await lib.reviseRun(rt, options, source(), "revise-from", io);
-        return revised.revised ? (await readVerdict(sink)) : NO_REVISION;
+        // Round 2's verdict, combined with round 2's legal review (S8.6), as every other kind returns it.
+        return revised.revised ? revised.verdict : NO_REVISION;
       }
     }
   })();
@@ -451,16 +462,6 @@ export async function closeRun(client: SqlClient, run: {
 
 /** A revision that found no revisable blocking finding: it made no request and wrote nothing. */
 const NO_REVISION = Symbol("no revision");
-
-/** A revision's round-2 verdict, from the critic artifact it wrote. */
-async function readVerdict(sink: DbRunSink): Promise<string | null> {
-  const bytes = sink.written.get("06-final-critic.json");
-  try {
-    return bytes ? JSON.parse(bytes.toString("utf8"))?.output?.provisional?.verdict ?? null : null;
-  } catch {
-    return null;
-  }
-}
 
 /** The CLI's `saveFailureRecords`, through the run's sink. Each step is best effort, as the CLI's is. */
 async function saveFailureRecords(context: RunFailureContext, error: unknown): Promise<void> {

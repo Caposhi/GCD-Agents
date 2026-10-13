@@ -18,7 +18,11 @@
  * 4. runs the library's own `verifySourceRun` in revision mode against those
  *    two files: the fingerprints, the recorded scope, the rebuilt pack, every
  *    saved output through its stage's validator, and the saved critic panel
- *    lens by lens (`revalidation_failed`, with the library's own message).
+ *    lens by lens (`revalidation_failed`, with the library's own message);
+ * 5. (Content Studio S8.6) when the folder holds `07-legal-review.json`,
+ *    revalidates it against the package it reviewed with the library's
+ *    `revalidateLegalReviewOutput` (`revalidation_failed`). A folder from
+ *    before S8.6 has none and is verified exactly as before.
  *
  * **verified** — `succeeded`, with every fingerprint, the fact version and the
  * worker's commit (set at the claim), and the goal, platforms and scope taken
@@ -29,7 +33,8 @@
  *
  * The outcome — the metadata, the findings rebuilt from the stored critic
  * artifact, the run's end with its tier, the job's end and an audit row — is
- * written in ONE transaction (`writeImportOutcome`).
+ * written in ONE transaction (`writeImportOutcome`). The stored verdict is the
+ * critic's, combined with a stored legal review's (`importVerdict`).
  */
 
 import * as lib from "../../harness/contentRun/index.js";
@@ -179,6 +184,17 @@ export async function decideImport(input: {
   } catch (error) {
     return archived("revalidation_failed", String((error as Error)?.message ?? error));
   }
+  // 5. A stored legal review (S8.6), against exactly the package it reviewed: stage 5 with its contact lines rebuilt.
+  if ((await input.source.readArtifact(lib.LEGAL_REVIEW_ARTIFACT)) !== undefined) {
+    try {
+      const saved = await lib.readSavedStage(input.source, lib.LEGAL_REVIEW_ARTIFACT.replace(/\.json$/, ""), "import");
+      const contacted = rt.contact.attachContactLines(verified.packagingOutput, verified.pack);
+      lib.revalidateLegalReviewOutput(saved.output, lib.renderLegalReviewMaterial(
+        verified.scriptOutput, verified.directionOutput, contacted, verified.truthOutput, verified.pack, verified.platforms));
+    } catch (error) {
+      return archived("revalidation_failed", `${lib.LEGAL_REVIEW_ARTIFACT}: ${String((error as Error)?.message ?? error)}`);
+    }
+  }
   return {
     tier: "verified",
     goal: verified.goal,
@@ -199,6 +215,27 @@ function storedVerdict(bytes: Uint8Array | undefined): string | null {
   } catch {
     return null;
   }
+}
+
+/** A stored legal review's verdict (S8.6), when it names one of the review's three. */
+function storedLegalVerdict(bytes: Uint8Array | undefined): (typeof lib.LEGAL_REVIEW_VERDICTS)[number] | null {
+  try {
+    const verdict = bytes ? JSON.parse(Buffer.from(bytes).toString("utf8"))?.output?.verdict : null;
+    return (lib.LEGAL_REVIEW_VERDICTS as readonly string[]).includes(verdict) ? verdict : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * An import's stored verdict: the critic's, combined with its legal review's by
+ * the library's own `runVerdict` (S8.6). It can only keep a pass from passing:
+ * a folder without a review, or one whose review names no known verdict, keeps
+ * the critic's verdict as before.
+ */
+export function importVerdict(critic: Uint8Array | undefined, legal: Uint8Array | undefined): string | null {
+  const verdict = storedVerdict(critic);
+  return verdict === null ? null : lib.runVerdict(verdict as never, storedLegalVerdict(legal));
 }
 
 /**
@@ -277,7 +314,7 @@ export async function runImport(ctx: WorkerJobContext, job: ClaimedJob, log: Wor
         goal: null, platforms: null, scopeTags: null, approvedFactsSha256: null, evidencePackSha256: null };
     }
   }
-  const verdict = storedVerdict(await source.readArtifact("06-final-critic.json"));
+  const verdict = importVerdict(await source.readArtifact("06-final-critic.json"), await source.readArtifact(lib.LEGAL_REVIEW_ARTIFACT));
   try {
     await writeImportOutcome(session, { runId, jobId: job.jobId }, decision, verdict,
       (client) => rebuildFindings(client, ctx.runtime, runId, log));

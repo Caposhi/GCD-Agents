@@ -520,6 +520,22 @@
  * the new checks it breaks (`CQ8`–`CQ10`). No mutation is added or removed and
  * no captured path is added: sixty-nine in all, still 713 mutations.
  *
+ * Content Studio S8.6's group, `M714`–`M757`, covers the legal-risk review
+ * after the critic panel (owner decision "legal lens: defaults", 2026-10-13)
+ * and Studio migration 0005: blocking decided by category and never by
+ * severity or by the model; the review's and the run's verdicts; every quote
+ * checked against the block its location names; the output contract's closed
+ * sets, bounds and link rule; failing closed as `LegalReviewError`; inputs
+ * revalidated and exactly the critic's; one request on the critic policy;
+ * its price line, summary section and measurement; the rubric's first line and
+ * a tool-free prompt; the live-path manifest byte for byte; the import's
+ * revalidation and stored verdict; 0005's two authorized changes and nothing
+ * else; the web's shared copies; and the report's Legal review section. `M630`–
+ * `M632` ("the expected migrations lose their last") are re-pointed to 0005 in
+ * place, with the same ids. Four captured paths are added (`legalReview.ts`,
+ * `agents/legal-review.md`, `skills/legal-risk/SKILL.md` and migration 0005):
+ * seventy-three in all, for 757 mutations.
+ *
  * It is offline and deterministic: no network, no database, no provider, no
  * credential. The mutations run in parallel on up to MAX_WORKERS workers (the
  * runner's available parallelism, capped), each worker in its OWN disposable
@@ -659,6 +675,11 @@ const STUDIO_WORKER_FINDINGS = "src/studio/worker/findings.ts";
 const STUDIO_WORKER_PREFLIGHT = "src/studio/worker/preflight.ts";
 const STUDIO_WEB_ACTIONS = "src/studio/web/actions.ts";
 const STUDIO_MIGRATION_0004 = "studio/migrations/0004_studio_fact_checks_and_imports.sql";
+// Content Studio S8.6: the legal review's module, prompt and rubric, and migration 0005.
+const CONTENT_RUN_LEGAL = "src/harness/contentRun/legalReview.ts";
+const LEGAL_REVIEW_PROMPT = "agents/legal-review.md";
+const LEGAL_RISK_SKILL = "skills/legal-risk/SKILL.md";
+const STUDIO_MIGRATION_0005 = "studio/migrations/0005_studio_legal_review.sql";
 // Content Studio S7.2: the fact check, the import's revalidation and the web's upload and bundle codecs.
 const STUDIO_WORKER_FACT_CHECK = "src/studio/worker/factCheck.ts";
 const STUDIO_WORKER_IMPORT = "src/studio/worker/importRun.ts";
@@ -5864,28 +5885,28 @@ const CONTENT_STUDIO_S6_1_MUTATIONS = [
   {
     // The list keeps its declared tuple type (a cast), so the tree still
     // compiles and the break is the value at run time, as the checks see it.
-    // Re-pointed by Content Studio S7.1 at the list's new last entry, 0004:
-    // the same edit (the list loses its last entry), suites and checks.
-    name: "the worker's expected migrations lose their last (0004; until S7.1, 0003)",
+    // Re-pointed by Content Studio S7.1 at the list's new last entry, 0004, and
+    // by S8.6 at 0005: the same edit (the list loses its last entry), suites and checks.
+    name: "the worker's expected migrations lose their last (0005; until S8.6, 0004; until S7.1, 0003)",
     file: STUDIO_DB_RUNNER,
-    from: "  \"0004_studio_fact_checks_and_imports.sql\",\n] as const;",
-    to: "] as unknown as readonly [\"0001_studio_identity_and_tripwire.sql\", \"0002_studio_schema.sql\", \"0003_studio_preflight_requests.sql\", \"0004_studio_fact_checks_and_imports.sql\"];",
+    from: "  \"0005_studio_legal_review.sql\",\n] as const;",
+    to: "] as unknown as readonly [\"0001_studio_identity_and_tripwire.sql\", \"0002_studio_schema.sql\", \"0003_studio_preflight_requests.sql\", \"0004_studio_fact_checks_and_imports.sql\", \"0005_studio_legal_review.sql\"];",
     expect: ["SW3a."],
     suite: STUDIO_WORKER_SUITE,
   },
   {
-    name: "the web's expected migrations lose their last (0004; until S7.1, 0003)",
+    name: "the web's expected migrations lose their last (0005; until S8.6, 0004; until S7.1, 0003)",
     file: STUDIO_DB_RUNNER,
-    from: "  \"0004_studio_fact_checks_and_imports.sql\",\n] as const;",
-    to: "] as unknown as readonly [\"0001_studio_identity_and_tripwire.sql\", \"0002_studio_schema.sql\", \"0003_studio_preflight_requests.sql\", \"0004_studio_fact_checks_and_imports.sql\"];",
+    from: "  \"0005_studio_legal_review.sql\",\n] as const;",
+    to: "] as unknown as readonly [\"0001_studio_identity_and_tripwire.sql\", \"0002_studio_schema.sql\", \"0003_studio_preflight_requests.sql\", \"0004_studio_fact_checks_and_imports.sql\", \"0005_studio_legal_review.sql\"];",
     expect: ["SA7."],
     suite: STUDIO_WEB_SUITE,
   },
   {
-    name: "the runner's expected migrations lose their last (0004; until S7.1, 0003)",
+    name: "the runner's expected migrations lose their last (0005; until S8.6, 0004; until S7.1, 0003)",
     file: STUDIO_DB_RUNNER,
-    from: "  \"0004_studio_fact_checks_and_imports.sql\",\n] as const;",
-    to: "] as unknown as readonly [\"0001_studio_identity_and_tripwire.sql\", \"0002_studio_schema.sql\", \"0003_studio_preflight_requests.sql\", \"0004_studio_fact_checks_and_imports.sql\"];",
+    from: "  \"0005_studio_legal_review.sql\",\n] as const;",
+    to: "] as unknown as readonly [\"0001_studio_identity_and_tripwire.sql\", \"0002_studio_schema.sql\", \"0003_studio_preflight_requests.sql\", \"0004_studio_fact_checks_and_imports.sql\", \"0005_studio_legal_review.sql\"];",
     expect: ["SM3c."],
     suite: STUDIO_DB_SUITE,
   },
@@ -6602,6 +6623,339 @@ const CONTENT_STUDIO_S8_2_MUTATIONS = [
   },
 ];
 
+
+// Content Studio S8.6: the legal-risk review (owner decision "legal lens: defaults",
+// 2026-10-13) and migration 0005. One mutation per new validator rule and per
+// owner default, each run against the suite that owns the behaviour.
+const CONTENT_STUDIO_S8_6_MUTATIONS = [
+  {
+    name: "a legal finding blocks by its severity instead of its category",
+    file: CONTENT_RUN_LEGAL,
+    from: "      blocking: (LEGAL_BLOCKING_CATEGORIES as readonly string[]).includes(category),",
+    to: "      blocking: severity === \"high\",",
+    expect: ["LR2.", "LR3."],
+  },
+  {
+    name: "the blocking categories lose copyright_reproduction",
+    file: CONTENT_RUN_LEGAL,
+    from: "  \"trademark_affiliation\", \"defamation_risk\", \"copyright_reproduction\",\n] as const;",
+    to: "  \"trademark_affiliation\", \"defamation_risk\",\n] as const;",
+    expect: ["LR2."],
+  },
+  {
+    name: "one blocking finding alone no longer blocks the review's verdict",
+    file: CONTENT_RUN_LEGAL,
+    from: "  if (findings.some((f) => f.blocking)) return \"blocked\";",
+    to: "  if (findings.length > 1 && findings.some((f) => f.blocking)) return \"blocked\";",
+    expect: ["LR2."],
+  },
+  {
+    name: "a blocked legal review no longer keeps the run's verdict from passing",
+    file: CONTENT_RUN_LEGAL,
+    from: "  if (legalVerdict === \"blocked\" && criticVerdict === \"provisional_pass\") return \"needs_human_review\";",
+    to: "  if (legalVerdict === \"blocked\" && criticVerdict === \"needs_human_review\") return \"needs_human_review\";",
+    expect: ["LR2."],
+  },
+  {
+    name: "an import's stored verdict ignores a blocked legal review (the same edit, in the worker)",
+    file: CONTENT_RUN_LEGAL,
+    from: "  if (legalVerdict === \"blocked\" && criticVerdict === \"provisional_pass\") return \"needs_human_review\";",
+    to: "  if (legalVerdict === \"blocked\" && criticVerdict === \"needs_human_review\") return \"needs_human_review\";",
+    expect: ["SW54."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "a quote is no longer checked against the package",
+    file: CONTENT_RUN_LEGAL,
+    from: "    if (!corpus.get(location)!.some((text) => text.includes(wanted))) {",
+    to: "    if (Date.now() < 0 && !corpus.get(location)!.some((text) => text.includes(wanted))) {",
+    expect: ["LR5.", "LR7."],
+  },
+  {
+    name: "an import's legal review with an invented quote verifies (the same edit, in the worker)",
+    file: CONTENT_RUN_LEGAL,
+    from: "    if (!corpus.get(location)!.some((text) => text.includes(wanted))) {",
+    to: "    if (Date.now() < 0 && !corpus.get(location)!.some((text) => text.includes(wanted))) {",
+    expect: ["SW53."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "a captions quote may come from the shot list too",
+    file: CONTENT_RUN_LEGAL,
+    from: "  captions: [\"PACKAGING_COPY\"],",
+    to: "  captions: [\"PACKAGING_COPY\", \"PRODUCTION_OUTPUT\"],",
+    expect: ["LR5."],
+  },
+  {
+    name: "a quote is no longer forgiven its whitespace runs",
+    file: CONTENT_RUN_LEGAL,
+    from: "export const normalizeQuoteText = (text: string): string => text.replace(/\\s+/gu, \" \").trim();",
+    to: "export const normalizeQuoteText = (text: string): string => text.trim();",
+    expect: ["LR6."],
+  },
+  {
+    name: "a model-supplied verdict is ignored instead of refused",
+    file: CONTENT_RUN_LEGAL,
+    from: "  requireExactKeys(raw, LEGAL_REVIEW_OUTPUT_FIELDS, \"output\");",
+    to: "  requireExactKeys(Object.fromEntries(Object.entries(raw).filter(([k]) => k !== \"verdict\")), LEGAL_REVIEW_OUTPUT_FIELDS, \"output\");",
+    expect: ["LR5."],
+  },
+  {
+    name: "a model-supplied blocking flag is ignored instead of refused",
+    file: CONTENT_RUN_LEGAL,
+    from: "    requireExactKeys(obj, LEGAL_REVIEW_FINDING_FIELDS, \"findings entry\");",
+    to: "    requireExactKeys(Object.fromEntries(Object.entries(obj).filter(([k]) => k !== \"blocking\")), LEGAL_REVIEW_FINDING_FIELDS, \"findings entry\");",
+    expect: ["LR5."],
+  },
+  {
+    name: "a critic category is accepted from the legal review",
+    file: CONTENT_RUN_LEGAL,
+    from: "    const category = requireEnum(obj.category, LEGAL_REVIEW_CATEGORIES, `findings[${index}].category`);",
+    to: "    const category = requireEnum(obj.category, [...LEGAL_REVIEW_CATEGORIES, \"human_decision\" as LegalReviewCategory], `findings[${index}].category`);",
+    expect: ["LR5."],
+  },
+  {
+    name: "an unknown severity is accepted",
+    file: CONTENT_RUN_LEGAL,
+    from: "    const severity = requireEnum(obj.severity, LEGAL_REVIEW_SEVERITIES, `findings[${index}].severity`);",
+    to: "    const severity = requireEnum(obj.severity, [...LEGAL_REVIEW_SEVERITIES, \"blocking\" as LegalReviewSeverity], `findings[${index}].severity`);",
+    expect: ["LR5."],
+  },
+  {
+    name: "recognizable URL syntax is accepted in the review's summary",
+    file: CONTENT_RUN_LEGAL,
+    from: "  const summary = requireUrlFree(requireBoundedString(raw.summary, \"summary\", LEGAL_REVIEW_LIMITS.summaryChars), \"summary\");",
+    to: "  const summary = requireBoundedString(raw.summary, \"summary\", LEGAL_REVIEW_LIMITS.summaryChars);",
+    expect: ["LR5."],
+  },
+  {
+    name: "recognizable URL syntax is accepted in a finding's fix",
+    file: CONTENT_RUN_LEGAL,
+    from: "      fix: requireUrlFree(requireBoundedString(obj.fix, `findings[${index}].fix`, LEGAL_REVIEW_LIMITS.fixChars),\n        `findings[${index}].fix`),",
+    to: "      fix: requireBoundedString(obj.fix, `findings[${index}].fix`, LEGAL_REVIEW_LIMITS.fixChars),",
+    expect: ["LR5."],
+  },
+  {
+    name: "a fix's bound is raised past the critic's suggested-action bound",
+    file: CONTENT_RUN_LEGAL,
+    from: "  fixChars: 300,",
+    to: "  fixChars: 400,",
+    expect: ["LR5.", "LR9."],
+  },
+  {
+    name: "the review may return more findings than a critic lens",
+    file: CONTENT_RUN_LEGAL,
+    from: "  maxFindings: 20,",
+    to: "  maxFindings: 21,",
+    expect: ["LR5.", "LR9."],
+  },
+  {
+    name: "a runner error escapes unnamed instead of failing closed as LegalReviewError",
+    file: CONTENT_RUN_LEGAL,
+    from: "    return fail(`model request failed: ${(error as Error)?.message ?? String(error)}`);",
+    to: "    throw error;",
+    expect: ["LR5."],
+  },
+  {
+    name: "the packages are not revalidated before the request",
+    file: CONTENT_RUN_LEGAL,
+    from: "    packagingOutput = revalidateContactedPackagingOutput(\n      invocation.packagingOutput, scriptOutput, truthOutput, pack, FINAL_CRITIC_STAGE, \"packagingOutput\");",
+    to: "    packagingOutput = invocation.packagingOutput;",
+    expect: ["LR6."],
+  },
+  {
+    name: "a platform order other than stage 5's is accepted",
+    file: CONTENT_RUN_LEGAL,
+    from: "  if (requestedPlatforms.join() !== actual.join()) {",
+    to: "  if (Date.now() < 0 && requestedPlatforms.join() !== actual.join()) {",
+    expect: ["LR6."],
+  },
+  {
+    name: "the review is shown stage 2's output beside the shot list",
+    file: CONTENT_RUN_LEGAL,
+    from: "    PRODUCTION_OUTPUT: JSON.stringify(directionOutput, null, 2),",
+    to: "    PRODUCTION_OUTPUT: JSON.stringify({ ...directionOutput, truth: truthOutput }, null, 2),",
+    expect: ["LR4."],
+  },
+  {
+    name: "the rubric skill is dropped from the instructions",
+    file: CONTENT_RUN_LEGAL,
+    from: "    ...LEGAL_REVIEW_ASSETS.skills.map((path) => ({ path, role: \"skill\" as const })),\n",
+    to: "",
+    expect: ["LR1.", "LR4."],
+  },
+  {
+    name: "the review runs on another policy than the critic lenses'",
+    file: CONTENT_RUN_LEGAL,
+    from: "export const LEGAL_REVIEW_POLICY = \"critic\" as const;",
+    to: "export const LEGAL_REVIEW_POLICY = \"reasoning-standard\" as const;",
+    expect: ["LR1.", "LR4.", "LR8."],
+  },
+  {
+    name: "a saved review is accepted when it differs from the validation of its own findings",
+    file: CONTENT_RUN_LEGAL,
+    from: "  if (JSON.stringify(rebuilt) !== JSON.stringify(value)) failHere(\"it does not equal the validation of its own findings\");",
+    to: "  if (Date.now() < 0) failHere(\"it does not equal the validation of its own findings\");",
+    expect: ["LR7."],
+  },
+  {
+    name: "a critic replay is priced without the legal review",
+    file: CONTENT_RUN_PRICING,
+    from: "  return [...criticLensPolicies(rt), ...legalReviewPolicies()];",
+    to: "  return [...criticLensPolicies(rt)];",
+    expect: ["LR8.", "LR10."],
+  },
+  {
+    name: "summary.md omits the Legal review section",
+    file: CONTENT_RUN_SUMMARY,
+    from: "  if (legal) lines.push(...legalSummaryLines(legal));",
+    to: "  if (Date.now() < 0 && legal) lines.push(...legalSummaryLines(legal));",
+    expect: ["LR10."],
+  },
+  {
+    name: "the legal review's response is not measured",
+    file: CONTENT_RUN_RECORDING,
+    from: "      bounds: { ...OUTPUT_FIELD_BOUNDS, ...LEGAL_REVIEW_FIELD_BOUNDS }, statedCeiling, providerText: proposedProviderText,",
+    to: "      bounds: OUTPUT_FIELD_BOUNDS, statedCeiling, providerText: proposedProviderText,",
+    expect: ["LR10."],
+  },
+  {
+    name: "the rubric no longer begins with the not-legal-advice line",
+    file: LEGAL_RISK_SKILL,
+    from: "Screening aid, not legal advice. Serious findings go to the owner's attorney before posting.\n\n# Legal-Risk Screening",
+    to: "# Legal-Risk Screening\n\nScreening aid, not legal advice. Serious findings go to the owner's attorney before posting.",
+    expect: ["LR11."],
+  },
+  {
+    name: "the legal review's prompt declares a tool",
+    file: LEGAL_REVIEW_PROMPT,
+    from: "tools: []\n",
+    to: "tools: [Read]\n",
+    expect: ["LR4."],
+  },
+  {
+    name: "the live-path manifest changes by a byte its parsed form does not show",
+    file: LIVE_PATH_MANIFEST,
+    from: "{\n  \"schema\": \"gcd-live-path-manifest/1\",",
+    to: "{\n  \"schema\":  \"gcd-live-path-manifest/1\",",
+    expect: ["LR12."],
+  },
+  {
+    name: "an import's legal review is not revalidated",
+    file: STUDIO_WORKER_IMPORT,
+    from: "  if ((await input.source.readArtifact(lib.LEGAL_REVIEW_ARTIFACT)) !== undefined) {",
+    to: "  if (Date.now() < 0 && (await input.source.readArtifact(lib.LEGAL_REVIEW_ARTIFACT)) !== undefined) {",
+    expect: ["SW53."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "an import's stored verdict is the critic's alone",
+    file: STUDIO_WORKER_IMPORT,
+    from: "  return verdict === null ? null : lib.runVerdict(verdict as never, storedLegalVerdict(legal));",
+    to: "  return verdict;",
+    expect: ["SW54."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "migration 0005's stage set loses legal-review (the runner's suite)",
+    file: STUDIO_MIGRATION_0005,
+    from: "    'packaging-adaptation', 'final-critic', 'legal-review'));",
+    to: "    'packaging-adaptation', 'final-critic'));",
+    expect: ["SM6b."],
+    suite: STUDIO_DB_SUITE,
+  },
+  {
+    name: "migration 0005's stage set loses legal-review (the worker's suite)",
+    file: STUDIO_MIGRATION_0005,
+    from: "    'packaging-adaptation', 'final-critic', 'legal-review'));",
+    to: "    'packaging-adaptation', 'final-critic'));",
+    expect: ["SW55."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "migration 0005 also drops the lens rule — a schema change beyond the two authorized",
+    file: STUDIO_MIGRATION_0005,
+    from: "    'packaging-adaptation', 'final-critic', 'legal-review'));",
+    to: "    'packaging-adaptation', 'final-critic', 'legal-review'));\nALTER TABLE studio_run_requests DROP CONSTRAINT studio_run_requests_lens_only_for_critic;",
+    expect: ["SW55."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "migration 0005's import file names lose 07-legal-review.json",
+    file: STUDIO_MIGRATION_0005,
+    from: "       '06-final-critic.json', 'round-1-06-final-critic.json', '07-legal-review.json', 'summary.md',",
+    to: "       '06-final-critic.json', 'round-1-06-final-critic.json', 'summary.md',",
+    expect: ["SW25.", "SW27.", "SW55."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "the web's copy of the blocking categories loses copyright_reproduction",
+    file: STUDIO_DB_RUNNER,
+    from: "  \"trademark_affiliation\", \"defamation_risk\", \"copyright_reproduction\",\n]);",
+    to: "  \"trademark_affiliation\", \"defamation_risk\",\n]);",
+    expect: ["SW56."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "the web's import file names lose 07-legal-review.json",
+    file: STUDIO_DB_RUNNER,
+    from: "\"06-final-critic.json\", \"07-legal-review.json\", \"field-measurements.json\",",
+    to: "\"06-final-critic.json\", \"field-measurements.json\",",
+    expect: ["SW27."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "the report shows a stored blocking-category finding as not blocking",
+    file: STUDIO_WEB_RUNS,
+    from: "        blocking: f.blocking || STUDIO_LEGAL_BLOCKING_CATEGORIES.includes(category),",
+    to: "        blocking: f.blocking,",
+    expect: ["SA156."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "the report displays a legal review naming no known verdict",
+    file: STUDIO_WEB_RUNS,
+    from: "    if (!(LEGAL_VERDICTS as readonly string[]).includes(verdict)) throw new Unexpected();\n",
+    to: "",
+    expect: ["SA156."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "the stopped-at stage never names the legal review",
+    file: STUDIO_WEB_RUNS,
+    from: "  [\"legal-review\", \"07-legal-review.json\"],\n",
+    to: "",
+    expect: ["SA157."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "a blocking legal finding is listed under \"Needs your decision\"",
+    file: STUDIO_WEB_VIEWS,
+    from: "  const legalDecisions = legal.ok ? legal.value.findings.filter((f) => !f.blocking) : [];",
+    to: "  const legalDecisions = legal.ok ? legal.value.findings : [];",
+    expect: ["SA155."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "the Legal review section loses its not-legal-advice line",
+    file: STUDIO_WEB_VIEWS,
+    from: "    + `<p class=\"banner banner-bad\">${escapeHtml(LEGAL_NOT_ADVICE)}</p>`\n",
+    to: "",
+    expect: ["SA155."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "the web's not-legal-advice line drifts from the rubric's first line",
+    file: STUDIO_WEB_VIEWS,
+    from: "export const LEGAL_NOT_ADVICE = \"Screening aid, not legal advice. Serious findings go to the owner's attorney before posting.\";",
+    // Widened to string: the worker suite's SW56 compares the two literals, so a drifted literal
+    // alone is already a compile error; the web suite must catch the drift at run time too.
+    to: "export const LEGAL_NOT_ADVICE: string = \"Screening aid, not legal advice.\";",
+    expect: ["SA155."],
+    suite: STUDIO_WEB_SUITE,
+  },
+];
+
 // Every group, in order. MUTATIONS is their concatenation; the groups exist
 // only so `M-inc-sample` can spread its sample across them.
 const MUTATION_GROUPS = [
@@ -6618,7 +6972,7 @@ const MUTATION_GROUPS = [
   ["Content Studio S6.1", CONTENT_STUDIO_S6_1_MUTATIONS], ["Content Studio S6.2", CONTENT_STUDIO_S6_2_MUTATIONS],
   ["Content Studio S7.1", CONTENT_STUDIO_S7_1_MUTATIONS], ["Content Studio S7.2", CONTENT_STUDIO_S7_2_MUTATIONS],
   ["Content Studio S7.3", CONTENT_STUDIO_S7_3_MUTATIONS], ["Content Studio S6b", CONTENT_STUDIO_S6B_MUTATIONS],
-  ["Content Studio S8.2", CONTENT_STUDIO_S8_2_MUTATIONS],
+  ["Content Studio S8.2", CONTENT_STUDIO_S8_2_MUTATIONS], ["Content Studio S8.6", CONTENT_STUDIO_S8_6_MUTATIONS],
 ];
 const MUTATIONS = MUTATION_GROUPS.flatMap(([, group]) => group);
 

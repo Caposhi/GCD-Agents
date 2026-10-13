@@ -7467,7 +7467,7 @@ async function run(): Promise<void> {
             && preflight < cnPipeline.indexOf("computeCostCeiling(rt, allStagePolicies(rt))")
             && preflight < cnPipeline.indexOf('await io.consent({\n      kind: "full-run"')
             && replayPreflight > preflight
-            && replayPreflight < cnPipeline.indexOf("computeCostCeiling(rt, criticLensPolicies(rt))")
+            && replayPreflight < cnPipeline.indexOf("computeCostCeiling(rt, criticReplayPolicies(rt))")
             && replayPreflight < cnPipeline.indexOf('await io.consent({ kind: "critic-replay"')
             && cnPipeline.indexOf("export async function replayCritic(") < replayPreflight);
 
@@ -7548,15 +7548,17 @@ async function run(): Promise<void> {
         const crGuardedRun = await cnQuiet(() => cliModule.resumeFromPackaging(crNoEarlyRt, cliModule.parseArgs([
           "--resume-from", "packaging-adaptation", crGuarded, "--automotive-facts", factsPath])));
         // Stage 5 first; the four lenses run concurrently, so they are recorded in
-        // completion order.
+        // completion order; then (Content Studio S8.6) the legal review, last.
         const crRequestsOk = (requests: unknown): boolean => Array.isArray(requests)
-          && requests[0] === "packaging-adaptation"
-          && requests.slice(1).map(String).sort().join() === [...crLensRequests].sort().join();
+          && requests[0] === "packaging-adaptation" && requests.at(-1) === "legal-review" && requests.length === 6
+          && requests.slice(1, -1).map(String).sort().join() === [...crLensRequests].sort().join();
         check("CR2. a resume makes no stage 1-4 request: its recorded requests and every measured response are "
-          + "stage 5 and the four critic lenses only, and it completes with every stage 1-4 executor made to throw",
+          + "stage 5, the four critic lenses and the legal review only, and it completes with every stage 1-4 executor "
+          + "made to throw",
           crRequestsOk(crMeta?.modelRequests)
             && Array.isArray(crRows) && crRows.length > 0
-            && crRows.every((r) => r.stage === "packaging-adaptation" || crLensRequests.includes(r.stage))
+            && crRows.every((r) => r.stage === "packaging-adaptation" || crLensRequests.includes(r.stage) || r.stage === "legal-review")
+            && crRows.some((r) => r.stage === "legal-review")
             && crRows.some((r) => r.stage === "packaging-adaptation")
             && crGuardedRun.ok && crSibling(crGuarded) !== undefined
             && crRequestsOk(crJson(join(crSibling(crGuarded)!, "resume-meta.json"))?.modelRequests));
@@ -7659,7 +7661,7 @@ async function run(): Promise<void> {
             && !crCombined.ok && /cannot be combined with --replay-critic/.test(crCombined.error)
             && JSON.stringify(crPolicies)
               === JSON.stringify((cliModule.allStagePolicies(cnRt) as Array<[string, string]>).slice(-crPolicies.length))
-            && crPolicies.map(([label]) => label).join() === ["packaging-adaptation", ...crLensRequests].join()
+            && crPolicies.map(([label]) => label).join() === ["packaging-adaptation", ...crLensRequests, "legal-review"].join()
             && crParseError([]) === "" && (() => {
               try { cliModule.resumePolicies(cnRt, "final-critic"); return false; } catch { return true; }
             })());
@@ -7703,6 +7705,8 @@ async function run(): Promise<void> {
         type CvCall = { stage: string; lens?: string; prompt: string; invocationKeys: string[] };
         const STAGE_OF: Record<string, string> = {
           script: "hook-story-script", direction: "production-direction", packaging: "packaging-adaptation", critic: "final-critic",
+          // Content Studio S8.6: the legal review's one request, after the panel.
+          legal: "legal-review",
         };
         const cvSpyRt = (calls: CvCall[], plans: unknown[], failStage?: string) => new Proxy(cnRt, {
           get(target, key) {
@@ -7775,16 +7779,18 @@ async function run(): Promise<void> {
           ? readFileSync(join(cvMixedDir, "summary.md"), "utf8") : "";
         const cvLensRequests = CRITIC_LENSES.map((lens) => `final-critic:${lens}`);
         check("CV11. --revise-from re-runs the earliest stage owning a blocking finding and every later writing stage, "
-          + "then all four lenses, into <source>-revised-<timestamp>: stages 1-3 and run-meta.json copied byte for "
-          + "byte, round 1's panel kept, revision-meta.json recording the plan, and the source run left unchanged",
+          + "then all four lenses and (S8.6) the legal review, into <source>-revised-<timestamp>: stages 1-3 and run-meta.json "
+          + "copied byte for byte, round 1's panel kept, revision-meta.json recording the plan, and the source run left unchanged",
           cvMixedRun.ok && cvMixedDir !== undefined
             && JSON.stringify(cvRequests(cvMixedRun.calls).slice(0, 2)) === JSON.stringify(["production-direction", "packaging-adaptation"])
-            && cvRequests(cvMixedRun.calls).slice(2).sort().join() === [...cvLensRequests].sort().join()
+            && cvRequests(cvMixedRun.calls).slice(2, -1).sort().join() === [...cvLensRequests].sort().join()
+            && cvRequests(cvMixedRun.calls).at(-1) === "legal-review" && cvRequests(cvMixedRun.calls).length === 7
             && ["run-meta.json", "01-strategy-concept.json", "02-automotive-truth.json", "03-hook-story-script.json"]
               .every((name) => readFileSync(join(cvMixedDir, name)).equals(readFileSync(join(cvMixed, name))))
             && readFileSync(join(cvMixedDir, "round-1-06-final-critic.json")).equals(readFileSync(join(cvMixed, "06-final-critic.json")))
             && ["04-production-direction.json", "05-packaging-adaptation.json", "05b-contact-lines.json",
-              "06-final-critic.json", "summary.md", "field-measurements.md"].every((name) => existsSync(join(cvMixedDir, name)))
+              "06-final-critic.json", "07-legal-review.json", "summary.md", "field-measurements.md"]
+              .every((name) => existsSync(join(cvMixedDir, name)))
             && cvMixedMeta?.schema === "gcd-content-revision/1" && cvMixedMeta?.status === "completed"
             && cvMixedMeta?.startStage === "production-direction" && cvMixedMeta?.rounds === 1
             && JSON.stringify(cvMixedMeta?.rerunStages) === JSON.stringify(["production-direction", "packaging-adaptation"])
@@ -7792,7 +7798,7 @@ async function run(): Promise<void> {
             && JSON.stringify(cvMixedMeta?.findingCaps) === JSON.stringify(REVISION_FINDING_CAPS)
             && cvMixedMeta?.findingsNotRerun?.map((f: { id: string }) => f.id).join() === "F1"
             && cvMixedMeta?.evidencePackFingerprintChecked === true && cvMixedMeta?.automotiveFacts?.identity === "matched"
-            && Array.isArray(cvMixedMeta?.costs?.requests) && cvMixedMeta.costs.requests.length === 6
+            && Array.isArray(cvMixedMeta?.costs?.requests) && cvMixedMeta.costs.requests.length === 7
             && cvMixedMeta.costs.totalUsd === 0
             && crTree(cvMixed) === cvMixedBefore);
 
@@ -7811,9 +7817,9 @@ async function run(): Promise<void> {
             && cvBlock(cvDirPrompt, "PREVIOUS_OUTPUT") === JSON.stringify(crJson(join(cvMixed, "04-production-direction.json")).output, null, 2)
             && cvBlock(cvPkgPrompt, "PREVIOUS_OUTPUT") === JSON.stringify(crJson(join(cvMixed, "05-packaging-adaptation.json")).output, null, 2));
         check("CV13. human findings never reach any model — neither a human_review finding nor a human_decision "
-          + "finding owned by a writing stage appears in any request — and both are listed as owner items in "
-          + "revision-meta.json and summary.md",
-          cvMixedRun.calls.length === 6
+          + "finding owned by a writing stage appears in any request, the legal review's (S8.6) included — and both are "
+          + "listed as owner items in revision-meta.json and summary.md",
+          cvMixedRun.calls.length === 7 && cvMixedRun.calls.some((c) => c.stage === "legal-review")
             && cvMixedRun.calls.every((c) => !c.prompt.includes(M.humanReview) && !c.prompt.includes(M.humanDecision))
             && cvMixedMeta?.ownerItems?.map((f: { id: string }) => f.id).join() === "F3,F5"
             && cvMixedSummary.includes("### Owner items — never sent to any model")
@@ -8031,11 +8037,12 @@ async function run(): Promise<void> {
         const cvOnceLive = cvChild(["CN synthetic goal", "--revise-once", "--automotive-facts", factsPath,
           "--out-dir", cvOnceLiveDir, "--runner", "live", "--i-understand-this-costs-money"], "");
         check("CV25. a live revision keeps the cost flag and the typed LIVE gate, and prices exactly its own requests — "
-          + "stages 4 and 5 and the four lenses here, never stages 1-3 — refusing before any output directory; "
+          + "stages 4 and 5, the four lenses and (S8.6) the legal review here, never stages 1-3 — refusing before any output directory; "
           + "--revise-once's first gate says the revision is priced and gated separately",
           cvLiveNoFlag.status !== 0 && /requires --i-understand-this-costs-money/.test(cvLiveNoFlag.stderr)
             && cvLiveWrong.status !== 0 && /live run cancelled: expected the exact word LIVE/.test(cvLiveWrong.stderr)
-            && cvLiveWrong.stdout.includes("Estimated ceiling for one revision round from production-direction (6 model requests)")
+            && cvLiveWrong.stdout.includes("Estimated ceiling for one revision round from production-direction (7 model requests)")
+            && /^ {2}legal-review /m.test(cvLiveWrong.stdout)
             && /^ {2}production-direction /m.test(cvLiveWrong.stdout) && /^ {2}packaging-adaptation /m.test(cvLiveWrong.stdout)
             && cvLensRequests.every((label) => cvLiveWrong.stdout.includes(label))
             && !/^ {2}(strategy-concept|automotive-truth|hook-story-script) /m.test(cvLiveWrong.stdout)
@@ -8133,13 +8140,13 @@ async function run(): Promise<void> {
           + "and after pricing, with the ceiling for exactly its own requests — and builds no runner and opens no output "
           + "until it allows; a free-check refusal and a fake run never ask",
           csLiveFull.error === "Error: CS: consent refused" && csFullRequest?.kind === "full-run"
-            && csFullRequest.label === "one full six-stage run" && csFullRequest.ceiling?.lines.length === 9
-            && (csFullRequest.ceiling?.totalUsd ?? 0) > 0 && csFullRequest.revisionRoundMaxRequests === 7
+            && csFullRequest.label === "one full six-stage run" && csFullRequest.ceiling?.lines.length === 10
+            && (csFullRequest.ceiling?.totalUsd ?? 0) > 0 && csFullRequest.revisionRoundMaxRequests === 8
             && csLiveFull.log.some((line) => line.startsWith("Evidence pack built:"))
             && /Refusing to start a LIVE run against an incomplete evidence pack/.test(csLiveNoFacts.error)
             && csRequests.length === 4
             && csRequests.slice(1).map((r) => `${r.kind}:${(r.ceiling as { lines: unknown[] }).lines.length}`).join()
-              === "resume:5,revision:6,critic-replay:4"
+              === "resume:6,revision:7,critic-replay:5"
             && [csLiveFull, csLiveNoFacts, csLiveResume, csLiveRevise, csLiveReplay].every((r) =>
               r.opened.length === 0 && r.runnerFactoryCalls.length === 0)
             && [csLiveResume, csLiveRevise, csLiveReplay].every((r) => r.error === "Error: CS: consent refused")
@@ -8211,6 +8218,296 @@ async function run(): Promise<void> {
             .every((name) => csTypecheck.includes(`export const ${name} = holds<`))
             && (csTypecheck.match(/\/\/ @ts-expect-error — /g) ?? []).length === 6
             && csTypecheck.includes("approve: async () => {}") && csTypecheck.includes("publish: async () => {}"));
+
+        // --- LR. the legal-risk review (Content Studio S8.6; owner decision "legal lens: defaults", 2026-10-13) ---
+        // Driven through the library as the CLI hands it out (the caller allowlist), against the plain fake run's
+        // own saved, revalidated stage outputs, with scripted runners: no provider, no network, no cost.
+        {
+          const L = cnRt.legal;
+          // This suite's check takes no detail; the LR checks print theirs on a failure only.
+          const lrCheck = (name: string, cond: boolean, detail = ""): void => {
+            check(name, cond);
+            if (!cond && detail) console.log(`      ${detail.slice(0, 2_000)}`);
+          };
+          // A mutation that breaks the plain run must fail these checks by name, not abort the suite.
+          let lrVerified: any;
+          try {
+            lrVerified = await csLib.verifySourceRun(cnRt, csOptions("fake"), csSource(plainRun), null,
+              { reporter: { log: () => {}, warn: () => {} }, confirmUnproven: async () => ({ confirmed: false, reason: "lr" }) });
+          } catch (e) {
+            console.log(`      LR setup: the plain run did not verify: ${(e as Error)?.message}`);
+          }
+          if (!lrVerified) {
+            for (let i = 1; i <= 11; i += 1) check(`LR${i}. (not exercised: the plain run's saved outputs did not verify)`, false);
+          } else {
+          const lrContacted = cnRt.contact.attachContactLines(lrVerified.packagingOutput, lrVerified.pack);
+          const lrPlatforms = lrContacted.provisional.packages.map((p: { platform: string }) => p.platform);
+          const lrMaterial = L.renderLegalReviewMaterial(lrVerified.scriptOutput, lrVerified.directionOutput, lrContacted,
+            lrVerified.truthOutput, lrVerified.pack, lrPlatforms) as Record<string, string>;
+          type LrCall = { systemPrompt: string; prompt: string; model: string; maxTokens: number; thinking: unknown;
+            effort?: string; responseFormatSchema?: unknown; lens?: string };
+          const lrInvoke = async (respond: (call: LrCall) => Promise<{ text: string }> | { text: string }, edit: (i: any) => void = () => {}) => {
+            const calls: LrCall[] = [];
+            const invocation: any = {
+              scriptOutput: lrVerified.scriptOutput, directionOutput: lrVerified.directionOutput, packagingOutput: lrContacted,
+              truthOutput: lrVerified.truthOutput, evidencePack: lrVerified.pack, requestedPlatforms: lrPlatforms,
+              runner: async (call: LrCall) => { calls.push(call); return { usage: { input_tokens: 1, output_tokens: 1 }, ...(await respond(call)) }; },
+            };
+            edit(invocation);
+            try {
+              return { result: await L.executeLegalReview(invocation), error: "", calls };
+            } catch (e) {
+              return { result: undefined, error: `${(e as Error)?.name}: ${(e as Error)?.message}`, calls };
+            }
+          };
+          const REQUIREMENT = "Written customer/vehicle consent to film in the bay.";
+          const lrFinding = (category: string, extra: Record<string, unknown> = {}) => ({
+            category, severity: "high", location: "production", quote: REQUIREMENT,
+            issue: "LR synthetic issue.", fix: "LR synthetic fix.", ...extra,
+          });
+          const lrAnswer = (findings: unknown[], extra: Record<string, unknown> = {}) =>
+            ({ text: JSON.stringify({ summary: "LR synthetic summary.", findings, ...extra }) });
+          const BLOCKING = ["trademark_affiliation", "defamation_risk", "copyright_reproduction"];
+          const DECISION = ["comparative_claim", "manufacturer_quotation", "endorsement_or_testimonial", "people_and_releases",
+            "privacy_exposure", "advertising_disclosure", "other_legal_question"];
+          const promptText = readFileSync(resolve(REPO_ROOT, "agents/legal-review.md"), "utf8");
+          const skillText = readFileSync(resolve(REPO_ROOT, "skills/legal-risk/SKILL.md"), "utf8");
+
+          const lrPass = await lrInvoke(() => lrAnswer([]));
+          const lrOut = lrPass.result?.output;
+          const lrMeta = lrPass.result?.metadata;
+          lrCheck("LR1. a legal review with no finding passes: verdict no_legal_finding, every authority flag false (legal "
+            + "advice included), the disclaimer set by code, one request recorded with its prompt and skill digests, and the "
+            + "run's verdict left as the critic panel's",
+            lrPass.error === "" && lrPass.calls.length === 1 && lrOut?.verdict === "no_legal_finding" && lrOut.findings.length === 0
+              && lrOut.kind === "provisional_legal_review"
+              && ["authoritative", "approvalGranted", "publishable", "executable", "productionValidated", "legalAdvice"]
+                .every((flag) => (lrOut as Record<string, unknown>)[flag] === false)
+              && lrOut.disclaimer === L.LEGAL_REVIEW_DISCLAIMER
+              && lrMeta?.stage === "legal-review" && lrMeta.modelPolicy === "critic" && lrMeta.modelRequests === 1
+              && lrMeta.model === cnRt.modelPolicy.resolveModelPolicy("critic").model
+              && JSON.stringify(lrMeta.assets.map((a: { path: string; role: string; channel: string }) => [a.path, a.role, a.channel]))
+                === JSON.stringify([["agents/legal-review.md", "prompt", "instruction"], ["skills/legal-risk/SKILL.md", "skill", "instruction"]])
+              && lrMeta.assets[0].sha256 === sha(readFileSync(resolve(REPO_ROOT, "agents/legal-review.md")))
+              && lrMeta.assets[1].sha256 === sha(readFileSync(resolve(REPO_ROOT, "skills/legal-risk/SKILL.md")))
+              && ["provisional_pass", "needs_revision", "needs_human_review"].every((v) => L.runVerdict(v, "no_legal_finding") === v),
+            lrPass.error);
+
+          const lrBlocking = await Promise.all(BLOCKING.map((category) => lrInvoke(() => lrAnswer([lrFinding(category, { severity: "low" })]))));
+          lrCheck("LR2. each blocking category blocks — trademark_affiliation, defamation_risk, copyright_reproduction, exactly "
+            + "the owner's three, even at severity low: the finding is marked blocking by code, the review's verdict is blocked, "
+            + "and the run's verdict cannot pass (a panel provisional_pass becomes needs_human_review; needs_revision and "
+            + "needs_human_review stand)",
+            JSON.stringify([...L.LEGAL_BLOCKING_CATEGORIES]) === JSON.stringify(BLOCKING)
+              && lrBlocking.every((r) => r.error === "" && r.result?.output.verdict === "blocked" && r.result.output.findings[0].blocking === true)
+              && L.runVerdict("provisional_pass", "blocked") === "needs_human_review"
+              && L.runVerdict("needs_revision", "blocked") === "needs_revision"
+              && L.runVerdict("needs_human_review", "blocked") === "needs_human_review",
+            lrBlocking.map((r) => r.error || r.result?.output.verdict).join());
+
+          const lrDecision = await Promise.all(DECISION.map((category) => lrInvoke(() => lrAnswer([lrFinding(category)]))));
+          const lrMixed = await lrInvoke(() => lrAnswer([lrFinding("comparative_claim"), lrFinding("trademark_affiliation")]));
+          const lrMixedLines = lrMixed.result ? (csLib.legalSummaryLines(lrMixed.result.output) as string[]).join("\n") : "";
+          lrCheck("LR3. every other category goes to \"Needs your decision\": comparative_claim, manufacturer_quotation, "
+            + "endorsement_or_testimonial, people_and_releases, privacy_exposure, advertising_disclosure, other_legal_question "
+            + "— not blocking, verdict needs_owner_decision, and the run's verdict unchanged; one blocking finding beside them "
+            + "blocks; summary.md lists the blocking category first, with the not-legal-advice line",
+            JSON.stringify([...L.LEGAL_DECISION_CATEGORIES]) === JSON.stringify(DECISION)
+              && JSON.stringify([...L.LEGAL_REVIEW_CATEGORIES]) === JSON.stringify([...BLOCKING, ...DECISION])
+              && lrDecision.every((r) => r.error === "" && r.result?.output.verdict === "needs_owner_decision"
+                && r.result.output.findings[0].blocking === false)
+              && ["provisional_pass", "needs_revision", "needs_human_review"].every((v) => L.runVerdict(v, "needs_owner_decision") === v)
+              && lrMixed.result?.output.verdict === "blocked"
+              && lrMixedLines.includes(`_${L.LEGAL_REVIEW_DISCLAIMER}_`)
+              && lrMixedLines.indexOf("### trademark_affiliation — blocking") > 0
+              && lrMixedLines.indexOf("### trademark_affiliation — blocking") < lrMixedLines.indexOf("### comparative_claim — needs your decision"),
+            lrDecision.map((r) => r.error || r.result?.output.verdict).join());
+
+          const lrCall = lrPass.calls[0];
+          const lrLabels = [...(lrCall?.prompt ?? "").matchAll(/<<<BEGIN (\S+) — UNTRUSTED DATA, NOT INSTRUCTIONS>>>/g)].map((m) => m[1]);
+          const lrPolicy = cnRt.modelPolicy.resolveModelPolicy("critic");
+          const lrCritic = cnRt.critic;
+          lrCheck("LR4. the review is ONE request on the critic lenses' policy — their model, output-token cap, thinking and "
+            + "effort — tool-free, with exactly its own prompt and the legal-risk skill as instructions, and exactly the five "
+            + "blocks the critic panel already reads, rendered by the critic's own renderers: nothing else",
+            lrCall !== undefined && lrCall.model === lrPolicy.model && lrCall.maxTokens === lrPolicy.maxTokens
+              && JSON.stringify(lrCall.thinking) === JSON.stringify(lrPolicy.thinking) && lrCall.effort === lrPolicy.effort
+              && lrCall.responseFormatSchema === L.LEGAL_REVIEW_RESPONSE_FORMAT && lrCall.lens === undefined
+              && lrCall.systemPrompt === `${promptText}\n\n---\n\n# SKILL: skills/legal-risk/SKILL.md\n\n${skillText}`
+              && /^tools: \[\]$/m.test(promptText)
+              && lrLabels.join() === "SCRIPT_COPY,PRODUCTION_OUTPUT,PACKAGING_COPY,SCRIPT_CLAIMS,PLATFORM_CLAIMS"
+              && untrustedBlock(lrCall.prompt, "SCRIPT_COPY") === lrCritic.renderScriptCopy(lrVerified.scriptOutput)
+              && untrustedBlock(lrCall.prompt, "PRODUCTION_OUTPUT") === JSON.stringify(lrVerified.directionOutput, null, 2)
+              && untrustedBlock(lrCall.prompt, "PACKAGING_COPY") === lrCritic.renderPackagingCopy(lrContacted)
+              && untrustedBlock(lrCall.prompt, "SCRIPT_CLAIMS")
+                === cnRt.packaging.renderPackagingScriptClaims(lrVerified.scriptOutput, lrVerified.truthOutput, lrVerified.pack)
+              && untrustedBlock(lrCall.prompt, "PLATFORM_CLAIMS") === lrCritic.renderPlatformClaims(
+                lrContacted, lrPlatforms, lrVerified.scriptOutput, lrVerified.truthOutput, lrVerified.pack)
+              && L.LEGAL_REVIEW_BLOCK_LABELS.every((label: string) => Object.values(cnRt.payloadContract.CRITIC_LENS_BLOCKS)
+                .some((blocks: any) => blocks.some((b: { label: string }) => b.label === label))),
+            lrLabels.join());
+
+          const long = (n: number) => "x".repeat(n);
+          const failCases: Array<[string, (call: LrCall) => Promise<{ text: string }> | { text: string }, RegExp]> = [
+            ["a runner error", () => { throw new Error("LR synthetic provider failure"); }, /model request failed: LR synthetic provider failure/],
+            ["a refusal stop reason", () => { throw Object.assign(new Error("refused (stop_reason refusal)"), { name: "StageRefusalError" }); }, /model request failed: refused/],
+            ["a truncated response", () => { throw Object.assign(new Error("truncated at max_tokens"), { name: "StageOutputTruncatedError" }); }, /model request failed: truncated/],
+            ["no text", () => ({ text: "  " }), /model returned no text/],
+            ["a fenced answer", () => ({ text: "```json\n{}\n```" }), /not strict JSON/],
+            ["an array", () => ({ text: "[]" }), /not a JSON object/],
+            ["a model verdict", () => lrAnswer([], { verdict: "no_legal_finding" }), /unknown field\(s\): verdict/],
+            ["a missing findings field", () => ({ text: JSON.stringify({ summary: "s" }) }), /missing "findings"/],
+            ["a model-set blocking flag", () => lrAnswer([{ ...lrFinding("trademark_affiliation"), blocking: false }]), /unknown field\(s\): blocking/],
+            ["a missing fix", () => lrAnswer([{ ...lrFinding("comparative_claim"), fix: undefined }]), /missing "fix"/],
+            ["a critic category", () => lrAnswer([lrFinding("human_decision")]), /category" must be one of/],
+            ["an unknown severity", () => lrAnswer([lrFinding("comparative_claim", { severity: "blocking" })]), /severity" must be one of/],
+            ["an unknown location", () => lrAnswer([lrFinding("comparative_claim", { location: "web" })]), /location" must be one of/],
+            ["a quote that is not in the package", () => lrAnswer([lrFinding("comparative_claim", { quote: "LR text the package never says." })]), /quote does not occur in the production block/],
+            ["a quote from another block", () => lrAnswer([lrFinding("comparative_claim", { location: "captions" })]), /quote does not occur in the captions block/],
+            ["a URL in the summary", () => ({ text: JSON.stringify({ summary: "see https://example.invalid/x", findings: [] }) }), /"summary" must not contain a recognizable URL/],
+            ["a URL in an issue", () => lrAnswer([lrFinding("comparative_claim", { issue: "see www.example.invalid" })]), /issue" must not contain a recognizable URL/],
+            ["a URL in a fix", () => lrAnswer([lrFinding("comparative_claim", { fix: "see https://example.invalid" })]), /fix" must not contain a recognizable URL/],
+            ["an empty issue", () => lrAnswer([lrFinding("comparative_claim", { issue: "  " })]), /issue" must not be empty/],
+            ["a summary over 1,500", () => ({ text: JSON.stringify({ summary: long(1_501), findings: [] }) }), /"summary" exceeds 1500 characters/],
+            ["a quote over 600", () => lrAnswer([lrFinding("comparative_claim", { quote: long(601) })]), /quote" exceeds 600 characters/],
+            ["an issue over 600", () => lrAnswer([lrFinding("comparative_claim", { issue: long(601) })]), /issue" exceeds 600 characters/],
+            ["a fix over 300", () => lrAnswer([lrFinding("comparative_claim", { fix: long(301) })]), /fix" exceeds 300 characters/],
+            ["21 findings", () => lrAnswer(Array.from({ length: 21 }, () => lrFinding("comparative_claim"))), /"findings" exceeds 20 entries/],
+          ];
+          const lrFailures = await Promise.all(failCases.map(async ([name, respond, pattern]) => {
+            const r = await lrInvoke(respond);
+            return { name, ok: r.result === undefined && r.calls.length === 1 && /^LegalReviewError: legal-review: /.test(r.error) && pattern.test(r.error), error: r.error };
+          }));
+          lrCheck("LR5. the review fails closed exactly like a lens: a runner error, a refusal or truncation, no text, "
+            + "non-strict JSON, a missing or extra field (a model verdict or blocking flag among them), a category, severity "
+            + "or location outside its closed set, a quote not found in the block its location names, recognizable URL "
+            + "syntax in prose, an empty or over-long field, or too many findings each throw a named LegalReviewError after "
+            + "exactly one request — no retry, and no partial review",
+            lrFailures.every((f) => f.ok), lrFailures.filter((f) => !f.ok).map((f) => `${f.name}: ${f.error}`).join(" | "));
+
+          const lrTampered = await lrInvoke(() => lrAnswer([]), (i) => {
+            i.packagingOutput = JSON.parse(JSON.stringify(i.packagingOutput));
+            i.packagingOutput.provisional.packages[0].contact.text = "LR tampered contact line";
+          });
+          const lrReordered = await lrInvoke(() => lrAnswer([]), (i) => { i.requestedPlatforms = [...i.requestedPlatforms].reverse(); });
+          const lrSpaced = await lrInvoke(() => lrAnswer([lrFinding("people_and_releases", { quote: `  ${REQUIREMENT.replace(/ /g, "  \n ")} ` })]));
+          lrCheck("LR6. every prior-stage value is revalidated before the request — an edited contact line, or a platform "
+            + "order other than stage 5's, is refused with no request made — and a quote is forgiven only its whitespace runs",
+            lrTampered.calls.length === 0 && /^LegalReviewError: legal-review: a prior-stage value did not revalidate/.test(lrTampered.error)
+              && lrReordered.calls.length === 0 && /does not match the packaging output's platform sequence/.test(lrReordered.error)
+              && lrSpaced.error === "" && lrSpaced.result?.output.verdict === "needs_owner_decision",
+            `${lrTampered.error} | ${lrReordered.error} | ${lrSpaced.error}`);
+
+          const lrSaved = lrMixed.result?.output;
+          const lrRevalidate = (edit: (o: any) => void): string => {
+            if (!lrSaved) return "(no saved review to revalidate)";
+            const copy = JSON.parse(JSON.stringify(lrSaved));
+            edit(copy);
+            try { L.revalidateLegalReviewOutput(copy, lrMaterial); return ""; } catch (e) { return (e as Error).message; }
+          };
+          lrCheck("LR7. a saved review revalidates only as the validation of its own findings, byte for byte: an unedited one "
+            + "passes; a blocking flag cleared, a verdict softened, a quote not in the package, legalAdvice set true, an extra "
+            + "field or a missing disclaimer is refused",
+            lrRevalidate(() => {}) === ""
+              && /does not equal/.test(lrRevalidate((o) => { o.findings[1].blocking = false; }))
+              && /does not equal/.test(lrRevalidate((o) => { o.verdict = "needs_owner_decision"; }))
+              && /quote does not occur/.test(lrRevalidate((o) => { o.findings[0].quote = "LR invented quote"; }))
+              && /does not equal/.test(lrRevalidate((o) => { o.legalAdvice = true; }))
+              && /does not equal/.test(lrRevalidate((o) => { o.extra = 1; }))
+              && /does not equal/.test(lrRevalidate((o) => { delete o.disclaimer; })));
+
+          const priced = (policies: Array<[string, string]>) => csLib.computeCostCeiling(cnRt, policies);
+          const lrLine = priced(csLib.legalReviewPolicies()).lines[0];
+          const lensLines = priced(csLib.criticLensPolicies(cnRt)).lines;
+          const lrCeilings = [
+            ["full", priced(csLib.allStagePolicies(cnRt))],
+            ["resume", priced(csLib.resumePolicies(cnRt, "packaging-adaptation"))],
+            ["replay", priced(csLib.criticReplayPolicies(cnRt))],
+            ...cnRt.revision.REVISABLE_STAGES.map((stage: string) => [`revise:${stage}`, priced(csLib.revisionPolicies(cnRt, stage))]),
+          ].map(([name, c]: any) => `${name}:${c.lines.length}:${c.totalUsd.toFixed(6)}:${c.lines.at(-1).label}`);
+          lrCheck("LR8. the quote and the reserved ceiling gain one line, \"legal-review\", computed exactly as a critic lens's "
+            + "($2.970000: the critic policy's model and output-token cap), last on every action that reaches the critic — "
+            + "a full run $24.62 (10 requests), a resume $16.315 (6), a critic replay $14.85 (5), revisions $19.245 / $17.78 / "
+            + "$16.315 (8 / 7 / 6)",
+            lrLine?.label === "legal-review" && lrLine.policy === "critic" && lrLine.costUsd === 2.97
+              && lensLines.every((l: { costUsd: number; maxTokens: number; model: string; inputTokensEstimate: number }) =>
+                l.costUsd === lrLine.costUsd && l.maxTokens === lrLine.maxTokens && l.model === lrLine.model
+                && l.inputTokensEstimate === lrLine.inputTokensEstimate)
+              && lrCeilings.join() === ["full:10:24.620000:legal-review", "resume:6:16.315000:legal-review",
+                "replay:5:14.850000:legal-review", "revise:hook-story-script:8:19.245000:legal-review",
+                "revise:production-direction:7:17.780000:legal-review", "revise:packaging-adaptation:6:16.315000:legal-review"].join(),
+            lrCeilings.join());
+
+          const pc = cnRt.payloadContract;
+          const lrBlocks = L.LEGAL_REVIEW_BLOCKS as Array<{ label: string; bodyChars: number }>;
+          const lrFramed = lrBlocks.reduce((t, b) => t + L.renderLegalDataBlock(b.label, "").length + b.bodyChars, 0)
+            + 2 * (lrBlocks.length - 1);
+          const LIM = L.LEGAL_REVIEW_LIMITS;
+          // The worst case: every string at its bound in the character JSON escapes most, every enum at its longest.
+          const longest = (values: readonly string[]) => values.reduce((a, b) => (b.length > a.length ? b : a));
+          const lrWorst = JSON.stringify({
+            summary: "\"".repeat(LIM.summaryChars),
+            findings: Array.from({ length: LIM.maxFindings }, () => ({
+              category: longest(L.LEGAL_REVIEW_CATEGORIES), severity: longest(L.LEGAL_REVIEW_SEVERITIES),
+              location: longest(L.LEGAL_REVIEW_LOCATIONS), quote: "\"".repeat(LIM.quoteChars),
+              issue: "\"".repeat(LIM.issueChars), fix: "\"".repeat(LIM.fixChars),
+            })),
+          });
+          const lensOutputs = Object.values(pc.CRITIC_LENS_OUTPUTS) as Array<{ transportChars: number }>;
+          const lrFloor = Math.ceil(pc.minimumOutputTokens(Buffer.byteLength(lrWorst, "utf8")) / 1_000) * 1_000;
+          const mp = cnRt.modelPolicy;
+          lrCheck("LR9. the review fits the bounds it borrows: each block's ceiling is the one CRITIC_LENS_BLOCKS derives for "
+            + "that label, the framed request at every ceiling fits MAX_PAYLOAD_CHARS, the assembled instructions fit "
+            + "MAX_INSTRUCTION_CHARS, the field limits are the critic lenses' own, and the worst-case answer's token floor — "
+            + "rounded as a lens's is — sits under the critic policy's own floor and leaves THINKING_RESERVE_TOKENS under its "
+            + "cap, the rule modelPolicy.ts applies to every lens",
+            lrBlocks.every((b) => Object.values(pc.CRITIC_LENS_BLOCKS).flat().some((c: any) => c.label === b.label && c.bodyChars === b.bodyChars))
+              && lrFramed <= pc.MAX_PAYLOAD_CHARS
+              && (lrCall?.systemPrompt.length ?? Infinity) <= pc.MAX_INSTRUCTION_CHARS
+              && LIM.summaryChars === pc.CRITIC_FIELD_LIMITS.summaryChars && LIM.maxFindings === pc.CRITIC_FIELD_LIMITS.maxFindings
+              && LIM.issueChars === pc.CRITIC_FIELD_LIMITS.issueChars && LIM.quoteChars === pc.CRITIC_FIELD_LIMITS.issueChars
+              && LIM.fixChars === pc.CRITIC_FIELD_LIMITS.suggestedActionChars
+              && lensOutputs.length === 4 && lrWorst.length < Math.max(...lensOutputs.map((o) => o.transportChars))
+              && lrFloor <= pc.POLICY_OUTPUT_TOKEN_FLOORS.critic
+              && lrFloor <= mp.POLICY_MODEL_OUTPUT_CAPS.critic - mp.THINKING_RESERVE_TOKENS
+              && mp.resolveModelPolicy("critic").maxTokens >= lrFloor + mp.THINKING_RESERVE_TOKENS,
+            `framed ${lrFramed} of ${pc.MAX_PAYLOAD_CHARS}; worst ${lrWorst.length} (floor ${lrFloor}) vs ${lensOutputs.map((o) => o.transportChars).join(",")}`);
+
+          // The paths: the plain full run, then a replay of it, through the CLI.
+          const lrPlainSaved = crJson(join(plainRun, "07-legal-review.json"));
+          const lrPlainSummary = readFileSync(join(plainRun, "summary.md"), "utf8");
+          const lrReplaySource = crCopy("lr-replay", plainRun);
+          const lrReplayBefore = crTree(lrReplaySource);
+          const lrReplay = await runCn(["--replay-critic", lrReplaySource, "--automotive-facts", factsPath]);
+          const lrReplayDir = crSibling(lrReplaySource);
+          const lrReplayRows = lrReplayDir ? crJson(join(lrReplayDir, "field-measurements.json")) : undefined;
+          lrCheck("LR10. a full run and a critic replay each write 07-legal-review.json after the panel — the review revalidates "
+            + "against the package it reviewed — and measure its response; the full run's summary.md shows the Legal review "
+            + "section with the not-legal-advice line and the run's verdict; the replay leaves its source unchanged",
+            lrPlainSaved !== undefined && (() => {
+              try { return L.revalidateLegalReviewOutput(lrPlainSaved.output, lrMaterial) !== undefined; } catch { return false; }
+            })()
+              && lrPlainSaved.metadata?.stage === "legal-review"
+              && lrPlainSummary.includes("## Legal review") && lrPlainSummary.includes(`_${L.LEGAL_REVIEW_DISCLAIMER}_`)
+              && /^- Run verdict: needs_revision \(the critic panel's, combined with the legal review's\)$/m.test(lrPlainSummary)
+              && lrPlainSummary.indexOf("## Critic panel") < lrPlainSummary.indexOf("## Legal review")
+              && lrReplay.ok && lrReplayDir !== undefined && existsSync(join(lrReplayDir, "07-legal-review.json"))
+              && Array.isArray(lrReplayRows) && lrReplayRows.some((r: { stage: string; field: string }) => r.stage === "legal-review" && r.field === "summary")
+              && crTree(lrReplaySource) === lrReplayBefore,
+            lrReplay.error);
+
+          const makes = (JSON.parse(readFileSync(resolve(REPO_ROOT, "config/approved-facts.json"), "utf8")).makes ?? []) as string[];
+          lrCheck("LR11. the rubric skill begins with exactly \"Screening aid, not legal advice. Serious findings go to the owner's "
+            + "attorney before posting.\", names all ten categories, and — like the prompt — states no fact: no make the "
+            + "approved facts name and no URL; neither presents itself as legal advice",
+            skillText.startsWith(`${L.LEGAL_REVIEW_DISCLAIMER}\n`)
+              && L.LEGAL_REVIEW_DISCLAIMER === "Screening aid, not legal advice. Serious findings go to the owner's attorney before posting."
+              && [...BLOCKING, ...DECISION].every((c) => skillText.includes(`**\`${c}\`**`) && promptText.includes(`\`${c}\``))
+              && makes.length > 0 && makes.every((make) => !skillText.includes(make) && !promptText.includes(make))
+              && ![skillText, promptText].some((t) => /https?:\/\/|www\./i.test(t))
+              && promptText.includes("nothing you return is legal advice") && skillText.includes("**Not legal advice.**"));
+          }
+        }
       } finally {
         rmSync(cnWork, { recursive: true, force: true });
       }
@@ -12053,7 +12350,7 @@ async function run(): Promise<void> {
     {
       const replayBody = bodyOf(cePipeline, "export async function replayCritic(", "\n/** Each writing stage's saved file name. */");
       const inReplay = (needle: string): number => replayBody.indexOf(needle);
-      const replayCost = inReplay("computeCostCeiling(rt, criticLensPolicies(rt))");
+      const replayCost = inReplay("computeCostCeiling(rt, criticReplayPolicies(rt))");
       const replayGuard = inReplay('await io.consent({ kind: "critic-replay"');
       const replayMkdir = inReplay('await io.outputs.openDerivedRun({ kind: "critic-replay"');
       // The free checks live in `verifySourceRun`, shared with --resume-from; the
@@ -12330,12 +12627,13 @@ async function run(): Promise<void> {
           "--automotive-facts", factsPath, "--runner", "live"]);
         const resumeWrongWord = runCli(["--resume-from", "packaging-adaptation", liveResumeSource,
           "--automotive-facts", factsPath, "--runner", "live", "--i-understand-this-costs-money"], "live\n");
-        check("CR8. a live resume shows the cost ceiling for exactly its five requests — stage 5 and the four "
-          + "critic lenses, none from stages 1-4 — and keeps the cost flag and the typed LIVE guard, "
-          + "refusing before any output directory",
+        check("CR8. a live resume shows the cost ceiling for exactly its six requests — stage 5, the four "
+          + "critic lenses and (S8.6) the legal review, none from stages 1-4 — and keeps the cost flag and the typed LIVE "
+          + "guard, refusing before any output directory",
           refusedWithoutOutput(liveResumeSource, resumeNoFlag, /requires --i-understand-this-costs-money/)
             && refusedWithoutOutput(liveResumeSource, resumeWrongWord, /live run cancelled: expected the exact word LIVE/)
-            && resumeWrongWord.stdout.includes("Estimated ceiling for one run resumed at packaging-adaptation (5 model requests)")
+            && resumeWrongWord.stdout.includes("Estimated ceiling for one run resumed at packaging-adaptation (6 model requests)")
+            && /^ {2}legal-review /m.test(resumeWrongWord.stdout)
             && /^ {2}packaging-adaptation /m.test(resumeWrongWord.stdout)
             && CRITIC_LENSES.every((lens) => resumeWrongWord.stdout.includes(`final-critic:${lens}`))
             && !/^ {2}(strategy-concept|automotive-truth|hook-story-script|production-direction) /m
@@ -12385,14 +12683,17 @@ async function run(): Promise<void> {
       }) as string;
       const lensRt = { payloadContract: { CRITIC_LENSES } };
       const fullRequests = cliModule.allStagePolicies(lensRt) as Array<[string, string]>;
-      const replayRequests = cliModule.criticLensPolicies(lensRt) as Array<[string, string]>;
+      const replayRequests = cliModule.criticReplayPolicies(lensRt) as Array<[string, string]>;
+      const lensRequests = cliModule.criticLensPolicies(lensRt) as Array<[string, string]>;
+      // (Until Content Studio S8.6: a full run was five stage requests plus the four lens requests, and a replay the four.)
       check("CE10. the CLI's cost ceilings count every model request: a full run is five stage requests "
-        + "plus the four critic lens requests, a critic-only replay is the four lens requests, all on "
-        + "the critic policy",
-        fullRequests.length === TARGET_STAGE_IDS.length - 1 + CRITIC_LENSES.length
-          && JSON.stringify(fullRequests.slice(-CRITIC_LENSES.length)) === JSON.stringify(replayRequests)
+        + "plus the four critic lens requests and the legal review's one, a critic-only replay is the four lens requests "
+        + "and the legal review's, all on the critic policy",
+        fullRequests.length === TARGET_STAGE_IDS.length - 1 + CRITIC_LENSES.length + 1
+          && JSON.stringify(fullRequests.slice(-(CRITIC_LENSES.length + 1))) === JSON.stringify(replayRequests)
           && replayRequests.map(([label]) => label).join()
-            === CRITIC_LENSES.map((lens) => `final-critic:${lens}`).join()
+            === [...CRITIC_LENSES.map((lens) => `final-critic:${lens}`), "legal-review"].join()
+          && lensRequests.map(([label]) => label).join() === CRITIC_LENSES.map((lens) => `final-critic:${lens}`).join()
           && replayRequests.every(([, policy]) => policy === "critic")
           && fullRequests.slice(0, TARGET_STAGE_IDS.length - 1).map(([stage]) => stage).join()
             === TARGET_STAGE_IDS.filter((id) => id !== "final-critic").join());
@@ -12411,7 +12712,7 @@ async function run(): Promise<void> {
       const replayBodyCE = bodyOf(cePipeline, "export async function replayCritic(", "\n/** Each writing stage's saved file name. */");
       const replayContactPreflight = replayBodyCE.indexOf("rt.contact.assertContactFactsAvailable(pack, platforms);");
       const replayAttach = replayBodyCE.indexOf("rt.contact.attachContactLines(packagingOutput, pack)");
-      const replayCostCE = replayBodyCE.indexOf("computeCostCeiling(rt, criticLensPolicies(rt))");
+      const replayCostCE = replayBodyCE.indexOf("computeCostCeiling(rt, criticReplayPolicies(rt))");
       check("CE9. the contact-line records are checked before any spend in a full run and in a "
         + "replay, and both hand the critic the attached packages",
         contactPreflight > 0 && contactPreflight < costGate
@@ -12924,6 +13225,24 @@ async function run(): Promise<void> {
       + (manifestProblems.length ? ` — ${manifestProblems.join("; ")}` : ""),
       manifestProblems.length === 0 && liveModules.size === live.reached.length && liveModules.size > 0
         && [...liveModules.keys()].every((path) => path.startsWith("src/") && path.endsWith(".ts")));
+    // Content Studio S8.6: the legal review was built in Studio-only and non-manifest modules so the Studio's next
+    // deploy still passes the release checklist's "touches no live-service path" rule. The manifest is pinned at its
+    // bytes on main at the S8.6 base (89e798a); a later change that declares a live-path edit updates this pin with it.
+    const S86_MANIFEST_SHA256 = "322943ad20c271a98ba8f2faf41bf1595876f1c66e3d33dea9ab9f829f6a31a4";
+    const S86_FILES = [
+      "src/harness/contentRun/legalReview.ts", "agents/legal-review.md", "skills/legal-risk/SKILL.md",
+      "studio/migrations/0005_studio_legal_review.sql",
+    ];
+    check("LR12. the live-path manifest is byte-identical to main's at the S8.6 base (sha256 322943ad…), every module it "
+      + "pins is byte-identical to its pin — payloadContract.ts, registry.ts and modelPolicy.ts among them — and no S8.6 "
+      + "file is live-loaded",
+      createHash("sha256").update(readFileSync(resolve(REPO_ROOT, LIVE_PATH_MANIFEST))).digest("hex") === S86_MANIFEST_SHA256
+        && manifest.modules.every((m) => existsSync(resolve(REPO_ROOT, m.path))
+          && createHash("sha256").update(readFileSync(resolve(REPO_ROOT, m.path))).digest("hex") === m.sha256)
+        && ["src/harness/agents/payloadContract.ts", "src/harness/agents/registry.ts", "src/harness/agents/modelPolicy.ts"]
+          .every((path) => manifest.modules.some((m) => m.path === path))
+        && S86_FILES.every((path) => existsSync(resolve(REPO_ROOT, path)) && !liveModules.has(path)
+          && !manifest.modules.some((m) => m.path === path)));
     const csLive = { entryPoints: ["dist/e.js"], modules: new Map([["src/a.ts", "1".repeat(64)], ["src/b.ts", "2".repeat(64)]]) };
     const csManifest = (edit: (m: LivePathManifest) => void = () => {}): LivePathManifest => {
       const m: LivePathManifest = {

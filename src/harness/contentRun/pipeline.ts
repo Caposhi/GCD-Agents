@@ -15,12 +15,18 @@
  * (`io.execution`, Content Studio S3), checked next to the consent and before
  * it. When a context is supplied, its per-request check runs immediately
  * before every request unit, fake or live (`executionContext.ts`).
+ *
+ * Since Content Studio S8.6 every path that runs the critic panel then runs
+ * the legal review (`legalReview.ts`) — one more priced request, gated like
+ * every other — and writes `07-legal-review.json`. Each path returns the run's
+ * verdict: the panel's, combined with the review's (`runVerdict`).
  */
 
 import { buildRunEvidence } from "./evidence.js";
 import { gateRequestUnits, requireReviewOnlyExecutionContext } from "./executionContext.js";
 import { buildFakeStageResponses, fakeStageRunner } from "./fakes.js";
-import { allStagePolicies, computeCostCeiling, criticLensPolicies, resumePolicies, revisionPolicies } from "./pricing.js";
+import { LEGAL_REVIEW_ARTIFACT, LEGAL_REVIEW_STAGE } from "./legalReview.js";
+import { allStagePolicies, computeCostCeiling, criticReplayPolicies, resumePolicies, revisionPolicies } from "./pricing.js";
 import { createRunRecorder, recordingRunner } from "./recording.js";
 import type { ContentRunRuntime } from "./runtime.js";
 import { markdownSummary } from "./summary.js";
@@ -45,6 +51,21 @@ async function copyArtifact(source: RunSource, sink: RunSink, name: string, as: 
   const bytes = await source.readArtifact(name);
   if (bytes === undefined) throw new Error(`cannot copy ${name}: the source run ${source.label} holds no such file`);
   await sink.writeArtifact(as, bytes);
+}
+
+/**
+ * The legal review (Content Studio S8.6), after the critic panel: exactly one
+ * request through `runner`, then `07-legal-review.json`. It fails closed like a
+ * lens: any failure throws `LegalReviewError` and the run stops.
+ */
+async function reviewLegalRisk(rt: ContentRunRuntime, io: RunIo, sink: RunSink, runner: Runner, inputs: {
+  scriptOutput: any; directionOutput: any; packagingOutput: any; truthOutput: any; evidencePack: any; requestedPlatforms: any;
+}) {
+  io.reporter.log("Running the legal review — one request, after the critic panel");
+  const legal = await rt.legal.executeLegalReview({ ...inputs, runner });
+  await sink.writeArtifact(LEGAL_REVIEW_ARTIFACT, JSON.stringify(legal, null, 2));
+  io.reporter.log(`Legal review: ${legal.output.verdict} (${legal.output.findings.length} finding(s)). ${rt.legal.LEGAL_REVIEW_DISCLAIMER}`);
+  return legal;
 }
 
 /**
@@ -196,19 +217,27 @@ export async function runFullPipeline(rt: ContentRunRuntime, args: RunOptions, i
   });
   await writeStage("06-final-critic", critic);
 
+  const legal = await reviewLegalRisk(rt, io, sink, runnerFor("legal-review", () => fake.legalReview()), {
+    scriptOutput: script.output, directionOutput: direction.output, packagingOutput: contacted,
+    truthOutput: truth.output, evidencePack: pack, requestedPlatforms: platforms,
+  });
+  const verdict = rt.legal.runVerdict(critic.output.provisional.verdict, legal.output.verdict);
+
   const summaryMd = markdownSummary({
     goal, runner: args.runner, timestamp: new Date(now).toISOString(),
     script: script.output, direction: direction.output, packaging: contacted, critic: critic.output,
+    legal: legal.output, verdict,
   });
   await sink.writeArtifact("summary.md", summaryMd);
   const { rows: measured, written } = writeMeasurements();
   await written;
 
-  io.reporter.log(`\nDone. Wrote 6 stage JSON files, 05b-contact-lines.json, run-meta.json, summary.md and field-measurements.md to: ${sink.label}`);
+  io.reporter.log(`\nDone. Wrote 6 stage JSON files, 05b-contact-lines.json, 07-legal-review.json, run-meta.json, summary.md and field-measurements.md to: ${sink.label}`);
   io.reporter.log(`Measured ${measured.length} field(s); largest share of a stated figure: `
     + `${Math.max(0, ...measured.map((r) => r.pctOfStated ?? 0))}%`);
   io.reporter.log(`Critic verdict: ${critic.output.provisional.verdict}`);
-  return { sink, measured, verdict: critic.output.provisional.verdict };
+  io.reporter.log(`Run verdict (with the legal review): ${verdict}`);
+  return { sink, measured, verdict, criticVerdict: critic.output.provisional.verdict, legalVerdict: legal.output.verdict };
 }
 
 /**
@@ -273,7 +302,8 @@ export async function resumeFromPackaging(
   await registry.verifyAllAssets();
   const requests = resumePolicies(rt, resumeAt);
   const availableKinds = new Set(pack.allowedFacts.map((r: any) => r.kind));
-  const unmet = [...new Set(requests.map(([label]) => label.split(":")[0]))].flatMap((stage) => {
+  // The legal review (S8.6) is no registry stage and requires no evidence class of its own.
+  const unmet = [...new Set(requests.map(([label]) => label.split(":")[0]))].filter((stage) => stage !== LEGAL_REVIEW_STAGE).flatMap((stage) => {
     const missing = registry.get(stage as never).requiredEvidenceKinds.filter((kind) => !availableKinds.has(kind));
     return missing.length ? [`${stage} requires ${missing.join(", ")}`] : [];
   });
@@ -343,9 +373,15 @@ export async function resumeFromPackaging(
   });
   await writeStage("06-final-critic", critic);
 
+  const legal = await reviewLegalRisk(rt, io, sink, runnerFor("legal-review", () => fake.legalReview()), {
+    scriptOutput, directionOutput, packagingOutput: contacted, truthOutput, evidencePack: pack, requestedPlatforms: platforms,
+  });
+  const verdict = rt.legal.runVerdict(critic.output.provisional.verdict, legal.output.verdict);
+
   const summaryMd = markdownSummary({
     goal, runner: args.runner, timestamp: new Date(now).toISOString(),
     script: scriptOutput, direction: directionOutput, packaging: contacted, critic: critic.output,
+    legal: legal.output, verdict,
     resumedFrom: { sourceRunDir: source.displayLabel, stage: resumeAt },
   });
   await sink.writeArtifact("summary.md", summaryMd);
@@ -355,10 +391,11 @@ export async function resumeFromPackaging(
   await writeResumeMeta({ modelRequests: transcript.map((t) => (t.lens ? `${t.stage}:${t.lens}` : t.stage)) });
 
   io.reporter.log(`\nDone. Wrote 05-packaging-adaptation.json, 05b-contact-lines.json, 06-final-critic.json, `
-    + `summary.md, resume-meta.json and field-measurements.md to: ${sink.label}`);
+    + `07-legal-review.json, summary.md, resume-meta.json and field-measurements.md to: ${sink.label}`);
   io.reporter.log(`The source run at ${source.label} was not modified.`);
   io.reporter.log(`Critic verdict: ${critic.output.provisional.verdict}`);
-  return { sink, verdict: critic.output.provisional.verdict };
+  io.reporter.log(`Run verdict (with the legal review): ${verdict}`);
+  return { sink, verdict, criticVerdict: critic.output.provisional.verdict, legalVerdict: legal.output.verdict };
 }
 
 /**
@@ -394,10 +431,10 @@ export async function replayCritic(rt: ContentRunRuntime, args: RunOptions, sour
   // --- 6. the spend guard --------------------------------------------------
   if (args.runner === "live") {
     requireReviewOnlyExecutionContext(io.execution, "critic-replay");
-    const ceiling = computeCostCeiling(rt, criticLensPolicies(rt));
+    const ceiling = computeCostCeiling(rt, criticReplayPolicies(rt));
     await io.consent({ kind: "critic-replay", label: "one critic-only replay", ceiling });
   }
-  const gated = unitGate(io, "critic-replay", args.runner, () => computeCostCeiling(rt, criticLensPolicies(rt)));
+  const gated = unitGate(io, "critic-replay", args.runner, () => computeCostCeiling(rt, criticReplayPolicies(rt)));
 
   const replayedAt = new Date();
   const sink = await io.outputs.openDerivedRun({ kind: "critic-replay", source, at: replayedAt });
@@ -425,6 +462,9 @@ export async function replayCritic(rt: ContentRunRuntime, args: RunOptions, sour
   const runner = recordingRunner(transcript, "final-critic", gated("final-critic", args.runner === "live"
     ? createAnthropicStageRunner()
     : fakeStageRunner((request) => fake.finalCritic(contacted, platforms, request?.lens))), sink);
+  const legalRunner = recordingRunner(transcript, "legal-review", gated("legal-review", args.runner === "live"
+    ? createAnthropicStageRunner()
+    : fakeStageRunner(() => fake.legalReview())), sink);
 
   io.reporter.log(`Running final-critic only — ${rt.payloadContract.CRITIC_LENSES.length} lens requests, concurrently — `
     + "against the saved stage 2-5 outputs and fresh contact lines");
@@ -433,11 +473,16 @@ export async function replayCritic(rt: ContentRunRuntime, args: RunOptions, sour
     requestedPlatforms: platforms as never, registry, runner,
   });
   await sink.writeArtifact("06-final-critic.json", JSON.stringify(critic, null, 2));
+  const legal = await reviewLegalRisk(rt, io, sink, legalRunner, {
+    scriptOutput, directionOutput, packagingOutput: contacted, truthOutput, evidencePack: pack, requestedPlatforms: platforms,
+  });
+  const verdict = rt.legal.runVerdict(critic.output.provisional.verdict, legal.output.verdict);
   await writeMeasurements().written;
-  io.reporter.log(`\nDone. Wrote 06-final-critic.json, 05b-contact-lines.json, replay-meta.json and field-measurements.md to: ${sink.label}`);
+  io.reporter.log(`\nDone. Wrote 06-final-critic.json, 07-legal-review.json, 05b-contact-lines.json, replay-meta.json and field-measurements.md to: ${sink.label}`);
   io.reporter.log(`The source run at ${source.label} was not modified.`);
   io.reporter.log(`Critic verdict: ${critic.output.provisional.verdict}`);
-  return { sink, verdict: critic.output.provisional.verdict };
+  io.reporter.log(`Run verdict (with the legal review): ${verdict}`);
+  return { sink, verdict, criticVerdict: critic.output.provisional.verdict, legalVerdict: legal.output.verdict };
 }
 
 /** Each writing stage's saved file name. */
@@ -472,12 +517,19 @@ export const WRITER_STAGE_FILES: Record<string, string> = {
  *     unchanged; a rejected response is saved as today and the run stops.
  *  7. Contact lines re-attached from the pack; all four critic lenses run fresh
  *     — the executor has no input for round-1 findings or verdicts.
+ *  8. The legal review runs fresh on the revised package (Content Studio
+ *     S8.6). Legal findings are never sent to a revision: they are the
+ *     owner's, like owner items.
  *
  * Exactly one round: nothing here plans from the round-2 panel.
  */
 export type ReviseRunResult =
   | { revised: false; plan: ReturnType<ContentRunRuntime["revision"]["planRevision"]> }
-  | { revised: true; dir: string; sink: RunSink; plan: ReturnType<ContentRunRuntime["revision"]["planRevision"]> };
+  | {
+    revised: true; dir: string; sink: RunSink; plan: ReturnType<ContentRunRuntime["revision"]["planRevision"]>;
+    /** The run's verdict: round 2's panel verdict, combined with round 2's legal review (S8.6). */
+    verdict: string; criticVerdict: string; legalVerdict: string;
+  };
 
 export async function reviseRun(
   rt: ContentRunRuntime, args: RunOptions, source: RunSource, origin: string, io: RunIo,
@@ -516,7 +568,8 @@ export async function reviseRun(
   await registry.verifyAllAssets();
   const requests = revisionPolicies(rt, plan.startStage);
   const availableKinds = new Set(pack.allowedFacts.map((r: any) => r.kind));
-  const unmet = [...new Set(requests.map(([label]) => label.split(":")[0]))].flatMap((stage) => {
+  // The legal review (S8.6) is no registry stage and requires no evidence class of its own.
+  const unmet = [...new Set(requests.map(([label]) => label.split(":")[0]))].filter((stage) => stage !== LEGAL_REVIEW_STAGE).flatMap((stage) => {
     const missing = registry.get(stage as never).requiredEvidenceKinds.filter((kind) => !availableKinds.has(kind));
     return missing.length ? [`${stage} requires ${missing.join(", ")}`] : [];
   });
@@ -639,9 +692,16 @@ export async function reviseRun(
   });
   await writeStage("06-final-critic", critic);
 
+  // --- 8. the legal review, fresh, on the revised package --------------------
+  const legal = await reviewLegalRisk(rt, io, sink, runnerFor("legal-review", () => fake.legalReview()), {
+    scriptOutput: script, directionOutput: direction, packagingOutput: contacted, truthOutput, evidencePack: pack,
+    requestedPlatforms: platforms,
+  });
+  const verdict = rt.legal.runVerdict(critic.output.provisional.verdict, legal.output.verdict);
+
   const summaryMd = markdownSummary({
     goal, runner: args.runner, timestamp: new Date(now).toISOString(),
-    script, direction, packaging: contacted, critic: critic.output,
+    script, direction, packaging: contacted, critic: critic.output, legal: legal.output, verdict,
     revision: {
       sourceRunDir: source.displayLabel, origin, rerunStages: rerun, reusedFiles, plan,
       round1: criticOutput.provisional, round2: critic.output.provisional,
@@ -652,14 +712,18 @@ export async function reviseRun(
   await writeRevisionMeta({
     status: "completed",
     round2: { verdict: critic.output.provisional.verdict, summary: critic.output.provisional.summary },
+    legalReview: { verdict: legal.output.verdict, findings: legal.output.findings.length },
+    runVerdict: verdict,
   });
   io.onFailureContext?.(null);
 
   io.reporter.log(`\nDone. Revised ${rerun.join(", ")} and re-ran the critic panel. Model requests made: `
     + transcript.map((t) => (t.lens ? `${t.stage}:${t.lens}` : t.stage)).join(", "));
   io.reporter.log(`Wrote ${rerun.map((stage) => `${WRITER_STAGE_FILES[stage]}.json`).join(", ")}, 05b-contact-lines.json, `
-    + `06-final-critic.json, round-1-06-final-critic.json, revision-meta.json, summary.md and field-measurements.md to: ${sink.label}`);
+    + `06-final-critic.json, 07-legal-review.json, round-1-06-final-critic.json, revision-meta.json, summary.md and `
+    + `field-measurements.md to: ${sink.label}`);
   io.reporter.log(`The source run at ${source.label} was not modified.`);
   io.reporter.log(`Critic verdict: round 1 ${criticOutput.provisional.verdict} → round 2 ${critic.output.provisional.verdict}`);
-  return { revised: true, dir: sink.label, sink, plan };
+  io.reporter.log(`Run verdict (with the legal review): ${verdict}`);
+  return { revised: true, dir: sink.label, sink, plan, verdict, criticVerdict: critic.output.provisional.verdict, legalVerdict: legal.output.verdict };
 }

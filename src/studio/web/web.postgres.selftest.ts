@@ -240,8 +240,8 @@ async function main(): Promise<void> {
       const unmigrated = await runEntryPoint(url, String(await freePort()), 20_000);
       check("SAP2. the web refuses an unmigrated gcd_studio (not-migrated) before it listens",
         unmigrated.code === 1 && /refused \(not-migrated\)/.test(unmigrated.stderr) && !unmigrated.ready, unmigrated.stderr.trim());
-      // SAP15 (Content Studio S6.1, S7.1): migrated to 0002 alone, then to 0003 alone, the web refuses; SAP3 then
-      // shows 0004 accepted.
+      // SAP15 (Content Studio S6.1, S7.1, S8.6): migrated to 0002 alone, then to 0003 alone, then to 0004 alone, the web
+      // refuses; SAP3 then shows 0005 accepted.
       const only0002 = mkdtempSync(join(tmpdir(), "gcd-studio-web-0002-"));
       try {
         for (const name of STUDIO_EXPECTED_MIGRATIONS.slice(0, 2)) {
@@ -262,12 +262,25 @@ async function main(): Promise<void> {
         rmSync(only0003, { recursive: true, force: true });
       }
       const at0003 = await runEntryPoint(url, String(await freePort()), 20_000);
+      // S8.6: and at 0004 alone — production before the S8.6 deploy — the web at S8.6 refuses too.
+      const only0004 = mkdtempSync(join(tmpdir(), "gcd-studio-web-0004-"));
+      try {
+        for (const name of STUDIO_EXPECTED_MIGRATIONS.slice(0, 4)) {
+          copyFileSync(resolve(REPO_ROOT, "studio/migrations", name), join(only0004, name));
+        }
+        await migrate(url, only0004);
+      } finally {
+        rmSync(only0004, { recursive: true, force: true });
+      }
+      const at0004 = await runEntryPoint(url, String(await freePort()), 20_000);
       check("SAP15. the web refuses, through its entry point, a gcd_studio migrated to 0002 alone, and the same database at "
-        + "0003 alone — exit 1, refused (schema-version), before it listens; once 0004 is applied on top it starts (SAP3, "
-        + `schema ${STUDIO_SCHEMA_VERSION})`,
+        + "0003 alone and (S8.6) at 0004 alone — exit 1, refused (schema-version), before it listens; once 0005 is applied "
+        + `on top it starts (SAP3, schema ${STUDIO_SCHEMA_VERSION})`,
         older.code === 1 && /refused \(schema-version\)/.test(older.stderr) && !older.ready
           && at0003.code === 1 && /refused \(schema-version\)/.test(at0003.stderr) && !at0003.ready
-          && STUDIO_SCHEMA_VERSION === "0004_studio_fact_checks_and_imports.sql", `${older.stderr.trim()} | ${at0003.stderr.trim()}`);
+          && at0004.code === 1 && /refused \(schema-version\)/.test(at0004.stderr) && !at0004.ready
+          && STUDIO_SCHEMA_VERSION === "0005_studio_legal_review.sql",
+        `${older.stderr.trim()} | ${at0003.stderr.trim()} | ${at0004.stderr.trim()}`);
       await migrate(url);
       const pool = openPool("web", { connectionString: url, max: 6 });
       try {
@@ -345,7 +358,7 @@ async function suite(pool: pg.Pool, url: string, issuer: FakeIssuer): Promise<vo
       + "/auth/login redirects to Google's authorization endpoint — the entry point passes Google's constants — after "
       + "storing one login attempt",
       run.ready && health?.status === 200 && doc.service === "gcd-studio-web" && doc.commit === COMMIT && doc.state === "postgres"
-        && doc.schema_version === "0004_studio_fact_checks_and_imports.sql" && doc.worker_heartbeat_age_seconds === null
+        && doc.schema_version === "0005_studio_legal_review.sql" && doc.worker_heartbeat_age_seconds === null
         && health.headers.get("content-security-policy")?.startsWith("default-src 'self'") === true
         && login?.status === 302 && login.location!.startsWith(`${GOOGLE_OIDC.authorizationEndpoint}?`)
         && new URL(login.location!).searchParams.get("redirect_uri") === `${ORIGIN}/auth/callback` && attempts === 1,

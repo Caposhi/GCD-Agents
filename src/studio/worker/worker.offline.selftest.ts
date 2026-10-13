@@ -20,12 +20,13 @@ import { fileURLToPath } from "node:url";
 import * as lib from "../../harness/contentRun/index.js";
 import type { ContentRunRuntime, CostCeilingLine, ReviewOnlyRequestUnit } from "../../harness/contentRun/index.js";
 import {
-  OVERRUN_ACKNOWLEDGEMENTS_SQL, STUDIO_IMPORT_FILE_NAMES, STUDIO_MIGRATION_LOCK_NAMESPACE, UNACKNOWLEDGED_OVERRUNS_SQL,
+  OVERRUN_ACKNOWLEDGEMENTS_SQL, STUDIO_IMPORT_FILE_NAMES, STUDIO_LEGAL_BLOCKING_CATEGORIES, STUDIO_LEGAL_REVIEW_ARTIFACT,
+  STUDIO_MIGRATION_LOCK_NAMESPACE, UNACKNOWLEDGED_OVERRUNS_SQL,
 } from "../db/runner.js";
 import {
   decideFactCheck, runFactCheck, UNKNOWN_FIELDS_MAX, UPLOAD_LABEL, writeFactCheckOutcome, type FactCheckOutcome, type FactCheckRow,
 } from "./factCheck.js";
-import { decideImport, IMPORT_GOAL_MAX_CHARS, writeImportOutcome, type ImportDecision } from "./importRun.js";
+import { decideImport, importVerdict, IMPORT_GOAL_MAX_CHARS, writeImportOutcome, type ImportDecision } from "./importRun.js";
 import {
   closeRun, decideBeforeWork, executeJob, failureClassOf, loadApprovedFacts, workerRuntime, WorkerStop, type BeforeWork,
 } from "./execute.js";
@@ -36,7 +37,8 @@ import { preflightParamsSha256 } from "../db/runner.js";
 import { preflightRequest } from "../web/actions.js";
 import { CRITIC_ARTIFACT, deriveFindings } from "./findings.js";
 import { providerTextWithContact } from "../../harness/agents/providerText.js";
-import { readCaptions, readScript, readShotList } from "../web/runs.js";
+import { readCaptions, readLegalReview, readScript, readShotList } from "../web/runs.js";
+import { LEGAL_NOT_ADVICE } from "../web/views.js";
 import { CLAIMED_JOB_KINDS, claimNextJob, FREE_JOB_KINDS, recoverInterruptedRuns, sweepQueuedJobs, terminalize } from "./jobs.js";
 import { ceilingMicros, measuredMicros, microsToNumeric, numericToMicros, parseCapMicros } from "./money.js";
 import { DbRunSink, REWRITTEN_ARTIFACTS } from "./runSink.js";
@@ -220,10 +222,11 @@ async function startupChecks(): Promise<void> {
       && refusalOf(() => decideWorkerIdentity(probe({ identityRows: [] }) as never)) === "identity-mismatch"
       && refusalOf(() => decideWorkerIdentity(probe({ ledger: null, identityRows: null, studioTables: [], migrationsTable: "absent" }) as never))
         === "not-migrated");
-  const extraFile = { name: "0005_later.sql", sha256: "f".repeat(64) };
-  check(`SW3a. the worker refuses any schema version but ${STUDIO_SCHEMA_VERSION}: a migration missing from the ledger, an `
-    + "extra one recorded or on disk, or a recorded file whose bytes changed",
-    decideSchemaVersion(ledger, files) === STUDIO_SCHEMA_VERSION && STUDIO_SCHEMA_VERSION === "0004_studio_fact_checks_and_imports.sql"
+  const extraFile = { name: "0006_later.sql", sha256: "f".repeat(64) };
+  // (Until Content Studio S8.6 the version here was 0004_studio_fact_checks_and_imports.sql and the extra file 0005_later.sql.)
+  check(`SW3a. the worker refuses any schema version but ${STUDIO_SCHEMA_VERSION}: a migration missing from the ledger (a `
+    + "database at 0004 alone among them), an extra one recorded or on disk, or a recorded file whose bytes changed",
+    decideSchemaVersion(ledger, files) === STUDIO_SCHEMA_VERSION && STUDIO_SCHEMA_VERSION === "0005_studio_legal_review.sql"
       && refusalOf(() => decideSchemaVersion(ledger.slice(0, 1), files)) === "schema-version"
       && refusalOf(() => decideSchemaVersion(ledger.slice(0, 2), files)) === "schema-version"
       && refusalOf(() => decideSchemaVersion(ledger.slice(0, 3), files)) === "schema-version"
@@ -232,12 +235,15 @@ async function startupChecks(): Promise<void> {
       && refusalOf(() => decideSchemaVersion([...ledger, extraFile], [...files, extraFile])) === "schema-version"
       && refusalOf(() => decideSchemaVersion([...ledger, extraFile], files)) === "schema-version"
       && refusalOf(() => decideSchemaVersion(ledger, [...files, extraFile])) === "schema-version"
-      && refusalOf(() => decideSchemaVersion([ledger[0]!, { ...ledger[1]!, sha256: "0".repeat(64) }, ledger[2]!, ledger[3]!], files))
+      && refusalOf(() => decideSchemaVersion([ledger[0]!, { ...ledger[1]!, sha256: "0".repeat(64) }, ledger[2]!, ledger[3]!, ledger[4]!], files))
         === "migration-changed"
-      && refusalOf(() => decideSchemaVersion([ledger[0]!, ledger[1]!, { ...ledger[2]!, sha256: "0".repeat(64) }, ledger[3]!], files))
+      && refusalOf(() => decideSchemaVersion([ledger[0]!, ledger[1]!, { ...ledger[2]!, sha256: "0".repeat(64) }, ledger[3]!, ledger[4]!], files))
         === "migration-changed"
-      && refusalOf(() => decideSchemaVersion([ledger[0]!, ledger[1]!, ledger[2]!, { ...ledger[3]!, sha256: "0".repeat(64) }], files))
+      && refusalOf(() => decideSchemaVersion([ledger[0]!, ledger[1]!, ledger[2]!, { ...ledger[3]!, sha256: "0".repeat(64) }, ledger[4]!], files))
         === "migration-changed"
+      && refusalOf(() => decideSchemaVersion([ledger[0]!, ledger[1]!, ledger[2]!, ledger[3]!, { ...ledger[4]!, sha256: "0".repeat(64) }], files))
+        === "migration-changed"
+      && refusalOf(() => decideSchemaVersion(ledger.slice(0, 4), files)) === "schema-version"
       && JSON.stringify(readdirSync(resolve(REPO_ROOT, "studio/migrations")).filter((n) => n.endsWith(".sql")).sort())
         === JSON.stringify([...STUDIO_EXPECTED_MIGRATIONS]));
 
@@ -352,16 +358,21 @@ async function gateChecks(): Promise<void> {
     runner: "fake", facts: repoFacts(REPO_ROOT), goal, reviewedAt: "2026-09-01T00:00:00.000Z", reviewedAtExplicit: true,
   }, memoryIo(sink, { execution: counting })).catch((e) => { countedError = (e as Error).message; });
   const labels = (lines: readonly CostCeilingLine[]) => lines.map((l) => l.label).join("|");
+  // (Until Content Studio S8.6 the panel was the last unit: nine requests, six units.)
   check("SW7. with a context, the library checks every request unit immediately before it is sent — the five stage "
-    + "requests one by one, then the critic panel's four lenses as ONE unit — each with its own priced lines and the "
-    + "ceiling still to come",
+    + "requests one by one, then the critic panel's four lenses as ONE unit, then (S8.6) the legal review's one request "
+    + "— each with its own priced lines and the ceiling still to come",
     units.map((u) => u.stage).join() === "strategy-concept,automotive-truth,hook-story-script,production-direction,"
-      + "packaging-adaptation,final-critic"
-      && units.slice(0, 5).every((u, i) => u.requests.length === 1 && u.remaining.length === 9 - i && u.requests[0] === u.remaining[0])
-      && units[5]!.requests.length === 4 && labels(units[5]!.requests) === labels(units[5]!.remaining)
+      + "packaging-adaptation,final-critic,legal-review"
+      && units.slice(0, 5).every((u, i) => u.requests.length === 1 && u.remaining.length === 10 - i && u.requests[0] === u.remaining[0])
+      && units[5]!.requests.length === 4 && units[5]!.remaining.length === 5
+      && labels(units[5]!.requests) === labels(units[5]!.remaining.slice(0, 4))
       && units[5]!.requests.every((l) => l.label.startsWith("final-critic:"))
+      && units[6]!.requests.length === 1 && units[6]!.requests[0]!.label === "legal-review"
+      && units[6]!.requests[0]!.policy === "critic" && labels(units[6]!.remaining) === "legal-review"
       && units.every((u) => u.action === "full-run" && u.runner === "fake")
-      && sink.recorded.length === 9 && sink.files.has("summary.md") && countedError === "", countedError);
+      && sink.recorded.length === 10 && sink.files.has("summary.md") && sink.files.has("07-legal-review.json")
+      && countedError === "", countedError);
 
   // A refusal at unit 3 (fake): two responses, then nothing more is requested.
   const stopAt = (n: number) => {
@@ -659,13 +670,20 @@ async function queueStatementChecks(): Promise<void> {
  */
 function migration0004Checks(): void {
   const sql = readFileSync(resolve(REPO_ROOT, "studio/migrations/0004_studio_fact_checks_and_imports.sql"), "utf8");
+  // Content Studio S8.6: migration 0005 redefines the import bounds with one name added; it is the list in force.
+  const sql0005 = readFileSync(resolve(REPO_ROOT, "studio/migrations/0005_studio_legal_review.sql"), "utf8");
   const quoted = (text: string | undefined) => [...(text ?? "").matchAll(/'([^']*)'/g)].map((m) => m[1]!);
-  const importNames = quoted(/IF NEW\.name <> ALL \(ARRAY\[([^\]]*)\]\) THEN/.exec(sql)?.[1]);
+  const namesIn = (text: string) => quoted(/IF NEW\.name <> ALL \(ARRAY\[([^\]]*)\]\) THEN/.exec(text)?.[1]);
+  const names0004 = namesIn(sql);
+  const importNames = namesIn(sql0005);
   const libraryNames = [...new Set(Object.values(lib.RUN_ARTIFACT_NAMES).flat())].sort();
-  check("SW25. migration 0004's import file names are exactly the library's RUN_ARTIFACT_NAMES (every kind of run, and the "
-    + "failure file), each once — sixteen, inside design §8.6's twenty",
+  // (Until Content Studio S8.6 this check read 0004's list: "… each once — sixteen, inside design §8.6's twenty".)
+  check("SW25. the import file names in force (migration 0005's) are exactly the library's RUN_ARTIFACT_NAMES (every kind "
+    + "of run, and the failure file), each once — seventeen, inside design §8.6's twenty — and are 0004's sixteen plus "
+    + "07-legal-review.json alone",
     importNames.length === new Set(importNames).size && JSON.stringify([...importNames].sort()) === JSON.stringify(libraryNames)
-      && importNames.length === 16,
+      && importNames.length === 17 && names0004.length === 16
+      && JSON.stringify([...names0004, "07-legal-review.json"].sort()) === JSON.stringify([...importNames].sort()),
     `${importNames.length}: ${[...importNames].sort().join(",")} vs ${libraryNames.join(",")}`);
   const jobKinds = quoted(/CONSTRAINT studio_jobs_kind\s+CHECK \(kind IN \(([^)]*)\)\)/.exec(sql)?.[1]);
   // (Until Content Studio S7.2 this check read: "… exactly the kinds this worker claims plus S7.2's two, fact_check and
@@ -924,20 +942,26 @@ async function preflightChecks(): Promise<void> {
     + "computeCostCeiling's lines for the run's requests (never a second formula), the ceiling is their sum each rounded up "
     + "to the micro-dollar, and no executor, provider factory or output was reached",
     full.outcome.outcome === "quoted" && full.calls === 0 && JSON.stringify(lines) === JSON.stringify(expected)
-      && full.outcome.ceilingMicros === sum && full.outcome.revisePlan === null && expected.length === 9,
+      && full.outcome.ceilingMicros === sum && full.outcome.revisePlan === null && expected.length === 10
+      && full.outcome.ceilingMicros === 24_620_000,
     `${JSON.stringify(full.outcome).slice(0, 200)}`);
   const items = full.outcome.outcome === "quoted" ? full.outcome.items : [];
   const panel = items.filter((i) => i.unit === "critic-panel");
   const replayFiles = await sourceFiles("fake");
   const replay = await preflightOf({ request: requestRow({ action: "replay_critic", goal: null, sourceRunId: SOURCE_RUN }), sourceRun: sourceOf(replayFiles) });
   const replayItems = replay.outcome.outcome === "quoted" ? replay.outcome.items : [];
+  // (Until Content Studio S8.6 a full run's quote held six items and a replay's one.)
   check("SW19a. the critic's four lenses are ONE item — the critic panel, its four lines in lens order — and each stage "
-    + "request its own; a critic replay is quoted as that one item; every item's ceiling is the sum of its own lines'",
-    items.length === 6 && panel.length === 1 && panel[0]!.lines.map((l) => l.label).join()
+    + "request its own, the legal review (S8.6) last; a critic replay is quoted as that one item and the legal review's; "
+    + "every item's ceiling is the sum of its own lines'",
+    items.length === 7 && panel.length === 1 && panel[0]!.lines.map((l) => l.label).join()
       === rt.payloadContract.CRITIC_LENSES.map((lens) => `final-critic:${lens}`).join()
       && items.filter((i) => i.unit === "request").every((i) => i.lines.length === 1 && i.item === i.lines[0]!.label)
+      && items.at(-1)!.item === "legal-review" && items.at(-1)!.ceilingUsd === "2.970000"
       && items.every((i) => numericToMicros(i.ceilingUsd) === i.lines.reduce((t, l) => t + ceilingMicros(l.costUsd!), 0))
-      && replayItems.length === 1 && replayItems[0]!.unit === "critic-panel" && replayItems[0]!.lines.length === 4 && replay.calls === 0,
+      && replayItems.length === 2 && replayItems[0]!.unit === "critic-panel" && replayItems[0]!.lines.length === 4
+      && replayItems[1]!.item === "legal-review" && replay.outcome.outcome === "quoted" && replay.outcome.ceilingMicros === 14_850_000
+      && replay.calls === 0,
     `${items.map((i) => `${i.item}:${i.lines.length}`).join()} | ${JSON.stringify(replay.outcome).slice(0, 160)}`);
 
   // SW20: a model with no price row makes no quote.
@@ -1106,14 +1130,16 @@ async function factCheckChecks(): Promise<void> {
   const approved = approvedRepo();
   const now = Date.now();
   const decide = (bytes: Buffer) => decideFactCheck({ bytes, approvedFacts: approved, runtime: rt, now });
-  const sql = readFileSync(resolve(REPO_ROOT, "studio/migrations/0004_studio_fact_checks_and_imports.sql"), "utf8");
+  // Content Studio S8.6: the list in force is migration 0005's (0004's plus 07-legal-review.json).
+  const sql = readFileSync(resolve(REPO_ROOT, "studio/migrations/0005_studio_legal_review.sql"), "utf8");
   const quoted = (text: string | undefined) => [...(text ?? "").matchAll(/'([^']*)'/g)].map((m) => m[1]!);
   const importNames = quoted(/IF NEW\.name <> ALL \(ARRAY\[([^\]]*)\]\) THEN/.exec(sql)?.[1]).sort();
   const libraryNames = [...new Set(Object.values(lib.RUN_ARTIFACT_NAMES).flat())].sort();
+  // (Until Content Studio S8.6 this check read "… and migration 0004's list, each once — sixteen".)
   check("SW27. the import's known file names the web reads (STUDIO_IMPORT_FILE_NAMES, in the S2 runner module the web may "
-    + "reach) are exactly the library's RUN_ARTIFACT_NAMES and migration 0004's list, each once — sixteen",
+    + "reach) are exactly the library's RUN_ARTIFACT_NAMES and migration 0005's list, each once — seventeen",
     JSON.stringify([...STUDIO_IMPORT_FILE_NAMES].sort()) === JSON.stringify(libraryNames)
-      && JSON.stringify(importNames) === JSON.stringify(libraryNames) && new Set(STUDIO_IMPORT_FILE_NAMES).size === 16,
+      && JSON.stringify(importNames) === JSON.stringify(libraryNames) && new Set(STUDIO_IMPORT_FILE_NAMES).size === 17,
     [...STUDIO_IMPORT_FILE_NAMES].join(","));
 
   // SW28: the loader's known field set is the library's export, held equal to what parseAutomotiveFacts reads.
@@ -1444,7 +1470,8 @@ function paidWorld(reservedMicros: number, spec: PaidWorldSpec = {}) {
     cost: number | null; input: number | null; output: number | null }> = [];
   const ledger: Array<{ entry: string; amount: number }> = spec.reserve === false ? [] : [{ entry: "reserve", amount: reservedMicros }];
   const artifacts = new Map<string, Buffer>();
-  const run: { state: string; failureClass: string | null; actual: string | null } = { state: "running", failureClass: null, actual: null };
+  const run: { state: string; failureClass: string | null; actual: string | null; verdict?: string | null } = {
+    state: "running", failureClass: null, actual: null };
   const charged = () => requests.reduce((t, r) => t + (r.outcome !== "started" && r.cost !== null ? r.cost : r.ceiling), 0);
   const facts = syntheticFactsBytes();
   const answer = (text: string, v: unknown[]): Array<Record<string, unknown>> | number => {
@@ -1516,6 +1543,7 @@ function paidWorld(reservedMicros: number, spec: PaidWorldSpec = {}) {
     if (/^INSERT INTO studio_spend_ledger/.test(text)) { ledger.push({ entry: String(v[0]), amount: numericToMicros(String(v[2]))! }); return 1; }
     if (/^UPDATE studio_runs SET state = \$2/.test(text)) {
       run.state = String(v[1]); run.failureClass = (v[2] as string | null) ?? null; run.actual = (v[5] as string | null) ?? null;
+      run.verdict = (v[4] as string | null) ?? null;
       return 1;
     }
     return 1;
@@ -1649,16 +1677,21 @@ async function s6bChecks(): Promise<void> {
     ...lensNames.map((l) => `row:${l}`)];
   const expected = ok.opens.map((o) => usageMicros(o.model, o.usage));
   const charged = expected.reduce((t: number, c) => t + (c ?? Number.NaN), 0);
+  // (Until Content Studio S8.6 the panel was the last unit and the run made nine requests.)
   check("SW48. an enabled worker's live run reaches the provider runner only after every gate: the consent check, then "
     + "for each of the five stages the unit check (quote, reservation, caps, overrun lock) under the run's lock, its "
-    + "started row, and only then the request; then one check and the panel's four rows before its four lens requests. "
-    + "Nine requests, each sent with maxRetries 0; each row is charged its provider-reported usage × the repository's "
-    + "price table to the micro-dollar, the run is charged their sum, and the unused reservation is released",
+    + "started row, and only then the request; then one check and the panel's four rows before its four lens requests; "
+    + "then (S8.6) the legal review's check, its row and its request. Ten requests, each sent with maxRetries 0; each "
+    + "row is charged its provider-reported usage × the repository's price table to the micro-dollar, the run is charged "
+    + "their sum, and the unused reservation is released",
     ok.state === "succeeded" && ok.world.run.state === "succeeded"
       && JSON.stringify(gated.slice(0, wantOrder.length)) === JSON.stringify(wantOrder)
-      && gated.slice(wantOrder.length).map((e) => e.slice("open:".length)).sort().join() === [...lensNames].sort().join()
-      && ok.opens.length === 9 && ok.opens.every((o) => o.maxRetries === 0)
-      && ok.world.requests.length === 9 && ok.world.requests.every((r) => r.outcome === "succeeded")
+      && gated.slice(wantOrder.length, wantOrder.length + 4).map((e) => e.slice("open:".length)).sort().join()
+        === [...lensNames].sort().join()
+      && JSON.stringify(gated.slice(wantOrder.length + 4)) === JSON.stringify(["check", "row:legal-review", "open:stage"])
+      && ok.opens.length === 10 && ok.opens.every((o) => o.maxRetries === 0)
+      && ok.world.requests.length === 10 && ok.world.requests.every((r) => r.outcome === "succeeded")
+      && ok.world.requests.at(-1)?.stage === "legal-review" && ok.world.requests.at(-1)?.lens === null
       && ok.world.requests.every((r, i) => r.cost === measured(r.lens === null ? ok.opens[i] : ok.opens.find((o) => o.lens === r.lens)))
       && ok.world.requests.every((r, i) => r.ceiling === ceilings[i])
       && Number.isSafeInteger(charged) && charged > 0 && ok.world.charged() === charged
@@ -1740,6 +1773,117 @@ async function s6bChecks(): Promise<void> {
     disabled.state === "refused" && disabled.world.run.failureClass === "live_runs_not_enabled" && disabled.opens.length === 0
       && disabled.world.requests.length === 0 && ledgerOf(disabled.world) === `reserve:${reserved},release:${reserved}`,
     `${disabled.state} ${disabled.world.run.failureClass} ${ledgerOf(disabled.world)}`);
+
+  // SW57 (Content Studio S8.6): the legal review's request is the tenth; it fails closed like a lens.
+  const legalError = await execute({}, "stub", ({ index }) => (index === 9 ? "error" : "end_turn"));
+  const legalRefused = await execute({}, "stub", ({ index }) => (index === 9 ? "refusal" : "end_turn"));
+  const before9 = (w: ReturnType<typeof paidWorld>) => w.requests.slice(0, 9).reduce((t, r) => t + (r.cost ?? Number.NaN), 0);
+  check("SW57. the legal review fails closed like a critic lens: a provider error or a refusal on its request — the "
+    + "tenth, after the panel — fails the run (legal_review_error) with no retry and no later request; its row is completed "
+    + "as failed and charged its full ceiling, the panel's artifact is kept, no review file is stored, a refused response "
+    + "is saved, and the reservation is reconciled; a run that succeeds stores the library's combined verdict",
+    legalError.state === "failed" && legalError.world.run.failureClass === "legal_review_error" && legalError.opens.length === 10
+      && legalError.opens.every((o) => o.maxRetries === 0)
+      && legalError.world.requests.at(-1)?.stage === "legal-review" && legalError.world.requests.at(-1)?.outcome === "failed"
+      && legalError.world.requests.at(-1)?.cost === null && legalError.world.artifacts.has("06-final-critic.json")
+      && !legalError.world.artifacts.has("07-legal-review.json")
+      && ledgerOf(legalError.world) === `reserve:${reserved},release:${reserved - before9(legalError.world) - ceilings[9]!}`
+      && legalRefused.state === "failed" && legalRefused.world.run.failureClass === "legal_review_error"
+      && legalRefused.opens.length === 10 && legalRefused.world.artifacts.has("rejected-responses.json")
+      && !legalRefused.world.artifacts.has("07-legal-review.json")
+      && ok.world.run.verdict === "needs_revision" && ok.world.artifacts.has("07-legal-review.json"),
+    `${legalError.state}/${legalError.world.run.failureClass}/${legalError.opens.length}/${ledgerOf(legalError.world)} `
+      + `${legalRefused.state}/${legalRefused.world.run.failureClass} ${ok.world.run.verdict}`);
+}
+
+/**
+ * Content Studio S8.6: the legal review in the worker — imports of new and older bundles, the stored verdict, the
+ * shared copies the web reads, migration 0005's two changes and nothing else, and the report's reading of the file.
+ */
+async function legalReviewChecks(): Promise<void> {
+  const rt = lib.loadRuntime();
+  const approved = approvedRepo();
+  const facts = syntheticFactsBytes();
+  const pinned = { id: FACT_VERSION, sha256: createHash("sha256").update(facts).digest("hex"), content: facts };
+  const live = await sourceFiles("live");
+  const folder = (edit: (m: Map<string, Buffer>) => void = () => {}) => {
+    const copy = new Map([...live].map(([k, v]) => [k, Buffer.from(v)] as [string, Buffer]));
+    edit(copy);
+    return { label: "import", displayLabel: "import", name: "import", exists: () => true,
+      readArtifact: async (name: string) => (copy.has(name) ? new Uint8Array(copy.get(name)!) : undefined) };
+  };
+  const decide = (source: ReturnType<typeof folder>) => decideImport({
+    source, pinned: null, versionBySha: async (sha) => (sha === pinned.sha256 ? pinned : null), approvedFacts: approved, runtime: rt,
+  });
+  const editLegal = (edit: (saved: Record<string, any>) => void) => (m: Map<string, Buffer>) => {
+    const saved = JSON.parse(m.get("07-legal-review.json")!.toString("utf8"));
+    edit(saved);
+    m.set("07-legal-review.json", Buffer.from(JSON.stringify(saved, null, 2), "utf8"));
+  };
+  const withReview = await decide(folder());
+  const older = await decide(folder((m) => { m.delete("07-legal-review.json"); }));
+  const softened = await decide(folder(editLegal((s) => { s.output.verdict = "no_legal_finding"; })));
+  const invented = await decide(folder(editLegal((s) => { s.output.findings[0].quote = "SW text the package never says."; })));
+  const archivedClass = (d: ImportDecision) => (d.tier === "archived_unverified" ? `${d.failureClass}:${d.message.slice(0, 60)}` : d.tier);
+  check("SW53. an import holding 07-legal-review.json is verified only when the review revalidates against the package it "
+    + "reviewed; a bundle from before S8.6, with no review, still verifies exactly as before; a review whose verdict was "
+    + "softened, or whose quote is not in the package, archives the import (revalidation_failed, naming the file)",
+    live.has("07-legal-review.json") && withReview.tier === "verified" && older.tier === "verified"
+      && softened.tier === "archived_unverified" && softened.failureClass === "revalidation_failed"
+      && softened.message.startsWith("07-legal-review.json: ")
+      && invented.tier === "archived_unverified" && invented.failureClass === "revalidation_failed" && /quote does not occur/.test(invented.message),
+    [withReview, older, softened, invented].map(archivedClass).join(" | "));
+
+  const art = (value: unknown) => new Uint8Array(Buffer.from(JSON.stringify(value), "utf8"));
+  const critic = (verdict: string) => art({ output: { provisional: { verdict } } });
+  const legal = (verdict: string) => art({ output: { verdict } });
+  check("SW54. an import's stored verdict is the critic's combined with its legal review's by the library's runVerdict: a "
+    + "blocked review keeps a pass from passing (needs_human_review), a decision-only review or none leaves the critic's, "
+    + "needs_revision stands, an unknown legal verdict is ignored and an unreadable critic file stores none",
+    importVerdict(critic("provisional_pass"), legal("blocked")) === "needs_human_review"
+      && importVerdict(critic("provisional_pass"), legal("needs_owner_decision")) === "provisional_pass"
+      && importVerdict(critic("provisional_pass"), undefined) === "provisional_pass"
+      && importVerdict(critic("needs_revision"), legal("blocked")) === "needs_revision"
+      && importVerdict(critic("provisional_pass"), legal("cleared")) === "provisional_pass"
+      && importVerdict(art("not json"), legal("blocked")) === null);
+
+  const sql4 = readFileSync(resolve(REPO_ROOT, "studio/migrations/0004_studio_fact_checks_and_imports.sql"), "utf8");
+  const sql5 = readFileSync(resolve(REPO_ROOT, "studio/migrations/0005_studio_legal_review.sql"), "utf8");
+  const sql2 = readFileSync(resolve(REPO_ROOT, "studio/migrations/0002_studio_schema.sql"), "utf8");
+  const code = (sql: string) => sql.split("\n").filter((line) => !/^\s*--/.test(line)).join("\n");
+  const statements = [...code(sql5).matchAll(/^(DO \$\$|ALTER TABLE \S+ \w+ CONSTRAINT \S+|CREATE OR REPLACE FUNCTION \S+|CREATE \w+|DROP \w+|INSERT|UPDATE|DELETE|GRANT|REVOKE|COMMENT)/gm)]
+    .map((m) => m[1]!.replace(/;$/, ""));
+  const stageSet = (sql: string) => [...(/CONSTRAINT studio_run_requests_stage CHECK \(stage IN \(([^)]*)\)\)/.exec(sql)?.[1] ?? "").matchAll(/'([^']*)'/g)].map((m) => m[1]!);
+  const body = (sql: string) => (/CREATE (?:OR REPLACE )?FUNCTION studio_run_artifacts_import_bounds\(\)[\s\S]*?\n\$\$;/.exec(code(sql))?.[0] ?? "")
+    .replace("CREATE OR REPLACE FUNCTION", "CREATE FUNCTION").replace(/\s+/g, " ");
+  check("SW55. migration 0005 makes exactly the two authorized changes and nothing else: its database guard, the stage "
+    + "constraint dropped and re-added as 0002's six stages plus legal-review, and 0004's import-bounds function with "
+    + "07-legal-review.json added; no lens, category, verdict, table or trigger is touched",
+    JSON.stringify(statements) === JSON.stringify(["DO $$", "ALTER TABLE studio_run_requests DROP CONSTRAINT studio_run_requests_stage",
+      "ALTER TABLE studio_run_requests ADD CONSTRAINT studio_run_requests_stage", "CREATE OR REPLACE FUNCTION studio_run_artifacts_import_bounds()"])
+      && JSON.stringify(stageSet(sql5)) === JSON.stringify([...stageSet(sql2), "legal-review"]) && stageSet(sql2).length === 6
+      && body(sql5).replace(" '07-legal-review.json',", "") === body(sql4) && body(sql5) !== body(sql4)
+      && body(sql4).length > 0 && !/studio_run_requests_lens|studio_findings|studio_runs_verdict|CREATE TRIGGER|CREATE TABLE/.test(code(sql5)),
+    `${statements.join(" | ")} :: ${stageSet(sql5).join(",")}`);
+
+  check("SW56. the copies the web reads are the library's: the blocking categories, the review's file name and the "
+    + "not-legal-advice line; and the report reads a stored review field by field — a finding in a blocking category "
+    + "shows as blocking even when a stored file says otherwise, and a review with an unknown verdict is not displayed",
+    JSON.stringify(STUDIO_LEGAL_BLOCKING_CATEGORIES) === JSON.stringify(lib.LEGAL_BLOCKING_CATEGORIES)
+      && STUDIO_LEGAL_REVIEW_ARTIFACT === lib.LEGAL_REVIEW_ARTIFACT && LEGAL_NOT_ADVICE === lib.LEGAL_REVIEW_DISCLAIMER
+      && (() => {
+        const stored = JSON.parse(live.get("07-legal-review.json")!.toString("utf8"));
+        const shown = readLegalReview(live.get("07-legal-review.json"));
+        const lowered = JSON.parse(JSON.stringify(stored));
+        lowered.output.findings[0].category = "trademark_affiliation";
+        lowered.output.findings[0].blocking = false;
+        const forced = readLegalReview(Buffer.from(JSON.stringify(lowered)));
+        const unknown = JSON.parse(JSON.stringify(stored));
+        unknown.output.verdict = "cleared";
+        return shown.ok && shown.value.verdict === stored.output.verdict && shown.value.findings.length === stored.output.findings.length
+          && forced.ok && forced.value.findings[0]!.blocking === true
+          && !readLegalReview(Buffer.from(JSON.stringify(unknown))).ok && readLegalReview(undefined).ok === false;
+      })());
 }
 
 async function main(): Promise<void> {
@@ -1757,6 +1901,7 @@ async function main(): Promise<void> {
   await importChecks();
   s73Checks();
   await s6bChecks();
+  await legalReviewChecks();
   console.log(failures === 0 ? `\n[studio-worker] ALL PASS (${total} checks)` : `\n[studio-worker] ${failures} FAILURE(S) of ${total}`);
   process.exit(failures === 0 ? 0 : 1);
 }
