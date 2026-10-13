@@ -56,8 +56,8 @@
     },
     {
       "path": "src/harness/contentCalendar.ts",
-      "sha256": "3c28e0e0b81fb16e11b7796b04e99082c401b85d82221b4796e64eabaec025f4",
-      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+      "sha256": "3c1a0b5ac7f2c366b7c4475c28e9ade740c67387747b423208a52a3600bdf0aa",
+      "declared": "declared edit (posting cadence, three posts a week, owner-approved 2026-10-13): the rotation indexes by posting slot instead of day-of-year, posting days are Monday/Wednesday/Friday, briefForDate returns null on other days, and the monthly brand post moves to the first posting day; MERGED is not DEPLOYED — the live scheduler stays at its recorded artifact until a separately authorized release"
     },
     {
       "path": "src/harness/contentIntelligence.ts",
@@ -236,8 +236,8 @@
     },
     {
       "path": "src/scheduler/daily.ts",
-      "sha256": "d833ac40165680bb918157b01ab8448ce434bccea76f73f7ea90e3de4cb9bea4",
-      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+      "sha256": "a8125c6e4933374b7515a756a9dd50eefbd9b96c3ef272f6facbbbbf41b1834a",
+      "declared": "declared edit (posting cadence, three posts a week, owner-approved 2026-10-13): the scheduler enqueues only on a posting day, logs and exits otherwise without touching the database, and accepts --force; MERGED is not DEPLOYED — the live scheduler stays at its recorded artifact until a separately authorized release"
     },
     {
       "path": "src/state/migrate.ts",
