@@ -902,6 +902,12 @@ defaults" and the owner's authorization of Studio migration 0005, both that day;
 - **The posting gate (owner rule, 2026-10-13):** "nothing from the Studio gets posted until the
   legal lens exists" — a process gate on people ([Operations](OPERATIONS.md) step 7).
 
+*(Dated note, 2026-10-13, the O6 records change. S8.6 is `MERGED` (PR #125), `DEPLOYED` and
+`PRODUCTION-VALIDATED`; the owner dropped the attorney step ("forget about the attorney we are just
+mitigating risk"). **The disclaimer text in code is pending rewording:** `LEGAL_REVIEW_DISCLAIMER`,
+`LEGAL_NOT_ADVICE` and the rubric's first line still say "Serious findings go to the owner's attorney
+before posting." — a recorded discrepancy; rewording it is `PLANNED` in [Roadmap](ROADMAP.md).)*
+
 ## 6. Cost controls
 
 ### 6.1 A price-ceiling confirmation before every paid action
