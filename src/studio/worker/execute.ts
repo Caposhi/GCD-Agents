@@ -406,7 +406,8 @@ export async function executeJob(
     end = { runState: "failed", jobState: "finished", failureClass: "job_timeout", failureMessage: stopped.message };
   } else if (failure === undefined && verdict === NO_REVISION) {
     end = { runState: "refused", jobState: "finished", failureClass: "no_revision",
-      failureMessage: "no blocking finding has a revisable owner; no request was made and nothing was written" };
+      failureMessage: "no blocking finding has a revisable owner, and the source run's legal review has no finding; "
+        + "no request was made and nothing was written" };
   } else if (failure === undefined) {
     const fp = fingerprintsFrom(sink.written);
     const cancel = (await session.query(

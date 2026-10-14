@@ -38,7 +38,7 @@ export const REQUIREMENT_UNVERIFIED = "to be confirmed by a person";
  * stored file: the skill's first line, word for word (the web's suite holds it
  * equal to the library's `LEGAL_REVIEW_DISCLAIMER`).
  */
-export const LEGAL_NOT_ADVICE = "Screening aid, not legal advice. Serious findings go to the owner's attorney before posting.";
+export const LEGAL_NOT_ADVICE = "Screening aid, not legal advice. Read it, and resolve its blocking findings, before posting.";
 export const LEGAL_VERDICT_LABELS: Readonly<Record<string, string>> = Object.freeze({
   no_legal_finding: "No legal finding", needs_owner_decision: "Needs your decision", blocked: "Blocked",
 });

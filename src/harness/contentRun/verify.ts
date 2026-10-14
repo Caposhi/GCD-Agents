@@ -294,3 +294,40 @@ export async function verifySourceRun(
     strategyOutput, truthOutput, scriptOutput, directionOutput, packagingOutput, platforms, criticOutput,
   };
 }
+
+/**
+ * Content Studio S8.8: a revision source's legal review, proved before anything
+ * is planned or bought against it. Free, like every check above.
+ *
+ * A source holding no `07-legal-review.json` — a run made before S8.6, or one
+ * that stopped before its legal review — returns `null`, and the revision is
+ * planned from its critic panel alone, exactly as before S8.8. A source holding
+ * one must prove it: the file is revalidated (`revalidateLegalReviewOutput`)
+ * against exactly the package it reviewed — the verified stage 3–5 outputs,
+ * stage 5 with its contact lines rebuilt from the pack, the recorded platforms —
+ * and a review that does not revalidate is refused, naming the file, rather
+ * than planned around: its blocking findings decide what a revision sends.
+ *
+ * Read after `verifySourceRun`, not inside it, so a Studio import's own check
+ * of the same file (`importRun.ts`, step 5) keeps its own refusal.
+ */
+export async function verifySourceLegalReview(
+  rt: ContentRunRuntime,
+  source: RunSource,
+  verified: Pick<Awaited<ReturnType<typeof verifySourceRun>>,
+    "scriptOutput" | "directionOutput" | "packagingOutput" | "truthOutput" | "pack" | "platforms">,
+) {
+  const name = rt.legal.LEGAL_REVIEW_ARTIFACT;
+  if ((await source.readArtifact(name)) === undefined) return null;
+  try {
+    const saved = await readSavedStage(source, name.replace(/\.json$/, ""), "revision");
+    const contacted = rt.contact.attachContactLines(verified.packagingOutput, verified.pack);
+    const material = rt.legal.renderLegalReviewMaterial(verified.scriptOutput, verified.directionOutput, contacted,
+      verified.truthOutput, verified.pack, verified.platforms);
+    const output = rt.legal.revalidateLegalReviewOutput(saved.output, material, "sourceLegalReview");
+    return { output, material, input: rt.legal.legalRevisionInput(output, material) };
+  } catch (error) {
+    throw new Error(`the revision source's ${name} does not revalidate against the package it reviewed, so its `
+      + `findings cannot be sent to a revision. Refusing: ${String((error as Error)?.message ?? error)}`);
+  }
+}

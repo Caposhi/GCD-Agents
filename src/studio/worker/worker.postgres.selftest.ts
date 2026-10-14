@@ -1599,7 +1599,11 @@ async function importsGroup(dbs: Databases): Promise<void> {
         return view && view.outcome !== null ? view : undefined;
       });
     };
-    const fromVerified = await askRevise(verified.runId, st.factVersion);
+    // Content Studio S8.8: SWP34's source is a verified live import WITHOUT a legal review (a bundle from before S8.6), so
+    // its plan is the panel's alone, exactly as before S8.8; the same folder WITH its review is SWP43's.
+    const verifiedNoLegal = await create(edited(live, (m) => { m.delete("07-legal-review.json"); }));
+    await ended(verifiedNoLegal.runId);
+    const fromVerified = await askRevise(verifiedNoLegal.runId, st.factVersion);
     const fromArchived = await askRevise(archivedId, st.factVersion);
     const fromFake = await askRevise(fakeImportId, fakeImport.fv);
     const plan = JSON.parse(JSON.stringify(lib.loadRuntime().revision.planRevision(JSON.parse(live.get("06-final-critic.json")!.toString("utf8")).output)));
@@ -1611,6 +1615,27 @@ async function importsGroup(dbs: Databases): Promise<void> {
         && fromArchived.outcome === "refused" && fromArchived.refusalClass === "source_not_verified"
         && fromFake.outcome === "refused" && fromFake.refusalClass === "fake_source" && fromFake.quote === null,
       `${fromVerified.outcome}/${fromVerified.refusalClass} ${fromArchived.refusalClass} ${fromFake.refusalClass} ${fakeImport.import_tier}`);
+
+    // SWP43 (Content Studio S8.8): the verified import WITH its legal review — its findings reach the stored plan.
+    const fromVerifiedLegal = await askRevise(verified.runId, st.factVersion);
+    const rtLib = lib.loadRuntime();
+    const storedLegal = JSON.parse(live.get("07-legal-review.json")!.toString("utf8")).output;
+    const legalInput = { verdict: storedLegal.verdict, findings: storedLegal.findings.map((f: Record<string, unknown>) => ({
+      category: f.category, blocking: f.blocking, location: f.location,
+      stage: (rtLib.legal.LEGAL_LOCATION_STAGES as Record<string, string>)[String(f.location)], issue: f.issue, fix: f.fix })) };
+    const legalPlan = JSON.parse(JSON.stringify(rtLib.revision.planRevision(
+      JSON.parse(live.get("06-final-critic.json")!.toString("utf8")).output, undefined, legalInput as never)));
+    const storedPlanRow = (await st.pool.query(
+      "SELECT revise_plan FROM studio_preflight_requests WHERE id = $1", [fromVerifiedLegal.id])).rows[0];
+    check("imports", "SWP43. a verified live import holding its legal review is quoted with a plan carrying that review's "
+      + "findings, each to the stage that wrote its quote, stored as jsonb under migration 0005's unchanged constraints and "
+      + "read back equal (Content Studio S8.8)",
+      fromVerifiedLegal.outcome === "quoted" && storedLegal.findings.length > 0
+        && storedLegal.findings.every((f: { location: string }) => f.location !== "claims")
+        && isDeepStrictEqual(fromVerifiedLegal.revisePlan, legalPlan) && isDeepStrictEqual(storedPlanRow?.revise_plan, legalPlan)
+        && legalPlan.legalReview?.findings?.length === storedLegal.findings.length
+        && legalPlan.legalReview.findings.every((f: { id: string }, i: number) => f.id === `L${i + 1}`),
+      `${fromVerifiedLegal.outcome}/${fromVerifiedLegal.refusalClass} ${JSON.stringify(fromVerifiedLegal.revisePlan).slice(0, 300)}`);
 
     // SWP35: lineage — proven, ambiguous, absent — over a fresh folder that no earlier import shares.
     const second = await runFolder("live");

@@ -176,7 +176,11 @@ export function breakdownTable(breakdown: unknown): string {
     + `<tbody>${rows}</tbody></table></div>`;
 }
 
-/** planRevision's plan (§8.4), as stored: untrusted JSON, read field by field and escaped. */
+/**
+ * planRevision's plan (§8.4), as stored: untrusted JSON, read field by field and escaped. Since Content Studio
+ * S8.8 a plan made from a source with a legal review lists every one of its findings — id, category, the stage it
+ * goes to and whether it is sent or dropped over a cap — so the owner sees them before confirming; a plan stored before S8.8 has none.
+ */
 export function revisePlanSection(plan: unknown): string {
   const p = record(plan);
   if (!p) return "";
@@ -187,9 +191,27 @@ export function revisePlanSection(plan: unknown): string {
   const stages = list(p.stages).map(record).filter((x): x is Record<string, unknown> => x !== null);
   const owners = list(p.ownerItems).map(record).filter((x): x is Record<string, unknown> => x !== null);
   const notRerun = list(p.notRerun).map(record).filter((x): x is Record<string, unknown> => x !== null);
+  const legal = record(p.legalReview);
+  const legalFindings = legal ? list(legal.findings).map(record).filter((x): x is Record<string, unknown> => x !== null) : [];
+  const legalWhere: Readonly<Record<string, string>> = {
+    sent: "sent", dropped: "dropped (over the cap)",
+  };
+  const legalSection = legal
+    ? `<h3>From the source run's legal review</h3><p class="meta">Verdict ${escapeHtml(str(legal.verdict))}. Each finding goes `
+      + "to the writing stage that wrote its quote, as a reviewer's opinion it must still check against every rule.</p>"
+      + (legalFindings.length
+        ? `<ul>${legalFindings.map((f) => `<li><span class="meta">${escapeHtml(str(f.id))} · ${escapeHtml(str(f.category))} · `
+          + `${escapeHtml(str(f.severity))} · ${escapeHtml(str(f.stage))} · `
+          + `${escapeHtml(Object.hasOwn(legalWhere, str(f.disposition)) ? legalWhere[str(f.disposition)]! : str(f.disposition))}</span></li>`)
+          .join("")}</ul>`
+        : "<p>No findings.</p>")
+    : "";
   return "<section class=\"plan\"><h2>Revision plan</h2>"
     + (p.kind === "no_revision"
-      ? "<p>No blocking finding has a revisable owner, so there is nothing to revise and no quote.</p>"
+      ? (legal
+        ? "<p>No blocking finding has a revisable owner, and the source run's legal review has no finding, so there is "
+          + "nothing to revise and no quote.</p>"
+        : "<p>No blocking finding has a revisable owner, so there is nothing to revise and no quote.</p>")
       : `<p>The round starts at <strong>${escapeHtml(str(p.startStage))}</strong> and re-runs: `
         + `${stages.map((s) => escapeHtml(str(s.stage))).join(", ")}, then the critic panel.</p>`)
     + stages.map((s) => `<h3>${escapeHtml(str(s.stage))}</h3><p class="meta">sends ${list(s.sent).length} of ${escapeHtml(str(s.owned))} `
@@ -199,6 +221,7 @@ export function revisePlanSection(plan: unknown): string {
         + list(s.dropped).map(record).filter((x): x is Record<string, unknown> => x !== null).map(finding).join("") + "</ul>" : "")).join("")
     + (notRerun.length ? `<h3>Not re-run (owned by an earlier stage)</h3><ul>${notRerun.map(finding).join("")}</ul>` : "")
     + (owners.length ? `<h3>Held back for a person — never sent to a model</h3><ul>${owners.map(finding).join("")}</ul>` : "")
+    + legalSection
     + "</section>";
 }
 

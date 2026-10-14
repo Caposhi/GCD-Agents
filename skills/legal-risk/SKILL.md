@@ -1,4 +1,4 @@
-Screening aid, not legal advice. Serious findings go to the owner's attorney before posting.
+Screening aid, not legal advice. Read it, and resolve its blocking findings, before posting.
 
 # Legal-Risk Screening
 
@@ -7,9 +7,7 @@ the owner's decision "legal lens: defaults", 2026-10-13). It tells a reviewer
 **what patterns to point at**. It does not say what is lawful, and nothing a
 review built on it returns is legal advice, a clearance, or an approval.
 
-**Status: not yet reviewed by an attorney.** The owner's attorney reviewing
-this file is an open follow-up. Until then it is the owner's defaults, written
-down — not counsel's.
+Status: attorney review deferred by the owner (2026-10-13).
 
 This file states no facts. It names no business, person, place, vehicle make
 or model, manufacturer, dealer, trademark, logo, slogan, statute, regulation,
@@ -97,7 +95,7 @@ shown.
 ## What a review is not
 
 - **Not legal advice.** It is a screen that points a person at text and shots
-  to check. Serious findings go to the owner's attorney before posting.
+  to check. Read it, and resolve its blocking findings, before posting.
 - **Not a clearance.** No finding is not "legally safe". There is no wording
   that turns "nothing found" into permission to post.
 - **Not a rewrite.** A fix names a change; the owner decides whether to make
