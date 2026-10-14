@@ -184,8 +184,9 @@ and writes `<source>-revised-<timestamp>` with `revision-meta.json` and a side-b
 not merged: when the source holds a `07-legal-review.json` that revalidates against the package it
 reviewed (`verifySourceLegalReview`, `src/harness/contentRun/verify.ts`), `planRevision` also takes
 its findings — every one, each owned by the writing stage that wrote its quote
-(`legalFindingStage`, `src/harness/contentRun/legalReview.ts`) — so a blocking legal finding alone
-makes a run revisable; they are sent in the same `CRITIC_FINDINGS` block, under the same caps, as lens
+(`legalFindingStage`, `src/harness/contentRun/legalReview.ts`) — and the round starts at the
+earliest stage owning a critic blocking finding or any legal finding, so a legal finding alone makes
+a run revisable and always reaches a stage that re-runs; they are sent in the same `CRITIC_FINDINGS` block, under the same caps, as lens
 `legal-review` with `L<n>` ids, after the stage's critic blocking findings and before its advisory
 ones; `revisionDataBlocks` accepts that lens only with an `L` id. A source with no legal review is
 planned exactly as before; round 2's legal review is never sent. See

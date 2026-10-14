@@ -179,7 +179,7 @@ export function breakdownTable(breakdown: unknown): string {
 /**
  * planRevision's plan (§8.4), as stored: untrusted JSON, read field by field and escaped. Since Content Studio
  * S8.8 a plan made from a source with a legal review lists every one of its findings — id, category, the stage it
- * goes to and whether it is sent — so the owner sees them before confirming; a plan stored before S8.8 has none.
+ * goes to and whether it is sent or dropped over a cap — so the owner sees them before confirming; a plan stored before S8.8 has none.
  */
 export function revisePlanSection(plan: unknown): string {
   const p = record(plan);
@@ -194,7 +194,7 @@ export function revisePlanSection(plan: unknown): string {
   const legal = record(p.legalReview);
   const legalFindings = legal ? list(legal.findings).map(record).filter((x): x is Record<string, unknown> => x !== null) : [];
   const legalWhere: Readonly<Record<string, string>> = {
-    sent: "sent", dropped: "dropped (over the cap)", not_rerun: "not sent (its stage is not re-run)", not_sent: "not sent (no revision)",
+    sent: "sent", dropped: "dropped (over the cap)",
   };
   const legalSection = legal
     ? `<h3>From the source run's legal review</h3><p class="meta">Verdict ${escapeHtml(str(legal.verdict))}. Each finding goes `
@@ -209,7 +209,7 @@ export function revisePlanSection(plan: unknown): string {
   return "<section class=\"plan\"><h2>Revision plan</h2>"
     + (p.kind === "no_revision"
       ? (legal
-        ? "<p>No blocking finding — in the critic panel or the source run's legal review — has a revisable owner, so there is "
+        ? "<p>No blocking finding has a revisable owner, and the source run's legal review has no finding, so there is "
           + "nothing to revise and no quote.</p>"
         : "<p>No blocking finding has a revisable owner, so there is nothing to revise and no quote.</p>")
       : `<p>The round starts at <strong>${escapeHtml(str(p.startStage))}</strong> and re-runs: `

@@ -7237,18 +7237,19 @@ const CONTENT_STUDIO_S8_7_MUTATIONS = [
 // their quotes (the owner's post-MVP item, go-ahead 2026-10-14), and the legal disclaimer reworded (no attorney step).
 const CONTENT_STUDIO_S8_8_MUTATIONS = [
   {
-    name: "a blocking legal finding no longer makes a run revisable",
+    // Re-anchored in place by the reviewer's required change of 2026-10-14 (any legal finding starts the round).
+    name: "legal findings no longer make a run revisable or move its start",
     file: REVISION_MODULE,
-    from: "    || legalSent.some((f) => f.owner === stage && f.severity === \"blocking\"));",
-    to: "    || legalSent.some((f) => f.owner === stage && f.severity === \"blocking\" && Date.now() < 0));",
-    expect: ["LV2.", "LV8."],
+    from: "    || legalSent.some((f) => f.owner === stage));",
+    to: "    || legalSent.some((f) => f.owner === stage && Date.now() < 0));",
+    expect: ["LV2.", "LV8.", "LV12."],
   },
   {
-    name: "the same edit, as the worker prices a run blocked only by its legal review",
+    name: "the same edit, as the worker prices a run whose only revisable findings are its legal review's",
     file: REVISION_MODULE,
-    from: "    || legalSent.some((f) => f.owner === stage && f.severity === \"blocking\"));",
-    to: "    || legalSent.some((f) => f.owner === stage && f.severity === \"blocking\" && Date.now() < 0));",
-    expect: ["SW58."],
+    from: "    || legalSent.some((f) => f.owner === stage));",
+    to: "    || legalSent.some((f) => f.owner === stage && Date.now() < 0));",
+    expect: ["SW58.", "SW59."],
     suite: STUDIO_WORKER_SUITE,
   },
   {
@@ -7420,7 +7421,8 @@ const CONTENT_STUDIO_S8_8_MUTATIONS = [
   {
     name: "the worker's refusal no longer says it looked at the legal review",
     file: STUDIO_WORKER_PREFLIGHT,
-    from: "      + \"in the critic panel or the source run's legal review: nothing to revise, so no quote\", asPlan(plan ?? revised.plan));",
+    // Re-anchored in place by the reviewer's required change of 2026-10-14 (the message's new wording).
+    from: "      + \"and the source run's legal review has no finding: nothing to revise, so no quote\", asPlan(plan ?? revised.plan));",
     to: "      + \"nothing to revise, so no quote\", asPlan(plan ?? revised.plan));",
     expect: ["SW59."],
     suite: STUDIO_WORKER_SUITE,
@@ -7439,6 +7441,30 @@ const CONTENT_STUDIO_S8_8_MUTATIONS = [
     from: "  to check. Read it, and resolve its blocking findings, before posting.\n",
     to: "  to check. Serious findings go to an attorney before posting.\n",
     expect: ["LV9.", "LV10."],
+  },
+  // The reviewer's required change of 2026-10-14: the start is the earliest stage owning a critic blocking finding or
+  // ANY legal finding; critic advisory findings never move it.
+  {
+    name: "only a blocking legal finding moves the start (S8.8's first rule), so script decisions go to a stage never re-run",
+    file: REVISION_MODULE,
+    from: "    || legalSent.some((f) => f.owner === stage));",
+    to: "    || legalSent.some((f) => f.owner === stage && f.severity === \"blocking\"));",
+    expect: ["LV2.", "LV8.", "LV12.", "LV13."],
+  },
+  {
+    name: "the same edit, as the worker prices a run whose legal review holds decision items only",
+    file: REVISION_MODULE,
+    from: "    || legalSent.some((f) => f.owner === stage));",
+    to: "    || legalSent.some((f) => f.owner === stage && f.severity === \"blocking\"));",
+    expect: ["SW59."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "a critic advisory finding moves the start stage",
+    file: REVISION_MODULE,
+    from: "    revisable.some(({ finding }) => finding.owner === stage && finding.severity === \"blocking\")\n    || legalSent",
+    to: "    revisable.some(({ finding }) => finding.owner === stage)\n    || legalSent",
+    expect: ["CV6.", "CV7.", "LV2.", "LV12."],
   },
 ];
 

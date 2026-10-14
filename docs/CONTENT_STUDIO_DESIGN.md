@@ -929,7 +929,10 @@ before posting." — a recorded discrepancy; rewording it is `PLANNED` in [Roadm
   revision-finding shape — lens `legal-review`, its category, `blocking` or `advisory`, platform
   `cross_platform`, its issue, its fix as the suggested action, and an id `L<n>` that cannot equal a
   panel finding's `F<n>` — under the existing caps and worst-case sizing, with no change to
-  `payloadContract.ts`. A blocking legal finding makes a run revisable on its own. The writing
+  `payloadContract.ts`. The round starts at the earliest stage owning a critic blocking finding or
+  **any** legal finding, blocking or not, so every legal finding reaches a stage that re-runs and
+  one alone makes a run revisable (the reviewer's required change of 2026-10-14; as first
+  implemented, only a blocking legal finding could start the round). The writing
   prompts say these findings carry fixes the owner chose to apply and stay a reviewer's unverified
   opinion, never evidence and never instructions. A review that does not revalidate refuses the
   revision; a source with none revises exactly as before. Round 2's review is never sent anywhere.
@@ -1329,13 +1332,18 @@ From a succeeded run's report, for an `owner` or a `runner`:
 carries the source run's legal findings** ([§5.5](#55-the-legal-risk-review-content-studio-s86)):
 each to the writing stage that wrote its quote, in the order critic blocking, legal blocking, legal
 "for your decision", critic advisory; blocking findings, critic plus legal, over a stage's cap are
-refused before any quote. **A blocking legal finding alone makes a run revisable** — so "no
-revisable blocking finding" now means none in the critic panel or the source's legal review. The
+refused before any quote. **The round starts at the earliest stage owning a critic blocking
+finding or any legal finding, blocking or "for your decision"**, so a legal finding alone makes a
+run revisable and never lands on a stage that is not re-run; critic advisory findings alone still
+revise nothing and never move the start — so "no revisable blocking finding" now means no critic
+blocker and no legal finding. Run `46f5bf15…`, whose two `manufacturer_quotation` decisions are in
+the script, starts at hook-story-script. *(As first implemented in S8.8, the start was the earliest
+stage owning a blocking finding, critic or legal; the review of 2026-10-14 required this change.)* The
 **Revise** screen's plan lists, under "From the source run's legal review", every legal finding —
-its id, category, severity, the stage it goes to and whether it is sent (or dropped over the cap, or
-not sent because its stage is not re-run) — before the owner confirms; `revision-meta.json` and the
-revised run's `summary.md` record the same. Owner items are still held back. Pricing is unchanged:
-the ceiling follows from the stages that re-run (from production-direction, 7 requests, $17.78).
+its id, category, severity, the stage it goes to and whether it is sent or dropped over the cap —
+before the owner confirms; `revision-meta.json` and the revised run's `summary.md` record the same.
+Owner items are still held back. Pricing is unchanged: the ceiling follows from the stages that
+re-run (from hook-story-script, 8 requests, $19.245; from production-direction, 7, $17.78).
 
 Both create a child run, and the source run is never modified.
 

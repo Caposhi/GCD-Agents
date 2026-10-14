@@ -37,9 +37,14 @@
  * finding and each "for your decision" finding — owned by the writing stage
  * that wrote the quoted block (`legalReview.ts`, `legalFindingStage`):
  *
- *  - a blocking legal finding counts for rule 2 and rule 3 like a blocking
- *    critic finding: it alone makes the run revisable, and the start stage is
- *    the earliest stage owning any blocking finding, critic or legal;
+ *  - **any** legal finding — blocking or "for your decision" — counts for rule
+ *    2 and rule 3 as a blocking critic finding does: it alone makes the run
+ *    revisable, and the start stage is the earliest stage owning a critic
+ *    blocking finding or any legal finding, so every legal finding reaches a
+ *    stage that re-runs and none is ever "not re-run" (the reviewer's required
+ *    change of 2026-10-14: run `46f5bf15…`'s two script decisions would
+ *    otherwise have gone to a stage that never re-ran). Critic advisory
+ *    findings alone still revise nothing and never move the start;
  *  - each is sent in the stage's existing `CRITIC_FINDINGS` block, in the
  *    revision-finding shape (`legalRevisionFinding`): lens `legal-review`, its
  *    category, severity `blocking` or `advisory`, platform `cross_platform`,
@@ -137,8 +142,12 @@ export interface LegalRevisionInput {
   findings: readonly LegalRevisionFindingInput[];
 }
 
-/** What became of one legal finding in the plan. */
-export type LegalFindingDisposition = "sent" | "dropped" | "not_rerun" | "not_sent";
+/**
+ * What became of one legal finding in the plan: sent to its stage, or dropped
+ * over that stage's cap. Every legal finding's stage re-runs (the start is never
+ * after it), and a review with any finding always makes a revision.
+ */
+export type LegalFindingDisposition = "sent" | "dropped";
 
 /** Content Studio S8.8: one legal finding's record in the plan, for revision-meta.json, summary.md and the price page. */
 export interface LegalFindingRecord {
@@ -147,7 +156,7 @@ export interface LegalFindingRecord {
   severity: "blocking" | "advisory";
   location: string;
   stage: RevisableStage;
-  /** `sent` to its stage; `dropped` over the cap; `not_rerun` (its stage precedes the start); `not_sent` (no revision). */
+  /** `sent` to its stage, or `dropped` over that stage's cap. */
   disposition: LegalFindingDisposition;
 }
 
@@ -159,7 +168,10 @@ export interface RevisionPlan {
   stages: StageRevisionPlan[];
   /** Human-owned and human_decision findings. Never sent to any model. */
   ownerItems: OwnerItem[];
-  /** Advisory findings owned by a writing stage before the start stage, which is not re-run. */
+  /**
+   * Critic advisory findings owned by a writing stage before the start stage, which is not re-run. Never a
+   * legal finding: every legal finding's stage is at or after the start (S8.8).
+   */
   notRerun: Array<FindingRef & { owner: string }>;
   /** Content Studio S8.8: the source run's legal review and every one of its findings; absent without one. */
   legalReview?: { verdict: string; findings: LegalFindingRecord[] };
@@ -211,29 +223,27 @@ export function planRevision(
     }
     return legalRevisionFinding(finding, index);
   });
-  const legalRecord = (disposition: (f: RevisionFinding) => LegalFindingDisposition) => (legal === null ? {} : {
+  const legalRecord = (dropped: ReadonlySet<string>) => (legal === null ? {} : {
     legalReview: {
       verdict: legal.verdict,
       findings: legalSent.map((f, index): LegalFindingRecord => ({
         id: f.id, category: f.category, severity: f.severity as LegalFindingRecord["severity"],
-        location: legal.findings[index]!.location, stage: f.owner as RevisableStage, disposition: disposition(f),
+        location: legal.findings[index]!.location, stage: f.owner as RevisableStage,
+        disposition: dropped.has(f.id) ? "dropped" : "sent",
       })),
     },
   });
 
   const startIndex = REVISABLE_STAGES.findIndex((stage) =>
     revisable.some(({ finding }) => finding.owner === stage && finding.severity === "blocking")
-    || legalSent.some((f) => f.owner === stage && f.severity === "blocking"));
-  if (startIndex < 0) return { kind: "no_revision", stages: [], ownerItems, notRerun: [], ...legalRecord(() => "not_sent") };
+    || legalSent.some((f) => f.owner === stage));
+  // No revision means no legal finding at all: a review with none is recorded, and nothing is sent.
+  if (startIndex < 0) return { kind: "no_revision", stages: [], ownerItems, notRerun: [], ...legalRecord(new Set()) };
 
-  const notRerun = [
-    ...revisable
-      .filter(({ finding }) => REVISABLE_STAGES.indexOf(finding.owner as RevisableStage) < startIndex)
-      .map((entry) => ({ ...ref(entry), owner: entry.finding.owner })),
-    ...legalSent
-      .filter((f) => REVISABLE_STAGES.indexOf(f.owner as RevisableStage) < startIndex)
-      .map((f) => ({ id: f.id, lens: f.lens, severity: f.severity, owner: f.owner })),
-  ];
+  // Critic findings only: no legal finding's stage precedes the start, by the rule above.
+  const notRerun = revisable
+    .filter(({ finding }) => REVISABLE_STAGES.indexOf(finding.owner as RevisableStage) < startIndex)
+    .map((entry) => ({ ...ref(entry), owner: entry.finding.owner }));
 
   const lensRank = (lens: string) => (CRITIC_LENSES as readonly string[]).indexOf(lens);
   const stages = REVISABLE_STAGES.slice(startIndex).map((stage): StageRevisionPlan => {
@@ -276,10 +286,8 @@ export function planRevision(
     };
   });
 
-  const sentIds = new Set(stages.flatMap((s) => s.sent.map((f) => f.id)));
-  const droppedIds = new Set(stages.flatMap((s) => s.dropped.map((f) => f.id)));
   return {
     kind: "revision", startStage: REVISABLE_STAGES[startIndex], stages, ownerItems, notRerun,
-    ...legalRecord((f) => (sentIds.has(f.id) ? "sent" : droppedIds.has(f.id) ? "dropped" : "not_rerun")),
+    ...legalRecord(new Set(stages.flatMap((s) => s.dropped.map((f) => f.id)))),
   };
 }

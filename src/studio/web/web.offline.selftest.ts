@@ -3533,17 +3533,17 @@ const S87_PLAIN: Array<[Parameters<typeof newRunBody>[0], string, number]> = [
   const legalFinding = (id: string, category: string, severity: string, stage: string, disposition: string) =>
     ({ id, category, severity, location: "production", stage, disposition });
   const plan = { kind: "revision", startStage: "production-direction", stages: [
-    { stage: "production-direction", cap: 80, owned: 2, blocking: 1, dropped: [], sent: [
+    { stage: "production-direction", cap: 2, owned: 3, blocking: 1, dropped: [{ id: "L3", lens: "legal-review", severity: "advisory" }], sent: [
       { id: "L1", lens: "legal-review", owner: "production-direction", severity: "blocking", category: "copyright_reproduction",
         platform: "cross_platform", issue: "SA171 the manual-page shots.", suggestedAction: "SA171 use plain shop-made cards." },
       { id: "L2", lens: "legal-review", owner: "production-direction", severity: "advisory", category: "people_and_releases",
         platform: "cross_platform", issue: "SA171 the technician's release.", suggestedAction: "SA171 get it signed." }] },
     { stage: "packaging-adaptation", cap: 31, owned: 0, blocking: 0, sent: [], dropped: [] }],
-    ownerItems: [], notRerun: [{ id: "L3", lens: "legal-review", severity: "advisory", owner: "hook-story-script" }],
+    ownerItems: [], notRerun: [],
     legalReview: { verdict: "blocked", findings: [
       legalFinding("L1", "copyright_reproduction", "blocking", "production-direction", "sent"),
       legalFinding("L2", "people_and_releases", "advisory", "production-direction", "sent"),
-      legalFinding("L3", `${hostile}[category]`, "advisory", "hook-story-script", "not_rerun"),
+      legalFinding("L3", `${hostile}[category]`, "advisory", "production-direction", "dropped"),
     ] } };
   const withLegal = requestIdOf(await post(s.w, `/runs/${source.id}/price`, s.runner, [["action", "revise"]]));
   s.w.store.answerPreflight(withLegal, { quote: { ceilingMicros: 17_780_000 } }, plan);
@@ -3551,27 +3551,26 @@ const S87_PLAIN: Array<[Parameters<typeof newRunBody>[0], string, number]> = [
   s.w.store.answerPreflight(before88, { quote: { ceilingMicros: 17_780_000 } }, { ...plan, legalReview: undefined });
   const refused = requestIdOf(await post(s.w, `/runs/${source.id}/price`, s.runner, [["action", "revise"]]));
   s.w.store.answerPreflight(refused, { refused: { refusalClass: "no_revisable_blocking_finding", message: "synthetic" } },
-    { kind: "no_revision", stages: [], ownerItems: [], notRerun: [], legalReview: { verdict: "needs_owner_decision", findings: [
-      legalFinding("L1", "people_and_releases", "advisory", "production-direction", "not_sent")] } });
+    { kind: "no_revision", stages: [], ownerItems: [], notRerun: [], legalReview: { verdict: "no_legal_finding", findings: [] } });
   const pages = await Promise.all([withLegal, before88, refused].map((id) => request(s.w, `/preflights/${id}`, { jar: s.runner })));
   const [page, oldPage, refusedPage] = [pages[0]!, pages[1]!, pages[2]!];
   const section = (html: string) => html.slice(html.indexOf("<section class=\"plan\">"), html.indexOf("</section>", html.indexOf("<section class=\"plan\">")));
   check("SA171. a revise's price page lists, before it is confirmed, every legal finding from the source run's review — id, "
-    + "category, severity, the stage it goes to and whether it is sent (sent, or not sent because its stage is not re-run) — "
-    + "beside the stage's findings with their lens legal-review; hostile text stays inert; a plan stored before S8.8 shows no "
-    + "such list, and a refused plan says no blocking finding was found in the critic panel or the legal review",
+    + "category, severity, the stage it goes to and whether it is sent or dropped over the cap — beside the stage's findings "
+    + "with their lens legal-review; hostile text stays inert; a plan stored before S8.8 shows no such list; a refused plan "
+    + "says there was no critic blocker and no legal finding, and shows the empty review",
     page.status === 200 && section(page.body).includes("<h3>From the source run's legal review</h3>")
       && section(page.body).includes("L1 · copyright_reproduction · blocking · production-direction · sent")
       && section(page.body).includes("L2 · people_and_releases · advisory · production-direction · sent")
-      && section(page.body).includes(`L3 · ${escapeHtml(hostile)}[category] · advisory · hook-story-script · not sent (its stage is not re-run)`)
+      && section(page.body).includes(`L3 · ${escapeHtml(hostile)}[category] · advisory · production-direction · dropped (over the cap)`)
       && section(page.body).includes("L1 · legal-review · blocking · copyright_reproduction")
       && section(page.body).indexOf("From the source run's legal review") < page.body.indexOf("Confirm and reserve")
       && !page.body.includes(hostile) && !/<img\b/i.test(page.body)
       && oldPage.status === 200 && section(oldPage.body).includes("<h2>Revision plan</h2>")
       && !oldPage.body.includes("From the source run's legal review")
       && refusedPage.status === 200
-      && refusedPage.body.includes("No blocking finding — in the critic panel or the source run's legal review — has a revisable owner")
-      && refusedPage.body.includes("L1 · people_and_releases · advisory · production-direction · not sent (no revision)"),
+      && refusedPage.body.includes("No blocking finding has a revisable owner, and the source run's legal review has no finding")
+      && section(refusedPage.body).includes("<h3>From the source run's legal review</h3>") && section(refusedPage.body).includes("<p>No findings.</p>"),
     section(page.body).slice(0, 600));
   await s.w.close();
 }

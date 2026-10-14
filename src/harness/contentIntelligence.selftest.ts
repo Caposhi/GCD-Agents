@@ -8605,7 +8605,8 @@ async function run(): Promise<void> {
                 && lvMapped === `hook-story-script,production-direction,${P8},${P8},hook-story-script`,
               JSON.stringify({ lvMapped, claimBoth, claimScriptOnly, claimPlatformOnly }));
 
-            // LV2: eligibility — a blocking legal finding alone makes a run revisable (run 46f5bf15's shape).
+            // LV2: eligibility and the start stage — any legal finding, blocking or not, can start the round
+            // (the reviewer's required change of 2026-10-14); critic advisory findings never do.
             const lvAdvisoryOnly: CvSpecCli[] = [
               { lens: "evidence-fidelity", severity: "advisory", category: "claim_fidelity", owner: "hook-story-script", issue: LVM("adv-hook") },
               { lens: "production-coherence", severity: "advisory", category: "production_coherence", owner: "production-direction", issue: LVM("adv-dir") },
@@ -8613,31 +8614,84 @@ async function run(): Promise<void> {
             ];
             const lvPanel0 = cvPanelCli(lvAdvisoryOnly);
             const lvCriticOnly = lvPlan(lvPanel0, null).plan;
+            const lvEmptyReview = lvPlan(lvPanel0, lvIn([], "no_legal_finding")).plan;
             const lvLegalOnly = lvPlan(lvPanel0, lvIn([{ stage: "production-direction", blocking: true },
               { stage: "production-direction", blocking: false }])).plan;
-            const lvDecisionsOnly = lvPlan(lvPanel0, lvIn([{ stage: "production-direction", blocking: false },
-              { stage: "hook-story-script", blocking: false, location: "script" }], "needs_owner_decision")).plan;
             const lvEarliest = lvPlan(cvPanelCli([{ lens: "platform-and-local", severity: "blocking", category: "timing", owner: P8, issue: "b" }]),
               lvIn([{ stage: "hook-story-script", blocking: true, location: "script" }])).plan;
             const lvCriticFirst = lvPlan(cvPanelCli([{ lens: "evidence-fidelity", severity: "blocking", category: "claim_fidelity", owner: "hook-story-script", issue: "b" }]),
               lvIn([{ stage: P8, blocking: true, location: "captions" }])).plan;
-            lrCheck("LV2. a blocking legal finding makes a run revisable with no critic blocking finding — run 46f5bf15's shape: "
-              + "critic 0 blocking, legal 1 blocking owned by production-direction starts the round there, re-running stages 4 "
-              + "and 5; the start is the earliest stage owning any blocking finding, critic or legal; decision items alone, like "
-              + "advisory critic findings alone, revise nothing",
+            const lvDecisionFirst = lvPlan(cvPanelCli([{ lens: "platform-and-local", severity: "blocking", category: "timing", owner: P8, issue: "b" }]),
+              lvIn([{ stage: "hook-story-script", blocking: false, location: "script" }], "needs_owner_decision")).plan;
+            lrCheck("LV2. the round starts at the earliest stage owning a critic blocking finding or ANY legal finding, blocking or "
+              + "\"for your decision\": a blocking legal finding alone makes a run revisable (legal 1 blocking owned by "
+              + "production-direction starts there, re-running stages 4 and 5); a legal decision item at stage 3 starts the round "
+              + "before a critic blocker at stage 5; critic advisory findings alone, or with a legal review holding no finding, "
+              + "revise nothing and never move the start",
               lvCriticOnly?.kind === "no_revision" && !("legalReview" in lvCriticOnly)
+                && lvEmptyReview?.kind === "no_revision" && JSON.stringify(lvEmptyReview.legalReview) === JSON.stringify({ verdict: "no_legal_finding", findings: [] })
                 && lvLegalOnly?.kind === "revision" && lvLegalOnly.startStage === "production-direction"
                 && lvLegalOnly.stages.map((s) => s.stage).join() === `production-direction,${P8}`
                 && lvSent(lvLegalOnly, "production-direction") === "L1,L2,F3" && lvSent(lvLegalOnly, P8) === "F2"
                 && lvLegalOnly.stages[0]!.blocking === 1 && lvLegalOnly.notRerun.map((f) => f.id).join() === "F1"
                 && lvLegalOnly.legalReview?.findings.map((f) => `${f.id}:${f.severity}:${f.stage}:${f.disposition}`).join()
                   === "L1:blocking:production-direction:sent,L2:advisory:production-direction:sent"
-                && lvDecisionsOnly?.kind === "no_revision" && lvDecisionsOnly.stages.length === 0
-                && lvDecisionsOnly.legalReview?.findings.map((f) => f.disposition).join() === "not_sent,not_sent"
                 && lvEarliest?.startStage === "hook-story-script" && lvSent(lvEarliest, "hook-story-script") === "L1"
                 && lvSent(lvEarliest, P8) === "F1"
-                && lvCriticFirst?.startStage === "hook-story-script" && lvSent(lvCriticFirst, P8) === "L1",
-              JSON.stringify({ lvLegalOnly, lvDecisionsOnly }).slice(0, 1_500));
+                && lvCriticFirst?.startStage === "hook-story-script" && lvSent(lvCriticFirst, P8) === "L1"
+                && lvDecisionFirst?.startStage === "hook-story-script" && lvSent(lvDecisionFirst, "hook-story-script") === "L1"
+                && lvDecisionFirst.stages.map((s) => s.stage).join() === REVISABLE_STAGES.join(),
+              JSON.stringify({ lvLegalOnly, lvDecisionFirst }).slice(0, 1_500));
+
+            // LV12: a run with only legal decision findings is revisable, from the earliest stage owning one.
+            const lvDecisionsOnly = lvPlan(lvPanel0, lvIn([{ stage: "production-direction", blocking: false },
+              { stage: "hook-story-script", blocking: false, location: "script" }], "needs_owner_decision")).plan;
+            const lvCaptionDecision = lvPlan(lvPanel0, lvIn([{ stage: P8, blocking: false, location: "captions" }], "needs_owner_decision")).plan;
+            lrCheck("LV12. a run with only legal decision findings — no critic and no legal blocker — is revisable and starts at the "
+              + "earliest stage owning one: decisions at stages 3 and 4 start at hook-story-script (stages 3-5, each sent its own); "
+              + "a decision at stage 5 alone re-runs stage 5 only, the earlier stages' critic advisory findings recorded as not re-run",
+              lvDecisionsOnly?.kind === "revision" && lvDecisionsOnly.startStage === "hook-story-script"
+                && lvDecisionsOnly.stages.map((s) => s.stage).join() === REVISABLE_STAGES.join()
+                && lvSent(lvDecisionsOnly, "hook-story-script") === "L2,F1" && lvSent(lvDecisionsOnly, "production-direction") === "L1,F3"
+                && lvSent(lvDecisionsOnly, P8) === "F2" && lvDecisionsOnly.notRerun.length === 0
+                && lvDecisionsOnly.stages.every((st) => st.blocking === 0)
+                && lvDecisionsOnly.legalReview?.findings.map((f) => `${f.id}:${f.severity}:${f.disposition}`).join() === "L1:advisory:sent,L2:advisory:sent"
+                && lvCaptionDecision?.kind === "revision" && lvCaptionDecision.startStage === P8
+                && lvCaptionDecision.stages.map((s) => s.stage).join() === P8 && lvSent(lvCaptionDecision, P8) === "L1,F2"
+                && lvCaptionDecision.notRerun.map((f) => f.id).join() === "F1,F3",
+              JSON.stringify({ lvDecisionsOnly, lvCaptionDecision }).slice(0, 1_500));
+
+            // LV13: a legal finding owned by a stage before the start can no longer occur.
+            const lvStageCombos: string[][] = [];
+            for (const a of REVISABLE_STAGES) {
+              lvStageCombos.push([a]);
+              for (const b of REVISABLE_STAGES) {
+                lvStageCombos.push([a, b]);
+                for (const c of REVISABLE_STAGES) lvStageCombos.push([a, b, c]);
+              }
+            }
+            const lvLocationOf: Record<string, string> = { "hook-story-script": "script", "production-direction": "production", [P8]: "captions" };
+            const lvSweepAdvisories: CvSpecCli[] = REVISABLE_STAGES.map((owner, k) => ({ lens: CRITIC_LENSES[k]!, severity: "advisory",
+              category: ["claim_fidelity", "timing", "voice_clarity"][k]!, owner, issue: `sweep advisory ${k}` }));
+            const lvSweep = [null, ...REVISABLE_STAGES].flatMap((criticBlocker) => lvStageCombos.flatMap((stages) => [false, true].map((firstBlocking) => {
+              const panel = cvPanelCli([...lvSweepAdvisories, ...(criticBlocker ? [{ lens: "production-coherence" as CriticLens,
+                severity: "blocking" as const, category: "production_coherence", owner: criticBlocker, issue: "sweep blocker" }] : [])]);
+              const legal = lvIn(stages.map((stage, k) => ({ stage, blocking: k === 0 && firstBlocking, location: lvLocationOf[stage] })));
+              const plan = lvPlan(panel, legal).plan;
+              const start = plan?.startStage ? REVISABLE_STAGES.indexOf(plan.startStage) : -1;
+              return plan !== undefined && plan.kind === "revision"
+                && plan.notRerun.every((f) => /^F/.test(f.id))
+                && legal.findings.every((f) => REVISABLE_STAGES.indexOf(f.stage) >= start)
+                && plan.legalReview!.findings.every((f) => f.disposition === "sent")
+                && start === Math.min(...stages.map((st) => REVISABLE_STAGES.indexOf(st as never)),
+                  criticBlocker ? REVISABLE_STAGES.indexOf(criticBlocker) : 99);
+            })));
+            lrCheck("LV13. a legal finding owned by a stage before the start can no longer occur: across every one-to-three-finding "
+              + "legal review over the three stages, each with and without a blocking finding, and with no critic blocker or one at "
+              + "each stage (312 plans), the plan is a revision starting at the earliest stage owning a critic blocker or a legal "
+              + "finding, every legal finding is sent, and notRerun holds critic findings only",
+              lvSweep.length === 4 * 39 * 2 && lvSweep.every(Boolean),
+              `${lvSweep.filter((ok) => !ok).length} of ${lvSweep.length} plans broke the rule`);
 
             // LV3: the order within a stage, and the cap.
             const lvOrderPanel = cvPanelCli([
@@ -8771,57 +8825,82 @@ async function run(): Promise<void> {
                 && JSON.stringify(lvOwnerMeta?.findingsSent) === JSON.stringify({ "production-direction": ["F4", "L1", "L2"], [P8]: ["F2"] }),
               `${lvOwnerRun.error} ${JSON.stringify(lvOwnerMeta?.findingsSent)}`);
 
+            // Run 46f5bf15's real shape (the reviewer's record of 2026-10-14): the critic panel 14 advisory, 0 blocking;
+            // the legal review L1 copyright_reproduction (blocking, production), L2 and L3 manufacturer_quotation
+            // (decision, script), L4 people_and_releases and L5 privacy_exposure (decision, production).
+            const lv46Owners = ["hook-story-script", "production-direction", P8];
+            const lv46Categories: Record<string, string> = { "evidence-fidelity": "claim_fidelity", "platform-and-local": "timing",
+              "voice-and-craft": "voice_clarity", "production-coherence": "production_coherence" };
+            const lv46Critic: CvSpecCli[] = CRITIC_LENSES.flatMap((lens, li) => Array.from({ length: li < 2 ? 4 : 3 }, (_, k): CvSpecCli => ({
+              lens, severity: "advisory", category: lv46Categories[lens]!, owner: lv46Owners[(li + k) % 3]!, issue: LVM(`46-adv-${lens}-${k}`),
+            })));
             const lv46Legal: LvSpec[] = [
               { category: "copyright_reproduction", location: "production", quote: REQUIREMENT, issue: LVM("46-copyright") },
-              { category: "manufacturer_quotation", location: "captions", quote: captionQuote, issue: LVM("46-quotation-captions") },
-              { category: "manufacturer_quotation", location: "claims", quote: claimPlatformOnly, issue: LVM("46-quotation-claims") },
+              { category: "manufacturer_quotation", location: "script", quote: scriptQuote, issue: LVM("46-quotation-own-words") },
+              { category: "manufacturer_quotation", location: "script", quote: scriptQuote, issue: LVM("46-quotation-assyst"), severity: "low" },
               { category: "people_and_releases", location: "production", quote: REQUIREMENT, issue: LVM("46-release"), severity: "low" },
               { category: "privacy_exposure", location: "production", quote: REQUIREMENT, issue: LVM("46-privacy"), severity: "low" },
             ];
-            const lv46 = cvSourceCli("lv-46f5bf15", lvAdvisoryOnly, lvWrite(lv46Legal));
+            const lv46 = cvSourceCli("lv-46f5bf15", lv46Critic, lvWrite(lv46Legal));
             const lv46Before = crTree(lv46);
             const lv46Run = await cvRevise(lv46);
             const lv46Dir = cvRevisedDir(lv46);
             const lv46Meta = lv46Dir ? crJson(join(lv46Dir, "revision-meta.json")) : undefined;
             const lv46Summary = lv46Dir && existsSync(join(lv46Dir, "summary.md")) ? readFileSync(join(lv46Dir, "summary.md"), "utf8") : "";
-            const lv46DirBlock = (() => {
-              try { return JSON.parse(cvBlock(cvStagePrompt(lv46Run.calls, "production-direction"), "CRITIC_FINDINGS")) as Array<Record<string, string>>; }
+            const lv46Block = (stage: string) => {
+              try { return JSON.parse(cvBlock(cvStagePrompt(lv46Run.calls, stage), "CRITIC_FINDINGS")) as Array<Record<string, string>>; }
               catch { return []; }
-            })();
-            const lv46Ceiling = csLib.computeCostCeiling(cnRt, csLib.revisionPolicies(cnRt, "production-direction"));
+            };
+            const lv46ScriptBlock = lv46Block("hook-story-script");
+            const lv46DirBlock = lv46Block("production-direction");
+            const lv46Ceiling = csLib.computeCostCeiling(cnRt, csLib.revisionPolicies(cnRt, "hook-story-script"));
             const lv46Round2 = lv46Run.calls.filter((c) => c.stage === "final-critic" || c.stage === "legal-review");
-            lrCheck("LV8. a revise of run 46f5bf15's shape — critic 0 blocking, the legal review blocked by one "
-              + "copyright_reproduction finding in the shot list, with four decision items — re-runs production-direction and "
-              + "packaging-adaptation, then the four lenses and the legal review fresh (7 requests, a $17.78 ceiling); each "
-              + "legal finding reaches the stage that wrote its quote in CRITIC_FINDINGS, mapped field by field; revision-meta.json "
-              + "and summary.md list them (id, category, stage); round 2 is shown none of them; the source is unchanged",
+            const lv46Expected = {
+              "hook-story-script": ["L2", "L3", "F1", "F4", "F7", "F10", "F12"],
+              "production-direction": ["L1", "L4", "L5", "F2", "F5", "F8", "F11", "F13"],
+              [P8]: ["F3", "F6", "F9", "F14"],
+            };
+            lrCheck("LV8. a revise of run 46f5bf15's real shape — critic 14 advisory, 0 blocking; the legal review blocked by one "
+              + "copyright_reproduction finding in the shot list, with two manufacturer_quotation decisions in the script and two "
+              + "decisions in the shot list — starts at hook-story-script, so the owner's script fixes are not lost: stage 3 is sent "
+              + "L2 and L3 then its critic advisories, stage 4 L1, L4 and L5 then its advisories, stage 5 its advisories; then the "
+              + "four lenses and the legal review fresh (8 requests, the $19.245 revise-from-hook-story-script ceiling); each legal "
+              + "finding mapped field by field; revision-meta.json and summary.md list them (id, category, stage); nothing is "
+              + "recorded as not re-run; round 2 is shown none of them; the source is unchanged",
               lv46Run.ok && lv46Dir !== undefined && lv46Run.plans.length === 1
-                && cvRequests(lv46Run.calls).slice(0, 2).join() === `production-direction,${P8}`
-                && cvRequests(lv46Run.calls).slice(2, -1).sort().join() === [...cvLensRequests].sort().join()
-                && cvRequests(lv46Run.calls).at(-1) === "legal-review" && lv46Run.calls.length === 7
-                && lv46Meta?.startStage === "production-direction" && lv46Meta?.status === "completed"
-                && JSON.stringify(lv46Meta?.findingsSent) === JSON.stringify({ "production-direction": ["L1", "L4", "L5", "F3"], [P8]: ["L2", "L3", "F2"] })
+                && cvRequests(lv46Run.calls).slice(0, 3).join() === [...REVISABLE_STAGES].join()
+                && cvRequests(lv46Run.calls).slice(3, -1).sort().join() === [...cvLensRequests].sort().join()
+                && cvRequests(lv46Run.calls).at(-1) === "legal-review" && lv46Run.calls.length === 8
+                && lv46Meta?.startStage === "hook-story-script" && lv46Meta?.status === "completed"
+                && JSON.stringify(lv46Meta?.rerunStages) === JSON.stringify([...REVISABLE_STAGES])
+                && JSON.stringify(lv46Meta?.findingsSent) === JSON.stringify(lv46Expected)
                 && JSON.stringify(lv46Meta?.legalFindingsSent) === JSON.stringify([
                   { id: "L1", category: "copyright_reproduction", stage: "production-direction" },
-                  { id: "L2", category: "manufacturer_quotation", stage: P8 },
-                  { id: "L3", category: "manufacturer_quotation", stage: P8 },
+                  { id: "L2", category: "manufacturer_quotation", stage: "hook-story-script" },
+                  { id: "L3", category: "manufacturer_quotation", stage: "hook-story-script" },
                   { id: "L4", category: "people_and_releases", stage: "production-direction" },
                   { id: "L5", category: "privacy_exposure", stage: "production-direction" },
                 ])
-                && JSON.stringify(lv46Meta?.legalFindingsDropped) === "[]" && JSON.stringify(lv46Meta?.legalFindingsNotRerun) === "[]"
+                && JSON.stringify(lv46Meta?.legalFindingsDropped) === "[]" && !("legalFindingsNotRerun" in lv46Meta)
                 && JSON.stringify(lv46Meta?.legalReviewSource) === JSON.stringify({ verdict: "blocked", findings: 5 })
-                && lv46Meta?.findingsNotRerun?.map((f: { id: string }) => f.id).join() === "F1"
+                && JSON.stringify(lv46Meta?.findingsNotRerun) === "[]"
+                && lv46ScriptBlock.map((f) => f.id).join() === lv46Expected["hook-story-script"].join()
+                && JSON.stringify(lv46ScriptBlock[0]) === JSON.stringify({ id: "L2", severity: "advisory", category: "manufacturer_quotation",
+                  platform: "cross_platform", lens: "legal-review", issue: LVM("46-quotation-own-words"),
+                  suggestedAction: `Fix it: ${LVM("46-quotation-own-words")}` })
                 && JSON.stringify(lv46DirBlock[0]) === JSON.stringify({ id: "L1", severity: "blocking", category: "copyright_reproduction",
                   platform: "cross_platform", lens: "legal-review", issue: LVM("46-copyright"), suggestedAction: `Fix it: ${LVM("46-copyright")}` })
                 && lv46DirBlock.slice(1, 3).every((f) => f.severity === "advisory" && f.lens === "legal-review")
-                && cvStagePrompt(lv46Run.calls, P8).includes(LVM("46-quotation-claims"))
-                && !cvStagePrompt(lv46Run.calls, "production-direction").includes(LVM("46-quotation-captions"))
+                && !cvStagePrompt(lv46Run.calls, "production-direction").includes(LVM("46-quotation-own-words"))
+                && !cvStagePrompt(lv46Run.calls, P8).includes("LVMARK-46-quotation")
                 && lv46Round2.length === 5 && lv46Round2.every((c) => !c.prompt.includes("LVMARK-") && !/CRITIC_FINDINGS/.test(c.prompt))
                 && lv46Summary.includes("### From the source run's legal review")
                 && lv46Summary.includes("- L1 (copyright_reproduction, blocking) — production-direction, sent")
+                && lv46Summary.includes("- L2 (manufacturer_quotation, advisory) — hook-story-script, sent")
+                && lv46Summary.includes(": L2 (legal-review, advisory), L3 (legal-review, advisory), F1 (evidence-fidelity, advisory)")
                 && lv46Summary.includes(": L1 (legal-review, blocking), L4 (legal-review, advisory), L5 (legal-review, advisory), "
-                  + "F3 (production-coherence, advisory)")
-                && lv46Ceiling.lines.length === 7 && Math.abs(lv46Ceiling.totalUsd - 17.78) < 1e-9
+                  + "F2 (evidence-fidelity, advisory)")
+                && lv46Ceiling.lines.length === 8 && Math.abs(lv46Ceiling.totalUsd - 19.245) < 1e-9
                 && crTree(lv46) === lv46Before,
               `${lv46Run.error} ${cvRequests(lv46Run.calls).join()} ${JSON.stringify(lv46Meta?.findingsSent)} ${lv46Ceiling.totalUsd}`);
 

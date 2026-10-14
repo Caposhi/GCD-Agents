@@ -77,8 +77,10 @@
  * Findings owned by `human_review`, and every `human_decision` finding, never
  * reach a model: they are listed as owner items. Since Content Studio S8.8 the
  * source run's legal findings (`07-legal-review.json`, revalidated) are sent
- * too, each to the writing stage that wrote its quote, and a blocking one makes
- * the run revisable. No revisable blocking finding means no request at all. It prices only the requests it makes, keeps the typed
+ * too, each to the writing stage that wrote its quote; any one of them makes
+ * the run revisable, and the round starts at the earliest stage owning a
+ * critic blocking finding or a legal finding. No revisable blocking finding
+ * and no legal finding means no request at all. It prices only the requests it makes, keeps the typed
  * LIVE gate, and writes a new `<source>-revised-<timestamp>` sibling; the
  * source run is never modified. See `src/harness/agents/revision.ts`.
  *
@@ -143,8 +145,9 @@
  *                              and every later writing stage, then all four critic
  *                              lenses fresh. Stages 1-2 are never re-run. The
  *                              source's legal findings go to the stage that wrote
- *                              each quote (S8.8). No revisable blocking finding,
- *                              critic or legal: no request. Writes
+ *                              each quote, and the earliest such stage can start
+ *                              the round (S8.8). No revisable blocking finding and
+ *                              no legal finding: no request. Writes
  *                              <run-dir>-revised-<timestamp>; never touches the
  *                              source run.
  *   --revise-once              With a goal: a full run, then the same single
@@ -213,9 +216,9 @@ Options:
                                    Run stage 5, final-critic and the legal review against a saved run's stage 1-4 outputs;
                                    writes a new sibling directory. packaging-adaptation is the only resume point.
   --revise-from <run-dir>          One revision round on a completed run: re-run the earliest writing stage that owns
-                                   a blocking finding and every later one, then the critic panel and the legal review
-                                   fresh. Human items never reach a model; the source's legal findings go to the
-                                   stage that wrote each quote. Writes
+                                   a blocking finding or one of the source's legal findings, and every later one, then
+                                   the critic panel and the legal review fresh. Human items never reach a model; each
+                                   legal finding goes to the stage that wrote its quote. Writes
                                    <run-dir>-revised-<timestamp>.
   --revise-once                    With a goal: a full run, then the same single revision round on it.
   --scope-tags a,b,c               Narrow the evidence pack to records with any of these tags. Contact-line and

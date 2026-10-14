@@ -95,8 +95,8 @@ function findingCounts(findings: any[]): string {
  * side, what each re-run stage was sent, what was dropped over a cap, what was
  * not sent because its stage did not re-run, and the owner items no model saw.
  * Since Content Studio S8.8, when the source run had a legal review, every one
- * of its findings — id, category, the stage it went to, and whether it was sent,
- * dropped over the cap or not re-run.
+ * of its findings — id, category, the stage it went to, and whether it was sent
+ * or dropped over the cap.
  */
 export function revisionSummaryLines({ round1, round2, plan, reusedFiles }: any): string[] {
   const lines = ["## Revision — one round", ""];
@@ -129,8 +129,7 @@ export function revisionSummaryLines({ round1, round2, plan, reusedFiles }: any)
   plan.notRerun.forEach((f: any) => lines.push(`- ${f.id} (${f.lens}, ${f.severity}) — owned by ${f.owner}`));
   if (plan.legalReview) {
     const disposition: Record<string, string> = {
-      sent: "sent", dropped: "dropped over its stage's cap", not_rerun: "not sent: its stage was not re-run",
-      not_sent: "not sent: no revision",
+      sent: "sent", dropped: "dropped over its stage's cap",
     };
     lines.push("", "### From the source run's legal review", "");
     lines.push(`The source run's legal review (${plan.legalReview.verdict}): each finding goes to the writing stage that `

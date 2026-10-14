@@ -22,9 +22,9 @@
  *    critic's four lenses are one item. A line whose model has no price row is
  *    refused (`unpriced_request`): an unknown price cannot be reserved.
  * 4. A revise records `planRevision`'s plan, captured from the library's own
- *    call; with no revisable blocking finding — counting, since Content Studio
- *    S8.8, the source run's blocking legal findings, which the library plans —
- *    it is refused as `no_revisable_blocking_finding`, with the plan.
+ *    call; with no revisable blocking finding and — since Content Studio S8.8 —
+ *    no finding at all in the source run's legal review, which the library
+ *    plans, it is refused as `no_revisable_blocking_finding`, with the plan.
  *
  * The outcome — the quote and the request's `quoted`, or the request's
  * `refused` — is written in ONE transaction with the job's end. A refusal's
@@ -252,7 +252,7 @@ export async function decidePreflight(input: PreflightInputs): Promise<Preflight
   if (kind === "revise" && revised?.revised === false) {
     return refused("no_revisable_blocking_finding",
       "no blocking finding has a revisable owner (hook-story-script, production-direction or packaging-adaptation), "
-      + "in the critic panel or the source run's legal review: nothing to revise, so no quote", asPlan(plan ?? revised.plan));
+      + "and the source run's legal review has no finding: nothing to revise, so no quote", asPlan(plan ?? revised.plan));
   }
   if (!priced) return refused("not_priced", "the action finished its free checks without reaching its paid-action gate");
 

@@ -507,8 +507,10 @@ export const WRITER_STAGE_FILES: Record<string, string> = {
  *     a review that does not revalidate is refused. A source without one is
  *     planned exactly as before S8.8.
  *  2. The plan (`planRevision`), from round 1's panel and the source's legal
- *     findings: owner items set aside, never sent; no revisable blocking finding,
- *     critic or legal → print that, write nothing, make no request; a stage
+ *     findings: owner items set aside, never sent; no critic blocking finding
+ *     with a revisable owner and no legal finding → print that, write nothing,
+ *     make no request; the start is the earliest stage owning a critic blocking
+ *     finding or any legal finding (S8.8); a stage
  *     owning more blocking findings, critic plus legal, than its derived cap →
  *     refused.
  *  3. The free preflights for the stages this re-runs.
@@ -569,7 +571,7 @@ export async function reviseRun(
   }
   if (plan.kind === "no_revision") {
     io.reporter.log("No blocking finding has a revisable owner (hook-story-script, production-direction or "
-      + `packaging-adaptation)${sourceLegal ? ", in the critic panel or the source's legal review" : ""}: `
+      + `packaging-adaptation)${sourceLegal ? ", and the source's legal review has no finding" : ""}: `
       + "no revision request was made, and nothing was written.");
     return { revised: false, plan };
   }
@@ -639,14 +641,13 @@ export async function reviseRun(
     findingsDropped: plan.stages.flatMap((stage) => stage.dropped.map((f) => ({ ...findingRef(f), stage: stage.stage }))),
     findingsNotRerun: plan.notRerun.map((f) => ({ ...findingRef(f), owner: f.owner })),
     ownerItems: plan.ownerItems.map((f) => ({ ...findingRef(f), owner: f.owner, category: f.category })),
-    // S8.8: the source run's legal findings — what was sent, dropped over a cap, or not re-run. Absent without a review.
+    // S8.8: the source run's legal findings — what was sent and what was dropped over a cap. Absent without a review.
+    // Never "not re-run": every legal finding's stage re-runs, the start being the earliest stage owning one.
     ...(plan.legalReview ? {
       legalReviewSource: { verdict: plan.legalReview.verdict, findings: plan.legalReview.findings.length },
       legalFindingsSent: plan.legalReview.findings.filter((f) => f.disposition === "sent")
         .map(({ id, category, stage }) => ({ id, category, stage })),
       legalFindingsDropped: plan.legalReview.findings.filter((f) => f.disposition === "dropped")
-        .map(({ id, category, stage }) => ({ id, category, stage })),
-      legalFindingsNotRerun: plan.legalReview.findings.filter((f) => f.disposition === "not_rerun")
         .map(({ id, category, stage }) => ({ id, category, stage })),
     } : {}),
     round1: { verdict: criticOutput.provisional.verdict, summary: criticOutput.provisional.summary },
