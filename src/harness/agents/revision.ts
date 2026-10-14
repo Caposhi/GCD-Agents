@@ -30,6 +30,30 @@
  *  5. **A stage that owns more blocking findings than its cap is refused**
  *     (`RevisionCapError`), naming the stage, the count and the cap, before any
  *     cost gate and before any request.
+ *
+ * **The source run's legal findings (Content Studio S8.8; the owner's go-ahead
+ * of 2026-10-14).** When the caller passes the source run's revalidated legal
+ * review (`legal`), every one of its findings joins the plan — each blocking
+ * finding and each "for your decision" finding — owned by the writing stage
+ * that wrote the quoted block (`legalReview.ts`, `legalFindingStage`):
+ *
+ *  - a blocking legal finding counts for rule 2 and rule 3 like a blocking
+ *    critic finding: it alone makes the run revisable, and the start stage is
+ *    the earliest stage owning any blocking finding, critic or legal;
+ *  - each is sent in the stage's existing `CRITIC_FINDINGS` block, in the
+ *    revision-finding shape (`legalRevisionFinding`): lens `legal-review`, its
+ *    category, severity `blocking` or `advisory`, platform `cross_platform`,
+ *    issue, suggested action = its fix, and an `L<n>` id that cannot equal a
+ *    panel finding's `F<n>`;
+ *  - within each stage the order is: critic blocking (as rule 4 orders them),
+ *    legal blocking, legal "for your decision", then critic advisory (as rule 4
+ *    orders them); within each legal group, the review's own order. Blocking
+ *    findings, critic plus legal, over the cap are rule 5's refusal; anything
+ *    else over the cap is dropped and recorded;
+ *  - owner items (rule 1) are unchanged: never sent.
+ *
+ * Without `legal` (a source from before S8.6, or one stopped before its legal
+ * review) the plan is exactly what it was before S8.8, key for key.
  */
 
 import {
@@ -44,7 +68,9 @@ import {
   revisionFindingId,
   type RevisableStage,
 } from "./payloadContract.js";
-import type { RevisionFinding } from "./revisionInput.js";
+import {
+  LEGAL_REVISION_LENS, LEGAL_REVISION_PLATFORM, legalRevisionFindingId, type RevisionFinding,
+} from "./revisionInput.js";
 
 export { REVISABLE_STAGES, REVISION_FINDING_CAPS } from "./payloadContract.js";
 export type { RevisableStage } from "./payloadContract.js";
@@ -89,6 +115,42 @@ export interface StageRevisionPlan {
   dropped: FindingRef[];
 }
 
+/**
+ * Content Studio S8.8: one finding of the source run's legal review, as the
+ * caller hands it to the plan: already revalidated, with the writing stage that
+ * wrote its quoted block. Model prose: never evidence, never instructions.
+ */
+export interface LegalRevisionFindingInput {
+  category: string;
+  /** Code's, from the category (`LEGAL_BLOCKING_CATEGORIES`), never the model's. */
+  blocking: boolean;
+  location: string;
+  stage: RevisableStage;
+  issue: string;
+  fix: string;
+}
+
+/** Content Studio S8.8: the source run's legal review, as the plan reads it. */
+export interface LegalRevisionInput {
+  verdict: string;
+  /** In the review's own order; finding `i` is `L<i + 1>`. */
+  findings: readonly LegalRevisionFindingInput[];
+}
+
+/** What became of one legal finding in the plan. */
+export type LegalFindingDisposition = "sent" | "dropped" | "not_rerun" | "not_sent";
+
+/** Content Studio S8.8: one legal finding's record in the plan, for revision-meta.json, summary.md and the price page. */
+export interface LegalFindingRecord {
+  id: string;
+  category: string;
+  severity: "blocking" | "advisory";
+  location: string;
+  stage: RevisableStage;
+  /** `sent` to its stage; `dropped` over the cap; `not_rerun` (its stage precedes the start); `not_sent` (no revision). */
+  disposition: LegalFindingDisposition;
+}
+
 export interface RevisionPlan {
   kind: "revision" | "no_revision";
   /** The earliest stage owning a blocking finding; absent for `no_revision`. */
@@ -99,6 +161,22 @@ export interface RevisionPlan {
   ownerItems: OwnerItem[];
   /** Advisory findings owned by a writing stage before the start stage, which is not re-run. */
   notRerun: Array<FindingRef & { owner: string }>;
+  /** Content Studio S8.8: the source run's legal review and every one of its findings; absent without one. */
+  legalReview?: { verdict: string; findings: LegalFindingRecord[] };
+}
+
+/** Content Studio S8.8: one legal finding in the revision-finding shape `CRITIC_FINDINGS` carries. */
+export function legalRevisionFinding(finding: LegalRevisionFindingInput, index: number): RevisionFinding {
+  return {
+    id: legalRevisionFindingId(index),
+    lens: LEGAL_REVISION_LENS,
+    owner: finding.stage,
+    severity: finding.blocking ? "blocking" : "advisory",
+    category: finding.category,
+    platform: LEGAL_REVISION_PLATFORM,
+    issue: finding.issue,
+    suggestedAction: finding.fix,
+  };
 }
 
 const isOwnerItem = (f: CriticFinding): boolean =>
@@ -111,6 +189,7 @@ const isOwnerItem = (f: CriticFinding): boolean =>
 export function planRevision(
   critic: FinalCriticOutput,
   caps: Readonly<Record<RevisableStage, number>> = REVISION_FINDING_CAPS,
+  legal: LegalRevisionInput | null = null,
 ): RevisionPlan {
   const indexed = critic.provisional.findings.map((finding, index) => ({ finding, index, id: revisionFindingId(index) }));
   const ref = ({ finding, id }: (typeof indexed)[number]): FindingRef =>
@@ -125,14 +204,36 @@ export function planRevision(
     suggestedAction: entry.finding.suggestedAction,
   }));
   const revisable = indexed.filter(({ finding }) => !isOwnerItem(finding));
+  // S8.8: the source run's legal findings, each already owned by the stage that wrote its quote.
+  const legalSent = (legal?.findings ?? []).map((finding, index) => {
+    if (!(REVISABLE_STAGES as readonly string[]).includes(finding.stage)) {
+      throw new Error(`legal finding ${legalRevisionFindingId(index)} names no writing stage (${JSON.stringify(finding.stage)})`);
+    }
+    return legalRevisionFinding(finding, index);
+  });
+  const legalRecord = (disposition: (f: RevisionFinding) => LegalFindingDisposition) => (legal === null ? {} : {
+    legalReview: {
+      verdict: legal.verdict,
+      findings: legalSent.map((f, index): LegalFindingRecord => ({
+        id: f.id, category: f.category, severity: f.severity as LegalFindingRecord["severity"],
+        location: legal.findings[index]!.location, stage: f.owner as RevisableStage, disposition: disposition(f),
+      })),
+    },
+  });
 
   const startIndex = REVISABLE_STAGES.findIndex((stage) =>
-    revisable.some(({ finding }) => finding.owner === stage && finding.severity === "blocking"));
-  if (startIndex < 0) return { kind: "no_revision", stages: [], ownerItems, notRerun: [] };
+    revisable.some(({ finding }) => finding.owner === stage && finding.severity === "blocking")
+    || legalSent.some((f) => f.owner === stage && f.severity === "blocking"));
+  if (startIndex < 0) return { kind: "no_revision", stages: [], ownerItems, notRerun: [], ...legalRecord(() => "not_sent") };
 
-  const notRerun = revisable
-    .filter(({ finding }) => REVISABLE_STAGES.indexOf(finding.owner as RevisableStage) < startIndex)
-    .map((entry) => ({ ...ref(entry), owner: entry.finding.owner }));
+  const notRerun = [
+    ...revisable
+      .filter(({ finding }) => REVISABLE_STAGES.indexOf(finding.owner as RevisableStage) < startIndex)
+      .map((entry) => ({ ...ref(entry), owner: entry.finding.owner })),
+    ...legalSent
+      .filter((f) => REVISABLE_STAGES.indexOf(f.owner as RevisableStage) < startIndex)
+      .map((f) => ({ id: f.id, lens: f.lens, severity: f.severity, owner: f.owner })),
+  ];
 
   const lensRank = (lens: string) => (CRITIC_LENSES as readonly string[]).indexOf(lens);
   const stages = REVISABLE_STAGES.slice(startIndex).map((stage): StageRevisionPlan => {
@@ -142,27 +243,43 @@ export function planRevision(
         Number(b.finding.severity === "blocking") - Number(a.finding.severity === "blocking")
         || lensRank(a.finding.lens) - lensRank(b.finding.lens)
         || a.index - b.index);
-    const blocking = owned.filter(({ finding }) => finding.severity === "blocking").length;
+    const criticBlocking = owned.filter(({ finding }) => finding.severity === "blocking").length;
+    const ownLegal = legalSent.filter((f) => f.owner === stage);
+    const legalBlocking = ownLegal.filter((f) => f.severity === "blocking");
+    const blocking = criticBlocking + legalBlocking.length;
     const cap = caps[stage];
     if (blocking > cap) throw new RevisionCapError(stage, blocking, cap);
+    const asSent = ({ finding, id }: (typeof owned)[number]): RevisionFinding => ({
+      id,
+      lens: finding.lens,
+      owner: finding.owner,
+      severity: finding.severity,
+      category: finding.category,
+      platform: finding.platform,
+      issue: finding.issue,
+      suggestedAction: finding.suggestedAction,
+    });
+    // Critic blocking (the sorted prefix), legal blocking, legal "for your decision", then critic advisory.
+    const ordered: RevisionFinding[] = [
+      ...owned.slice(0, criticBlocking).map(asSent),
+      ...legalBlocking,
+      ...ownLegal.filter((f) => f.severity !== "blocking"),
+      ...owned.slice(criticBlocking).map(asSent),
+    ];
     return {
       stage,
       cap,
-      owned: owned.length,
+      owned: ordered.length,
       blocking,
-      sent: owned.slice(0, cap).map(({ finding, id }) => ({
-        id,
-        lens: finding.lens,
-        owner: finding.owner,
-        severity: finding.severity,
-        category: finding.category,
-        platform: finding.platform,
-        issue: finding.issue,
-        suggestedAction: finding.suggestedAction,
-      })),
-      dropped: owned.slice(cap).map(ref),
+      sent: ordered.slice(0, cap),
+      dropped: ordered.slice(cap).map(({ id, lens, severity }) => ({ id, lens, severity })),
     };
   });
 
-  return { kind: "revision", startStage: REVISABLE_STAGES[startIndex], stages, ownerItems, notRerun };
+  const sentIds = new Set(stages.flatMap((s) => s.sent.map((f) => f.id)));
+  const droppedIds = new Set(stages.flatMap((s) => s.dropped.map((f) => f.id)));
+  return {
+    kind: "revision", startStage: REVISABLE_STAGES[startIndex], stages, ownerItems, notRerun,
+    ...legalRecord((f) => (sentIds.has(f.id) ? "sent" : droppedIds.has(f.id) ? "dropped" : "not_rerun")),
+  };
 }

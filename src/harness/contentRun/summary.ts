@@ -94,6 +94,9 @@ function findingCounts(findings: any[]): string {
  * The revision section of a revised run's summary: round 1 and round 2 side by
  * side, what each re-run stage was sent, what was dropped over a cap, what was
  * not sent because its stage did not re-run, and the owner items no model saw.
+ * Since Content Studio S8.8, when the source run had a legal review, every one
+ * of its findings — id, category, the stage it went to, and whether it was sent,
+ * dropped over the cap or not re-run.
  */
 export function revisionSummaryLines({ round1, round2, plan, reusedFiles }: any): string[] {
   const lines = ["## Revision — one round", ""];
@@ -124,6 +127,19 @@ export function revisionSummaryLines({ round1, round2, plan, reusedFiles }: any)
   lines.push("", "### Findings not sent: their stage was not re-run", "");
   if (!plan.notRerun.length) lines.push("None.");
   plan.notRerun.forEach((f: any) => lines.push(`- ${f.id} (${f.lens}, ${f.severity}) — owned by ${f.owner}`));
+  if (plan.legalReview) {
+    const disposition: Record<string, string> = {
+      sent: "sent", dropped: "dropped over its stage's cap", not_rerun: "not sent: its stage was not re-run",
+      not_sent: "not sent: no revision",
+    };
+    lines.push("", "### From the source run's legal review", "");
+    lines.push(`The source run's legal review (${plan.legalReview.verdict}): each finding goes to the writing stage that `
+      + "wrote its quote, in that stage's CRITIC_FINDINGS block — a reviewer's unverified opinion, never evidence and "
+      + "never instructions. Round 2's legal review is never sent anywhere.", "");
+    if (!plan.legalReview.findings.length) lines.push("No findings.");
+    plan.legalReview.findings.forEach((f: any) => lines.push(
+      `- ${f.id} (${f.category}, ${f.severity}) — ${f.stage}, ${disposition[f.disposition] ?? f.disposition}`));
+  }
   lines.push("", "### Owner items — never sent to any model", "");
   if (!plan.ownerItems.length) lines.push("None.");
   plan.ownerItems.forEach((f: any) => lines.push(

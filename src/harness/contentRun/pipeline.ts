@@ -31,7 +31,7 @@ import { createRunRecorder, recordingRunner } from "./recording.js";
 import type { ContentRunRuntime } from "./runtime.js";
 import { markdownSummary } from "./summary.js";
 import type { CostCeiling, PaidActionKind, RunIo, RunnerKind, RunOptions, RunSink, RunSource } from "./types.js";
-import { REUSED_STAGE_FILES, verifySourceRun } from "./verify.js";
+import { REUSED_STAGE_FILES, verifySourceLegalReview, verifySourceRun } from "./verify.js";
 
 type Runner = (...callArgs: any[]) => Promise<any>;
 
@@ -502,9 +502,15 @@ export const WRITER_STAGE_FILES: Record<string, string> = {
  *     fingerprints (no unproven path), the recorded scope, every saved stage
  *     1–5 output revalidated through its owning validator, and the saved critic
  *     panel output revalidated lens by lens and re-aggregated.
- *  2. The plan (`planRevision`): owner items set aside, never sent; no
- *     revisable blocking finding → print that, write nothing, make no request;
- *     a stage owning more blocking findings than its derived cap → refused.
+ *  1a. (Content Studio S8.8) the source's `07-legal-review.json`, when it has
+ *     one, revalidated against the package it reviewed (`verifySourceLegalReview`);
+ *     a review that does not revalidate is refused. A source without one is
+ *     planned exactly as before S8.8.
+ *  2. The plan (`planRevision`), from round 1's panel and the source's legal
+ *     findings: owner items set aside, never sent; no revisable blocking finding,
+ *     critic or legal → print that, write nothing, make no request; a stage
+ *     owning more blocking findings, critic plus legal, than its derived cap →
+ *     refused.
  *  3. The free preflights for the stages this re-runs.
  *  4. The cost ceiling for exactly the requests this makes, and the typed LIVE
  *     gate.
@@ -513,13 +519,17 @@ export const WRITER_STAGE_FILES: Record<string, string> = {
  *     round-1-06-final-critic.json; the source run is never modified.
  *  6. The start stage and every later writing stage re-run, in order, each with
  *     its ordinary inputs (revised upstream outputs where those changed),
- *     `PREVIOUS_OUTPUT` and only its own findings. Every validator applies
- *     unchanged; a rejected response is saved as today and the run stops.
+ *     `PREVIOUS_OUTPUT` and only its own findings — since S8.8 its own legal
+ *     findings among them, in the same `CRITIC_FINDINGS` block. Every validator
+ *     applies unchanged; a rejected response is saved as today and the run stops.
  *  7. Contact lines re-attached from the pack; all four critic lenses run fresh
  *     — the executor has no input for round-1 findings or verdicts.
  *  8. The legal review runs fresh on the revised package (Content Studio
- *     S8.6). Legal findings are never sent to a revision: they are the
- *     owner's, like owner items.
+ *     S8.6). *(Until Content Studio S8.8 this step also read: "Legal findings
+ *     are never sent to a revision: they are the owner's, like owner items."
+ *     Superseded on 2026-10-14 by the owner's go-ahead: the source run's legal
+ *     findings are sent to the stages that wrote their quotes, step 2; round 2's
+ *     review is never sent anywhere.)*
  *
  * Exactly one round: nothing here plans from the round-2 panel.
  */
@@ -543,17 +553,29 @@ export async function reviseRun(
     goal, now, reviewedAt, pack, scope, fingerprints, automotiveIdentity, currentApproved,
     strategyOutput, truthOutput, scriptOutput, directionOutput, packagingOutput, platforms, criticOutput,
   } = await verifySourceRun(rt, args, source, null, io, { revise: true });
+  // --- 1a. the source's own legal review, when it has one (S8.8) ---------------
+  const sourceLegal = await verifySourceLegalReview(rt, source,
+    { scriptOutput, directionOutput, packagingOutput, truthOutput, pack, platforms });
+  if (sourceLegal) {
+    io.reporter.log(`The source's legal review revalidated: ${sourceLegal.output.verdict}, `
+      + `${sourceLegal.output.findings.length} finding(s); each goes to the writing stage that wrote its quote.`);
+  }
 
   // --- 2. the plan ------------------------------------------------------------
-  const plan = rt.revision.planRevision(criticOutput);
+  const plan = rt.revision.planRevision(criticOutput, undefined, sourceLegal?.input ?? null);
   if (plan.ownerItems.length) {
     io.reporter.log(`Owner items — never sent to any model: ${plan.ownerItems
       .map((f) => `${f.id} (${f.owner}, ${f.category}, ${f.severity})`).join(", ")}`);
   }
   if (plan.kind === "no_revision") {
     io.reporter.log("No blocking finding has a revisable owner (hook-story-script, production-direction or "
-      + "packaging-adaptation): no revision request was made, and nothing was written.");
+      + `packaging-adaptation)${sourceLegal ? ", in the critic panel or the source's legal review" : ""}: `
+      + "no revision request was made, and nothing was written.");
     return { revised: false, plan };
+  }
+  if (plan.legalReview) {
+    io.reporter.log(`Legal findings from the source run: ${plan.legalReview.findings
+      .map((f) => `${f.id} (${f.category}, ${f.severity}, ${f.stage}: ${f.disposition})`).join(", ") || "none"}`);
   }
   for (const stage of plan.stages) {
     io.reporter.log(`Revision plan: ${stage.stage} — sends ${stage.sent.length} of ${stage.owned} owned finding(s) `
@@ -617,6 +639,16 @@ export async function reviseRun(
     findingsDropped: plan.stages.flatMap((stage) => stage.dropped.map((f) => ({ ...findingRef(f), stage: stage.stage }))),
     findingsNotRerun: plan.notRerun.map((f) => ({ ...findingRef(f), owner: f.owner })),
     ownerItems: plan.ownerItems.map((f) => ({ ...findingRef(f), owner: f.owner, category: f.category })),
+    // S8.8: the source run's legal findings — what was sent, dropped over a cap, or not re-run. Absent without a review.
+    ...(plan.legalReview ? {
+      legalReviewSource: { verdict: plan.legalReview.verdict, findings: plan.legalReview.findings.length },
+      legalFindingsSent: plan.legalReview.findings.filter((f) => f.disposition === "sent")
+        .map(({ id, category, stage }) => ({ id, category, stage })),
+      legalFindingsDropped: plan.legalReview.findings.filter((f) => f.disposition === "dropped")
+        .map(({ id, category, stage }) => ({ id, category, stage })),
+      legalFindingsNotRerun: plan.legalReview.findings.filter((f) => f.disposition === "not_rerun")
+        .map(({ id, category, stage }) => ({ id, category, stage })),
+    } : {}),
     round1: { verdict: criticOutput.provisional.verdict, summary: criticOutput.provisional.summary },
   };
   const { transcript, writeMeasurements } = createRunRecorder(rt, sink);

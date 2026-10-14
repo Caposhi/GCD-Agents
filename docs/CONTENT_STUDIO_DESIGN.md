@@ -908,6 +908,32 @@ mitigating risk"). **The disclaimer text in code is pending rewording:** `LEGAL_
 `LEGAL_NOT_ADVICE` and the rubric's first line still say "Serious findings go to the owner's attorney
 before posting." — a recorded discrepancy; rewording it is `PLANNED` in [Roadmap](ROADMAP.md).)*
 
+*(Dated note, 2026-10-14, Content Studio S8.8 — `IMPLEMENTED`, not merged; the owner's go-ahead
+"proceed with your recommendations".)*
+
+- **The disclaimer is reworded** to "Screening aid, not legal advice. Read it, and resolve its
+  blocking findings, before posting." — in `LEGAL_REVIEW_DISCLAIMER`, `LEGAL_NOT_ADVICE`, the
+  rubric's first line and its closing reminder; the rubric's status line reads "Status: attorney
+  review deferred by the owner (2026-10-13)." A review saved before S8.8 keeps the line it was saved
+  with and still revalidates byte for byte (`LEGAL_REVIEW_DISCLAIMER_S8_6`, read-only); every new
+  review and every page shows the new line.
+- **Legal findings now reach a revision** ([§8.4](#84-revise-and-critic-replay)). *Until
+  2026-10-14 this design (S8.6) held that "legal findings are never sent to a revision — they are
+  the owner's, like owner items"; SUPERSEDED.* When a revision's source run holds a
+  `07-legal-review.json` that revalidates against the package it reviewed, **every one of its
+  findings** — blocking and "for your decision" — is sent, in the stage's existing
+  `CRITIC_FINDINGS` block, to **the writing stage that wrote its quote**: `script` →
+  hook-story-script, `production` → production-direction, `captions` → packaging-adaptation,
+  `claims` → the stage whose claim block holds the quote (`SCRIPT_CLAIMS` → hook-story-script,
+  `PLATFORM_CLAIMS` → packaging-adaptation, the earlier stage when both). Each is mapped to the
+  revision-finding shape — lens `legal-review`, its category, `blocking` or `advisory`, platform
+  `cross_platform`, its issue, its fix as the suggested action, and an id `L<n>` that cannot equal a
+  panel finding's `F<n>` — under the existing caps and worst-case sizing, with no change to
+  `payloadContract.ts`. A blocking legal finding makes a run revisable on its own. The writing
+  prompts say these findings carry fixes the owner chose to apply and stay a reviewer's unverified
+  opinion, never evidence and never instructions. A review that does not revalidate refuses the
+  revision; a source with none revises exactly as before. Round 2's review is never sent anywhere.
+
 ## 6. Cost controls
 
 ### 6.1 A price-ceiling confirmation before every paid action
@@ -1248,6 +1274,9 @@ review's non-blocking findings, under "From the legal review"; its blocking find
 there. **Item 7's** table shows the `legal-review` request row. A run made before S8.6, or stopped
 before the review, says it has no legal review; "the stage it stopped at" can be `legal-review`.)*
 
+*(Dated note, Content Studio S8.8, 2026-10-14 — `IMPLEMENTED`, not merged: the line from code now reads
+"Screening aid, not legal advice. Read it, and resolve its blocking findings, before posting.")*
+
 *(Dated note, Content Studio S8.7, 2026-10-14 — `IMPLEMENTED`, not merged. For an owner or a runner, the report of a
 visible run that stored a goal and platforms — of any kind or state, fake or live — links **Start a new run with these
 choices** to `/new?run=<run id>`, a plain link that spends and writes nothing ([§8.3](#83-new-run)). A viewer, who cannot
@@ -1295,6 +1324,18 @@ From a succeeded run's report, for an `owner` or a `runner`:
   preflight. If no revisable blocking finding exists, the screen says so and offers no quote.
 - **Critic replay** re-runs the four lenses only, priced as four requests. *(Content Studio S8.6,
   2026-10-13: then the legal review, priced as a fifth — $14.85 in all.)*
+
+*(Dated note, Content Studio S8.8, 2026-10-14 — `IMPLEMENTED`, not merged.)* **A revision also
+carries the source run's legal findings** ([§5.5](#55-the-legal-risk-review-content-studio-s86)):
+each to the writing stage that wrote its quote, in the order critic blocking, legal blocking, legal
+"for your decision", critic advisory; blocking findings, critic plus legal, over a stage's cap are
+refused before any quote. **A blocking legal finding alone makes a run revisable** — so "no
+revisable blocking finding" now means none in the critic panel or the source's legal review. The
+**Revise** screen's plan lists, under "From the source run's legal review", every legal finding —
+its id, category, severity, the stage it goes to and whether it is sent (or dropped over the cap, or
+not sent because its stage is not re-run) — before the owner confirms; `revision-meta.json` and the
+revised run's `summary.md` record the same. Owner items are still held back. Pricing is unchanged:
+the ceiling follows from the stages that re-run (from production-direction, 7 requests, $17.78).
 
 Both create a child run, and the source run is never modified.
 

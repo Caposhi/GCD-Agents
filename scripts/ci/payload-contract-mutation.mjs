@@ -6849,8 +6849,9 @@ const CONTENT_STUDIO_S8_6_MUTATIONS = [
   {
     name: "the rubric no longer begins with the not-legal-advice line",
     file: LEGAL_RISK_SKILL,
-    from: "Screening aid, not legal advice. Serious findings go to the owner's attorney before posting.\n\n# Legal-Risk Screening",
-    to: "# Legal-Risk Screening\n\nScreening aid, not legal advice. Serious findings go to the owner's attorney before posting.",
+    // Re-anchored in place by Content Studio S8.8 (same edit, same check): the line was reworded.
+    from: "Screening aid, not legal advice. Read it, and resolve its blocking findings, before posting.\n\n# Legal-Risk Screening",
+    to: "# Legal-Risk Screening\n\nScreening aid, not legal advice. Read it, and resolve its blocking findings, before posting.",
     expect: ["LR11."],
   },
   {
@@ -6974,7 +6975,8 @@ const CONTENT_STUDIO_S8_6_MUTATIONS = [
   {
     name: "the web's not-legal-advice line drifts from the rubric's first line",
     file: STUDIO_WEB_VIEWS,
-    from: "export const LEGAL_NOT_ADVICE = \"Screening aid, not legal advice. Serious findings go to the owner's attorney before posting.\";",
+    // Re-anchored in place by Content Studio S8.8 (same edit, same check): the line was reworded.
+    from: "export const LEGAL_NOT_ADVICE = \"Screening aid, not legal advice. Read it, and resolve its blocking findings, before posting.\";",
     // Widened to string: the worker suite's SW56 compares the two literals, so a drifted literal
     // alone is already a compile error; the web suite must catch the drift at run time too.
     to: "export const LEGAL_NOT_ADVICE: string = \"Screening aid, not legal advice.\";",
@@ -7231,6 +7233,215 @@ const CONTENT_STUDIO_S8_7_MUTATIONS = [
 
 // Every group, in order. MUTATIONS is their concatenation; the groups exist
 // only so `M-inc-sample` can spread its sample across them.
+// Content Studio S8.8: a revision carries the source run's legal-review findings to the writing stages that wrote
+// their quotes (the owner's post-MVP item, go-ahead 2026-10-14), and the legal disclaimer reworded (no attorney step).
+const CONTENT_STUDIO_S8_8_MUTATIONS = [
+  {
+    name: "a blocking legal finding no longer makes a run revisable",
+    file: REVISION_MODULE,
+    from: "    || legalSent.some((f) => f.owner === stage && f.severity === \"blocking\"));",
+    to: "    || legalSent.some((f) => f.owner === stage && f.severity === \"blocking\" && Date.now() < 0));",
+    expect: ["LV2.", "LV8."],
+  },
+  {
+    name: "the same edit, as the worker prices a run blocked only by its legal review",
+    file: REVISION_MODULE,
+    from: "    || legalSent.some((f) => f.owner === stage && f.severity === \"blocking\"));",
+    to: "    || legalSent.some((f) => f.owner === stage && f.severity === \"blocking\" && Date.now() < 0));",
+    expect: ["SW58."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "blocking legal findings are not counted against a stage's cap",
+    file: REVISION_MODULE,
+    from: "    const blocking = criticBlocking + legalBlocking.length;",
+    to: "    const blocking = criticBlocking;",
+    expect: ["LV3."],
+  },
+  {
+    name: "a stage's legal findings are sent after its critic advisory findings",
+    file: REVISION_MODULE,
+    from: "      ...ownLegal.filter((f) => f.severity !== \"blocking\"),\n      ...owned.slice(criticBlocking).map(asSent),\n",
+    to: "      ...owned.slice(criticBlocking).map(asSent),\n      ...ownLegal.filter((f) => f.severity !== \"blocking\"),\n",
+    expect: ["LV3.", "LV8."],
+  },
+  {
+    name: "legal decision items are sent ahead of legal blocking findings",
+    file: REVISION_MODULE,
+    from: "      ...legalBlocking,\n      ...ownLegal.filter((f) => f.severity !== \"blocking\"),\n",
+    to: "      ...ownLegal.filter((f) => f.severity !== \"blocking\"),\n      ...legalBlocking,\n",
+    expect: ["LV3."],
+  },
+  {
+    name: "a stage is sent none of its legal findings",
+    file: REVISION_MODULE,
+    from: "    const ownLegal = legalSent.filter((f) => f.owner === stage);",
+    to: "    const ownLegal = legalSent.filter((f) => f.owner === stage && Date.now() < 0);",
+    expect: ["LV2.", "LV7.", "LV8."],
+  },
+  {
+    name: "a legal finding is sent under a critic lens",
+    file: REVISION_MODULE,
+    from: "    lens: LEGAL_REVISION_LENS,\n    owner: finding.stage,",
+    to: "    lens: \"production-coherence\",\n    owner: finding.stage,",
+    expect: ["LV5.", "LV8."],
+  },
+  {
+    name: "a legal finding's suggested action is its issue, not its fix",
+    file: REVISION_MODULE,
+    from: "    suggestedAction: finding.fix,",
+    to: "    suggestedAction: finding.issue,",
+    expect: ["LV5.", "LV8."],
+  },
+  {
+    name: "a blocking legal finding is sent as advisory",
+    file: REVISION_MODULE,
+    from: "    severity: finding.blocking ? \"blocking\" : \"advisory\",",
+    to: "    severity: \"advisory\",",
+    expect: ["LV2.", "LV8."],
+  },
+  {
+    name: "a plan from a source without a legal review gains a legal record",
+    file: REVISION_MODULE,
+    // A source without a legal review is planned as though it had an empty one.
+    from: "  legal: LegalRevisionInput | null = null,\n",
+    to: "  legal: LegalRevisionInput | null = { verdict: \"no_legal_finding\", findings: [] },\n",
+    expect: ["LV6."],
+  },
+  {
+    name: "a stage accepts an F id on a legal finding, or an L id on a critic finding",
+    file: REVISION_INPUT_MODULE,
+    from: "    if (typeof f.id !== \"string\" || !(legal ? LEGAL_ID_PATTERN : ID_PATTERN).test(f.id) || f.id.length > MAX_ID_CHARS) {",
+    to: "    if (typeof f.id !== \"string\" || !/^[FL][1-9][0-9]*$/.test(f.id) || f.id.length > MAX_ID_CHARS) {",
+    expect: ["LV5."],
+  },
+  {
+    name: "a stage refuses the legal-review lens",
+    file: REVISION_INPUT_MODULE,
+    from: "    if (!legal && !(CRITIC_LENSES as readonly string[]).includes(f.lens)) fail(`\"${at}.lens\" is not a critic lens`);",
+    to: "    if (!(CRITIC_LENSES as readonly string[]).includes(f.lens)) fail(`\"${at}.lens\" is not a critic lens`);",
+    expect: ["LV4.", "LV5.", "LV8."],
+  },
+  {
+    name: "a claims quote in both claim blocks goes to packaging-adaptation",
+    file: CONTENT_RUN_LEGAL,
+    from: "  [\"SCRIPT_CLAIMS\", \"hook-story-script\"],\n  [\"PLATFORM_CLAIMS\", \"packaging-adaptation\"],\n];",
+    to: "  [\"PLATFORM_CLAIMS\", \"packaging-adaptation\"],\n  [\"SCRIPT_CLAIMS\", \"hook-story-script\"],\n];",
+    expect: ["LV1."],
+  },
+  {
+    name: "a production finding goes to packaging-adaptation",
+    file: CONTENT_RUN_LEGAL,
+    from: "  production: \"production-direction\",\n  captions: \"packaging-adaptation\",\n};",
+    to: "  production: \"packaging-adaptation\",\n  captions: \"packaging-adaptation\",\n};",
+    expect: ["LV1.", "LV8."],
+  },
+  {
+    name: "a review saved before S8.8, with the old line, no longer revalidates",
+    file: CONTENT_RUN_LEGAL,
+    from: "  if (saved.disclaimer === LEGAL_REVIEW_DISCLAIMER_S8_6) rebuilt = { ...rebuilt, disclaimer: LEGAL_REVIEW_DISCLAIMER_S8_6 };\n",
+    to: "",
+    expect: ["LV9."],
+  },
+  {
+    name: "a saved review revalidates whatever line it carries",
+    file: CONTENT_RUN_LEGAL,
+    from: "  if (saved.disclaimer === LEGAL_REVIEW_DISCLAIMER_S8_6) rebuilt = { ...rebuilt, disclaimer: LEGAL_REVIEW_DISCLAIMER_S8_6 };\n",
+    to: "  if (typeof saved.disclaimer === \"string\") rebuilt = { ...rebuilt, disclaimer: saved.disclaimer as LegalReviewDisclaimer };\n",
+    expect: ["LV9."],
+  },
+  {
+    name: "the library's disclaimer drifts from the owner's line",
+    file: CONTENT_RUN_LEGAL,
+    from: "export const LEGAL_REVIEW_DISCLAIMER = \"Screening aid, not legal advice. Read it, and resolve its blocking findings, before posting.\";",
+    // Widened to string, as M757's literal: a drifted literal alone is a compile error in the worker suite (SW56).
+    to: "export const LEGAL_REVIEW_DISCLAIMER: string = \"Screening aid, not legal advice.\";",
+    expect: ["LR11.", "LV9."],
+  },
+  {
+    name: "a source's legal review that does not revalidate is planned around instead of refused",
+    file: CONTENT_RUN_VERIFY,
+    from: "    throw new Error(`the revision source's ${name} does not revalidate against the package it reviewed, so its `",
+    to: "    return null;\n    throw new Error(`the revision source's ${name} does not revalidate against the package it reviewed, so its `",
+    expect: ["LV11."],
+  },
+  {
+    name: "a revision never reads its source's legal review",
+    file: CONTENT_RUN_VERIFY,
+    from: "  if ((await source.readArtifact(name)) === undefined) return null;",
+    to: "  if (Date.now() > 0 || (await source.readArtifact(name)) === undefined) return null;",
+    expect: ["LV7.", "LV8.", "LV11."],
+  },
+  {
+    name: "the revision plans without the source's legal findings",
+    file: CONTENT_RUN_PIPELINE,
+    from: "  const plan = rt.revision.planRevision(criticOutput, undefined, sourceLegal?.input ?? null);",
+    to: "  const plan = rt.revision.planRevision(criticOutput, undefined, null);",
+    expect: ["LV7.", "LV8."],
+  },
+  {
+    name: "the same edit, in the worker's revise preflight",
+    file: CONTENT_RUN_PIPELINE,
+    from: "  const plan = rt.revision.planRevision(criticOutput, undefined, sourceLegal?.input ?? null);",
+    to: "  const plan = rt.revision.planRevision(criticOutput, undefined, null);",
+    expect: ["SW58.", "SW59."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  {
+    name: "revision-meta.json no longer lists the legal findings sent",
+    file: CONTENT_RUN_PIPELINE,
+    from: "      legalFindingsSent: plan.legalReview.findings.filter((f) => f.disposition === \"sent\")",
+    to: "      legalFindingsSent: plan.legalReview.findings.filter((f) => f.disposition === \"dropped\")",
+    expect: ["LV8."],
+  },
+  {
+    name: "summary.md's revision section omits the source's legal findings",
+    file: CONTENT_RUN_SUMMARY,
+    from: "  if (plan.legalReview) {\n    const disposition: Record<string, string> = {",
+    to: "  if (Date.now() < 0) {\n    const disposition: Record<string, string> = {",
+    expect: ["LV8."],
+  },
+  {
+    name: "the price page omits the source's legal findings",
+    file: STUDIO_WEB_ACTION_VIEWS,
+    from: "    + legalSection\n",
+    to: "",
+    expect: ["SA171."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "the price page puts a legal finding's category in unescaped",
+    file: STUDIO_WEB_ACTION_VIEWS,
+    from: "        ? `<ul>${legalFindings.map((f) => `<li><span class=\"meta\">${escapeHtml(str(f.id))} · ${escapeHtml(str(f.category))} · `",
+    to: "        ? `<ul>${legalFindings.map((f) => `<li><span class=\"meta\">${escapeHtml(str(f.id))} · ${str(f.category)} · `",
+    expect: ["SA171."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "the worker's refusal no longer says it looked at the legal review",
+    file: STUDIO_WORKER_PREFLIGHT,
+    from: "      + \"in the critic panel or the source run's legal review: nothing to revise, so no quote\", asPlan(plan ?? revised.plan));",
+    to: "      + \"nothing to revise, so no quote\", asPlan(plan ?? revised.plan));",
+    expect: ["SW59."],
+    suite: STUDIO_WORKER_SUITE,
+  },
+  ...[[SCRIPT_PROMPT, "3"], [DIRECTION_PROMPT, "4"], [PACKAGING_PROMPT, "5"]].map(([file, n]) => ({
+    name: `stage ${n}'s prompt no longer says findings may come from the legal review`,
+    file,
+    from: " Findings may also come from the legal review (`lens` `legal-review`, an `id` starting with `L`): its findings about "
+      + "text or shots this stage wrote, whose fixes the owner has chosen to have applied.",
+    to: "",
+    expect: ["LV10."],
+  })),
+  {
+    name: "the rubric's closing reminder sends serious findings to an attorney again",
+    file: LEGAL_RISK_SKILL,
+    from: "  to check. Read it, and resolve its blocking findings, before posting.\n",
+    to: "  to check. Serious findings go to an attorney before posting.\n",
+    expect: ["LV9.", "LV10."],
+  },
+];
+
 const MUTATION_GROUPS = [
   ["legacy", LEGACY_MUTATIONS], ["raw identity", RAW_IDENTITY_MUTATIONS], ["field margin", FIELD_MARGIN_MUTATIONS],
   ["critic policy", CRITIC_POLICY_MUTATIONS], ["contact line", CONTACT_LINE_MUTATIONS],
@@ -7246,7 +7457,7 @@ const MUTATION_GROUPS = [
   ["Content Studio S7.1", CONTENT_STUDIO_S7_1_MUTATIONS], ["Content Studio S7.2", CONTENT_STUDIO_S7_2_MUTATIONS],
   ["Content Studio S7.3", CONTENT_STUDIO_S7_3_MUTATIONS], ["Content Studio S6b", CONTENT_STUDIO_S6B_MUTATIONS],
   ["Content Studio S8.2", CONTENT_STUDIO_S8_2_MUTATIONS], ["Content Studio S8.6", CONTENT_STUDIO_S8_6_MUTATIONS],
-  ["Content Studio S8.7", CONTENT_STUDIO_S8_7_MUTATIONS],
+  ["Content Studio S8.7", CONTENT_STUDIO_S8_7_MUTATIONS], ["Content Studio S8.8", CONTENT_STUDIO_S8_8_MUTATIONS],
 ];
 const MUTATIONS = MUTATION_GROUPS.flatMap(([, group]) => group);
 

@@ -67,7 +67,10 @@ import type { ContactedPackagingOutput } from "../agents/contactLine.js";
 import { revalidateContactedPackagingOutput } from "../agents/contactLine.js";
 import { renderPackagingCopy, renderPlatformClaims, renderScriptCopy, FINAL_CRITIC_STAGE } from "../agents/finalCritic.js";
 import type { CriticVerdict } from "../agents/finalCritic.js";
-import { CRITIC_LENS_BLOCKS, MAX_INSTRUCTION_CHARS, MAX_PAYLOAD_CHARS, isBoundedSerializableText } from "../agents/payloadContract.js";
+import {
+  CRITIC_LENS_BLOCKS, MAX_INSTRUCTION_CHARS, MAX_PAYLOAD_CHARS, isBoundedSerializableText, type RevisableStage,
+} from "../agents/payloadContract.js";
+import type { LegalRevisionInput } from "../agents/revision.js";
 import { resolveModelPolicy } from "../agents/modelPolicy.js";
 import { resolveAssetPath } from "../agents/registry.js";
 import { schemaArray, schemaEnum, schemaObject, schemaString } from "../agents/responseFormatKit.js";
@@ -78,8 +81,21 @@ export const LEGAL_REVIEW_STAGE = "legal-review" as const;
 export const LEGAL_REVIEW_ARTIFACT = "07-legal-review.json" as const;
 /** The critic lenses' policy: their model, output-token cap, thinking and effort. */
 export const LEGAL_REVIEW_POLICY = "critic" as const;
-/** The line the skill begins with, and the report shows beside every review. */
-export const LEGAL_REVIEW_DISCLAIMER = "Screening aid, not legal advice. Serious findings go to the owner's attorney before posting.";
+/**
+ * The line the skill begins with, and the report shows beside every review.
+ * Reworded by Content Studio S8.8 to the owner's no-attorney decision ("forget
+ * about the attorney we are just mitigating risk", 2026-10-13).
+ */
+export const LEGAL_REVIEW_DISCLAIMER = "Screening aid, not legal advice. Read it, and resolve its blocking findings, before posting.";
+/**
+ * The line every review saved from S8.6 until S8.8 carries (runs `8549e829…`
+ * and `46f5bf15…` among them). Never written or shown again: kept only so that
+ * `revalidateLegalReviewOutput` still proves such a saved review byte for byte
+ * — an import of it, and a revision of its run, read it as they did.
+ */
+export const LEGAL_REVIEW_DISCLAIMER_S8_6 = "Screening aid, not legal advice. Serious findings go to the owner's attorney before posting.";
+/** A saved review's disclaimer: the current line, or (read only) the one written before S8.8. */
+export type LegalReviewDisclaimer = typeof LEGAL_REVIEW_DISCLAIMER | typeof LEGAL_REVIEW_DISCLAIMER_S8_6;
 
 /** The instruction assets: one prompt and the rubric skill, in this order. */
 export const LEGAL_REVIEW_ASSETS = {
@@ -117,6 +133,23 @@ export const LEGAL_LOCATION_BLOCKS: Readonly<Record<LegalReviewLocation, readonl
   captions: ["PACKAGING_COPY"],
   claims: ["SCRIPT_CLAIMS", "PLATFORM_CLAIMS"],
 };
+
+/**
+ * Content Studio S8.8: which writing stage wrote each location's block, so a
+ * legal finding is sent, in a revision, to the stage that can fix it. `claims`
+ * names two blocks written by two stages; `legalFindingStage` decides it by
+ * where the quote is.
+ */
+export const LEGAL_LOCATION_STAGES: Readonly<Record<Exclude<LegalReviewLocation, "claims">, RevisableStage>> = {
+  script: "hook-story-script",
+  production: "production-direction",
+  captions: "packaging-adaptation",
+};
+/** The two claim blocks, in stage order: `SCRIPT_CLAIMS` is stage 3's claim use, `PLATFORM_CLAIMS` stage 5's. */
+export const LEGAL_CLAIM_BLOCK_STAGES: ReadonlyArray<readonly [string, RevisableStage]> = [
+  ["SCRIPT_CLAIMS", "hook-story-script"],
+  ["PLATFORM_CLAIMS", "packaging-adaptation"],
+];
 
 /** Closed set: the review's verdict, computed by `legalReviewVerdict`, never taken from a model. */
 export const LEGAL_REVIEW_VERDICTS = ["no_legal_finding", "needs_owner_decision", "blocked"] as const;
@@ -205,7 +238,8 @@ export interface LegalReviewOutput {
   readonly executable: false;
   readonly productionValidated: false;
   readonly legalAdvice: false;
-  readonly disclaimer: typeof LEGAL_REVIEW_DISCLAIMER;
+  /** Set by code: the current line on every new review; a saved review revalidates with the line it was saved with. */
+  readonly disclaimer: LegalReviewDisclaimer;
   /** Computed by `legalReviewVerdict`. */
   verdict: LegalReviewVerdict;
   /** The model's own summary. */
@@ -552,6 +586,54 @@ export function revalidateLegalReviewOutput(value: unknown, material: LegalRevie
   } catch (error) {
     return failHere((error as Error).message);
   }
+  // S8.8: a review saved before the disclaimer was reworded carries the line it was saved with; that one line,
+  // and only it, is taken from the file. Every other byte is still the validation of its own findings.
+  if (saved.disclaimer === LEGAL_REVIEW_DISCLAIMER_S8_6) rebuilt = { ...rebuilt, disclaimer: LEGAL_REVIEW_DISCLAIMER_S8_6 };
   if (JSON.stringify(rebuilt) !== JSON.stringify(value)) failHere("it does not equal the validation of its own findings");
   return rebuilt;
+}
+
+/**
+ * Content Studio S8.8: the writing stage that wrote a finding's quoted block —
+ * `script` stage 3, `production` stage 4, `captions` stage 5 — and, for
+ * `claims`, the stage whose claim block holds the quote: `SCRIPT_CLAIMS` stage
+ * 3, `PLATFORM_CLAIMS` stage 5, the earlier stage when both hold it. The quote
+ * is matched exactly as `validateLegalReviewOutput` matches it, so a review
+ * that revalidated always resolves.
+ */
+export function legalFindingStage(
+  finding: Pick<LegalReviewFinding, "location" | "quote">, material: LegalReviewMaterial,
+): RevisableStage {
+  if (finding.location !== "claims") {
+    const stage = (LEGAL_LOCATION_STAGES as Record<string, RevisableStage>)[finding.location];
+    return stage ?? fail(`a finding's location ${JSON.stringify(finding.location)} names no writing stage`);
+  }
+  const wanted = normalizeQuoteText(finding.quote);
+  for (const [label, stage] of LEGAL_CLAIM_BLOCK_STAGES) {
+    const body = material[label];
+    if (body === undefined) return fail(`no ${label} block to place a claims quote in`);
+    if (quotableStrings(body).some((text) => text.includes(wanted))) return stage;
+  }
+  return fail("a claims quote occurs in neither claim block");
+}
+
+/**
+ * Content Studio S8.8: a source run's revalidated legal review as the revision
+ * plan reads it (`planRevision`'s `legal`): its verdict, and every finding — in
+ * the review's order, blocking and "for your decision" alike — with the stage
+ * that wrote its quote. `material` must be what the review was revalidated
+ * against.
+ */
+export function legalRevisionInput(review: LegalReviewOutput, material: LegalReviewMaterial): LegalRevisionInput {
+  return {
+    verdict: review.verdict,
+    findings: review.findings.map((finding) => ({
+      category: finding.category,
+      blocking: finding.blocking,
+      location: finding.location,
+      stage: legalFindingStage(finding, material),
+      issue: finding.issue,
+      fix: finding.fix,
+    })),
+  };
 }

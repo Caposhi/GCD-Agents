@@ -180,7 +180,16 @@ first; advisory findings over a cap are dropped and recorded; more blocking find
 refused before the cost gate. Contact lines are then re-attached and the four lenses run fresh, shown
 nothing of round 1. The round prices only its own requests behind the cost flag and typed `LIVE`,
 and writes `<source>-revised-<timestamp>` with `revision-meta.json` and a side-by-side
-`summary.md`; the source run is never modified.
+`summary.md`; the source run is never modified. *(2026-10-14, Content Studio S8.8, `IMPLEMENTED`,
+not merged: when the source holds a `07-legal-review.json` that revalidates against the package it
+reviewed (`verifySourceLegalReview`, `src/harness/contentRun/verify.ts`), `planRevision` also takes
+its findings — every one, each owned by the writing stage that wrote its quote
+(`legalFindingStage`, `src/harness/contentRun/legalReview.ts`) — so a blocking legal finding alone
+makes a run revisable; they are sent in the same `CRITIC_FINDINGS` block, under the same caps, as lens
+`legal-review` with `L<n>` ids, after the stage's critic blocking findings and before its advisory
+ones; `revisionDataBlocks` accepts that lens only with an `L` id. A source with no legal review is
+planned exactly as before; round 2's legal review is never sent. See
+[Content Studio design §5.5](CONTENT_STUDIO_DESIGN.md#55-the-legal-risk-review-content-studio-s86).)*
 
 ### Content Intelligence foundation (Phase 0B.0) — merged and deployed
 

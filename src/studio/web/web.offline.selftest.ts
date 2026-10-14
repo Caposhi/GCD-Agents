@@ -3523,6 +3523,60 @@ const S87_PLAIN: Array<[Parameters<typeof newRunBody>[0], string, number]> = [
 }
 
 {
+  // SA171 (Content Studio S8.8): the price page's revise plan lists the source run's legal findings before the owner
+  // confirms — every one, with its id, category, severity, stage and whether it is sent — escaped; a plan stored before
+  // S8.8 (no legal record) shows no such list; a refusal's plan says no blocking finding was found in either.
+  const s = await s62World();
+  const hostile = "<img src=x onerror=alert(1)>";
+  const source = s.w.store.addRun(s.runnerUser, { runner: "live", state: "succeeded", goal: "Synthetic legal source goal",
+    platforms: ["facebook"], fact_version_id: s.factVersion });
+  const legalFinding = (id: string, category: string, severity: string, stage: string, disposition: string) =>
+    ({ id, category, severity, location: "production", stage, disposition });
+  const plan = { kind: "revision", startStage: "production-direction", stages: [
+    { stage: "production-direction", cap: 80, owned: 2, blocking: 1, dropped: [], sent: [
+      { id: "L1", lens: "legal-review", owner: "production-direction", severity: "blocking", category: "copyright_reproduction",
+        platform: "cross_platform", issue: "SA171 the manual-page shots.", suggestedAction: "SA171 use plain shop-made cards." },
+      { id: "L2", lens: "legal-review", owner: "production-direction", severity: "advisory", category: "people_and_releases",
+        platform: "cross_platform", issue: "SA171 the technician's release.", suggestedAction: "SA171 get it signed." }] },
+    { stage: "packaging-adaptation", cap: 31, owned: 0, blocking: 0, sent: [], dropped: [] }],
+    ownerItems: [], notRerun: [{ id: "L3", lens: "legal-review", severity: "advisory", owner: "hook-story-script" }],
+    legalReview: { verdict: "blocked", findings: [
+      legalFinding("L1", "copyright_reproduction", "blocking", "production-direction", "sent"),
+      legalFinding("L2", "people_and_releases", "advisory", "production-direction", "sent"),
+      legalFinding("L3", `${hostile}[category]`, "advisory", "hook-story-script", "not_rerun"),
+    ] } };
+  const withLegal = requestIdOf(await post(s.w, `/runs/${source.id}/price`, s.runner, [["action", "revise"]]));
+  s.w.store.answerPreflight(withLegal, { quote: { ceilingMicros: 17_780_000 } }, plan);
+  const before88 = requestIdOf(await post(s.w, `/runs/${source.id}/price`, s.runner, [["action", "revise"]]));
+  s.w.store.answerPreflight(before88, { quote: { ceilingMicros: 17_780_000 } }, { ...plan, legalReview: undefined });
+  const refused = requestIdOf(await post(s.w, `/runs/${source.id}/price`, s.runner, [["action", "revise"]]));
+  s.w.store.answerPreflight(refused, { refused: { refusalClass: "no_revisable_blocking_finding", message: "synthetic" } },
+    { kind: "no_revision", stages: [], ownerItems: [], notRerun: [], legalReview: { verdict: "needs_owner_decision", findings: [
+      legalFinding("L1", "people_and_releases", "advisory", "production-direction", "not_sent")] } });
+  const pages = await Promise.all([withLegal, before88, refused].map((id) => request(s.w, `/preflights/${id}`, { jar: s.runner })));
+  const [page, oldPage, refusedPage] = [pages[0]!, pages[1]!, pages[2]!];
+  const section = (html: string) => html.slice(html.indexOf("<section class=\"plan\">"), html.indexOf("</section>", html.indexOf("<section class=\"plan\">")));
+  check("SA171. a revise's price page lists, before it is confirmed, every legal finding from the source run's review — id, "
+    + "category, severity, the stage it goes to and whether it is sent (sent, or not sent because its stage is not re-run) — "
+    + "beside the stage's findings with their lens legal-review; hostile text stays inert; a plan stored before S8.8 shows no "
+    + "such list, and a refused plan says no blocking finding was found in the critic panel or the legal review",
+    page.status === 200 && section(page.body).includes("<h3>From the source run's legal review</h3>")
+      && section(page.body).includes("L1 · copyright_reproduction · blocking · production-direction · sent")
+      && section(page.body).includes("L2 · people_and_releases · advisory · production-direction · sent")
+      && section(page.body).includes(`L3 · ${escapeHtml(hostile)}[category] · advisory · hook-story-script · not sent (its stage is not re-run)`)
+      && section(page.body).includes("L1 · legal-review · blocking · copyright_reproduction")
+      && section(page.body).indexOf("From the source run's legal review") < page.body.indexOf("Confirm and reserve")
+      && !page.body.includes(hostile) && !/<img\b/i.test(page.body)
+      && oldPage.status === 200 && section(oldPage.body).includes("<h2>Revision plan</h2>")
+      && !oldPage.body.includes("From the source run's legal review")
+      && refusedPage.status === 200
+      && refusedPage.body.includes("No blocking finding — in the critic panel or the source run's legal review — has a revisable owner")
+      && refusedPage.body.includes("L1 · people_and_releases · advisory · production-direction · not sent (no revision)"),
+    section(page.body).slice(0, 600));
+  await s.w.close();
+}
+
+{
   // Every HTML page this suite received, S4's and S5's: no inline script, no inline style, no event handler.
   const scripts = htmlPages.flatMap((p) => [...p.body.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/g)]
     .map((m) => ({ attributes: m[1]!, inner: m[2]! })));

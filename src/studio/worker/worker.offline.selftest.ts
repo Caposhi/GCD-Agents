@@ -1018,9 +1018,12 @@ async function preflightChecks(): Promise<void> {
     + "scope other than the source's",
     wrong.length === 0 && cases.length === 12, wrong.join(" | "));
 
-  // SW23, SW23a: a revise's plan is planRevision's, captured from the library's own call.
+  // SW23, SW23a: a revise's plan is planRevision's, captured from the library's own call. Content Studio S8.8:
+  // each source here holds no legal review (a run from before S8.6), so the plan is the panel's alone, exactly as
+  // before S8.8; a source with one is SW58's.
+  const withoutLegal = (files: Map<string, Buffer>) => new Map([...files].filter(([name]) => name !== "07-legal-review.json"));
   const reviseRequest = requestRow({ action: "revise", goal: null, sourceRunId: SOURCE_RUN });
-  const revise = await preflightOf({ request: reviseRequest, sourceRun: sourceOf(replayFiles) });
+  const revise = await preflightOf({ request: reviseRequest, sourceRun: sourceOf(withoutLegal(replayFiles)) });
   const savedCritic = JSON.parse(String(replayFiles.get("06-final-critic.json"))).output;
   const expectedPlan = JSON.parse(JSON.stringify(rt.revision.planRevision(savedCritic)));
   const reviseLines = revise.outcome.outcome === "quoted" ? revise.outcome.items.flatMap((i) => i.lines) : [];
@@ -1034,13 +1037,57 @@ async function preflightChecks(): Promise<void> {
     t.lenses.set("production-coherence", JSON.stringify({ verdict: "provisional_pass",
       summary: "Synthetic pass: no production concern.", findings: [] }));
   });
-  const noRevision = await preflightOf({ request: reviseRequest, sourceRun: sourceOf(passFiles) });
+  const noRevision = await preflightOf({ request: reviseRequest, sourceRun: sourceOf(withoutLegal(passFiles)) });
   const passPlan = JSON.parse(JSON.stringify(rt.revision.planRevision(JSON.parse(String(passFiles.get("06-final-critic.json"))).output)));
   check("SW23a. a revise whose source has no revisable blocking finding is refused as no_revisable_blocking_finding, with "
     + "planRevision's plan (no quote, no request)",
     refusedAs(noRevision, "no_revisable_blocking_finding") && passPlan.kind === "no_revision"
       && JSON.stringify(noRevision.outcome.revisePlan) === JSON.stringify(passPlan),
     JSON.stringify(noRevision.outcome).slice(0, 240));
+
+  // SW58, SW59 (Content Studio S8.8): a source WITH a legal review — the shape of run 46f5bf15, whose critic panel had
+  // no blocking finding and whose legal review was blocked by one finding in the shot list. The source is a live-shaped
+  // run whose transcript's legal-review answer (its last stage text) is replaced; the library validates it as it runs.
+  const legalAnswer = (findings: Array<{ category: string; severity: string }>) => (t: { stages: string[]; lenses: Map<string, string> }) => {
+    t.lenses.set("production-coherence", JSON.stringify({ verdict: "provisional_pass", summary: "Synthetic pass: no production concern.", findings: [] }));
+    t.stages[t.stages.length - 1] = JSON.stringify({
+      summary: "SW synthetic legal review.",
+      findings: findings.map((f, i) => ({ ...f, location: "production", quote: "Written customer/vehicle consent to film in the bay.",
+        issue: `SW legal issue ${i}.`, fix: `SW legal fix ${i}.` })),
+    });
+  };
+  const legalBlockedFiles = await sourceFiles("live", legalAnswer([
+    { category: "copyright_reproduction", severity: "medium" }, { category: "people_and_releases", severity: "low" }]));
+  const legalBlocked = await preflightOf({ request: reviseRequest, sourceRun: sourceOf(legalBlockedFiles) });
+  const legalPlan = legalBlocked.outcome.revisePlan as Record<string, any> | null;
+  const legalLines = legalBlocked.outcome.outcome === "quoted" ? legalBlocked.outcome.items.flatMap((i) => i.lines) : [];
+  check("SW58. a revise whose source's critic panel has no blocking finding but whose legal review has one, in the shot list, "
+    + "is quoted — not refused — from production-direction (7 requests, $17.78), its stored plan sending that finding (L1, "
+    + "lens legal-review, blocking) and the decision item (L2) to production-direction and listing both from the source's "
+    + "legal review",
+    JSON.parse(String(legalBlockedFiles.get("07-legal-review.json"))).output.verdict === "blocked"
+      && JSON.parse(String(legalBlockedFiles.get("06-final-critic.json"))).output.provisional.findings
+        .every((f: { severity: string }) => f.severity !== "blocking")
+      && legalBlocked.outcome.outcome === "quoted" && legalBlocked.calls === 0
+      && legalBlocked.outcome.ceilingMicros === 17_780_000 && legalLines.length === 7
+      && JSON.stringify(legalLines) === JSON.stringify(lib.computeCostCeiling(rt, lib.revisionPolicies(rt, "production-direction")).lines)
+      && legalPlan?.kind === "revision" && legalPlan.startStage === "production-direction"
+      && legalPlan.stages[0].sent.slice(0, 2).map((f: Record<string, string>) => `${f.id}:${f.lens}:${f.severity}:${f.category}`).join()
+        === "L1:legal-review:blocking:copyright_reproduction,L2:legal-review:advisory:people_and_releases"
+      && JSON.stringify(legalPlan.legalReview) === JSON.stringify({ verdict: "blocked", findings: [
+        { id: "L1", category: "copyright_reproduction", severity: "blocking", location: "production", stage: "production-direction", disposition: "sent" },
+        { id: "L2", category: "people_and_releases", severity: "advisory", location: "production", stage: "production-direction", disposition: "sent" },
+      ] }),
+    JSON.stringify(legalBlocked.outcome).slice(0, 400));
+  const legalDecisionFiles = await sourceFiles("live", legalAnswer([{ category: "people_and_releases", severity: "low" }]));
+  const legalDecision = await preflightOf({ request: reviseRequest, sourceRun: sourceOf(legalDecisionFiles) });
+  const decisionPlan = legalDecision.outcome.revisePlan as Record<string, any> | null;
+  check("SW59. with neither a critic nor a legal blocking finding — the legal review holding decision items only — the revise "
+    + "is still refused as no_revisable_blocking_finding, now saying so of both, its plan listing the legal finding as not sent",
+    refusedAs(legalDecision, "no_revisable_blocking_finding", /in the critic panel or the source run's legal review/)
+      && decisionPlan?.kind === "no_revision"
+      && JSON.stringify(decisionPlan.legalReview?.findings?.map((f: Record<string, string>) => `${f.id}:${f.disposition}`)) === "[\"L1:not_sent\"]",
+    JSON.stringify(legalDecision.outcome).slice(0, 400));
 
   // SW22: the outcome and its quote in ONE transaction.
   const binding = { commit: COMMIT, approvedFactsSha256: "a".repeat(64), priceTableSha256: "b".repeat(64) };

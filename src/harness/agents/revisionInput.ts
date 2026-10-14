@@ -8,7 +8,9 @@
  *  - `PREVIOUS_OUTPUT` — the stage's own round-1 output;
  *  - `CRITIC_FINDINGS` — only the round-1 panel findings that name this stage as
  *    their owner, each with its id, severity, category, platform, lens, issue
- *    and suggested action.
+ *    and suggested action; and, since Content Studio S8.8, the source run's
+ *    legal-review findings about a block this stage wrote, in the same shape
+ *    (lens `legal-review`, an `L<n>` id, platform `cross_platform`).
  *
  * Both are untrusted data. A finding is a reviewer's unverified opinion: it may
  * only narrow or correct what the stage writes, and never permits anything —
@@ -19,7 +21,9 @@
  * **What the executor checks here, and what it does not.** It refuses, before
  * the request exists: a finding owned by any other stage or by `human_review`;
  * a `human_decision` finding; more findings than the stage's derived cap; an
- * unknown lens or severity; a malformed id; an issue or suggested action over
+ * unknown lens or severity; a malformed id, or one whose kind does not match its
+ * lens (`F<n>` for a critic lens, `L<n>` for `legal-review`, S8.8); an issue or
+ * suggested action over
  * the critic's own limits; and a `PREVIOUS_OUTPUT` larger than the stage's own
  * output contract. It does not re-derive which findings a stage should get, or
  * prove a previous output came from a real run: the CLI selects the findings
@@ -45,6 +49,27 @@ import {
 /** The two labels, in the order they follow a stage's ordinary blocks. */
 export const REVISION_BLOCK_LABELS = ["PREVIOUS_OUTPUT", "CRITIC_FINDINGS"] as const;
 
+/**
+ * Content Studio S8.8: the lens a legal-review finding carries in a revision.
+ * Never a critic lens, so a stage, a record or a person can always tell the two
+ * apart. The legal review is not a critic lens (`legalReview.ts`).
+ */
+export const LEGAL_REVISION_LENS = "legal-review" as const;
+/**
+ * Content Studio S8.8: a legal finding names a block, not a platform, so it is
+ * sent as the critic's own value for a finding that is not platform-specific.
+ */
+export const LEGAL_REVISION_PLATFORM = "cross_platform" as const;
+
+/**
+ * A legal-review finding's id in a revision: `L` and its 1-based position in the
+ * source run's legal review (`07-legal-review.json`). Assigned by code, never by
+ * a model; the `L` prefix means it can never equal a panel finding's `F<n>`.
+ */
+export function legalRevisionFindingId(index: number): string {
+  return `L${index + 1}`;
+}
+
 /** Severities a panel finding carries. Mirrors `CRITIC_FINDING_SEVERITIES`. */
 const SEVERITIES = ["blocking", "advisory"] as const;
 
@@ -54,7 +79,10 @@ const SEVERITIES = ["blocking", "advisory"] as const;
  * rendered, because every rendered finding has the same owner.
  */
 export interface RevisionFinding {
-  /** `F<n>`: the finding's 1-based position in the round-1 panel's findings. */
+  /**
+   * `F<n>`: the finding's 1-based position in the round-1 panel's findings; or
+   * (S8.8) `L<n>`: its position in the source run's legal review.
+   */
   id: string;
   lens: string;
   owner: string;
@@ -90,6 +118,8 @@ export function renderCriticFindings(findings: readonly RevisionFinding[]): stri
 }
 
 const ID_PATTERN = /^F[1-9][0-9]*$/;
+/** S8.8: a legal-review finding's id. No longer than a panel finding's widest (the block's sizing). */
+const LEGAL_ID_PATTERN = /^L[1-9][0-9]*$/;
 const MAX_ID_CHARS = revisionFindingId(MAX_PANEL_FINDINGS - 1).length;
 const ENUM_TOKEN = /^[a-z][a-z_]{0,31}$/;
 
@@ -119,12 +149,16 @@ export function revisionDataBlocks(
     // its own findings, and a human's decision never reaches a model.
     if (f.owner !== stage) fail(`"${at}" is owned by ${JSON.stringify(f.owner)}, not this stage`);
     if (f.category === "human_decision") fail(`"${at}" is a human_decision finding; it never reaches a model`);
-    if (typeof f.id !== "string" || !ID_PATTERN.test(f.id) || f.id.length > MAX_ID_CHARS) {
-      fail(`"${at}.id" must be a panel finding id (F1 to ${revisionFindingId(MAX_PANEL_FINDINGS - 1)})`);
+    // S8.8: a legal-review finding is told apart by its lens, and must carry an L id; every other finding an F id.
+    const legal = f.lens === LEGAL_REVISION_LENS;
+    if (typeof f.id !== "string" || !(legal ? LEGAL_ID_PATTERN : ID_PATTERN).test(f.id) || f.id.length > MAX_ID_CHARS) {
+      fail(legal
+        ? `"${at}.id" must be a legal finding id (L1 to L${"9".repeat(MAX_ID_CHARS - 1)})`
+        : `"${at}.id" must be a panel finding id (F1 to ${revisionFindingId(MAX_PANEL_FINDINGS - 1)})`);
     }
     if (seen.has(f.id)) fail(`"${at}.id" repeats ${f.id}`);
     seen.add(f.id);
-    if (!(CRITIC_LENSES as readonly string[]).includes(f.lens)) fail(`"${at}.lens" is not a critic lens`);
+    if (!legal && !(CRITIC_LENSES as readonly string[]).includes(f.lens)) fail(`"${at}.lens" is not a critic lens`);
     if (!(SEVERITIES as readonly string[]).includes(f.severity)) fail(`"${at}.severity" must be blocking or advisory`);
     // Category and platform are the critic's closed enums, already enforced on
     // the critic output the caller selected from; here only their token shape.
