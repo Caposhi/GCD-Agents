@@ -934,6 +934,68 @@ async function suite(pool: pg.Pool, url: string, issuer: FakeIssuer): Promise<vo
         && spend.body.includes("Synthetic s62-runner-a") && spend.body.includes("acknowledged"),
       `${spend.status} ${dbDay}`);
 
+    // SAP41-SAP43 (Content Studio S8.7): "Edit these choices" over the real store. The choices come from the stored rows,
+    // never the URL, and no route here writes a row.
+    const rowsNow = async () => JSON.stringify((await pool.query(
+      `SELECT (SELECT count(*) FROM studio_preflight_requests)::int AS requests, (SELECT count(*) FROM studio_jobs)::int AS jobs,
+              (SELECT count(*) FROM studio_quotes)::int AS quotes, (SELECT count(*) FROM studio_quotes WHERE consumed_at IS NOT NULL)::int AS consumed,
+              (SELECT count(*) FROM studio_runs)::int AS runs, (SELECT count(*) FROM studio_spend_ledger)::int AS ledger,
+              (SELECT count(*) FROM studio_audit_log)::int AS audit`)).rows[0]);
+    const goal87 = "SYNTHETIC <b>brakes</b> & \"rotors\" for O'Neil </textarea><script>alert(1)</script>";
+    const asked87 = await post("/new/price", jarA, [["goal", goal87], ["platform", "instagram"], ["platform", "google_business_profile"],
+      ["tag", "synthetic-tag"], ["tag", "synthetic-approved"]]);
+    const request87 = /^\/preflights\/([0-9a-f-]{36})$/.exec(asked87.location ?? "")?.[1] ?? "";
+    await answer(request87);
+    const before87 = await rowsNow();
+    const textarea = (body: string) => /<textarea id="goal"[^>]*>([\s\S]*?)<\/textarea>/.exec(body)?.[1] ?? null;
+    const checkedOf = (body: string, name: string) => [...body.matchAll(new RegExp(`name="${name}" value="([^"]+)"[^>]*?( checked)?>`, "g"))]
+      .filter((m) => m[2]).map((m) => m[1]).join();
+    const own87 = await get(w.base, `/new?from=${request87}`, jarA);
+    const owner87 = await get(w.base, `/new?from=${request87}`, ownerJar);
+    const other87 = await get(w.base, `/new?from=${request87}`, jarB);
+    const price87 = await get(w.base, `/preflights/${request87}`, jarA);
+    await pool.query("UPDATE studio_worker_heartbeat SET approved_facts_tag_counts = '{}'");
+    const dropped87 = await get(w.base, `/new?from=${request87}`, jarA);
+    await pool.query(`UPDATE studio_worker_heartbeat SET approved_facts_tag_counts = '{"synthetic-approved":3}'`);
+    check("SAP41. over PostgreSQL GET /new?from=<a full price request> fills the form from the stored row — the goal "
+      + "escaped and exact, exactly its platforms, its offered tags — for its requester and an owner, 404 for another "
+      + "runner; the price page links \"Edit these choices\"; a tag the heartbeat stops offering is listed and not chosen",
+      own87.status === 200 && textarea(own87.body) === escapeText(goal87) && !own87.body.includes("<script>alert")
+        && checkedOf(own87.body, "platform") === "instagram,google_business_profile"
+        && checkedOf(own87.body, "tag") === "synthetic-approved,synthetic-tag" && own87.body.includes(`href="/preflights/${request87}"`)
+        && owner87.status === 200 && textarea(owner87.body) === escapeText(goal87) && other87.status === 404
+        && price87.status === 200 && price87.body.includes(`<a href="/new?from=${request87}">Edit these choices</a>`)
+        && dropped87.status === 200 && checkedOf(dropped87.body, "tag") === "synthetic-tag"
+        && dropped87.body.includes("No longer offered, so not chosen: synthetic-approved"),
+      `${own87.status} ${owner87.status} ${other87.status} ${price87.status} ${dropped87.status}`);
+
+    const report87 = await get(w.base, `/runs/${fakeId}`, ownerJar);
+    const fromRun87 = await get(w.base, `/new?run=${fakeId}`, jarA);
+    const missing87 = await Promise.all([`/new?run=${crypto.randomUUID()}`, `/new?from=${fakeId}`, `/new?run=${request87}`,
+      `/new?from=${request87}&run=${fakeId}`, "/new?from=not-a-uuid", "/new?goal=SYNTHETIC"].map((path) => get(w.base, path, jarA)));
+    check("SAP42. over PostgreSQL a run's report links \"Start a new run with these choices\", and GET /new?run=<that run> "
+      + "fills the form from the stored run (here the owner's fake run, for a runner); an unknown id, an id of the other "
+      + "kind, two parameters, a malformed id or another parameter is 404",
+      report87.status === 200 && report87.body.includes(`<a href="/new?run=${fakeId}">Start a new run with these choices</a>`)
+        && fromRun87.status === 200 && textarea(fromRun87.body) === "SYNTHETIC fake wiring goal"
+        && checkedOf(fromRun87.body, "platform") === "instagram" && fromRun87.body.includes(`href="/runs/${fakeId}"`)
+        && missing87.every((r) => r.status === 404),
+      `${report87.status} ${fromRun87.status} ${missing87.map((r) => r.status).join()}`);
+
+    const invalid87 = await post("/new/price", jarA, [["goal", "   "], ["platform", "facebook"], ["platform", "tiktok"], ["tag", "synthetic-tag"],
+      ["tag", "synthetic-not-offered"]]);
+    const invalidFake87 = await post("/new/fake", ownerJar, [["goal", "SYNTHETIC fake goal"], ["tag", "synthetic-tag"]]);
+    const after87 = await rowsNow();
+    check("SAP43. over PostgreSQL an invalid New run submission shows the form again (400) with the refusal in the error "
+      + "banner and its values put back (known platforms and offered tags only), for a price and a fake run; and no S8.7 "
+      + "route above wrote a preflight request, job, quote, confirmation, run, ledger entry or audit row",
+      invalid87.status === 400 && invalid87.body.includes("<h1>New run</h1>") && invalid87.body.includes("banner banner-bad")
+        && textarea(invalid87.body) === "   " && checkedOf(invalid87.body, "platform") === "facebook"
+        && checkedOf(invalid87.body, "tag") === "synthetic-tag" && !invalid87.body.includes("synthetic-not-offered")
+        && invalidFake87.status === 400 && checkedOf(invalidFake87.body, "platform") === "" && invalidFake87.body.includes("formaction=\"/new/fake\"")
+        && after87 === before87,
+      `${invalid87.status} ${invalidFake87.status} ${before87} → ${after87}`);
+
     // SAP27-SAP33 (Content Studio S7.2): fact versions, imports and the whole-run bundle over the real schema.
     const viewerS72 = await addUser("viewer", "s72-viewer");
     const viewerJar = await signedIn(viewerS72);

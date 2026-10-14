@@ -16,7 +16,8 @@
  */
 
 import {
-  ACTION_LABELS, effectiveCaps, GOAL_MAX_CHARS, PACK_RECORD_CAP, PLATFORMS, type DeploymentCeilings, type PaidAction,
+  ACTION_LABELS, effectiveCaps, GOAL_MAX_CHARS, PACK_RECORD_CAP, PLATFORMS, scopeUpperBound, type DeploymentCeilings,
+  type NewRunChoices, type PaidAction,
 } from "./actions.js";
 import { escapeHtml } from "./html.js";
 import { PLATFORM_LABELS } from "./runs.js";
@@ -75,33 +76,58 @@ export interface NewRunInput {
   workerOnline: boolean;
   /** A refusal of the last submission (its message), shown above the form. */
   error?: string | null;
+  /**
+   * S8.7: the choices the form is filled in with — a stored price request's or run's, or an invalid submission's put
+   * back. Absent, the form is exactly S6.2's: an empty goal, every platform checked, no tag.
+   */
+  choices?: NewRunChoices;
+  /** S8.7: the stored record the choices came from, linked in a note above the form (a validated id's page). */
+  source?: { href: string; label: string };
 }
+
+/**
+ * The textarea's content: a goal escaped, with a leading line break kept — an HTML parser drops ONE line break
+ * straight after `<textarea>`, so a goal that starts with one gets one more.
+ */
+const textareaText = (goal: string): string => (/^[\r\n]/.test(goal) ? "\n" : "") + escapeHtml(goal);
 
 export function newRunBody(input: NewRunInput): string {
   const version = input.activeFactVersion;
+  const chosen = input.choices;
   const error = input.error ? `<p class="banner banner-bad prose">${escapeHtml(input.error)}</p>` : "";
+  const filledFrom = input.source ? `<p class="note">Filled in from <a href="${escapeAttribute(input.source.href)}">`
+    + `${escapeHtml(input.source.label)}</a>. Nothing is priced until you ask.</p>` : "";
+  const dropped = chosen?.dropped.length
+    ? `<p class="note prose">No longer offered, so not chosen: ${chosen.dropped.map(escapeHtml).join(", ")}</p>` : "";
   const versionLine = version
     ? `<p class="note">Fact version: <code>${escapeHtml(version.sha256.slice(0, 12))}…</code>, ${version.recordCount} records.</p>`
     : "<p class=\"banner banner-warn\">No fact version is active, so no price can be offered. The owner uploads the automotive "
       + "facts file and marks a version active (fact upload arrives with Content Studio S7).</p>";
-  const platforms = PLATFORMS.map((p) => `<label class="check"><input type="checkbox" name="platform" value="${escapeAttribute(p)}" checked>`
+  const platforms = PLATFORMS.map((p) => `<label class="check"><input type="checkbox" name="platform" value="${escapeAttribute(p)}"`
+    + `${!chosen || chosen.platforms.includes(p) ? " checked" : ""}>`
     + ` ${escapeHtml(PLATFORM_LABELS[p] ?? p)}</label>`).join("");
   const tags = input.tags.length
-    ? input.tags.map((t) => `<label class="check"><input type="checkbox" name="tag" value="${escapeAttribute(t.tag)}" data-count="${t.count}">`
+    ? input.tags.map((t) => `<label class="check"><input type="checkbox" name="tag" value="${escapeAttribute(t.tag)}" data-count="${t.count}"`
+      + `${chosen?.tags.includes(t.tag) ? " checked" : ""}>`
       + ` <span class="prose">${escapeHtml(t.tag)}</span> <span class="meta">(${t.count} record${t.count === 1 ? "" : "s"})</span></label>`).join("")
     : "<p class=\"note\">No tag counts yet: the worker publishes them with its heartbeat.</p>";
   const priceButton = version
     ? "<button type=\"submit\" class=\"primary\">Check and get a price</button>"
     : "<button type=\"submit\" disabled>Check and get a price</button>";
+  // A filled-in form states its chosen tags' upper bound at once, in the static script's own words (it updates on a change).
+  const chosenTags = chosen ? input.tags.filter((t) => chosen.tags.includes(t.tag)) : [];
+  const bound = !chosen ? "Choose tags to see an upper bound of the records they put in the pack."
+    : chosenTags.length ? `At most ${scopeUpperBound(input.tags, chosen.tags)} records carry the chosen tags (an upper bound), plus `
+      + "the always-included contact and identity records." : "No tags chosen: an unscoped run, with every record.";
   const fakeButton = input.isOwner
     ? `<button type="submit" formaction="/new/fake" class="fake">Start ${escapeHtml(FAKE_LABEL)} (no quote, no cost)</button>` : "";
-  return `<h1>New run</h1>${workerStatus(input.workerOnline)}${versionLine}${error}`
+  return `<h1>New run</h1>${workerStatus(input.workerOnline)}${versionLine}${error}${filledFrom}${dropped}`
     + `<form class="action-form" method="post" action="/new/price">${csrfField(input.csrfToken)}`
     + `<label class="field" for="goal">Goal <span class="meta">(1 to ${GOAL_MAX_CHARS.toLocaleString("en-US")} characters)</span></label>`
-    + `<textarea id="goal" name="goal" rows="4" maxlength="${GOAL_MAX_CHARS}" required></textarea>`
+    + `<textarea id="goal" name="goal" rows="4" maxlength="${GOAL_MAX_CHARS}" required>${chosen ? textareaText(chosen.goal) : ""}</textarea>`
     + `<fieldset><legend>Platforms</legend>${platforms}</fieldset>`
     + `<fieldset><legend>Scope tags <span class="meta">(none chosen: an unscoped run)</span></legend>${tags}`
-    + "<p class=\"note\" data-scope-bound>Choose tags to see an upper bound of the records they put in the pack.</p>"
+    + `<p class="note" data-scope-bound>${bound}</p>`
     + `<p class="note">The count shown is an upper bound: tags overlap, so a record carrying two chosen tags is counted twice. `
     + `The contact and identity records every run needs are added to it. The worker's free check enforces the pack's `
     + `${PACK_RECORD_CAP}-record cap exactly, before any price.</p></fieldset>`
@@ -198,7 +224,9 @@ export function preflightBody(input: PreflightPageInput): string {
     + `<dt>Platforms</dt><dd>${v.platforms.map((p) => escapeHtml(PLATFORM_LABELS[p] ?? p)).join(", ")}</dd>`
     + `<dt>Scope tags</dt><dd>${v.scopeTags?.length ? v.scopeTags.map(escapeHtml).join(", ") : "none (unscoped)"}</dd>`
     + (v.sourceRunId ? `<dt>Source run</dt><dd><a href="/runs/${encodeURIComponent(v.sourceRunId)}"><code>${escapeHtml(v.sourceRunId)}</code></a></dd>` : "")
-    + `<dt>Asked</dt><dd>${isoNy(v.createdAt)}</dd></dl>`;
+    + `<dt>Asked</dt><dd>${isoNy(v.createdAt)}</dd></dl>`
+    // S8.7: a full run's choices, in every state, back to New run — a plain link that spends and writes nothing.
+    + (v.action === "full" ? `<p><a href="/new?from=${encodeURIComponent(v.id)}">Edit these choices</a></p>` : "");
   if (v.outcome === null) {
     const waiting = v.jobState === "queued" || v.jobState === "running";
     return head + (waiting
@@ -249,6 +277,10 @@ export function reportActions(input: {
     + (forms.length ? "<p class=\"note\">Each asks the worker's free preflight for a price first; nothing is spent until a quote is confirmed. "
       + "The source run is never modified.</p>" : "") + "</section>";
 }
+
+/** S8.7: from a run's report, its choices back to New run — a plain link that spends and writes nothing. */
+export const newRunFromRunLink = (runId: string): string =>
+  `<p><a href="/new?run=${encodeURIComponent(runId)}">Start a new run with these choices</a></p>`;
 
 // --- §6.4 The spend panel -------------------------------------------------------------------------
 

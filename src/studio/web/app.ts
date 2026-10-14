@@ -68,6 +68,7 @@ import {
 } from "./sessions.js";
 import type { WebConfig } from "./startup.js";
 import type { WebStore } from "./store.js";
+import type { ActionContext } from "./store.js";
 import { escapeHtml } from "./html.js";
 import type { Refusal } from "./actions.js";
 import { downloadHeaders, verifiedBytes } from "./downloads.js";
@@ -77,10 +78,11 @@ import {
 import { STATIC_ASSETS, STATIC_CACHE_CONTROL } from "./static.js";
 import { listPolls, REPORT_ARTIFACTS, reportBody, reportPolls, runsListBody, shell } from "./views.js";
 import {
-  localDay, offeredTags, parseNewRun, preflightRequest, sourceActions, workerOnline, type PaidAction,
+  localDay, offeredTags, parseNewRun, parseNewRunQuery, preflightRequest, preflightVisible, runOffersChoices, sourceActions,
+  storedChoices, submittedChoices, workerOnline, type NewRunChoices, type PaidAction,
 } from "./actions.js";
 import {
-  newRunBody, preflightBody, PREFLIGHT_POLL_SECONDS, refusalBody, reportActions, spendBody,
+  newRunBody, newRunFromRunLink, preflightBody, PREFLIGHT_POLL_SECONDS, refusalBody, reportActions, spendBody,
 } from "./actionViews.js";
 import { stoppedAt } from "./runs.js";
 import {
@@ -383,6 +385,21 @@ export function createStudioWebApp(options: StudioWebOptions): StudioWebApp {
     redirect(ctx.res, 303, `/preflights/${created.requestId}`);
   };
 
+  /**
+   * §8.3 New run: the form — S6.2's exactly when nothing is given; S8.7: filled in from a stored record's choices, or
+   * shown again with an invalid submission's values and its refusal in the error banner.
+   */
+  const newRunPage = (ctx: RouteContext, context: ActionContext, status: number, tags: Array<{ tag: string; count: number }>,
+    extra: { error?: string; choices?: NewRunChoices; source?: { href: string; label: string } }) =>
+    htmlPage(ctx.res, status, shell({
+      title: "New run", user: ctx.user!, csrfToken: csrfTokenFor(ctx.sessionCookie!), poll: false,
+      body: newRunBody({
+        csrfToken: csrfTokenFor(ctx.sessionCookie!), isOwner: ctx.user!.role === "owner",
+        activeFactVersion: context.activeFactVersion, tags,
+        workerOnline: workerOnline(context.nowMs, context.heartbeat?.beatAtMs), ...extra,
+      }),
+    }));
+
   /** S7.2: activate, retire or restore a version — one owner edit each, refused with its reason (the schema refuses too). */
   const versionEdit = async (ctx: RouteContext, verb: "activate" | "retire" | "restore") => {
     const id = ctx.params.id!;
@@ -606,7 +623,7 @@ export function createStudioWebApp(options: StudioWebOptions): StudioWebApp {
         runId: run.id, csrfToken: csrfTokenFor(ctx.sessionCookie!), fake: run.runner === "fake",
         actions: acts ? sourceActions(run, stoppedAt(run.kind, artifacts.map((a) => a.name), requests)) : [],
         cancellable: acts && (user.role === "owner" || run.requested_by === user.id) && (run.state === "queued" || run.state === "running"),
-      });
+      }) + (acts && runOffersChoices(run) ? newRunFromRunLink(run.id) : "");
       // S7.2: an import's tier and reason, and the files its metadata recorded, by base name only.
       let importInfo: string | undefined;
       if (run.kind === "imported") {
@@ -659,16 +676,26 @@ export function createStudioWebApp(options: StudioWebOptions): StudioWebApp {
     // --- Content Studio S6.2: the actions ---------------------------------------------------------
 
     "GET /new": async (ctx) => {
+      // S8.7: at most one of from=<price request> and run=<run>; the choices are read from that record, never the URL.
+      const source = parseNewRunQuery(ctx.url.searchParams);
+      if (source === null) return notFound(ctx.res);
+      let stored: { goal: string; platforms: string[]; scopeTags: string[] | null } | null = null;
+      let link: { href: string; label: string } | undefined;
+      if (source.kind === "from") {
+        const view = await store.findPreflightRequest(source.id);
+        // Only a full run's request: a revise, replay or resume has no goal of its own (0003 stores none).
+        if (!view || view.action !== "full" || !preflightVisible(view, ctx.user!)) return notFound(ctx.res);
+        stored = { goal: view.goal ?? "", platforms: view.platforms, scopeTags: view.scopeTags };
+        link = { href: `/preflights/${encodeURIComponent(view.id)}`, label: `price request ${view.id}` };
+      } else if (source.kind === "run") {
+        const run = await store.findRun(source.id);
+        if (!runVisible(run) || !runOffersChoices(run)) return notFound(ctx.res);
+        stored = { goal: run.goal!, platforms: run.platforms!, scopeTags: run.scope_tags };
+        link = { href: `/runs/${encodeURIComponent(run.id)}`, label: `run ${run.id}` };
+      }
       const context = await store.actionContext();
-      htmlPage(ctx.res, 200, shell({
-        title: "New run", user: ctx.user!, csrfToken: csrfTokenFor(ctx.sessionCookie!), poll: false,
-        body: newRunBody({
-          csrfToken: csrfTokenFor(ctx.sessionCookie!), isOwner: ctx.user!.role === "owner",
-          activeFactVersion: context.activeFactVersion,
-          tags: offeredTags(context.heartbeat?.tagCounts, context.activeFactVersion?.tagCounts),
-          workerOnline: workerOnline(context.nowMs, context.heartbeat?.beatAtMs),
-        }),
-      }));
+      const offered = offeredTags(context.heartbeat?.tagCounts, context.activeFactVersion?.tagCounts);
+      newRunPage(ctx, context, 200, offered, stored ? { choices: storedChoices(stored, new Set(offered.map((t) => t.tag))), source: link } : {});
     },
 
     "POST /new/price": async (ctx) => {
@@ -680,7 +707,7 @@ export function createStudioWebApp(options: StudioWebOptions): StudioWebApp {
         message: "no fact version is active, so no price can be offered" }, "/new");
       const tags = offeredTags(context.heartbeat?.tagCounts, version.tagCounts);
       const parsed = parseNewRun(ctx.form!, new Set(tags.map((t) => t.tag)));
-      if (!parsed.ok) return refused(ctx, 400, "Not a valid request", parsed, "/new");
+      if (!parsed.ok) return newRunPage(ctx, context, 400, tags, { error: parsed.message, choices: submittedChoices(ctx.form!, new Set(tags.map((t) => t.tag))) });
       return askPrice(ctx, preflightRequest({
         userId: user.id, action: "full", goal: parsed.goal, platforms: parsed.platforms, scopeTags: parsed.scopeTags,
         sourceRunId: null, factVersionId: version.id,
@@ -691,7 +718,7 @@ export function createStudioWebApp(options: StudioWebOptions): StudioWebApp {
       const context = await store.actionContext();
       const tags = offeredTags(context.heartbeat?.tagCounts, context.activeFactVersion?.tagCounts);
       const parsed = parseNewRun(ctx.form!, new Set(tags.map((t) => t.tag)));
-      if (!parsed.ok) return refused(ctx, 400, "Not a valid request", parsed, "/new");
+      if (!parsed.ok) return newRunPage(ctx, context, 400, tags, { error: parsed.message, choices: submittedChoices(ctx.form!, new Set(tags.map((t) => t.tag))) });
       let created: { runId: string; jobId: string };
       try {
         created = await store.createFakeRun({ ownerId: ctx.user!.id, goal: parsed.goal, platforms: parsed.platforms,
@@ -733,7 +760,7 @@ export function createStudioWebApp(options: StudioWebOptions): StudioWebApp {
       const view = UUID_SHAPE.test(id) ? await store.findPreflightRequest(id) : null;
       const user = ctx.user!;
       // A request, its refusal and its quote are shown to its user and to an owner; to anyone else it does not exist.
-      if (!view || (view.userId !== user.id && user.role !== "owner")) return notFound(ctx.res);
+      if (!view || !preflightVisible(view, user)) return notFound(ctx.res);
       const [context, spend] = await Promise.all([store.actionContext(), store.spendView(localDay(ctx.now))]);
       const source = view.sourceRunId ? await store.findRun(view.sourceRunId) : null;
       const mineRow = spend.users.find((u) => u.id === view.userId);

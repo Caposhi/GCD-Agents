@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Content Studio S8.4 — the browser form-POST check.
+ * Content Studio S8.4 — the browser form-POST check (extended by S8.7).
  *
  * The defect it guards (owner-observed in production on 2026-10-12, POST
  * /settings/caps): every page carried `Referrer-Policy: no-referrer`. Under the
@@ -34,7 +34,13 @@
  *    by the Origin check (303 to /settings, no `csrf.refused` log), and that its
  *    handler ran (the caps are stored and audited); and that the control's
  *    POST carries `Origin: null` and is refused (403, `csrf.refused`, nothing
- *    stored) — the production defect, reproduced.
+ *    stored) — the production defect, reproduced;
+ *  - (Content Studio S8.7) on the app, asks a price through the real New run
+ *    form (a real form POST: a goal with a leading line break, markup and
+ *    quotes, two of three platforms, one tag), clicks the price page's real
+ *    "Edit these choices" link, and asserts that the form arrives at
+ *    /new?from=<that request's id> alone, filled in with the same goal,
+ *    platforms and tag read from the stored request, with nothing written.
  *
  * Run: npm run build && node scripts/local/studio-form-post-check.mjs
  * Exit 0 when every assertion holds, 1 otherwise. Makes no network request
@@ -245,6 +251,60 @@ try {
   assert("control: the unchanged Origin check refused it (403, csrf.refused) and nothing was written",
     ctl.serverPost?.status === 403 && ctl.refused && JSON.stringify(store.settings) === before && store.auditLog.length === auditAtControl,
     { post: ctl.serverPost, refused: ctl.refused, settings: store.settings });
+
+  // --- Content Studio S8.7: "Edit these choices", in a real browser -------------------------------------------------
+  // A price is asked for through the real New run form (a real form POST), then the price page's "Edit these choices"
+  // link is clicked, and the form that arrives must hold the same goal, platforms and tags, read from the stored request.
+  store.addFactVersion({ "synthetic-tag-a": 3, "synthetic-tag-b": 2 });
+  store.heartbeat = { commit: "0".repeat(40), approvedFactsSha256: "a".repeat(64), priceTableSha256: "b".repeat(64),
+    tagCounts: { "synthetic-approved": 5 }, beatAtMs: Date.now() };
+  const goal = "\nSynthetic S8.7 goal: brakes & \"rotors\" <b>before</b> O'Neil's trip </textarea>";
+  const opened = loadFired();
+  await cdp("Page.navigate", { url: `${fixed.base}/new` });
+  await opened;
+  const asked = loadFired();
+  const submittedNew = await evaluate(`(() => {
+    const form = document.querySelector('form[action="/new/price"]');
+    if (!form) return false;
+    form.querySelector('#goal').value = ${JSON.stringify(goal)};
+    for (const box of form.querySelectorAll('input[name=platform]')) box.checked = box.value !== "facebook";
+    for (const box of form.querySelectorAll('input[name=tag]')) box.checked = box.value === "synthetic-tag-b";
+    form.querySelector('button.primary[type="submit"]').click();
+    return true;
+  })()`);
+  if (submittedNew) await asked;
+  const pricePath = await evaluate("location.pathname");
+  const requestsAfterAsk = store.preflight.size;
+  const edited = loadFired();
+  const clickedEdit = await evaluate(`(() => {
+    const link = [...document.querySelectorAll('a')].find((a) => a.textContent === "Edit these choices");
+    if (!link) return false;
+    link.click();
+    return true;
+  })()`);
+  if (clickedEdit) await edited;
+  const arrived = await evaluate(`(() => ({
+    path: location.pathname, search: location.search, title: document.title,
+    goal: document.querySelector('#goal')?.value ?? null,
+    platforms: [...document.querySelectorAll('input[name=platform]:checked')].map((b) => b.value),
+    tags: [...document.querySelectorAll('input[name=tag]:checked')].map((b) => b.value),
+    note: document.body.textContent.includes("Nothing is priced until you ask."),
+  }))()`);
+  const requestId = /^\/preflights\/([0-9a-f-]{36})$/.exec(pricePath ?? "")?.[1];
+  console.log(`S8.7: asked a price at ${pricePath}; clicked "Edit these choices": ${clickedEdit}; arrived at `
+    + `${arrived.path}${arrived.search} ("${arrived.title}"); goal ${JSON.stringify(arrived.goal)}; platforms ${arrived.platforms}; `
+    + `tags ${arrived.tags}`);
+  assert("S8.7: the real New run form's POST asked for a price (303 to the request's page, one request stored)",
+    submittedNew === true && requestId !== undefined && requestsAfterAsk === 1, { submittedNew, pricePath, requestsAfterAsk });
+  assert("S8.7: the price page's \"Edit these choices\" link was found and clicked, arriving at /new?from=<the request's id> alone",
+    clickedEdit === true && arrived.path === "/new" && arrived.search === `?from=${requestId}` && arrived.title.startsWith("New run"),
+    arrived);
+  assert("S8.7: the form arrived filled in with the same goal (its leading line break kept), platforms and tags, with its note",
+    arrived.goal === goal && arrived.platforms.join() === "instagram,google_business_profile" && arrived.tags.join() === "synthetic-tag-b"
+      && arrived.note, arrived);
+  assert("S8.7: following the link wrote nothing (still one request, no further POST)",
+    store.preflight.size === 1 && fixed.posts.filter((p) => p.path === "/new/price").length === 1,
+    { requests: store.preflight.size, posts: fixed.posts.map((p) => p.path) });
 } finally {
   socket.close();
   // Chromium and every helper process it started (its own process group) are stopped, and the profile is removed

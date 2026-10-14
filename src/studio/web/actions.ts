@@ -10,6 +10,7 @@
  */
 
 import { preflightParamsSha256 } from "../db/runner.js";
+import { UUID_SHAPE } from "./runs.js";
 import type { DeploymentCeilings } from "./startup.js";
 
 export type { DeploymentCeilings } from "./startup.js";
@@ -239,6 +240,64 @@ export function parseNewRun(form: URLSearchParams, offeredTags: ReadonlySet<stri
   return {
     ok: true, goal, platforms: PLATFORMS.filter((p) => chosen.includes(p)),
     scopeTags: tags.length ? [...tags].sort() : null,
+  };
+}
+
+// --- "Edit these choices" (Content Studio S8.7) ------------------------------------------------
+
+/** What `GET /new` is filled in from: nothing, a price request (`from=`) or a run (`run=`), each named by its id alone. */
+export type NewRunSource = { kind: "none" } | { kind: "from"; id: string } | { kind: "run"; id: string };
+
+/**
+ * `GET /new`'s query: none, or exactly one of `from=<preflight request id>` and `run=<run id>`, a UUID. Anything else —
+ * a malformed id, both, one given twice, any other parameter — is null, which the route answers as not found. The
+ * choices themselves are never in the URL: they are read from the record the id names.
+ */
+export function parseNewRunQuery(query: URLSearchParams): NewRunSource | null {
+  const keys = [...query.keys()];
+  if (keys.length === 0) return { kind: "none" };
+  const key = keys[0]!;
+  const id = query.get(key)!;
+  if (keys.length !== 1 || (key !== "from" && key !== "run") || !UUID_SHAPE.test(id)) return null;
+  return { kind: key, id };
+}
+
+/** A price request, its refusal and its quote are shown to its user and to an owner; to anyone else it does not exist. */
+export const preflightVisible = (view: { userId: string }, user: { id: string; role: string }): boolean =>
+  view.userId === user.id || user.role === "owner";
+
+/** S8.7: a run's choices can refill New run only when it stored a goal and one or more platforms. */
+export const runOffersChoices = (run: { goal: string | null; platforms: readonly string[] | null }): boolean =>
+  run.goal !== null && (run.platforms?.length ?? 0) > 0;
+
+/** The choices a New run form is filled in with; `dropped` are stored tags no longer offered, never chosen. */
+export interface NewRunChoices { goal: string; platforms: string[]; tags: string[]; dropped: string[] }
+
+/** A goal clipped to the form's bound, in code points as PostgreSQL counts them. */
+export const clipGoal = (goal: string): string => [...goal].slice(0, GOAL_MAX_CHARS).join("");
+
+/**
+ * S8.7: a stored record's choices for the form — its goal (clipped to the form's bound), exactly its known platforms,
+ * and each stored scope tag that is still offered. A stored tag no longer offered is not chosen; it is listed instead.
+ */
+export function storedChoices(stored: { goal: string; platforms: readonly string[]; scopeTags: readonly string[] | null },
+  offered: ReadonlySet<string>): NewRunChoices {
+  const tags = stored.scopeTags ?? [];
+  return {
+    goal: clipGoal(stored.goal), platforms: PLATFORMS.filter((p) => stored.platforms.includes(p)),
+    tags: tags.filter((t) => offered.has(t)), dropped: tags.filter((t) => !offered.has(t)),
+  };
+}
+
+/**
+ * S8.7: an invalid submission's values, put back on the form shown again — the first goal clipped to the form's bound,
+ * only known platforms and only offered tags. Nothing here is written anywhere.
+ */
+export function submittedChoices(form: URLSearchParams, offered: ReadonlySet<string>): NewRunChoices {
+  const platforms = form.getAll("platform");
+  return {
+    goal: clipGoal(form.get("goal") ?? ""), platforms: PLATFORMS.filter((p) => platforms.includes(p)),
+    tags: [...new Set(form.getAll("tag"))].filter((t) => offered.has(t)), dropped: [],
   };
 }
 

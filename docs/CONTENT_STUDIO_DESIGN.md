@@ -961,6 +961,13 @@ stopped at its `PaidActionConsent`, so the quote's lines are `computeCostCeiling
 checks are the CLI's own. Cancellation (§5.3): an owner may cancel any run, a runner only their own.
 Fake runs are full runs only. See [Roadmap](ROADMAP.md).)*
 
+*(Dated note, Content Studio S8.7, 2026-10-14 — `IMPLEMENTED`, not merged. The price page of a **full** run's request
+links **Edit these choices** to `/new?from=<request id>`, in every state — checking, not answered, refused, quoted, expired,
+confirmed — for anyone who can see the page (its requester, or an owner). It is a plain link: it spends nothing, writes
+nothing and asks for no price; New run is filled in from the stored request ([§8.3](#83-new-run)), and a new price is
+asked only when the person presses "Check and get a price" again. A revise, critic-replay or resume request's page has
+no such link: those take their goal from their source run.)*
+
 ### 6.2 Daily and monthly caps — enforced before every paid call
 
 **PROPOSED.** Spend is capped at three levels:
@@ -1241,6 +1248,11 @@ review's non-blocking findings, under "From the legal review"; its blocking find
 there. **Item 7's** table shows the `legal-review` request row. A run made before S8.6, or stopped
 before the review, says it has no legal review; "the stage it stopped at" can be `legal-review`.)*
 
+*(Dated note, Content Studio S8.7, 2026-10-14 — `IMPLEMENTED`, not merged. For an owner or a runner, the report of a
+visible run that stored a goal and platforms — of any kind or state, fake or live — links **Start a new run with these
+choices** to `/new?run=<run id>`, a plain link that spends and writes nothing ([§8.3](#83-new-run)). A viewer, who cannot
+open New run, is not shown it.)*
+
 ### 8.3 New run
 
 For an `owner` or a `runner`:
@@ -1259,6 +1271,19 @@ For an `owner` or a `runner`:
 
 Then **Check** runs the free preflight and **Get price** shows the quote
 ([§6.1](#61-a-price-ceiling-confirmation-before-every-paid-action)).
+
+*(Dated note, Content Studio S8.7, 2026-10-14 — `IMPLEMENTED`, not merged; the owner's post-MVP item "Edit these
+choices". **New run can be filled in from a stored record.** `GET /new` takes at most one parameter, `from=<price
+request id>` or `run=<run id>`, a UUID; anything else — a malformed id, both, one twice, any other parameter — is not
+found. `from=` names a **full** run's request that its page would show this user (its requester, or an owner); `run=` a
+run that is not deleted and stored a goal and platforms. **The choices are read from that record, never from the URL:**
+the goal (escaped; clipped to 2,000 code points), exactly its platforms, and each of its scope tags still offered. A tag
+no longer offered is not chosen and is listed above the form ("No longer offered, so not chosen: …"); a note links the
+source and says "Nothing is priced until you ask." On a filled-in form the scope's upper bound is stated at once. With no
+parameter the page is exactly as before. **An invalid submission** — a goal, platform or tag the form refuses — shows
+New run again (400) with the refusal above the form and the submitted values put back: the goal clipped to 2,000 code
+points, only known platforms and only offered tags. A refusal for another reason (no active fact version, a refused
+write) is shown as before.)*
 
 ### 8.4 Revise, and critic replay
 
