@@ -538,6 +538,25 @@
  * added (`legalReview.ts`, `agents/legal-review.md`, `skills/legal-risk/SKILL.md`
  * and migration 0005): seventy-three in all, for 757 mutations.
  *
+ * Content Studio S8.7's group, `M758`–`M787`, covers "Edit these choices":
+ * New run filled in from a stored full price request or a visible run, never
+ * from the URL. In the Studio web's offline suite: the query accepting a
+ * parameter twice, both parameters or an id not shaped as a UUID (`SA164`);
+ * the price request's visibility widened or narrowed (`SA159`, `SA167`); a run
+ * without a goal or platforms offering its choices (`SA163`, `SA168`); a goal
+ * not clipped, the stored platforms ignored, a tag no longer offered chosen or
+ * not listed (`SA159`, `SA161`, `SA162`, `SA169`); an invalid submission's
+ * unknown platforms or tags not offered put back (`SA169`); a revise or replay
+ * request, a request its page would not show, or a deleted run filling the
+ * form (`SA159`, `SA160`, `SA163`); an invalid submission shown the refusal
+ * page again, without its values, or writing an audit row (`SA169`, `SA170`);
+ * the report's link shown to a viewer or never (`SA168`); and the views — the
+ * goal unescaped, a leading line break lost, the platforms and tags checked
+ * wrongly, the plain page changed, the note or the bound missing, and the
+ * price page's link on the wrong requests or states (`SA159`, `SA161`,
+ * `SA162`, `SA165`–`SA167`). One captured path is added, the web's action
+ * views (`actionViews.ts`): seventy-four in all, for 787 mutations.
+ *
  * It is offline and deterministic: no network, no database, no provider, no
  * credential. The mutations run in parallel on up to MAX_WORKERS workers (the
  * runner's available parallelism, capped), each worker in its OWN disposable
@@ -676,6 +695,8 @@ const STUDIO_WORKER_FINDINGS = "src/studio/worker/findings.ts";
 // Content Studio S6.2: the worker's free preflight and the web's run and revise actions.
 const STUDIO_WORKER_PREFLIGHT = "src/studio/worker/preflight.ts";
 const STUDIO_WEB_ACTIONS = "src/studio/web/actions.ts";
+// Content Studio S8.7: the action screens' views ("Edit these choices", the New run form filled in).
+const STUDIO_WEB_ACTION_VIEWS = "src/studio/web/actionViews.ts";
 const STUDIO_MIGRATION_0004 = "studio/migrations/0004_studio_fact_checks_and_imports.sql";
 // Content Studio S8.6: the legal review's module, prompt and rubric, and migration 0005.
 const CONTENT_RUN_LEGAL = "src/harness/contentRun/legalReview.ts";
@@ -6962,6 +6983,252 @@ const CONTENT_STUDIO_S8_6_MUTATIONS = [
   },
 ];
 
+// Content Studio S8.7: "Edit these choices" — New run filled in from a stored full price request or run, never from the
+// URL; the price page's and the report's links; an invalid submission's form shown again with its values; and nothing
+// written by any of it. One mutation per new rule, each against the Studio web's offline suite (SA159–SA170).
+const CONTENT_STUDIO_S8_7_MUTATIONS = [
+  {
+    name: "New run accepts a parameter given twice, or both parameters",
+    file: STUDIO_WEB_ACTIONS,
+    from: "  if (keys.length !== 1 || (key !== \"from\" && key !== \"run\") || !UUID_SHAPE.test(id)) return null;",
+    to: "  if ((key !== \"from\" && key !== \"run\") || !UUID_SHAPE.test(id)) return null;",
+    expect: ["SA164."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "New run's id is not held to the UUID shape",
+    file: STUDIO_WEB_ACTIONS,
+    from: "  if (keys.length !== 1 || (key !== \"from\" && key !== \"run\") || !UUID_SHAPE.test(id)) return null;",
+    to: "  if (keys.length !== 1 || (key !== \"from\" && key !== \"run\") || id === \"\") return null;",
+    expect: ["SA164."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "an owner no longer sees another user's price request, or fills New run from it",
+    file: STUDIO_WEB_ACTIONS,
+    from: "  view.userId === user.id || user.role === \"owner\";",
+    to: "  view.userId === user.id;",
+    expect: ["SA159.", "SA167."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "any runner sees another user's price request, and fills New run from it",
+    file: STUDIO_WEB_ACTIONS,
+    from: "  view.userId === user.id || user.role === \"owner\";",
+    to: "  view.userId !== \"\" || user.role === \"owner\";",
+    expect: ["SA159."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "a run without a stored goal offers its choices",
+    file: STUDIO_WEB_ACTIONS,
+    from: "  run.goal !== null && (run.platforms?.length ?? 0) > 0;",
+    to: "  (run.platforms?.length ?? 0) > 0;",
+    expect: ["SA163.", "SA168."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "a run without stored platforms offers its choices",
+    file: STUDIO_WEB_ACTIONS,
+    from: "  run.goal !== null && (run.platforms?.length ?? 0) > 0;",
+    to: "  run.goal !== null;",
+    expect: ["SA163.", "SA168."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "a stored goal is not clipped to the form's bound",
+    file: STUDIO_WEB_ACTIONS,
+    from: "export const clipGoal = (goal: string): string => [...goal].slice(0, GOAL_MAX_CHARS).join(\"\");",
+    to: "export const clipGoal = (goal: string): string => goal;",
+    expect: ["SA161.", "SA169."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "a stored record's platforms are ignored: every platform is checked",
+    file: STUDIO_WEB_ACTIONS,
+    from: "    goal: clipGoal(stored.goal), platforms: PLATFORMS.filter((p) => stored.platforms.includes(p)),",
+    to: "    goal: clipGoal(stored.goal), platforms: [...PLATFORMS],",
+    expect: ["SA159.", "SA161."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "a stored tag no longer offered is chosen anyway",
+    file: STUDIO_WEB_ACTIONS,
+    from: "    tags: tags.filter((t) => offered.has(t)), dropped: tags.filter((t) => !offered.has(t)),",
+    to: "    tags: [...tags], dropped: tags.filter((t) => !offered.has(t)),",
+    expect: ["SA162."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "a stored tag no longer offered is dropped silently",
+    file: STUDIO_WEB_ACTIONS,
+    from: "    tags: tags.filter((t) => offered.has(t)), dropped: tags.filter((t) => !offered.has(t)),",
+    to: "    tags: tags.filter((t) => offered.has(t)), dropped: [],",
+    expect: ["SA159.", "SA162."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "an invalid submission's platforms are put back as sent, unknown ones and their order included",
+    file: STUDIO_WEB_ACTIONS,
+    from: "    goal: clipGoal(form.get(\"goal\") ?? \"\"), platforms: PLATFORMS.filter((p) => platforms.includes(p)),",
+    to: "    goal: clipGoal(form.get(\"goal\") ?? \"\"), platforms,",
+    expect: ["SA169."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "an invalid submission's tags are put back whether offered or not",
+    file: STUDIO_WEB_ACTIONS,
+    from: "    tags: [...new Set(form.getAll(\"tag\"))].filter((t) => offered.has(t)), dropped: [],",
+    to: "    tags: [...new Set(form.getAll(\"tag\"))], dropped: [],",
+    expect: ["SA169."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "a revise or replay price request fills New run",
+    file: STUDIO_WEB_APP,
+    from: "        if (!view || view.action !== \"full\" || !preflightVisible(view, ctx.user!)) return notFound(ctx.res);",
+    to: "        if (!view || !preflightVisible(view, ctx.user!)) return notFound(ctx.res);",
+    expect: ["SA160."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "New run is filled from a price request its page would not show",
+    file: STUDIO_WEB_APP,
+    from: "        if (!view || view.action !== \"full\" || !preflightVisible(view, ctx.user!)) return notFound(ctx.res);",
+    to: "        if (!view || view.action !== \"full\") return notFound(ctx.res);",
+    expect: ["SA159."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "a deleted run fills New run",
+    file: STUDIO_WEB_APP,
+    from: "        if (!runVisible(run) || !runOffersChoices(run)) return notFound(ctx.res);",
+    to: "        if (run === null || !runOffersChoices(run)) return notFound(ctx.res);",
+    expect: ["SA163."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "an invalid price submission shows the refusal page again",
+    file: STUDIO_WEB_APP,
+    from: "      const tags = offeredTags(context.heartbeat?.tagCounts, version.tagCounts);\n      const parsed = parseNewRun(ctx.form!, new Set(tags.map((t) => t.tag)));\n      if (!parsed.ok) return newRunPage(ctx, context, 400, tags, { error: parsed.message, choices: submittedChoices(ctx.form!, new Set(tags.map((t) => t.tag))) });",
+    to: "      const tags = offeredTags(context.heartbeat?.tagCounts, version.tagCounts);\n      const parsed = parseNewRun(ctx.form!, new Set(tags.map((t) => t.tag)));\n      if (!parsed.ok) return refused(ctx, 400, \"Not a valid request\", parsed, \"/new\");",
+    expect: ["SA169."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "an invalid fake-run submission shows the refusal page again",
+    file: STUDIO_WEB_APP,
+    from: "      const tags = offeredTags(context.heartbeat?.tagCounts, context.activeFactVersion?.tagCounts);\n      const parsed = parseNewRun(ctx.form!, new Set(tags.map((t) => t.tag)));\n      if (!parsed.ok) return newRunPage(ctx, context, 400, tags, { error: parsed.message, choices: submittedChoices(ctx.form!, new Set(tags.map((t) => t.tag))) });",
+    to: "      const tags = offeredTags(context.heartbeat?.tagCounts, context.activeFactVersion?.tagCounts);\n      const parsed = parseNewRun(ctx.form!, new Set(tags.map((t) => t.tag)));\n      if (!parsed.ok) return refused(ctx, 400, \"Not a valid request\", parsed, \"/new\");",
+    expect: ["SA169."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "an invalid price submission's values are not put back",
+    file: STUDIO_WEB_APP,
+    from: "      const tags = offeredTags(context.heartbeat?.tagCounts, version.tagCounts);\n      const parsed = parseNewRun(ctx.form!, new Set(tags.map((t) => t.tag)));\n      if (!parsed.ok) return newRunPage(ctx, context, 400, tags, { error: parsed.message, choices: submittedChoices(ctx.form!, new Set(tags.map((t) => t.tag))) });",
+    to: "      const tags = offeredTags(context.heartbeat?.tagCounts, version.tagCounts);\n      const parsed = parseNewRun(ctx.form!, new Set(tags.map((t) => t.tag)));\n      if (!parsed.ok) return newRunPage(ctx, context, 400, tags, { error: parsed.message });",
+    expect: ["SA169."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "an invalid price submission writes an audit row",
+    file: STUDIO_WEB_APP,
+    from: "      const tags = offeredTags(context.heartbeat?.tagCounts, version.tagCounts);\n      const parsed = parseNewRun(ctx.form!, new Set(tags.map((t) => t.tag)));\n      if (!parsed.ok) return newRunPage(ctx, context, 400, tags, { error: parsed.message, choices: submittedChoices(ctx.form!, new Set(tags.map((t) => t.tag))) });",
+    to: "      const tags = offeredTags(context.heartbeat?.tagCounts, version.tagCounts);\n      const parsed = parseNewRun(ctx.form!, new Set(tags.map((t) => t.tag)));\n      if (!parsed.ok) {\n        await store.audit({ action: \"preflight.invalid\", actorUserId: user.id, targetType: null, targetId: null, detail: {} });\n        return newRunPage(ctx, context, 400, tags, { error: parsed.message, choices: submittedChoices(ctx.form!, new Set(tags.map((t) => t.tag))) });\n      }",
+    expect: ["SA170."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "the report's \"Start a new run with these choices\" is shown to a viewer",
+    file: STUDIO_WEB_APP,
+    from: "      }) + (acts && runOffersChoices(run) ? newRunFromRunLink(run.id) : \"\");",
+    to: "      }) + (runOffersChoices(run) ? newRunFromRunLink(run.id) : \"\");",
+    expect: ["SA168."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "the report never links its choices to New run",
+    file: STUDIO_WEB_APP,
+    from: "      }) + (acts && runOffersChoices(run) ? newRunFromRunLink(run.id) : \"\");",
+    to: "      });",
+    expect: ["SA168."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "the goal is put in the textarea unescaped",
+    file: STUDIO_WEB_ACTION_VIEWS,
+    from: "const textareaText = (goal: string): string => (/^[\\r\\n]/.test(goal) ? \"\\n\" : \"\") + escapeHtml(goal);",
+    to: "const textareaText = (goal: string): string => (/^[\\r\\n]/.test(goal) ? \"\\n\" : \"\") + goal;",
+    expect: ["SA159.", "SA165."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "a goal's leading line break is lost to the HTML parser",
+    file: STUDIO_WEB_ACTION_VIEWS,
+    from: "const textareaText = (goal: string): string => (/^[\\r\\n]/.test(goal) ? \"\\n\" : \"\") + escapeHtml(goal);",
+    to: "const textareaText = (goal: string): string => escapeHtml(goal);",
+    expect: ["SA165."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "a filled-in form checks every platform",
+    file: STUDIO_WEB_ACTION_VIEWS,
+    from: "    + `${!chosen || chosen.platforms.includes(p) ? \" checked\" : \"\"}>`",
+    to: "    + `${!chosen || PLATFORMS.includes(p) ? \" checked\" : \"\"}>`",
+    expect: ["SA159.", "SA161."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "the plain New run page checks no platform",
+    file: STUDIO_WEB_ACTION_VIEWS,
+    from: "    + `${!chosen || chosen.platforms.includes(p) ? \" checked\" : \"\"}>`",
+    to: "    + `${chosen?.platforms.includes(p) ? \" checked\" : \"\"}>`",
+    expect: ["SA166."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "a filled-in form checks no tag",
+    file: STUDIO_WEB_ACTION_VIEWS,
+    from: "      + `${chosen?.tags.includes(t.tag) ? \" checked\" : \"\"}>`",
+    to: "      + `${\"\"}>`",
+    expect: ["SA159.", "SA161.", "SA162."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "a filled-in form does not say where its choices came from",
+    file: STUDIO_WEB_ACTION_VIEWS,
+    from: "  const filledFrom = input.source ? `<p class=\"note\">Filled in from <a href=\"${escapeAttribute(input.source.href)}\">`",
+    to: "  const filledFrom = input.source && input.error ? `<p class=\"note\">Filled in from <a href=\"${escapeAttribute(input.source.href)}\">`",
+    expect: ["SA159.", "SA161."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "a filled-in form does not state its chosen tags' upper bound",
+    file: STUDIO_WEB_ACTION_VIEWS,
+    from: "    : chosenTags.length ? `At most ${scopeUpperBound(input.tags, chosen.tags)} records carry the chosen tags (an upper bound), plus `",
+    to: "    : chosenTags.length < 0 ? `At most ${scopeUpperBound(input.tags, chosen.tags)} records carry the chosen tags (an upper bound), plus `",
+    expect: ["SA162."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "every price page links \"Edit these choices\", a revise's and a replay's too",
+    file: STUDIO_WEB_ACTION_VIEWS,
+    from: "    + (v.action === \"full\" ? `<p><a href=\"/new?from=${encodeURIComponent(v.id)}\">Edit these choices</a></p>` : \"\");",
+    to: "    + (v.action !== \"\" ? `<p><a href=\"/new?from=${encodeURIComponent(v.id)}\">Edit these choices</a></p>` : \"\");",
+    expect: ["SA167."],
+    suite: STUDIO_WEB_SUITE,
+  },
+  {
+    name: "a full price request's page shows \"Edit these choices\" only once quoted",
+    file: STUDIO_WEB_ACTION_VIEWS,
+    from: "    + (v.action === \"full\" ? `<p><a href=\"/new?from=${encodeURIComponent(v.id)}\">Edit these choices</a></p>` : \"\");",
+    to: "    + (v.action === \"full\" && v.outcome === \"quoted\" ? `<p><a href=\"/new?from=${encodeURIComponent(v.id)}\">Edit these choices</a></p>` : \"\");",
+    expect: ["SA167."],
+    suite: STUDIO_WEB_SUITE,
+  },
+];
+
 // Every group, in order. MUTATIONS is their concatenation; the groups exist
 // only so `M-inc-sample` can spread its sample across them.
 const MUTATION_GROUPS = [
@@ -6979,6 +7246,7 @@ const MUTATION_GROUPS = [
   ["Content Studio S7.1", CONTENT_STUDIO_S7_1_MUTATIONS], ["Content Studio S7.2", CONTENT_STUDIO_S7_2_MUTATIONS],
   ["Content Studio S7.3", CONTENT_STUDIO_S7_3_MUTATIONS], ["Content Studio S6b", CONTENT_STUDIO_S6B_MUTATIONS],
   ["Content Studio S8.2", CONTENT_STUDIO_S8_2_MUTATIONS], ["Content Studio S8.6", CONTENT_STUDIO_S8_6_MUTATIONS],
+  ["Content Studio S8.7", CONTENT_STUDIO_S8_7_MUTATIONS],
 ];
 const MUTATIONS = MUTATION_GROUPS.flatMap(([, group]) => group);
 

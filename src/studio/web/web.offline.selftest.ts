@@ -26,10 +26,10 @@ import {
   FORBIDDEN_PREFIXES, FORBIDDEN_VARIABLES, microsToNumeric, numericToMicros, parseCapMicros, preflightParamsSha256,
 } from "../db/runner.js";
 import {
-  codePoints, decideConfirm, GOAL_MAX_CHARS, localDay, monthOf, offeredTags, PACK_RECORD_CAP, PLATFORMS, preflightPurgeable,
-  preflightRequest, scopeUpperBound, type ConfirmSnapshot,
+  codePoints, decideConfirm, GOAL_MAX_CHARS, localDay, monthOf, offeredTags, PACK_RECORD_CAP, parseNewRunQuery, PLATFORMS,
+  preflightPurgeable, preflightRequest, scopeUpperBound, storedChoices, submittedChoices, type ConfirmSnapshot,
 } from "./actions.js";
-import { PREFLIGHT_POLL_SECONDS } from "./actionViews.js";
+import { newRunBody, PREFLIGHT_POLL_SECONDS } from "./actionViews.js";
 import {
   CONTENT_SECURITY_POLICY, createStudioWebApp, SECURITY_HEADERS, STUDIO_ROUTE_TABLE, type Route, type StudioWebApp, type WebLog,
 } from "./app.js";
@@ -3284,6 +3284,241 @@ const sectionOf = (html: string, klass: string) => {
       && !s.w.store.artifacts.get(olderId)?.has("07-legal-review.json")
       && STUDIO_IMPORT_FILE_NAMES.length === 17 && STUDIO_IMPORT_FILE_NAMES.includes("07-legal-review.json"),
     `${created.status} ${download.status} ${reimport.status} ${older.status}`);
+  await s.w.close();
+}
+
+// --- Content Studio S8.7: "Edit these choices" -------------------------------------------------------------
+
+/** The New run form's state as a browser reads it: the goal (one leading line break dropped, as the parser does), the checked boxes. */
+function formState(body: string): { goal: string | null; platforms: string[]; tags: string[]; offered: string[] } {
+  const unescape = (text: string) => text.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, "\"").replace(/&#39;/g, "'")
+    .replace(/&amp;/g, "&");
+  const areas = [...body.matchAll(/<textarea id="goal"[^>]*>([\s\S]*?)<\/textarea>/g)];
+  const goal = areas.length === 1 ? unescape(areas[0]![1]!).replace(/^\n/, "") : null;
+  const platforms = [...body.matchAll(/name="platform" value="([^"]+)"( checked)?>/g)].filter((m) => m[2]).map((m) => m[1]!);
+  const boxes = [...body.matchAll(/name="tag" value="([^"]+)" data-count="\d+"( checked)?>/g)];
+  return { goal, platforms, tags: boxes.filter((m) => m[2]).map((m) => unescape(m[1]!)), offered: boxes.map((m) => unescape(m[1]!)) };
+}
+const S87_EDIT = (id: string) => `<a href="/new?from=${id}">Edit these choices</a>`;
+const S87_START = (id: string) => `<a href="/new?run=${id}">Start a new run with these choices</a>`;
+const S87_NOTE = "Nothing is priced until you ask.";
+/**
+ * `newRunBody`'s output with no choices, recorded on `main` at 50b27a1 (PR #126's merge, before S8.7) for three fixed
+ * inputs: sha256 and length. S8.7 must leave the plain New run page byte-identical.
+ */
+const S87_PLAIN_VERSION = { id: "00000000-0000-4000-8000-000000000001", sha256: "d".repeat(64), recordCount: 5, tagCounts: {}, uploadedAt: new Date(0) };
+const S87_PLAIN_TAGS = [{ tag: "synthetic-a", count: 3 }, { tag: "synthetic <b> & \"c\" 'd'", count: 1 }];
+const S87_PLAIN: Array<[Parameters<typeof newRunBody>[0], string, number]> = [
+  [{ csrfToken: "csrf-fixed-token", isOwner: false, activeFactVersion: S87_PLAIN_VERSION, tags: S87_PLAIN_TAGS, workerOnline: true },
+    "9dadb2b93ba4033afe177d39d3a9b64cbfde5186b31f2d1eb397f6aaedec0eea", 1933],
+  [{ csrfToken: "csrf-fixed-token", isOwner: true, activeFactVersion: null, tags: [], workerOnline: false },
+    "af7512cc7f247b997f5d7d961e6f0e5b37b68a3df46c428a84b9b4032678ebe8", 1995],
+  [{ csrfToken: "csrf-fixed-token", isOwner: true, activeFactVersion: S87_PLAIN_VERSION, tags: S87_PLAIN_TAGS, workerOnline: true,
+    error: "an <error> & 'message'" }, "c571fa352ec6520c800b1bb112d4227ab5e5a7493b16b24dc40d8d6880b83085", 2123],
+];
+
+{
+  // SA159-SA170. Every fixture is written first; then every S8.7 request is made, and none may write anything (SA170).
+  const s = await s62World();
+  const otherRunner = listed(s.w, "runner");
+  const otherJar = new Jar();
+  await signIn(s.w, otherJar, { identity: identityOf(otherRunner) });
+  const hostile = "Fix the <b>brakes</b> & \"rotors\" for O'Neil's car </textarea><script>alert(1)</script>";
+  const ask = async (jar: Jar, goal: string, fields: Array<[string, string]>) => requestIdOf(await post(s.w, "/new/price", jar, [["goal", goal], ...fields]));
+  // A full request of the runner's: a hostile goal, two of three platforms, two offered tags (one the heartbeat's alone).
+  const full = await ask(s.runner, hostile, [["platform", "instagram"], ["platform", "google_business_profile"], ["tag", "synthetic-tag-b"],
+    ["tag", "synthetic-approved"]]);
+  s.w.store.answerPreflight(full, { quote: { ceilingMicros: CEILING } });
+  // One per state of the price page: checking, not answered, refused, quoted (above), expired, confirmed.
+  const checking = await ask(s.runner, "Synthetic checking goal", [["platform", "facebook"]]);
+  const unanswered = await ask(s.runner, "Synthetic unanswered goal", [["platform", "facebook"]]);
+  s.w.store.jobs.get(s.w.store.preflight.get(unanswered)!.jobId)!.state = "failed";
+  const refusedId = await ask(s.runner, "Synthetic refused goal", [["platform", "facebook"]]);
+  s.w.store.answerPreflight(refusedId, { refused: { refusalClass: "pack_too_large", message: "synthetic refusal" } });
+  const expired = await ask(s.runner, "Synthetic expired goal", [["platform", "facebook"]]);
+  s.w.store.answerPreflight(expired, { quote: { ceilingMicros: CEILING, expiresAtMs: s.w.clock.now - 1 } });
+  const confirmed = await quoteFor(s, s.runner);
+  const confirmReply = await post(s.w, `/quotes/${confirmed.quoteId}/confirm`, s.runner);
+  const ownersFull = await ask(s.owner, "Synthetic owner's goal", [["platform", "instagram"]]);
+  // A leading line break, which an HTML parser drops once after <textarea>.
+  const leading = await ask(s.runner, "\r\nSynthetic goal after a line break", [["platform", "instagram"]]);
+  // A request whose tag was offered when asked and is no longer: the heartbeat stops publishing it.
+  const dropping = await ask(s.runner, "Synthetic dropped-tag goal", [["platform", "facebook"], ["tag", "synthetic-tag-a"],
+    ["tag", "synthetic-approved"]]);
+  // A source run, and its revise and critic-replay requests.
+  const source = s.w.store.addRun(s.runnerUser, { runner: "live", state: "succeeded", goal: "Synthetic live source goal",
+    platforms: ["facebook"], scope_tags: ["synthetic-tag-a", "synthetic-retired-tag"], fact_version_id: s.factVersion });
+  const revise = requestIdOf(await post(s.w, `/runs/${source.id}/price`, s.runner, [["action", "revise"]]));
+  const replay = requestIdOf(await post(s.w, `/runs/${source.id}/price`, s.runner, [["action", "replay_critic"]]));
+  s.w.store.answerPreflight(revise, { quote: { ceilingMicros: CEILING } }, { kind: "revise", startStage: "hook-story-script", stages: [] });
+  // Runs: the owner's fake run, a failed live run, an import, a queued run; and four that offer no choices.
+  const fake = s.w.store.addRun(s.w.owner, { runner: "fake", state: "succeeded", goal: "Synthetic fake goal", platforms: ["instagram", "facebook"] });
+  const failed = s.w.store.addRun(s.runnerUser, { runner: "live", state: "failed", goal: "Synthetic failed goal", platforms: ["google_business_profile"] });
+  const imported = s.w.store.addRun(s.w.owner, { kind: "imported", runner: "live", import_tier: "verified", goal: `Synthetic import ${"𝔊".repeat(GOAL_MAX_CHARS + 5)}`,
+    platforms: ["instagram"], scope_tags: [] });
+  const queued = s.w.store.addRun(s.runnerUser, { runner: "live", state: "queued", goal: "Synthetic queued goal", platforms: ["facebook"] });
+  const deleted = s.w.store.addRun(s.runnerUser, { goal: "Synthetic deleted goal", deleted_at: new Date(s.w.clock.now) });
+  const noGoal = s.w.store.addRun(s.runnerUser, { kind: "revise", goal: null });
+  const noPlatforms = s.w.store.addRun(s.runnerUser, { platforms: null });
+  const emptyPlatforms = s.w.store.addRun(s.runnerUser, { platforms: [] });
+  s.w.store.heartbeat = { ...s.w.store.heartbeat!, tagCounts: { "synthetic-tag-a": 1 } };
+  const offeredNow = offeredTags(s.w.store.heartbeat.tagCounts, s.w.store.factVersions.get(s.factVersion)!.tagCounts);
+  const noVersion = await s62World({ withVersion: false });
+
+  const snapshot = (w: World) => JSON.stringify({ preflight: w.store.preflight.size, jobs: w.store.jobs.size, quotes: w.store.quotes.size,
+    consumed: [...w.store.quotes.values()].filter((q) => q.consumedAtMs !== null).length, runs: w.store.runs.size,
+    audit: w.store.auditLog.length, ledger: w.store.ledger.length });
+  const before = [snapshot(s.w), snapshot(noVersion.w)];
+  const callsAt = [s.w.store.calls.length, noVersion.w.store.calls.length];
+  const get = (path: string, jar: Jar = s.runner) => request(s.w, path, { jar });
+
+  // --- The requests.
+  const own = await get(`/new?from=${full}`);
+  const asOwner = await get(`/new?from=${full}`, s.owner);
+  const asOther = await get(`/new?from=${full}`, otherJar);
+  const asViewer = await get(`/new?from=${full}`, s.viewer);
+  const ownersAsRunner = await get(`/new?from=${ownersFull}`);
+  const fromRevise = await Promise.all([get(`/new?from=${revise}`), get(`/new?from=${revise}`, s.owner), get(`/new?from=${replay}`)]);
+  const fromRuns = await Promise.all([source, fake, failed, imported, queued].map((r) => get(`/new?run=${r.id}`)));
+  const fromRunAsOther = await get(`/new?run=${source.id}`, otherJar);
+  const dropped = await get(`/new?from=${dropping}`);
+  const missing = await Promise.all([deleted, noGoal, noPlatforms, emptyPlatforms].map((r) => get(`/new?run=${r.id}`))
+    .concat([get(`/new?run=${crypto.randomUUID()}`), get(`/new?from=${crypto.randomUUID()}`), get(`/new?from=${source.id}`),
+      get(`/new?run=${full}`)]));
+  const malformed = await Promise.all([`/new?from=not-a-uuid`, `/new?from=${full.toUpperCase()}`, "/new?from=", "/new?run=", "/new?from",
+    `/new?from=${full}&run=${source.id}`, `/new?from=${full}&from=${full}`, `/new?run=${source.id}&run=${source.id}`, "/new?x=1",
+    `/new?from=${full}&x=1`, `/new?goal=${encodeURIComponent("Synthetic goal in a URL")}`, `/new?tag=synthetic-tag-a`,
+    `/new?from=${full}%20`, `/new?FROM=${full}`].map((path) => get(path)));
+  const withLeading = await get(`/new?from=${leading}`);
+  const plain = await Promise.all([get("/new"), get("/new?"), get("/new", s.owner)]);
+  const pricePages = await Promise.all([full, checking, unanswered, refusedId, expired, confirmed.requestId]
+    .map(async (id) => [await get(`/preflights/${id}`), await get(`/preflights/${id}`, s.owner)] as const));
+  const derivedPages = await Promise.all([revise, replay].map((id) => get(`/preflights/${id}`)));
+  const reports = await Promise.all([source, fake, failed, imported, queued].map(async (r) =>
+    [await get(`/runs/${r.id}`), await get(`/runs/${r.id}`, s.owner), await get(`/runs/${r.id}`, s.viewer)] as const));
+  const noChoiceReports = await Promise.all([noGoal, noPlatforms, emptyPlatforms].map((r) => get(`/runs/${r.id}`, s.owner)));
+  const astral = "𝔊".repeat(GOAL_MAX_CHARS + 3);
+  const invalidPrice = await post(s.w, "/new/price", s.runner, [["goal", ""], ["platform", "facebook"], ["platform", "tiktok"],
+    ["tag", "synthetic-tag-a"], ["tag", "synthetic-not-offered"], ["tag", "synthetic-tag-a"]]);
+  const invalidLong = await post(s.w, "/new/price", s.runner, [["goal", astral], ["platform", "instagram"]]);
+  const invalidHostile = await post(s.w, "/new/price", s.runner, [["goal", hostile]]);
+  const invalidFake = await post(s.w, "/new/fake", s.owner, [["goal", "Synthetic fake goal, no platform"], ["tag", "synthetic-tag-a"]]);
+  const noVersionPost = await post(noVersion.w, "/new/price", noVersion.runner, newRunFields("Synthetic goal, no version"));
+  const after = [snapshot(s.w), snapshot(noVersion.w)];
+  const writeCalls = [...s.w.store.calls.slice(callsAt[0]), ...noVersion.w.store.calls.slice(callsAt[1])]
+    .filter((c) => !/^(find|list|read|actionContext|spendView|runLineage|touchSession|health)/.test(c));
+
+  // --- The checks.
+  const fullForm = formState(own.body);
+  const offered = new Set(offeredNow.map((t) => t.tag));
+  check("SA159. GET /new?from=<a full price request> fills the form from the stored request alone — its goal, exactly its "
+    + "platforms, and each of its tags still offered — for its requester and for an owner, with a note linking the price and "
+    + "saying nothing is priced until asked; another runner's is 404 and a viewer is refused by the route's role (403), as before",
+    own.status === 200 && fullForm.goal === hostile && fullForm.platforms.join() === "instagram,google_business_profile"
+      && fullForm.tags.join() === "synthetic-tag-b" && own.body.includes(`Filled in from <a href="/preflights/${full}">price request ${full}</a>. ${S87_NOTE}`)
+      && own.body.includes("No longer offered, so not chosen: synthetic-approved")
+      && asOwner.status === 200 && JSON.stringify(formState(asOwner.body)) === JSON.stringify(fullForm)
+      && asOther.status === 404 && asViewer.status === 403 && ownersAsRunner.status === 404,
+    `${own.status} ${asOwner.status} ${asOther.status} ${asViewer.status} ${ownersAsRunner.status} ${JSON.stringify(fullForm)}`);
+  check("SA160. a revise or critic-replay price request never fills New run: 404 for its requester and for an owner, quoted or not",
+    fromRevise.every((r) => r.status === 404), fromRevise.map((r) => r.status).join());
+  const runForms = fromRuns.map((r) => formState(r.body));
+  check("SA161. GET /new?run=<a visible run> fills the form from the stored run — any kind, state or runner, the runner's own "
+    + "or another user's — with its goal, exactly its platforms and its offered tags, linking the run; a goal longer than the "
+    + "form's bound (an import's) is clipped to 2,000 code points",
+    fromRuns.every((r) => r.status === 200) && fromRunAsOther.status === 200
+      && runForms[0]!.goal === source.goal && runForms[0]!.platforms.join() === "facebook" && runForms[0]!.tags.join() === "synthetic-tag-a"
+      && fromRuns[0]!.body.includes(`Filled in from <a href="/runs/${source.id}">run ${source.id}</a>. ${S87_NOTE}`)
+      && runForms[1]!.goal === fake.goal && runForms[1]!.platforms.join() === "instagram,facebook" && runForms[1]!.tags.length === 0
+      && runForms[2]!.platforms.join() === "google_business_profile" && runForms[4]!.goal === queued.goal
+      && runForms[3]!.goal === [...imported.goal!].slice(0, GOAL_MAX_CHARS).join("") && codePoints(runForms[3]!.goal!) === GOAL_MAX_CHARS
+      && runForms[3]!.tags.length === 0,
+    fromRuns.map((r) => r.status).join());
+  const droppedForm = formState(dropped.body);
+  check("SA162. a stored tag no longer offered is not chosen and is listed, escaped, in a note above the form; the tags "
+    + "still offered stay chosen; the scope bound states the chosen tags' upper bound at once",
+    dropped.status === 200 && droppedForm.tags.join() === "synthetic-tag-a" && !droppedForm.offered.includes("synthetic-approved")
+      && dropped.body.includes("No longer offered, so not chosen: synthetic-approved</p>")
+      && dropped.body.indexOf("No longer offered") < dropped.body.indexOf("<form class=\"action-form\"")
+      && fromRuns[0]!.body.includes("No longer offered, so not chosen: synthetic-retired-tag")
+      && dropped.body.includes(`At most ${scopeUpperBound(offeredNow, ["synthetic-tag-a"])} records carry the chosen tags (an upper bound)`)
+      && fromRuns[1]!.body.includes("No tags chosen: an unscoped run, with every record.")
+      && JSON.stringify(storedChoices({ goal: "g", platforms: ["facebook", "tiktok"], scopeTags: ["b", "x", "a"] }, new Set(["a", "b"])))
+        === JSON.stringify({ goal: "g", platforms: ["facebook"], tags: ["b", "a"], dropped: ["x"] }),
+    `${dropped.status} ${JSON.stringify(droppedForm)}`);
+  check("SA163. a deleted run, a run without a stored goal or platforms, an unknown run or request, and an id of the other "
+    + "kind are each 404",
+    missing.every((r) => r.status === 404), missing.map((r) => r.status).join());
+  check("SA164. GET /new takes at most one parameter, from= or run=, a UUID: a malformed or upper-case id, an empty value, "
+    + "both, one twice, a padded id, any other parameter (a goal or tag in the URL among them) is 404",
+    malformed.every((r) => r.status === 404) && parseNewRunQuery(new URLSearchParams(""))?.kind === "none"
+      && parseNewRunQuery(new URLSearchParams(`run=${full}`))?.kind === "run" && parseNewRunQuery(new URLSearchParams(`from=${full}&from=${full}`)) === null
+      && [`from=not-a-uuid`, `from=${full.toUpperCase()}`, `run=${full} `, `from=${full}&run=${source.id}`, `x=${full}`, "from="]
+        .every((q) => parseNewRunQuery(new URLSearchParams(q)) === null),
+    malformed.map((r) => r.status).join());
+  check("SA165. a stored goal holding <, >, &, quotes and a closing </textarea> with a script is escaped in the textarea "
+    + "and reads back exactly; a goal that starts with a line break keeps it (one more is written, as the parser drops one)",
+    own.body.includes("Fix the &lt;b&gt;brakes&lt;/b&gt; &amp; &quot;rotors&quot; for O&#39;Neil&#39;s car &lt;/textarea&gt;&lt;script&gt;alert(1)&lt;/script&gt;</textarea>")
+      && !own.body.includes("<script>alert") && withLeading.status === 200 && formState(withLeading.body).goal === "\r\nSynthetic goal after a line break"
+      && withLeading.body.includes("required>\n\r\nSynthetic goal after a line break</textarea>"),
+    `${withLeading.status}`);
+  const context = await s.w.store.actionContext();
+  const plainBody = newRunBody({ csrfToken: csrfTokenFor(s.runner.values.get(SESSION_COOKIE)!), isOwner: false,
+    activeFactVersion: context.activeFactVersion, tags: offeredTags(context.heartbeat?.tagCounts, context.activeFactVersion?.tagCounts),
+    workerOnline: true });
+  check("SA166. with no parameter the New run page is byte-identical to S6.2's: newRunBody with no choices hashes as on main at "
+    + "50b27a1 for three fixed inputs, and GET /new (and /new?) carries exactly that body — empty goal, every platform "
+    + "checked, no tag, no note",
+    S87_PLAIN.every(([input, sha, length]) => { const out = newRunBody(input); return out.length === length && createHash("sha256").update(out).digest("hex") === sha; })
+      && plain.every((r) => r.status === 200) && plain[0]!.body.includes(plainBody) && plain[1]!.body === plain[0]!.body
+      && formState(plain[0]!.body).goal === "" && formState(plain[0]!.body).platforms.join() === PLATFORMS.join()
+      && formState(plain[0]!.body).tags.length === 0 && !plain[0]!.body.includes("Filled in from") && !plain[0]!.body.includes("No longer offered")
+      && plain[2]!.body.includes("formaction=\"/new/fake\""),
+    plain.map((r) => r.status).join());
+  check("SA167. every full price request's page links \"Edit these choices\" to /new?from=<its id>, in every state — checking, "
+    + "not answered, refused, quoted, expired, confirmed — for its requester and an owner; a revise or replay request's never does",
+    confirmReply.status === 303 && pricePages.every(([mine, owners], i) => {
+      const id = [full, checking, unanswered, refusedId, expired, confirmed.requestId][i]!;
+      return mine.status === 200 && owners.status === 200 && mine.body.includes(S87_EDIT(id)) && owners.body.includes(S87_EDIT(id));
+    }) && pricePages[1]![0].body.includes("Checking.") && pricePages[2]![0].body.includes("This check was not answered")
+      && pricePages[3]![0].body.includes("Refused before any cost") && pricePages[4]![0].body.includes("This quote has expired")
+      && pricePages[5]![0].body.includes("This quote was confirmed")
+      && derivedPages.every((r) => r.status === 200 && !r.body.includes("Edit these choices")),
+    pricePages.map(([a, b]) => `${a.status}/${b.status}`).join());
+  check("SA168. a run's report links \"Start a new run with these choices\" to /new?run=<its id> for an owner or runner, on "
+    + "any visible run with a stored goal and platforms — fake or live, any kind or state; never for a run without them, "
+    + "and never to a viewer, who cannot open New run",
+    reports.every(([runner, owner, viewer], i) => {
+      const id = [source, fake, failed, imported, queued][i]!.id;
+      return runner.status === 200 && owner.status === 200 && viewer.status === 200 && runner.body.includes(S87_START(id))
+        && owner.body.includes(S87_START(id)) && !viewer.body.includes("Start a new run with these choices");
+    }) && noChoiceReports.every((r) => r.status === 200 && !r.body.includes("Start a new run with these choices")),
+    reports.map(([a, b, c]) => `${a.status}/${b.status}/${c.status}`).join());
+  const priceForm = formState(invalidPrice.body);
+  const longForm = formState(invalidLong.body);
+  const fakeForm = formState(invalidFake.body);
+  check("SA169. an invalid New run submission shows the form again (400) with its refusal in the error banner and its values "
+    + "put back — the goal clipped to 2,000 code points and escaped, only known platforms, only offered tags — for a price "
+    + "and for the owner's fake run; the no-fact-version refusal is unchanged",
+    invalidPrice.status === 400 && invalidPrice.body.includes("<h1>New run</h1>") && !invalidPrice.body.includes("class=\"refusal\"")
+      && invalidPrice.body.includes(`<p class="banner banner-bad prose">the goal must be 1 to ${GOAL_MAX_CHARS.toLocaleString("en-US")} characters</p>`)
+      && priceForm.goal === "" && priceForm.platforms.join() === "facebook" && priceForm.tags.join() === "synthetic-tag-a"
+      && !invalidPrice.body.includes("synthetic-not-offered") && !invalidPrice.body.includes("tiktok")
+      && invalidLong.status === 400 && longForm.goal === "𝔊".repeat(GOAL_MAX_CHARS) && longForm.platforms.join() === "instagram"
+      && invalidHostile.status === 400 && formState(invalidHostile.body).goal === hostile && !invalidHostile.body.includes("<script>alert")
+      && invalidHostile.body.includes("choose one or more of the three platforms") && formState(invalidHostile.body).platforms.length === 0
+      && invalidFake.status === 400 && fakeForm.goal === "Synthetic fake goal, no platform" && fakeForm.tags.join() === "synthetic-tag-a"
+      && invalidFake.body.includes("formaction=\"/new/fake\"")
+      && noVersionPost.status === 409 && noVersionPost.body.includes("<code>no_fact_version</code>") && noVersionPost.body.includes("class=\"refusal\"")
+      && JSON.stringify(submittedChoices(new URLSearchParams([["goal", "a"], ["goal", "b"], ["platform", "google_business_profile"],
+        ["platform", "instagram"], ["tag", "y"], ["tag", "x"]]), offered.add("x"))) === JSON.stringify({ goal: "a",
+        platforms: ["instagram", "google_business_profile"], tags: ["x"], dropped: [] }),
+    `${invalidPrice.status} ${invalidLong.status} ${invalidHostile.status} ${invalidFake.status} ${noVersionPost.status}`);
+  check("SA170. no S8.7 route writes anything: across every prefilled and refused New run page, price page and report above, "
+    + "no preflight request, job, quote, confirmation, run, ledger entry or audit row is written, and no store write is called",
+    after[0] === before[0] && after[1] === before[1] && writeCalls.length === 0 && s.w.store.calls.slice(callsAt[0]).includes("findRun"),
+    `${before.join(" ")} → ${after.join(" ")}; ${writeCalls.join()}`);
+  await noVersion.w.close();
   await s.w.close();
 }
 
