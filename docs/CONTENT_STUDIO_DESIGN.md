@@ -909,7 +909,7 @@ mitigating risk"). **The disclaimer text in code is pending rewording:** `LEGAL_
 before posting." — a recorded discrepancy; rewording it is `PLANNED` in [Roadmap](ROADMAP.md).)*
 
 *(Dated note, 2026-10-14, Content Studio S8.8 — `IMPLEMENTED`, not merged; the owner's go-ahead
-"proceed with your recommendations".)* *(2026-10-16: S8.8 is `MERGED` through PR #128 at `1f19e7b…` and `DEPLOYED` to both Studio services, no migration; not yet `PRODUCTION-VALIDATED` — [Status](STATUS.md#content-studio-on-render--the-s88-deploy-2026-10-16).)*
+"proceed with your recommendations".)* *(2026-10-16: **VERIFIED** from this repository's dated record — S8.8 is `MERGED` through PR #128 at `1f19e7b…` and `DEPLOYED` to both Studio services, no migration; not yet `PRODUCTION-VALIDATED` — [Status](STATUS.md#content-studio-on-render--the-s88-deploy-2026-10-16). The label was added by the roadmap split of 2026-10-16.)*
 
 - **The disclaimer is reworded** to "Screening aid, not legal advice. Read it, and resolve its
   blocking findings, before posting." — in `LEGAL_REVIEW_DISCLAIMER`, `LEGAL_NOT_ADVICE`, the
@@ -1278,7 +1278,7 @@ there. **Item 7's** table shows the `legal-review` request row. A run made befor
 before the review, says it has no legal review; "the stage it stopped at" can be `legal-review`.)*
 
 *(Dated note, Content Studio S8.8, 2026-10-14 — `IMPLEMENTED`, not merged: the line from code now reads
-"Screening aid, not legal advice. Read it, and resolve its blocking findings, before posting.")* *(2026-10-16: S8.8 is `MERGED` through PR #128 at `1f19e7b…` and `DEPLOYED` to both Studio services, no migration; not yet `PRODUCTION-VALIDATED` — [Status](STATUS.md#content-studio-on-render--the-s88-deploy-2026-10-16).)*
+"Screening aid, not legal advice. Read it, and resolve its blocking findings, before posting.")* *(2026-10-16: **VERIFIED** from this repository's dated record — S8.8 is `MERGED` through PR #128 at `1f19e7b…` and `DEPLOYED` to both Studio services, no migration; not yet `PRODUCTION-VALIDATED` — [Status](STATUS.md#content-studio-on-render--the-s88-deploy-2026-10-16). The label was added by the roadmap split of 2026-10-16.)*
 
 *(Dated note, Content Studio S8.7, 2026-10-14 — `IMPLEMENTED`, not merged. For an owner or a runner, the report of a
 visible run that stored a goal and platforms — of any kind or state, fake or live — links **Start a new run with these
@@ -1343,7 +1343,7 @@ stage owning a blocking finding, critic or legal; the review of 2026-10-14 requi
 its id, category, severity, the stage it goes to and whether it is sent or dropped over the cap —
 before the owner confirms; `revision-meta.json` and the revised run's `summary.md` record the same.
 Owner items are still held back. Pricing is unchanged: the ceiling follows from the stages that
-re-run (from hook-story-script, 8 requests, $19.245; from production-direction, 7, $17.78). *(2026-10-16: S8.8 is `MERGED` through PR #128 at `1f19e7b…` and `DEPLOYED` to both Studio services, no migration; not yet `PRODUCTION-VALIDATED` — [Status](STATUS.md#content-studio-on-render--the-s88-deploy-2026-10-16).)*
+re-run (from hook-story-script, 8 requests, $19.245; from production-direction, 7, $17.78). *(2026-10-16: **VERIFIED** from this repository's dated record — S8.8 is `MERGED` through PR #128 at `1f19e7b…` and `DEPLOYED` to both Studio services, no migration; not yet `PRODUCTION-VALIDATED` — [Status](STATUS.md#content-studio-on-render--the-s88-deploy-2026-10-16). The label was added by the roadmap split of 2026-10-16.)*
 
 Both create a child run, and the source run is never modified.
 
