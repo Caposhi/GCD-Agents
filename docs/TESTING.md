@@ -323,6 +323,8 @@ npm run build && node scripts/local/studio-layout-check.mjs
 - **`npm run test:offline`:** still **twelve suites**; **1,981 → 2,031** checks.
 - **The layout check** (`scripts/local/studio-layout-check.mjs`, local only) now also signs in as a synthetic owner and checks the new-run page, a quoted full run's page, a quoted revise's page with its plan, the spend panel with an unacknowledged overrun and the report with its action buttons. 2026-10-05 in this container: **ALL PASS** — `scrollWidth` 375 on all eight pages, the smallest tap target 44 × 44 px (the new-run check boxes are 44 px), no CSP violation.
 
+*(2026-10-16, the S8.8 records change: S8.8 below is `MERGED` through PR #128 at `1f19e7b…`; `main` CI ran twice at that commit — runs 300 and 301, fifteen jobs each, all `success` on attempt 1; `deploy-production` runs 93 and 94 each refused at the disabled gate, release skipped; `DEPLOYED` to the Studio, not yet `PRODUCTION-VALIDATED`. The records change itself is documentation only: `test:offline` 2,152, unchanged.)*
+
 **Content Studio S8.8 — a revision carries the source run's legal-review findings; the disclaimer reworded — `IMPLEMENTED`, not merged; not deployed.** *(2026-10-14; based on `36d2996…`, PR #127's merge; the owner's go-ahead "proceed with your recommendations".)* No model, provider, Render or Google call: fake runners, fixtures, the memory store and a disposable PostgreSQL 16 only. Local validation in this container (Node 22.22.0, PostgreSQL 16.15):
 
 - **Content intelligence, offline** (**1,348 → 1,361**), one block `LV1`–`LV13` inside the LR block, on copies of the plain fake run whose `07-legal-review.json` is validated against the plain run's own material, each finding's issue a unique marker:
