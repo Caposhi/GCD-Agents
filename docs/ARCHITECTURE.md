@@ -191,6 +191,8 @@ a run revisable and always reaches a stage that re-runs; they are sent in the sa
 ones; `revisionDataBlocks` accepts that lens only with an `L` id. A source with no legal review is
 planned exactly as before; round 2's legal review is never sent. See
 [Content Studio design §5.5](CONTENT_STUDIO_DESIGN.md#55-the-legal-risk-review-content-studio-s86).)*
+*(2026-10-16: S8.8 is `MERGED` through PR #128 at `1f19e7b…` and `DEPLOYED` to both Studio
+services, no migration; not yet `PRODUCTION-VALIDATED` — [Status](STATUS.md#content-studio-on-render--the-s88-deploy-2026-10-16).)*
 
 ### Content Intelligence foundation (Phase 0B.0) — merged and deployed
 
