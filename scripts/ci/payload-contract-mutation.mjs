@@ -4566,7 +4566,7 @@ const STATED_CAPTION_AND_RESUME_MUTATIONS = [
  * manufacturer with a comparison its record does not make, unflagged by any
  * lens; the owner's check of 2026-09-28 found BMW's own record makes that
  * city-versus-long-distance comparison, so there was no critic gap (see PR
- * #97's corrected record in docs/ROADMAP.md). Appended after every earlier group.
+ * #97's corrected record in docs/COMPLETED_ROADMAP_PHASES.md). Appended after every earlier group.
  */
 const COMPARISON_CLAIM_MUTATIONS = [
   {

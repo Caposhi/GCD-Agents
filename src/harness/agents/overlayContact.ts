@@ -58,8 +58,8 @@ export type OverlayContactCategory = (typeof OVERLAY_CONTACT_CATEGORIES)[number]
 
 /**
  * The closed call-to-action list. Whole phrases, matched on word boundaries
- * after normalization. Documented in `docs/ROADMAP.md`; extending it is a
- * reviewed change with its own acceptance checks.
+ * after normalization. Documented in `docs/COMPLETED_ROADMAP_PHASES.md`;
+ * extending it is a reviewed change with its own acceptance checks.
  */
 export const CALL_TO_ACTION_PHRASES = [
   "book online",
