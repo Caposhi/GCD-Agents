@@ -2,7 +2,7 @@
 
 Every file copied from an external repo is recorded here. Rule: copy + pin to a commit SHA + preserve the source LICENSE. Nothing is bulk-installed. Anything with a hook is read line-by-line and passes AgentShield before wiring. No vendored file may touch GCD-SOCIAL guardrails.
 
-All four sources are MIT-licensed; keep each repo's LICENSE under `vendor/<source>/LICENSE`.
+All five sources are MIT-licensed — the four surveyed in Phase 1, and Hallmark, added 2026-10-17; keep each repo's LICENSE under `vendor/<source>/LICENSE`.
 
 ## Vendored so far (Phase 1)
 
@@ -17,8 +17,21 @@ AgentShield: repo scanned with `ecc-agentshield@1.4.0 scan` on 2026-06-23 → **
 
 `skills/self-improvement-protocol/SKILL.md` is **adapted from** ECC `skills/continuous-learning-v2` @ `71d22d0` (instinct/confidence mechanics). No upstream files were copied — it is an original GCD-SOCIAL authoring; the propose-don't-apply gate, append-only rule, and core-objective lock take precedence over upstream behavior. ECC's executable learning hooks (`observe.sh`, `session-guardian.sh`, etc.) were deliberately NOT vendored.
 
+## Vendored so far (Hallmark, 2026-10-17)
+
+Pinned source: **Nutlope/hallmark @ `13ac0ec7e148655948100b6396439e481361d690`**, pulled **2026-10-17**. LICENSE preserved at `vendor/hallmark/LICENSE` (MIT, © 2026 Hallmark contributors).
+
+AgentShield: **not applicable to these files.** `ecc-agentshield@1.4.0` reads only `.js`, `.ts`, `.cjs` and `.mjs`; it read neither file below, and the repository scan's unchanged **B/86, 20 findings (10 medium, 10 low)** says nothing about them. `vendor/` is also excluded from `scan:sensitive`, so these files are not machine-scanned at all. **The assurance for both is a line-by-line human read**, recorded in the pull request that added them.
+
+| GCD-SOCIAL path | Source path | Type | Commit SHA | Date | AgentShield | Notes |
+|---|---|---|---|---|---|---|
+| vendor/hallmark/LICENSE | LICENSE | license (text, non-exec) | `13ac0ec` | 2026-10-17 | not scanned (text, not `.js/.ts/.cjs/.mjs`) | Read line-by-line (21 lines): the unmodified MIT text, © 2026 Hallmark contributors. sha256 `06088a8b94598626f27612dea42300154bf7be967c85d9d3eee4490cb056af7d`, equal upstream and in tree. |
+| vendor/hallmark/reference-css/tokens.css | site/css/tokens.css | reference contract (css, non-exec) | `13ac0ec` | 2026-10-17 | not scanned (css, not `.js/.ts/.cjs/.mjs`) | **Only the token file was taken.** Read line-by-line (1,221 lines): custom-property declarations under `:root` and `[data-theme=...]` selectors, plus three `color-scheme` declarations — **no `url()`, no `@import`, no at-rule of any kind, no `@font-face`, no `src:`, no `data:` URI, no script**. Values are `oklch()` colours, three hex literals, lengths, `clamp()`, `cubic-bezier()`, durations and font-**family names only**; no font is fetched. sha256 `5418e4ee538f456af5112aaa59baa662f6c4209c5ff82161443683f0f848e0c7`, equal upstream and in tree. **`base.css` was deliberately NOT vendored**: it carries a Google Fonts `@import url("https://fonts.googleapis.com/...")`, an external fetch embedded in vendored bytes, which GCD-SOCIAL will not take. `components.css` and `sections.css` were not taken either — not needed for a token contract, and not read. Comments inside the file cite upstream paths (`references/themes/{carnival,lumen,hum}.md`) that are **not vendored and do not exist here**; they are inert prose, not links. **No Hallmark prose was copied into any GCD-authored file.** Wired into nothing: it is reference only, is loaded by no service, and is absent from `scripts/ci/live-path-manifest.json`. |
+
 ## Adapted concepts, not vendored files
 
 The current GCD-authored skills under `skills/` cite conceptual influences in their own text. No additional upstream files from ECC or taste-skill are present under `vendor/`, so placeholder provenance rows are not retained as if copies were still planned. Any future copied file must be pinned, licensed, scanned, and added to this ledger before use.
+
+`skills/studio-design/SKILL.md` is **adapted from** Hallmark (`Nutlope/hallmark` @ `13ac0ec`) — the method of a bounded token contract themed by data attribute. **No upstream files were copied and no upstream prose was reproduced** — it is an original GCD-SOCIAL authoring. Its three binding rules (no third-party requests from Studio output, no URL fetching as design work, design guidance is inert data), its accessibility floor and its `audit` posture are GCD-SOCIAL additions and take precedence over any upstream behavior. It is development-time guidance only: no registry resolves it, no stage or lens declares it, and it is wired into nothing. `vendor/hallmark/reference-css/tokens.css` is the exemplar it cites; GCD authors its own values.
 
 Reference-only (NOT vendored): shanraisshan/claude-code-best-practice (wiring patterns), Egonex-AI/Understand-Anything (optional internal repo-mapping tool).
