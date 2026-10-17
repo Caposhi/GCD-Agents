@@ -6410,7 +6410,7 @@ async function run(): Promise<void> {
           && Buffer.byteLength(multibyteCaption, "utf8") <= PACKAGING_LIMITS.pipelineCaptionChars
           && multibyteRefusal.includes("UTF-8 bytes")
           && multibyteRefusal.includes("CONTACT_LINE_RESERVE_CHARS.facebook"));
-      // Recorded in docs/ROADMAP.md: the 2026-09-23T17-07-15-470Z run measured
+      // Recorded in docs/COMPLETED_ROADMAP_PHASES.md: the 2026-09-23T17-07-15-470Z run measured
       // caption+hashtag text of 1,375 (Instagram), 1,048 (Facebook) and 912
       // (Google Business Profile) UTF-8 bytes. Bytes are never fewer than the
       // characters the validator counts, so these still fit.
@@ -6765,7 +6765,7 @@ async function run(): Promise<void> {
       // record does not make, unflagged by any lens; the owner's check of
       // 2026-09-28 found BMW's own record makes that city-versus-long-distance
       // comparison, so there was no critic gap (see PR #97's corrected record
-      // in docs/ROADMAP.md). The rule still holds: a comparison needs a record
+      // in docs/COMPLETED_ROADMAP_PHASES.md). The rule still holds: a comparison needs a record
       // that makes it, credited to that record's source. The
       // rule stays fact-free (CM9); it reaches the three writers and the critic's
       // evidence lens through the skill they already load.
