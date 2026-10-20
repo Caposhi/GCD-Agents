@@ -180,6 +180,129 @@ Open items, carried unchanged except where S8.2 and S8.3 (now under *Merged repo
 - ~~**BLOCKING (owner, 2026-10-05): the `deploy-production` run for S6.2's merge must reach *Refuse while production automation is disabled* with its release job skipped**~~ **DISCHARGED 2026-10-06** by run 76 (`37486785375`), attempt 1: gate job `112348760063` on runner `1000001488` reached the refusal; release job `112348812149` skipped (S6.2's reconciliation below).
 - **From S6.2:** design §8.7's users and caps settings screens — **assigned to S7.3** (owner decision of 2026-10-06).
 
+## Planned — pre-review humanize loop: Pangram detection and Undetectable humanization (owner request of 2026-10-14; recorded 2026-10-19) — `PLANNED`
+
+**State:** `PLANNED`, post-MVP. This is one of the post-MVP items the owner chooses among after the revise of run `46f5bf15…`, and it moves no cursor (*Next steps* above). Nothing is designed in detail, built, configured or enabled:
+
+- no Pangram or Undetectable account, key, secret, environment variable, dependency, provider client or fake exists in this repository;
+- **no request has been made to either provider**.
+
+Nothing here authorizes any of the following; each needs its own explicit authorization:
+
+- a provider call, a key or a Render change;
+- any change to the posting gate, the legal review, the critic panel or the Phase-A approval gate;
+- the start of any H-step.
+
+**Owner request (2026-10-14), recorded in substance:** humanize generated content *before* the human-review phase. Check each draft for AI content with **Pangram**. If it does not read as human, rewrite it with **Undetectable** (Humanization API v2). Check again with Pangram, and repeat until the Pangram reading is 100% human. *(First drafted on 2026-10-14 against `e9d06a7`, before S6–S8.8; rewritten on 2026-10-19 against the current pipeline before it was committed.)*
+
+**Where it sits.** It sits on the six-stage path in `src/harness/contentRun/**`, which the Content Studio worker and the local CLI share, directly after stage 5 and before the deterministic contact line:
+
+```
+… → 05 packaging-adaptation → [humanize loop] → 05b contact lines → 06 final-critic → 07 legal review → the owner's posting gate
+```
+
+**Why there.** Everything after the loop then judges the exact text that would be posted:
+
+- the critic's four lenses and the legal review (S8.6);
+- the owner's per-run posting gate, where the owner reads that run's legal review before posting anything.
+
+That is the invariant in [`skills/platform-specs`](../skills/platform-specs/SKILL.md): *"All provider-visible formatting is finalized before critique and approval."* Placing the loop before `attachContactLines` keeps the contact line out of the humanizer's input by construction. As today, stage 5's saved file stays exactly what stage 5 returned; the loop's result is its own artifact (name TO DECIDE in H0).
+
+**Rejected placements:**
+
+- **After the critic or the legal review.** That would post text neither reviewed.
+- **After approval.** That would break the approval subject's SHA-256 binding.
+
+**Out of scope:** the live `runBrief` path in the `gcd-social-*` services, which would be a production-wiring question (P1–P8, *Production-wiring design* below). It is `DEFERRED` until the owner decides it separately.
+
+**The loop, as requested (H0 fixes the details):**
+
+1. **What is sent.** Only each platform's model-authored `caption` prose. Nothing else is sent, and nothing else is changed by the humanizer:
+   - hashtags;
+   - the contact line;
+   - CTA, URLs, phone and address;
+   - alt text and the Instagram `is_ai_generated` image disclosure (the honesty guardrail in [`skills/posting-workflow`](../skills/posting-workflow/SKILL.md));
+   - overlays, `claimUse`, the evidence pack, the uploaded facts file and the identity records.
+2. **Detect.** Pangram: `POST /task` at `https://text.external-api.pangram.com`, header `x-api-key`. Then poll `GET /task/{task_id}` until `STAGE_SUCCESS` or `STAGE_FAILED`. The model selector comes from `GET /models` at run time and is recorded; it is never hard-coded, which is Pangram's instruction.
+3. **Target.** "100% human" means `fraction_human` = 1.0 (so `fraction_ai` = `fraction_ai_assisted` = 0), with no window flagged `is_humanized`. That is the owner's default; whether it becomes a threshold is decision H-D4.
+4. **Humanize.** Undetectable: `POST https://humanize.undetectable.ai/submit`, header `apikey`. Then poll `POST /document` every 5–10 s (the vendor's guidance), with a timeout.
+   - **Proposed parameters:** `readability` "Marketing", `purpose` "Marketing Material", `model` "v11" (English), `strength` "Balanced" on round 1.
+   - **Later rounds:** round 2 is `/rehumanize`, which the vendor allows once per document. Round 3, if allowed, resubmits with `strength` "More Human".
+   - **REST polling only:** the WebSocket stream and browser token exchange are not used, so the key stays on the worker.
+5. **Revalidate every candidate before it can win.** The candidate is put back into stage 5's output, and `revalidatePackagingAdaptationOutput` runs again: budgets net of the contact reserve, claim bindings, forbidden claims and the contact-in-text rules. A candidate that fails is discarded.
+6. **Bounded.** A round cap (proposed 3) and a per-run vendor-credit cap stop the loop. If the target is not met within the cap, the loop stops there. The best valid candidate and the original go forward, flagged *"did not reach the Pangram target"*; what happens next is decision H-D3.
+7. **Downstream unchanged.** The critic, the legal review, the revision pass and the posting gate run exactly as today on the chosen text. A critic FAIL routes through the existing revision pass and its caps, and the loop adds no revision cycles of its own.
+8. **Recorded.** Per platform and round, the run records:
+   - the Pangram selector and its three fractions;
+   - the Undetectable document id, model and strength;
+   - the revalidation result and the credits used.
+
+   The run report shows the original and humanized captions side by side.
+
+**Why H0 (a design) comes first:**
+
+- **Quotes and ceilings.** A Studio live run needs a user-bound, expiring, single-use quote, and the run is held to its printed ceiling. A loop of 1 to N rounds against two vendors that bill in their own units changes those contracts, as the caption-repair item in *Planned — Content Studio* does.
+- **Questions H0 must answer:**
+  - how the quote prices the round cap at its worst case;
+  - how vendor credits join the spend ledger and caps;
+  - how a critic replay reuses the recorded result without calling either vendor, and how a revise re-runs the loop on the new stage 5 (`verify.ts`'s reused-file list);
+  - whether the key-presence rule that gates the Anthropic runner (S6b) is mirrored for each vendor key.
+
+**Known risks, recorded so they are not discovered live:**
+
+- **Convergence is not assured.** Pangram markets humanizer detection: its windows carry `is_humanized` and `humanizer_score`, and Pangram reports detecting most Undetectable output. Independent studies conflict. "100% human" may be unreachable for many captions, which is why the cap and H-D3 exist. The rate on our own captions is TO VERIFY, offline first and then in H4.
+- **Accuracy and voice drift.** The vendor's own documented example changes meaning and adds punctuation errors. That is why step 5 revalidates every candidate and the critic and legal review run after the loop. The extra failure rate is measured in H4.
+- **Short captions.** Undetectable needs at least 50 characters. Pangram's reliability on short Google Business Profile or Facebook text is TO VERIFY. Below either minimum, the loop is skipped and the caption is labelled.
+- **Language.** `v11` is English-best. The Spanish version stays `DEFERRED` (owner, 2026-09-28).
+- **Vendor data.** Undetectable's `/list` returns past documents with their input and output, so captions persist in that account. Pangram keeps bulk results 48 hours; its single-task retention is TO VERIFY. Both vendors' terms and retention are TO VERIFY before O-H1 and O-H2.
+- **Vendor-doc inconsistencies (TO VERIFY).**
+  - Undetectable documents "insufficient credits" as status 400 in one place and 402 in its error table.
+  - Its hand-over example posts to `/submit`.
+- **Cost.** Undetectable word credits (`GET /check-user-credits`) and Pangram billing units; prices are TO VERIFY. The calls go behind the paid-call preconditions: every free check first.
+
+**Sequence: serial, each step separately authorized, chosen by the owner from the post-MVP list.**
+
+- **H0 — design.** Placement, artifact name, quote and ceiling pricing, the ledger, replay and revise behaviour, key handling, data handling, the decisions below. Documentation only.
+- **H1 — offline library.** Provider interfaces and fakes, the loop controller, caption-only scoping, per-candidate revalidation, the caps and the artifact, inside `src/harness/contentRun/**`, with offline self-tests and a mutation group. No network, environment read or dependency (Node `fetch` suffices).
+  - Stage 5's executor (`packagingAdaptation.ts`) is not in `scripts/ci/live-path-manifest.json`, but `payloadContract.ts`, which holds the caption budgets and the contact reserve, is. H1 must leave it byte-identical, or declare a live-path change; H0 checks which.
+- **H2 — provider clients.** Both clients, run only by the Studio worker. Request shapes proven by the simulated dry run. Proposed key names `PANGRAM_API_KEY` and `UNDETECTABLE_API_KEY` (final in H2), added to `.env.example` and [Environment](ENVIRONMENT.md) in that change, never committed with values. Quotes and caps per H0. No live call.
+- **H3 — Studio surface.** The quote shows the loop's priced ceiling; the run report shows the rounds, the scores, the diff and the non-convergence flag.
+- **H4 — first live measurement (owner action).** A bounded set of runs measures:
+  - Pangram scores before and after;
+  - rounds used;
+  - revalidation, critic and legal-review outcomes;
+  - the owner's edits and the cost per post.
+
+  The owner then decides: on by default, opt-in per run, or retired.
+
+**Owner actions, named separately:**
+
+- **O-H1:** create the Pangram key.
+- **O-H2:** create the Undetectable key.
+
+Each key is entered only in Render on `gcd-studio-worker`, never on the web, never in the live `gcd-social-*` services, never committed, and with its vendor's spend or credit limit set first, as for the Anthropic key at O4.
+
+**Owner decisions, open:**
+
+- **H-D1 — placement among the post-MVP items and S9.** *Recommend* after the revise of run `46f5bf15…` validates S8.8, so the loop is measured against a validated pipeline.
+- **H-D2 — the round cap and per-run credit cap.** *Recommend* 3 rounds, with the credit cap set in H0 once prices are verified.
+- **H-D3 — when the target is not reached.** *Recommend* forwarding the best valid candidate and the original to the critic, the legal review and the owner, clearly flagged, rather than failing the run.
+- **H-D4 — exactly 100% human, or a threshold.** *Recommend* deciding after H4's measurements.
+
+**Gates:**
+
+- H0 accepted by the owner before H1.
+- O-H1, O-H2 and the vendor terms reviewed before any live call.
+- The M1→M2 interval's terms as then in force for anything touching a service (this track adds none).
+- The posting gate, the legal review, the critic panel and the Phase-A approval gate unchanged in every H-step, proven by their existing self-tests.
+
+**Vendor sources (read 2026-10-14):**
+
+- Undetectable Humanization API v2 documentation, as supplied by the owner.
+- Pangram REST API overview, as supplied by the owner.
+- Pangram result fields from the [`pangram-sdk` README](https://github.com/pangramlabs/pangram-sdk).
+- Pangram's humanizer figures from [pangram.com/blog/humanizers-aug-25](https://www.pangram.com/blog/humanizers-aug-25) (vendor-reported).
+
 ## Planned — Content Studio (owner decisions of 2026-09-29) — `PLANNED`
 
 **State:** `PLANNED`. The design is [`docs/CONTENT_STUDIO_DESIGN.md`](CONTENT_STUDIO_DESIGN.md), added by the documentation change now recorded under *Merged repository change awaiting rollout* (PR #102). It was first recorded with the owner's approval pending. **The owner approved it on 2026-09-29, with the answers below.** Approval is not implementation. **S1 — the pipeline library and the §5.4 protections — is `IMPLEMENTED`, not merged** (*Content Studio S1*, at the top of this file). *(Corrected 2026-09-30: S1 is `MERGED` through PR #103 at `c1c19f4…`, not deployed or enabled; its record is under *Merged repository change awaiting rollout* below.)* No Studio service exists: no `src/studio/**` code, Studio migration, Render service, database, Google OAuth client, secret or Anthropic key. *(2026-09-30: S2 — `src/studio/db/**` and `studio/migrations/**`, the Studio schema and its runner — is `IMPLEMENTED`, not merged, at the top of this file; still no Render service, database, OAuth client, secret or key, and nothing has been migrated.)* *(2026-10-01: S2 is `MERGED` through PR #105 at `fd88a2c…`, not deployed or enabled; its record is under *Merged repository change awaiting rollout* below. Still no Render service, database, OAuth client, secret or key, and nothing has been migrated.)* *(2026-10-01: S3 — the review-only execution context and the worker, `src/studio/worker/**` — is `IMPLEMENTED`, not merged, fake runner only, at the top of this file. No Render file names the worker; still no Render service, database, OAuth client, secret or key.)* *(2026-10-02: S3 is `MERGED` through PR #107 at `0aae05b…`, not deployed or enabled; its record is under *Merged repository change awaiting rollout* below. S4 — the web service's authentication, `src/studio/web/**`, with `jose` — is `IMPLEMENTED`, not merged, at the top of this file. No Render file names the web service; still no Render service, database, Google OAuth client, consent screen, secret, `STUDIO_PUBLIC_ORIGIN` or key.)* *(2026-10-02: S4 is `MERGED` through PR #108 at `a80913d…`, not deployed, configured or enabled; its record is under *Merged repository change awaiting rollout* below. S5 — the read-only screens — is `IMPLEMENTED`, not merged, at the top of this file. Still no Render service, database, OAuth client, consent screen, secret, origin or key.)* *(2026-10-05: S5 is `MERGED` through PR #109 at `e9d06a7…`, not deployed, configured or enabled; its record is under *Merged repository change awaiting rollout* below. **The owner split S6** (decisions of 2026-10-05, recorded in S6.1's record): S6.1 — Studio migration 0003, the preflight-request table — is `IMPLEMENTED`, not merged, at the top of this file; S6.2 builds the actions with fake runners only; S6b connects the real runner after S8. Still no Render service, database, OAuth client, consent screen, secret, origin or key, and until S6b no Studio code path can spend money.)* *(2026-10-05: S6.1 is `MERGED` through PR #110 at `a22ffd9…`, not deployed, configured or enabled; its record is under *Merged repository change awaiting rollout* below. S6.2 — the run and revise actions with caps, fake runners only — is `IMPLEMENTED`, not merged, at the top of this file. Still no Render service, database, OAuth client, consent screen, secret, origin or key, and until S6b no Studio code path can spend money.)* *(2026-10-06: S6.2 is `MERGED` through PR #111 at `4eca3b3…`, not deployed, configured or enabled; its record is under *Merged repository change awaiting rollout* below. **The owner split S7** (decisions of 2026-10-06, recorded in S7.1's record): S7.1 — Studio migration 0004 and its database tests — is `IMPLEMENTED`, not merged, at the top of this file; S7.2 builds fact upload, import and the whole-run download; S7.3 the users-and-caps screens. Still no Render service, database, OAuth client, consent screen, secret, origin or key, and until S6b no Studio code path can spend money.)* *(2026-10-06: S7.1 is `MERGED` through PR #112 at `1e36054…`, not deployed, configured or enabled; its record is under *Merged repository change awaiting rollout* below. S7.2 — fact upload and versions, the legacy import and the whole-run download — is `IMPLEMENTED`, not merged, at the top of this file. The Anthropic workspace of O2 exists by owner report (no key yet); still no Render service, database, OAuth client, consent screen, secret, origin or key, and until S6b no Studio code path can spend money.)* *(2026-10-08: S7.2 is `MERGED` through PR #113 at `8e9a73d…` and S7.3 through PR #114 at `0f4dda0…`, neither deployed, configured or enabled. S8 (reduced) — `render.studio.yaml`, its static check, the release checklist — is `IMPLEMENTED`, not merged, at the top of this file: a Render file now declares the Studio's three resources, but **none is created**; still no Render service, database, Blueprint, OAuth client, consent screen, secret, origin or key, and until S6b no Studio code path can spend money. The O5 client-address fix is split to S8b, `PLANNED` and `BLOCKED`.)* *(2026-10-09: S8 is `MERGED` through PR #115 at `4738532…`, not deployed, configured or enabled; its record is under *Merged repository change awaiting rollout* below, its Blueprint merge gate closed after merge. S6b — the live-runner enablement — is `IMPLEMENTED`, not merged, at the top of this file: **after S6b, a paid call is possible only on a worker holding `ANTHROPIC_API_KEY`, which no environment has until O4 (after the freeze, separately authorized).** Still no Render service, database, Blueprint for the Studio, OAuth client, consent screen, secret, origin or key.)* *(2026-10-09, later: S6b is `MERGED` through PR #116 at `bab4f7d…`, not deployed, configured or enabled; its record is under *Merged repository change awaiting rollout* below. S8.1 — pre-O3 readiness: the database's storage, `diskSizeGB: 5`, and the checklist additions from the owner's read-only checks — is `IMPLEMENTED`, not merged, at the top of this file. By the owner's read-only check, still no `gcd-studio-*` resource, Blueprint for the Studio, OAuth client, consent screen, secret, origin or key.)* *(2026-10-10: S8.1 is `MERGED` through PR #117 at `b7ff939…`, not deployed, configured or enabled; its record is under *Merged repository change awaiting rollout* below. S8.2 — pre-launch hardening: a whitespace-padded key leaves the worker's live runner disabled, classed `anthropic_key_padded` — is `IMPLEMENTED`, not merged, at the top of this file. **S9 is `DEFERRED` until after O6** (owner decision of 2026-10-10). Still no Studio resource, OAuth client, consent screen, secret, origin or key.)* *(2026-10-12: S8.3 is `MERGED` through PR #119 at `68ba72c…`. **The owner performed O3, O1 and O4 without the key**: the Studio's Blueprint, database, web and worker now exist on Render in the project "GCD Content Studio", its OAuth client and consent screen exist in a new Google Cloud project, and its non-key values are set; no Anthropic key exists on any service. Database `CONFIGURED`, worker `DEPLOYED` with its live runner disabled, web `CONFIGURED` and not running, nothing `PRODUCTION-VALIDATED` — the O3/O1/O4 record, at the top of this file.)* *(2026-10-12, later: the owner chose option A for the Studio's database connections (internal connections unencrypted for the MVP; reading REVIEWER-VERIFIED) and decided "accept shared sign-in limits for MVP; S8b post-MVP" — the client-address gate is CLOSED by acceptance, S8b is post-MVP, and **O5 is blocked by no repository change**, needing only the owner's own authorization; the cursor section above.)* *(2026-10-13, the O6 records change: S8.5 and S8.6 are `DEPLOYED` and `PRODUCTION-VALIDATED` — both services at `dcc7b91`, `gcd-studio-db` at Studio migrations 0001–0005, the live runner `ENABLED`; **O6 is COMPLETE and the Content Studio MVP is live** (OWNER-OBSERVED; the record at the top of this file). Nothing from the Studio has been recorded as posted.)* This entry sits outside the production-wiring sequence: the Studio implements none of P1–P8, performs none of M2–M7, and moves no production-wiring milestone.
@@ -258,6 +381,7 @@ Open items, carried unchanged except where S8.2 and S8.3 (now under *Merged repo
 - **Post-MVP items added on 2026-10-13 — each `PLANNED`, its own PR and authorization** (recorded by the O6 records change; the other items the owner listed that day were already above, under S8.6's line or in S8.6's follow-ups, and are left as they are):
   - ~~**feeding the owner's legal decisions into revisions** — today legal findings are never sent to a revision (S8.6: they are the owner's), so a legal blocker such as run `46f5bf15…`'s `copyright_reproduction` cannot be cleared by revising; it changes S8.6's rule, so it needs its own design first;~~ **Moved 2026-10-14 to Content Studio S8.8** (`IMPLEMENTED`, the record at the top of this file; the S8.8 line above); *(2026-10-16: S8.8 is `MERGED` and `DEPLOYED`, not yet `PRODUCTION-VALIDATED`; its record is under *Merged repository change awaiting rollout*.)*
   - ~~**rewording the legal disclaimer to match the owner's no-attorney decision** ("forget about the attorney we are just mitigating risk", 2026-10-13) — the shipped text still says "Serious findings go to the owner's attorney before posting." in `LEGAL_REVIEW_DISCLAIMER` (`src/harness/contentRun/legalReview.ts:82`), `LEGAL_NOT_ADVICE` (`src/studio/web/views.ts:41`), `skills/legal-risk/SKILL.md` (lines 1 and 100, with its line 10 status line), the self-test (`src/harness/contentIntelligence.selftest.ts:8515`) and the mutation harness's anchors (`scripts/ci/payload-contract-mutation.mjs:6831` and `:6956`); the literals are held equal by checks, so they change together;~~ **Moved 2026-10-14 to Content Studio S8.8** (`IMPLEMENTED`; reworded everywhere, the rubric's status line replaced); *(2026-10-16: S8.8 is `MERGED` and `DEPLOYED`, not yet `PRODUCTION-VALIDATED`; its record is under *Merged repository change awaiting rollout*.)*
+- **Post-MVP item added on 2026-10-14 — `PLANNED`, its own design, PRs and authorizations:** **the pre-review humanize loop** (Pangram detection, Undetectable humanization), the H-series, under *Planned — pre-review humanize loop* above. It changes the quote and ceiling contracts, as the caption-repair item above does, so it begins with its own design (H0). It is one of the post-MVP items the owner chooses among; it moves no cursor.
 - **S9** the cron, built disabled — **`DEFERRED` until after O6** *(2026-10-13: O6 is COMPLETE, so the re-entry condition is met; still `DEFERRED`, not started — the owner chooses between it and the post-MVP items)* (owner decision of 2026-10-10: not required for the first live run, scheduled runs off at launch; the only path that would spend without a person confirming each run, so designed with O6's cost data; and a verified schema gap — no pre-authorization table, and a live run requires a user-bound, expiring, single-use quote — needing a pricing-and-reservation design decision and a new migration; S8.2's record) *(until 2026-10-10: the next repository change, pending S8.1's merge, unless the owner reordered or a human Render engineer's written statement made S8b eligible first; until 2026-10-09: pending S6b's merge)*.
 
 **Owner actions, named separately:**
