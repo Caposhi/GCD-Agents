@@ -19,6 +19,10 @@ check("route text-graphic -> ideogram", modelFor("text-graphic") === "fal-ai/ide
 check("route photoreal -> flux", modelFor("photoreal") === "fal-ai/flux-pro/v1.1");
 check("route graphic-vector -> recraft", modelFor("graphic-vector") === "fal-ai/recraft/v3/text-to-image");
 
+function expected_terms(text: string, terms: string[]): boolean {
+  return terms.every((t) => text.includes(t));
+}
+
 // request shape
 const r = buildFalRequest({ contentType: "text-graphic", prompt: "Brake fluid flush — book online", width: 1080, height: 1350 });
 check("fal url", r.url === "https://fal.run/fal-ai/ideogram/v3");
@@ -31,6 +35,19 @@ check(
   JSON.stringify(r.body?.image_size) === JSON.stringify({ width: 1024, height: 1280 }),
 );
 check("N2. jpeg is still requested (advisory; provider may return png)", r.body?.output_format === "jpeg");
+{
+  const neg = String(r.body?.negative_prompt ?? "");
+  const photo = buildFalRequest({ contentType: "photoreal", prompt: "x", width: 1080, height: 1350 });
+  check(
+    "N2a. text-graphic's negative prompt covers plates and badges and now also screens, signage and reflected plates",
+    expected_terms(neg, ["license plate", "brand badge", "laptop screen", "scan tool display", "shop signage", "reflection of a license plate"]),
+  );
+  check(
+    "N2b. the negative prompt is sent only on the verified Ideogram route, never on the unverified photoreal or vector routes",
+    !("negative_prompt" in (photo.body ?? {})),
+  );
+  check("N2c. prompt expansion stays off so the authored composition rule reaches the model", r.body?.expand_prompt === false);
+}
 
 // Every reviewed source size must have EXACTLY its target's aspect ratio,
 // because the pipeline refuses any non-uniform resize.

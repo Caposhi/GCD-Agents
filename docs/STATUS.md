@@ -70,6 +70,19 @@ The current partial-release interval, bound `2026-10-22T18:52Z`, prohibits every
 
 See [Roadmap](ROADMAP.md).
 
+### Image incidental-text fix — screens, signs and reflections — repository only
+
+**`IMPLEMENTED`, not merged; not deployed.** Branch `claude/image-incidental-text-fix`, based on `282fe54…` (`origin/main`). No PR is open. Recorded 2026-10-21, at the owner's request after the Slack escalations of Oct 19 and Oct 21.
+
+- **The defect (OWNER-OBSERVED in Slack):** publication QC keeps rejecting hero images for text nobody asked for. Oct 19, Mini Cooper Check-Engine Diagnostics: a plate `BC0C800` and a laptop screen of scrambled digits. Oct 21, BMW Steering & Suspension: `SMOOTH MILE` rendered `SAMOOTH MILE`, a plate `H 9E2297` and its reflection `H KE8801`. QC caught every one and nothing was published; the generator is what fails. The four earlier plate/badge fixes (`7697bf2`, `ebdcbb2`, `10543d8`, `83a5a7d`) cover only the vehicle's own plate and badges, and are themselves **not deployed** (the worker is recorded at `44d7336…`; the worker's actual commit is still unconfirmed).
+- **The fix:** `agents/image.md` extends the rule to screens, signage, posters, labels and reflections; the runtime appends a standing composition rule to **every** attempt; the Ideogram negative prompt gains screen, signage and reflected-plate terms; a retry names each failed surface and forces a recomposition; the third attempt after an incidental-text failure drops the vehicle exterior for a close shot of one mechanical part. No model, limit, QC rule or approval rule changes — QC is not loosened.
+- **Not fixed by this change:** a headline the model misspells (`SAMOOTH MILE`) is a different failure — the same retry applies, but no rule here makes the model spell. It may need a shorter headline from the image agent.
+- **Production reality:** nothing here is live. The owner's decision of 2026-10-14 holds the worker release for M2; this change joins that bundle, and the effect on real renders is **unverified until then**. Until M2, escalations continue (nothing is posted on them).
+- **Live-path manifest:** both modules are live-loaded, so the manifest declares the edits and `LR12`'s pin moved. The Studio release checklist refuses a deploy whose diff changes the manifest, so merge order matters exactly as for the posting-cadence branch — and **both branches edit the manifest**, so whichever merges second must re-hash and re-pin.
+- **Tests:** `test:orchestrator` 119 → 131, `test:image` 18 → 21; `test:offline` **2,152 → 2,167**. Figures in [Testing](TESTING.md).
+
+See [Roadmap](ROADMAP.md).
+
 ### Roadmap split — completed history relocated to `docs/COMPLETED_ROADMAP_PHASES.md`; PR #129 reconciled — repository only
 
 **`IMPLEMENTED`, not merged.** Based directly on `2cd98e163ac2296ad3d08d09af2286d35e2a0c6e`, the merge of PR #129 (the S8.8 records change). Recorded 2026-10-16. **Documentation, plus comment text in three source files:** only `docs/**`, `README.md`, one paragraph of `AGENTS.md` and four source comments change; the 246 tracked files outside them, `.DS_Store`, `src/harness/agents/modelPolicy.ts` and `scripts/ci/live-path-manifest.json` among them, are byte-identical. *(Corrected after inspection: first recorded as documentation only, with 249 files outside.)* It performed nothing on Render, Google or Anthropic; no model was called.
