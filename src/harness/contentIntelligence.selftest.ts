@@ -13696,13 +13696,14 @@ async function run(): Promise<void> {
         && [...liveModules.keys()].every((path) => path.startsWith("src/") && path.endsWith(".ts")));
     // Content Studio S8.6: the legal review was built in Studio-only and non-manifest modules so the Studio's next
     // deploy still passes the release checklist's "touches no live-service path" rule. The manifest is pinned at its
-    // bytes on main at the S8.6 base (89e798a); a later change that declares a live-path edit updates this pin with it.
-    const S86_MANIFEST_SHA256 = "322943ad20c271a98ba8f2faf41bf1595876f1c66e3d33dea9ab9f829f6a31a4";
+    // bytes on main at the S8.6 base (89e798a); a later change that declares a live-path edit updates this pin with it
+    // (2026-10-21: the posting cadence declared contentCalendar.ts and daily.ts — S8.6's own bytes were 322943ad…).
+    const S86_MANIFEST_SHA256 = "dabe027070f906b140f261a34da258570417e23dc778c89727b5c6f934e99b68";
     const S86_FILES = [
       "src/harness/contentRun/legalReview.ts", "agents/legal-review.md", "skills/legal-risk/SKILL.md",
       "studio/migrations/0005_studio_legal_review.sql",
     ];
-    check("LR12. the live-path manifest is byte-identical to main's at the S8.6 base (sha256 322943ad…), every module it "
+    check("LR12. the live-path manifest is byte-identical to its pin (sha256 dabe0270…: main's at the S8.6 base plus the declared posting-cadence edits), every module it "
       + "pins is byte-identical to its pin — payloadContract.ts, registry.ts and modelPolicy.ts among them — and no S8.6 "
       + "file is live-loaded",
       createHash("sha256").update(readFileSync(resolve(REPO_ROOT, LIVE_PATH_MANIFEST))).digest("hex") === S86_MANIFEST_SHA256
