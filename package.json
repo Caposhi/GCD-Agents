@@ -60,5 +60,8 @@
     "@types/node": "^20.11.0",
     "@types/pg": "^8.11.0",
     "typescript": "^6.0.3"
+  },
+  "overrides": {
+    "zod": "^4.6.6"
   }
 }
