@@ -333,6 +333,11 @@ npm run build && node scripts/local/studio-layout-check.mjs
 - **Also:** `check:markdown-links`, `check:env-coverage` and `scan:sensitive` pass; the report was run by hand on a synthetic list and printed the expected buckets, flags and make table.
 - **Not run:** `--live` — no Google call was made, no credential was read.
 
+**Dependency fix — the `zod` advisory cleared by an npm override — `IMPLEMENTED`, not merged; not deployed; no source changed.** *(2026-10-28; based on `282fe54…`.)* `package.json` gains `overrides: { "zod": "^4.6.6" }`; `package-lock.json` is regenerated. **No test was added or changed:** `npm audit --omit=dev` is itself the regression guard (removing the override makes it fail again), and the existing `test:orchestrator` normalization checks already decode, resize and JPEG-encode through `jimp`.
+
+- **`npm run test:offline`:** still **twelve suites**; **2,152 → 2,152** — all passing on a clean `npm ci --include=dev`. Typecheck, build, the simulated dry run and the deployment-controller fixtures pass. **`npm audit --omit=dev` 1 high → 0; plain `npm audit` 0.**
+- **A direct `jimp` smoke under zod 4** (scratch script, not committed): PNG decode, `resize` 896×1120 → 1080×1350, JPEG encode at quality 90, an invalid `resize` option still refused, `crop`, `rotate`, `flip`, `blur` constructed. **Not run:** the PostgreSQL and Studio jobs; any production deploy.
+
 **Content Studio S8.8 — a revision carries the source run's legal-review findings; the disclaimer reworded — `IMPLEMENTED`, not merged; not deployed.** *(2026-10-14; based on `36d2996…`, PR #127's merge; the owner's go-ahead "proceed with your recommendations".)* No model, provider, Render or Google call: fake runners, fixtures, the memory store and a disposable PostgreSQL 16 only. Local validation in this container (Node 22.22.0, PostgreSQL 16.15):
 
 - **Content intelligence, offline** (**1,348 → 1,361**), one block `LV1`–`LV13` inside the LR block, on copies of the plain fake run whose `07-legal-review.json` is validated against the plain run's own material, each finding's issue a unique marker:
