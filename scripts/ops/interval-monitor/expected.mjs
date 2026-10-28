@@ -83,15 +83,31 @@ export const FORBIDDEN_MIGRATION_PREFIX = "008";
  * How stale the newest `brief_queue` row may be before the scheduler is judged
  * to have stopped.
  *
- * The production scheduler enqueues on Render cron `0 13 * * *` and this
- * monitor runs at `0 14 * * *`, so a healthy system presents a row about an
- * hour old. Twenty-five hours tolerates exactly one missed hour of cron jitter
- * or a single late run without tolerating a missed DAY, which is the event
- * worth catching.
+ * The production scheduler's cron fires every day at 13:00 UTC but enqueues a
+ * brief only on a posting day — Monday, Wednesday and Friday — and this monitor
+ * runs at 14:00 UTC every day. At monitor time the newest row of a healthy
+ * system is therefore about 1 hour old on a posting day, 25 hours old the day
+ * after one, and, the longest healthy gap, 49 hours old on Sunday after
+ * Friday's run. Fifty hours tolerates that worst healthy case plus an hour of
+ * cron jitter or a single late run.
+ *
+ * A missed run is still caught: a missed Monday run the same afternoon (the
+ * newest row is Friday's, 73 hours old), a missed Wednesday or Friday run at
+ * the next day's monitor run (Monday's or Wednesday's row, 73 hours old) — the
+ * same one-day detection delay the previous 25-hour bound gave a daily cadence.
+ * A missed run is the event worth catching.
+ *
+ * The posting weekdays live in code, `POSTING_WEEKDAYS` in
+ * `src/harness/contentCalendar.ts`, not in the cron. `offline.selftest.mjs`
+ * simulates a healthy stretch and every single missed run against this bound,
+ * and asserts that the weekdays it simulates are the calendar's.
  */
-export const SCHEDULER_MAX_AGE_HOURS = 25;
+export const SCHEDULER_MAX_AGE_HOURS = 50;
 
-/** The production scheduler's cron, as `docs/OPERATIONS.md` and `render.yaml` state it. */
+/**
+ * The production scheduler's cron, as `docs/OPERATIONS.md` and `render.yaml`
+ * state it. It fires daily; the scheduler decides in code which days post.
+ */
 export const SCHEDULER_CRON = "0 13 * * *";
 
 /**

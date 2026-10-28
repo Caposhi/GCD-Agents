@@ -307,6 +307,89 @@ function makeSdkRunner(cost: CostTracker, runId?: string): AgentRunner {
  */
 const MAX_IMAGE_ATTEMPTS = 3;
 
+/**
+ * Standing composition rule sent with EVERY image attempt, the first included.
+ * Production data (2026-09 to 2026-10) shows publication QC rejecting
+ * photoreal hero shots for text nobody asked for — a license plate, a vehicle
+ * badge, and then a laptop or diagnostic screen, shop signage, and a plate
+ * mirrored in glossy paint or glass. The image model cannot be trusted to spell
+ * or to leave text-shaped surfaces blank, so the prompt takes the surfaces out
+ * of the picture instead of asking for them to be rendered correctly.
+ */
+export const INCIDENTAL_TEXT_GUARD =
+  "Composition rule: the only readable text in the image is the allowed text. "
+  + "Any screen — laptop, tablet, scan tool, dashboard display or gauge — is switched off and dark, or shown from behind, "
+  + "never with characters on it. No storefront, wall or shop signage, posters, calendars, stickers, or tool and box labels. "
+  + "No license plate in frame, and no mirror-finish paint, glass or chrome positioned to reflect a plate or lettering.";
+
+// What a QC finding says is wrong. The findings are the inspector's free text,
+// so these are deliberately broad words, not exact phrases.
+const VEHICLE_TEXT_ISSUE = /plate|badge|emblem/i;
+const SCREEN_TEXT_ISSUE = /screen|\bdisplays?\b|monitor|laptop|tablet|scan[- ]?tool|scanner|dashboard|infotainment|gauge|readout|odometer/i;
+const SIGN_TEXT_ISSUE = /\bsigns?\b|signage|banner|poster|calendar|sticker|label|storefront|whiteboard|lettering/i;
+const REFLECTION_TEXT_ISSUE = /reflect|mirror/i;
+
+/** True when any QC finding names a surface that carried unwanted text. */
+export function isIncidentalTextIssue(issues: readonly string[]): boolean {
+  const joined = issues.join(" ");
+  return [VEHICLE_TEXT_ISSUE, SCREEN_TEXT_ISSUE, SIGN_TEXT_ISSUE, REFLECTION_TEXT_ISSUE].some((re) => re.test(joined));
+}
+
+/**
+ * The prompt for one image attempt. Attempt 1 is the agent's prompt plus the
+ * standing rule. A retry additionally names the previous QC findings and
+ * forces a COMPOSITIONAL change for each kind of surface that failed, because
+ * repeating "render it correctly" does not fix text the model keeps garbling
+ * (e.g. a "LAND ROVER" badge rendered "LANDO ROVER"). From the third attempt, a
+ * run that is still failing on incidental text drops the vehicle exterior
+ * altogether for a close shot of a mechanical part.
+ */
+export function imagePromptFor(
+  basePrompt: string,
+  attempt: number,
+  lastIssues: readonly string[],
+  expected: readonly string[],
+): string {
+  const guarded = `${basePrompt}\n\n${INCIDENTAL_TEXT_GUARD}`;
+  if (attempt <= 1) return guarded;
+  const joined = lastIssues.join(" ");
+  const fixes: string[] = [];
+  if (VEHICLE_TEXT_ISSUE.test(joined)) {
+    fixes.push(
+      "The vehicle's license plate and/or brand badge/emblem keeps rendering with visible or garbled characters — stop trying to render them correctly, that keeps failing. "
+      + "Recompose the shot so NO plate-shaped area and NO sharp, readable badge/emblem is in frame at all: crop the hero shot just above the bumper/plate line, use a rear 3/4 angle, or frame a tight shot on the headlight/front fascia that keeps badges soft, distant, or out of frame.",
+    );
+  }
+  if (SCREEN_TEXT_ISSUE.test(joined)) {
+    fixes.push(
+      "A screen, display or gauge in the scene keeps rendering unreadable or scrambled characters. Remove it from the shot, or show every screen switched off, dark and blank, or from behind.",
+    );
+  }
+  if (SIGN_TEXT_ISSUE.test(joined)) {
+    fixes.push("Signage, labels or lettering in the scene keep rendering garbled. Leave every sign, poster, label and sticker out of the frame; use plain, unmarked surfaces.");
+  }
+  if (REFLECTION_TEXT_ISSUE.test(joined)) {
+    fixes.push(
+      "A reflection is showing readable or garbled text. Use matte surfaces and an angle where paint, glass and chrome reflect only sky or a plain wall — nothing that could mirror a plate or lettering.",
+    );
+  }
+  if (fixes.length === 0) fixes.push("no license-plate or badge text.");
+  if (attempt >= 3 && isIncidentalTextIssue(lastIssues)) {
+    fixes.push(
+      "FINAL ATTEMPT — simplest possible composition: a close-up of one mechanical component (a brake rotor and caliper, a suspension arm, an engine-bay detail, a tire and wheel) on a plain workshop background, "
+      + "with no full vehicle exterior, no screens, no signage and no plate anywhere in frame.",
+    );
+  }
+  const allowed = expected.length
+    ? expected.map((t) => `"${t}"`).join(", ")
+    : "the kicker, the headline, one CTA button, the wordmark, and the URL only";
+  return (
+    `${guarded}\n\nCRITICAL FIX: the previous render failed publication QC (${lastIssues.join("; ") || "visual inspection failure"}). `
+    + `Remove every reported privacy, safety, or misleading element. Render ONLY these exact words — large, sharp, and perfectly legible — with NO other text: no body paragraphs, no second call-to-action. `
+    + `${fixes.join(" ")} Allowed text: ${allowed}.`
+  );
+}
+
 export type ImageResolver = (imageSpecification: any, runId?: string) => Promise<any>;
 
 async function resolveImage(image: any, runId?: string): Promise<any> {
@@ -356,21 +439,7 @@ async function resolveImage(image: any, runId?: string): Promise<any> {
   let attempts = 0;
   for (let attempt = 1; attempt <= MAX_IMAGE_ATTEMPTS; attempt++) {
     attempts = attempt;
-    // On a retry, hard-constrain the prompt and remove the prior QC defect.
-    // A plate OR badge/emblem defect that survived one attempt won't be fixed
-    // by repeating the same "render it correctly" ask — production data shows
-    // that's unreliable on a photoreal hero car (e.g. "LAND ROVER" rendered as
-    // "LANDO ROVER" on the vehicle's own badge). Force a compositional change.
-    const vehicleTextIssue = /plate|badge|emblem/i.test(lastIssues.join(" "));
-    const prompt =
-      attempt === 1
-        ? basePrompt
-        : `${basePrompt}\n\nCRITICAL FIX: the previous render failed publication QC (${lastIssues.join("; ") || "visual inspection failure"}). ` +
-          `Remove every reported privacy, safety, or misleading element. Render ONLY these exact words — large, sharp, and perfectly legible — with NO other text: no body paragraphs, no second call-to-action.` +
-          (vehicleTextIssue
-            ? ` The vehicle's license plate and/or brand badge/emblem keeps rendering with visible or garbled characters — stop trying to render them correctly, that keeps failing. Recompose the shot so NO plate-shaped area and NO sharp, readable badge/emblem is in frame at all: crop the hero shot just above the bumper/plate line, use a rear 3/4 angle, or frame a tight shot on the headlight/front fascia that keeps badges soft, distant, or out of frame.`
-            : ` no license-plate or badge text.`) +
-          ` Allowed text: ${expected.length ? expected.map((t: string) => `"${t}"`).join(", ") : "the kicker, the headline, one CTA button, the wordmark, and the URL only"}.`;
+    const prompt = imagePromptFor(basePrompt, attempt, lastIssues, expected);
     try {
       console.log(`[image] generating via fal (${ct})… attempt ${attempt}/${MAX_IMAGE_ATTEMPTS}`);
       const gen = await generateImage({ contentType: ct, prompt, width, height }, config.imagegenApiKey);
