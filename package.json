@@ -24,10 +24,11 @@
     "test:gate": "node dist/harness/gate.selftest.js",
     "test:api": "node dist/api/security.selftest.js",
     "test:render-identity": "node dist/harness/renderIdentity.selftest.js",
+    "test:content-calendar": "node dist/harness/contentCalendar.selftest.js",
     "test:ownership": "node dist/harness/ownershipRecovery.selftest.js",
     "test:postgres": "node dist/harness/postgres.integration.selftest.js",
     "test:http-e2e": "node dist/api/http.e2e.selftest.js",
-    "test:offline": "npm run test:posting && npm run test:image && npm run test:orchestrator && npm run test:gate && npm run test:api && npm run test:render-identity && npm run test:ownership && npm run test:content-intelligence && npm run test:interval-monitor && npm run test:studio-db && npm run test:studio-worker && npm run test:studio-web",
+    "test:offline": "npm run test:posting && npm run test:image && npm run test:orchestrator && npm run test:gate && npm run test:api && npm run test:render-identity && npm run test:content-calendar && npm run test:ownership && npm run test:content-intelligence && npm run test:interval-monitor && npm run test:studio-db && npm run test:studio-worker && npm run test:studio-web",
     "test:payload-mutation": "node scripts/ci/payload-contract-mutation.mjs",
     "test:interval-monitor": "node scripts/ops/interval-monitor/offline.selftest.mjs",
     "test:m1-readiness": "node scripts/ops/m1-readiness/offline.selftest.mjs",
@@ -59,5 +60,8 @@
     "@types/node": "^20.11.0",
     "@types/pg": "^8.11.0",
     "typescript": "^6.0.3"
+  },
+  "overrides": {
+    "zod": "^4.6.6"
   }
 }

@@ -957,7 +957,7 @@ in this session, and none was authorized.
 |---|---|---|---|
 | `gcd-social-api` | web | `npm run start:api` | Health, protected control/console routes, approval review/action, media. Runs `npm run migrate` as `preDeployCommand` |
 | `gcd-social-worker` | worker | `npm run start:worker` | Queue consumption, orchestration, approval wait, the only publication handoff |
-| `gcd-social-scheduler` | cron `0 13 * * *` | `npm run start:scheduler` | Enqueues one brief daily; does not publish |
+| `gcd-social-scheduler` | cron `0 13 * * *` | `npm run start:scheduler` | Enqueues one brief on each posting day — Monday, Wednesday and Friday (the cron fires daily; *as of the 2026-10-13 cadence change*); does not publish |
 | `gcd-social-db` | PostgreSQL | — | Durable state |
 
 > **Dated note (Content Studio S8, 2026-10-08), not a rewrite.** This table is still exactly `render.yaml`, which S8 leaves byte-identical, and `gcd-social-api` is still its only `preDeployCommand`. A separate Blueprint file, `render.studio.yaml` (`IMPLEMENTED`, not merged; **nothing created on Render**), declares the Content Studio's `gcd-studio-web` (with its own `preDeployCommand`, `npm run studio:migrate`, against the Studio's own database only), `gcd-studio-worker` and `gcd-studio-db`. None is a live resource, none touches `gcd-social-db`, and CI's `scripts/ci/check-studio-blueprint.rb` keeps the two files apart. See the [Content Studio design](CONTENT_STUDIO_DESIGN.md) §3.
@@ -1809,7 +1809,7 @@ These are genuinely open. None is closed by this revision:
 5. **PROPOSED, undecided** — cost ceiling per run and per day, and what happens on breach. Six stages
    at the derived output budgets is materially more spend than the current path, and §7.4 makes the
    model-request count explicit rather than hiding it.
-6. **UNKNOWN** — whether one brief per day remains the right cadence once six stages run per brief.
+6. **UNKNOWN** — whether the current cadence remains the right one once six stages run per brief. *(2026-10-13: the owner decided three posts a week, Monday, Wednesday and Friday, for the current pipeline — see [Roadmap](ROADMAP.md); this question about six stages per brief stays open.)*
 7. **PROPOSED, undecided** — retention for `content_intelligence_stage_results`. Stage outputs contain
    model prose; the repository has no complete retention program yet.
 

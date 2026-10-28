@@ -31,7 +31,7 @@ Per-platform format conventions plus the deterministic rules the canonical build
 
 ## Cross-platform assembly rules
 - One brief → tailored per platform; **don't** paste identical copy everywhere (tune length, hashtags, CTA).
-- **Scheduled cadence:** one daily brief, producing one tailored item per configured active platform. Manual trigger intake can add more work.
+- **Scheduled cadence:** one brief per posting day (Monday, Wednesday and Friday), producing one tailored item per configured active platform. Manual trigger intake can add more work.
 - **Bilingual (EN+ES):** IG/FB use one caption, English then Spanish. The current legacy GBP flow emits exactly one locale per brief, preferring English when available and otherwise using Spanish; a second GBP-language post is not implemented.
 - Keep the core message and any claim identical across platforms; only format changes.
 - Every package carries meaningful EN/ES alt-text source, and Instagram's provider payload carries the applicable alt text plus AI disclosure. Current FB/GBP payloads carry only the same inspected content-addressed image URL/digest; there is no per-platform crop/resize path. Every package records the proposed post time (`hashtag-seo-timing`) as review metadata; the current canonical builder does not put scheduling fields in generated provider payloads, so they publish immediately.

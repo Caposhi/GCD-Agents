@@ -204,7 +204,7 @@ export const evaluateMigrationSet = ({ names }) => {
 };
 
 /**
- * Check 3 — the daily scheduler is still enqueueing.
+ * Check 3 — the scheduler is still enqueueing on its posting days (Monday, Wednesday, Friday).
  *
  * Both instants come from the DATABASE's own clock, so a runner whose clock has
  * drifted cannot make a stopped scheduler look live, or a live one look stopped.
@@ -215,7 +215,7 @@ export const evaluateMigrationSet = ({ names }) => {
  */
 export const evaluateSchedulerLiveness = ({ latest, now }) => {
   const expected = `a brief_queue row created within the last ${SCHEDULER_MAX_AGE_HOURS} hours`
-    + ` (production cron ${SCHEDULER_CRON})`;
+    + ` (production cron ${SCHEDULER_CRON}; it enqueues on Monday, Wednesday and Friday)`;
   if (latest === null) {
     return Object.freeze({
       id: "scheduler-liveness",
@@ -236,7 +236,7 @@ export const evaluateSchedulerLiveness = ({ latest, now }) => {
   if (stale) {
     failures.push(
       `the newest brief is ${ageHours.toFixed(1)} hours old, past the`
-      + ` ${SCHEDULER_MAX_AGE_HOURS}-hour bound — the daily scheduler has missed at least one run`,
+      + ` ${SCHEDULER_MAX_AGE_HOURS}-hour bound — the scheduler has missed at least one posting-day run`,
     );
   }
   if (inFuture) {
