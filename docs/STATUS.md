@@ -70,6 +70,10 @@ The current partial-release interval, bound `2026-10-22T18:52Z`, prohibits every
 
 See [Roadmap](ROADMAP.md).
 
+### GBP search-demand report — a read-only owner tool — repository only
+
+**`IMPLEMENTED`, not merged; not deployed.** Branch `claude/gbp-search-demand-report`, based on `282fe54…`. Recorded 2026-10-28. `scripts/ops/gbp-search-demand/` classifies the search terms that showed the Business Profile into brand, intent, make, category, adjacent, geo, noise and other, and flags price/financing wording and services absent from `config/approved-facts.json`. **It is not part of the posting pipeline and changes nothing**; the monthly feed into the analytics step (step 2b) is not built and needs the owner to review a real report first. **Privacy:** geo, noise and other terms are counted and never listed. **Never run live:** `--live` and the Performance API's request spelling are unverified against Google; the API may need enabling, and a quota of 0 is possible. Until a release carries it, a Render Shell on the services (`44d7336…`) does not have it. Tests: `test:gbp-search-demand` 64; `test:offline` **2,152 → 2,216**. See [Roadmap](ROADMAP.md) and [Operations](OPERATIONS.md#gbp-search-demand-report-read-only-implemented-not-merged-not-deployed).
+
 ### Roadmap split — completed history relocated to `docs/COMPLETED_ROADMAP_PHASES.md`; PR #129 reconciled — repository only
 
 **`IMPLEMENTED`, not merged.** Based directly on `2cd98e163ac2296ad3d08d09af2286d35e2a0c6e`, the merge of PR #129 (the S8.8 records change). Recorded 2026-10-16. **Documentation, plus comment text in three source files:** only `docs/**`, `README.md`, one paragraph of `AGENTS.md` and four source comments change; the 246 tracked files outside them, `.DS_Store`, `src/harness/agents/modelPolicy.ts` and `scripts/ci/live-path-manifest.json` among them, are byte-identical. *(Corrected after inspection: first recorded as documentation only, with 249 files outside.)* It performed nothing on Render, Google or Anthropic; no model was called.
