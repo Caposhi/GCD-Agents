@@ -83,6 +83,15 @@ See [Roadmap](ROADMAP.md).
 
 See [Roadmap](ROADMAP.md).
 
+### A new `zod` advisory fails the production dependency audit; cleared by an npm override — repository only
+
+**`IMPLEMENTED`, not merged; not deployed.** Branch `claude/zod-advisory-fix`, based on `282fe54…`. Recorded 2026-10-28.
+
+- **REVIEWER-VERIFIED (LOCAL):** `npm audit --omit=dev` read 0 vulnerabilities on 2026-10-21 and one HIGH advisory on 2026-10-28 — `zod` below 4.6.6 (GHSA-mrhx-c7xc-m3w5, memory exhaustion on oversized collections) — on `main`, unchanged by any branch of ours. CI's *Production dependency audit* step runs that command, so **`main`'s CI and every open pull request's fail that job until this merges.** (This session had no access to read a CI run.)
+- **The fix:** `package.json` `overrides: { "zod": "^4.6.6" }` and a regenerated lockfile: one `zod` 4.6.7 replaces the root 4.4.3 and sixteen nested 3.25.76 copies under `jimp`. `jimp` 1.6.1 is its latest and depends on zod 3, so no upstream fix exists; the only offered alternative is a breaking `jimp` downgrade, rejected. `src/` imports no zod; `jimp` is used only in `src/harness/mediaNormalize.ts`. **Exposure: none identified; the change is for the gate, not a demonstrated exploit.**
+- **Tested:** clean `npm ci --include=dev`, build, typecheck, `test:offline` **2,152** unchanged (its media-normalization checks run a real decode, resize and JPEG encode through `jimp`), dry run, deployment-controller fixtures, `npm audit` 0. **Unverified:** `jimp`'s other plugins beyond a smoke test; it now runs against zod 4, which its plugins were not written for.
+- **Not deployed:** the live worker and scheduler run `44d7336…` with the old lockfile. Remove the override when `jimp` depends on zod 4.6.6 or later. See [Roadmap](ROADMAP.md).
+
 ### Roadmap split — completed history relocated to `docs/COMPLETED_ROADMAP_PHASES.md`; PR #129 reconciled — repository only
 
 **`IMPLEMENTED`, not merged.** Based directly on `2cd98e163ac2296ad3d08d09af2286d35e2a0c6e`, the merge of PR #129 (the S8.8 records change). Recorded 2026-10-16. **Documentation, plus comment text in three source files:** only `docs/**`, `README.md`, one paragraph of `AGENTS.md` and four source comments change; the 246 tracked files outside them, `.DS_Store`, `src/harness/agents/modelPolicy.ts` and `scripts/ci/live-path-manifest.json` among them, are byte-identical. *(Corrected after inspection: first recorded as documentation only, with 249 files outside.)* It performed nothing on Render, Google or Anthropic; no model was called.
