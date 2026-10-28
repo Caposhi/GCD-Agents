@@ -29,6 +29,9 @@ import {
   ImageResolver,
   isTrustedGeneratedImageUrl,
   imageAttemptFailurePolicy,
+  imagePromptFor,
+  INCIDENTAL_TEXT_GUARD,
+  isIncidentalTextIssue,
   loadAgent,
   MediaContractError,
   normalizeToPublicationJpeg,
@@ -910,6 +913,97 @@ async function run(): Promise<void> {
     check(
       "Q2. a non-contract failure is not mislabelled deterministic",
       genericPolicy.deterministic === false,
+    );
+  }
+
+  // --- IT. Incidental text on screens, signs and reflections (2026-10) ---------
+  //
+  // The image model keeps rendering text nobody asked for: plates, badges, then
+  // (Oct 19 and Oct 21 escalations) a laptop screen of scrambled digits, and a
+  // plate reflected in the paint. These are the inspector's real findings.
+  {
+    const BASE = "Hero shot of a BMW in a bright service bay. Headline \"SMOOTH MILE\".";
+    const EXPECTED = ["SMOOTH MILE", "GermanCarDepot.com"];
+    const oct19 = [
+      "License plate on vehicle reads 'BC0C800' - appears to be a readable/garbled plate string that could constitute a real or fabricated plate",
+      "Laptop screen shows numeric strings '6340000', '689000', '8870000' which appear to be garbled/nonsensical diagnostic data rendered as placeholder gibberish",
+      "Laptop screen body text is unreadable scrambled placeholder text",
+    ];
+    const oct21 = [
+      "'SMOOTH MILE' is misspelled as 'SAMOOTH MILE' - wrong letter inserted, garbled word",
+      "License plate 'H 9E2297' is readable on the vehicle",
+      "License plate reflection 'H KE8801' is also partially readable",
+    ];
+
+    const first = imagePromptFor(BASE, 1, [], EXPECTED);
+    check(
+      "IT1. attempt 1 is the agent's prompt, unchanged and first, followed by the standing text rule",
+      first.startsWith(BASE) && first.endsWith(INCIDENTAL_TEXT_GUARD) && first === imagePromptFor(BASE, 1, oct21, EXPECTED),
+    );
+    check(
+      "IT2. the standing rule covers screens, signage, plates and reflections",
+      /screen/i.test(INCIDENTAL_TEXT_GUARD) && /signage/i.test(INCIDENTAL_TEXT_GUARD)
+        && /license plate/i.test(INCIDENTAL_TEXT_GUARD) && /reflect/i.test(INCIDENTAL_TEXT_GUARD)
+        && /only readable text/i.test(INCIDENTAL_TEXT_GUARD),
+    );
+
+    const r19 = imagePromptFor(BASE, 2, oct19, EXPECTED);
+    check(
+      "IT3. the Oct 19 findings (plate + laptop screen) get a plate recomposition AND a screen instruction, with the findings, the allowed text and the standing rule",
+      r19.includes("CRITICAL FIX") && r19.includes("BC0C800") && r19.includes(INCIDENTAL_TEXT_GUARD)
+        && /NO plate-shaped area/.test(r19) && /switched off, dark and blank/.test(r19)
+        && r19.includes('"SMOOTH MILE", "GermanCarDepot.com"') && !r19.includes("FINAL ATTEMPT"),
+    );
+    const r21 = imagePromptFor(BASE, 2, oct21, EXPECTED);
+    check(
+      "IT4. the Oct 21 findings (plate + reflected plate) get the plate recomposition and the reflection instruction, but no screen or sign instruction",
+      /NO plate-shaped area/.test(r21) && /reflection is showing/.test(r21)
+        && !/screen, display or gauge in the scene/.test(r21) && !/Signage, labels or lettering in the scene/.test(r21),
+    );
+    check(
+      "IT5. a sign, a label and a poster each draw the signage instruction",
+      ["Shop sign above the bay door reads gibberish", "Garbled label on the toolbox", "Poster on the wall has scrambled text"]
+        .every((issue) => /Signage, labels or lettering in the scene/.test(imagePromptFor(BASE, 2, [issue], EXPECTED))),
+    );
+    check(
+      "IT6. the original vehicle-badge case still recomposes (a 'LANDO ROVER' hood badge) and names no screen, sign or reflection",
+      (() => {
+        const p = imagePromptFor(BASE, 2, ["Vehicle badge reads 'LANDO ROVER' - misspelled brand name"], EXPECTED);
+        return /NO plate-shaped area/.test(p) && !/screen, display or gauge in the scene/.test(p) && !/reflection is showing/.test(p);
+      })(),
+    );
+    check(
+      "IT7. a finding that is none of those keeps the previous wording and gets no recomposition",
+      (() => {
+        const p = imagePromptFor(BASE, 2, ["An identifiable person's face is visible"], EXPECTED);
+        return p.includes(" no license-plate or badge text.") && !/NO plate-shaped area/.test(p) && !p.includes("FINAL ATTEMPT");
+      })(),
+    );
+    check(
+      "IT8. only the third attempt, and only after an incidental-text finding, drops the vehicle exterior for a close mechanical shot",
+      imagePromptFor(BASE, 3, oct19, EXPECTED).includes("FINAL ATTEMPT")
+        && imagePromptFor(BASE, 3, oct21, EXPECTED).includes("FINAL ATTEMPT")
+        && !imagePromptFor(BASE, 3, ["An identifiable person's face is visible"], EXPECTED).includes("FINAL ATTEMPT")
+        && !imagePromptFor(BASE, 2, oct19, EXPECTED).includes("FINAL ATTEMPT"),
+    );
+    check(
+      "IT9. with no listed allowed text the retry falls back to the default list, and an empty finding list still produces a valid retry",
+      /the kicker, the headline, one CTA button, the wordmark, and the URL only/.test(imagePromptFor(BASE, 2, [], []))
+        && imagePromptFor(BASE, 2, [], []).includes("visual inspection failure"),
+    );
+    check(
+      "IT10. a headline QC finding ('misspelled', 'garbled word', 'displayed') is not mistaken for a screen or a sign",
+      !isIncidentalTextIssue(["'SMOOTH MILE' is misspelled as 'SAMOOTH MILE' - wrong letter inserted, garbled word", "headline text displayed with an extra letter"]),
+    );
+    check(
+      "IT11. the classifier names exactly the surfaces: plate, badge, emblem, screen, laptop, sign, poster, reflection",
+      ["plate", "badge", "emblem", "laptop screen", "scan tool", "shop sign", "poster", "reflection"].every((w) => isIncidentalTextIssue([`${w} is garbled`])),
+    );
+    const source = readFileSync(new URL("../../src/harness/orchestrator.ts", import.meta.url), "utf8");
+    check(
+      "IT12. the live image loop builds every attempt's prompt through imagePromptFor, so the rule cannot be bypassed on a first attempt",
+      source.includes("const prompt = imagePromptFor(basePrompt, attempt, lastIssues, expected);")
+        && !/const prompt =\s*\n?\s*attempt === 1/.test(source),
     );
   }
 

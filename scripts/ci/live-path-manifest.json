@@ -141,8 +141,8 @@
     },
     {
       "path": "src/harness/orchestrator.ts",
-      "sha256": "83463a13f49e71c61d40a69616a4f96334385c8fb55a64cac103347e016db2ee",
-      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+      "sha256": "02e7a7c5013b497f83a50835a8fb9bf19d5ed54fd2d25e5bf56c9a358d3245c2",
+      "declared": "declared edit (image incidental-text fix, owner-requested 2026-10-21): the image attempt prompt is built by imagePromptFor with a standing text rule on every attempt, and a retry names the failed surface (plate/badge, screen, signage, reflection) and forces a recomposition; MERGED is not DEPLOYED — the worker is released only under the M1→M2 owner decision"
     },
     {
       "path": "src/harness/packageMap.ts",
@@ -186,8 +186,8 @@
     },
     {
       "path": "src/mcp/image-tool/fal/models.ts",
-      "sha256": "d8f65ef80e54f3a4627d6c11fd052489cc19d4d30fea11e4262bd66551529f5e",
-      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+      "sha256": "b8cd018456dd2aa7ea5aff02511246e8eed271c61d26eb3243a8bd9a4e9d53b8",
+      "declared": "declared edit (image incidental-text fix, owner-requested 2026-10-21): the Ideogram negative prompt gains screen, signage and reflected-plate terms; MERGED is not DEPLOYED — the worker is released only under the M1→M2 owner decision"
     },
     {
       "path": "src/mcp/image-tool/fal/provider.ts",
