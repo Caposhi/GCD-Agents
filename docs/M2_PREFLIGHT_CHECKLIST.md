@@ -8,7 +8,7 @@ Evidence labels: **REVIEWER-VERIFIED** — read by the writing session in GitHub
 
 ## 0. Why this document exists, and a terminology warning
 
-The interval's bound, `2026-10-22T18:52Z`, passed six days before this was written. The interval record gives the owner three outcomes at that point — complete M2, re-authorize under a new bound, or take the recovery path — and **the repository records none of them**. `origin/main` is still `282fe54…`, the daily `Interval monitor` runs #31–#37 (2026-10-21 to 2026-10-27) all concluded `success`, and the monitor is built never to fail on expiry ([`checks.mjs`](../scripts/ops/interval-monitor/checks.mjs): "expiry is a decision point"), so a green run says only that the API artifact, migration set, scheduler freshness and deployment gate still match — it does not say anyone decided. **REVIEWER-VERIFIED.**
+The interval's bound, `2026-10-22T18:52Z`, passed six days before this was written. The interval record gives the owner three outcomes at that point — complete M2, re-authorize under a new bound, or take the recovery path — and **the repository records none of them**. `origin/main` was still `282fe54…` when this was written *(updated later the same day: PRs #135, #134 and #133 merged, to `516cf63…`; none of them records an interval decision)*, the daily `Interval monitor` runs #31–#37 (2026-10-21 to 2026-10-27) all concluded `success`, and the monitor is built never to fail on expiry ([`checks.mjs`](../scripts/ops/interval-monitor/checks.mjs): "expiry is a decision point"), so a green run says only that the API artifact, migration set, scheduler freshness and deployment gate still match — it does not say anyone decided. **REVIEWER-VERIFIED.**
 
 **"M2" in this repository has two meanings that must not be conflated.** The design's M2 ([Production wiring design](PRODUCTION_WIRING_DESIGN.md), "M2 — Deploy the inert implementation") deploys P1–P7 and is **migration-bearing** (migration `008`). P1–P7 are not merged and no `008` exists on `main` (migrations `001`–`007` only), so **that M2 cannot be performed from any commit that exists.** What the owner and the sessions have been waiting on — returning the worker and scheduler to one commit with the API and ending the partial-release interval — is the design's *sentence* about M2 ("the controlled reconciliation step that returns all three services to one commit"), not its entry conditions. This document is the checklist for that **reconciliation release**, which is migration-free. Whether it is recorded as "M2", as a re-scoped M2, or under another name is Decision D2 below; it is not for a session to decide.
 
@@ -21,7 +21,7 @@ The interval's bound, `2026-10-22T18:52Z`, passed six days before this was writt
 | Migrations applied | exactly `001`–`007`, no `008` | the monitor's check, passing through 2026-10-27 |
 | Native auto-deploy | Off on all three services | OWNER-ATTESTED (2026-10-02, 2026-10-10); not re-read |
 | `RENDER_DEPLOY_AUTOMATION_ENABLED` | `false` | the monitor's check, passing through 2026-10-27 |
-| `main` | `282fe54…`; PRs #133 (posting cadence) and #134 (image incidental-text fix) open, unmerged | REVIEWER-VERIFIED 2026-10-28 |
+| `main` | `282fe54…` when written; **`516cf63…` after the same day's merges** — #135 (`zod` override, `56bab13…`), #134 (image incidental-text fix, `680468b…`) and #133 (posting cadence, `516cf63…`); none deployed | REVIEWER-VERIFIED 2026-10-28 |
 | Posting | daily, with recurring image-QC escalations (Oct 13, 14, 19, 21 observed) | OWNER-OBSERVED (Slack) |
 | `A` and `R` are both ancestors of `main`; `R` is an ancestor of `A` | yes | LOCAL (`git merge-base --is-ancestor`) |
 
@@ -41,13 +41,13 @@ Nothing below may be inferred from this document. Record each answer, with the o
 
 ## 3. Choosing the target — the repository facts
 
-| | `A` = `d501523…` (merge of PR #67) | `main` (`282fe54…`, or after #133/#134) |
+| | `A` = `d501523…` (merge of PR #67) | `main` (`516cf63…`, with #133 and #134 merged) |
 |---|---|---|
 | Migrations | none beyond what is already applied (`001`–`007`; `007` came with `A`) | none beyond `007` |
 | Carries the four plate/badge/QC fixes (`7697bf2`, `ebdcbb2`, `10543d8`, `83a5a7d`) | **yes — all four are ancestors of `A`** (LOCAL) | yes |
 | Carries Sonnet 5 for the copywriter, image and SEO agents | **no** — still `claude-sonnet-4-6`; analytics, formatter and posting still the dated Haiku id (LOCAL) | yes (`claude-sonnet-5`; Haiku by alias) |
-| Carries the image incidental-text fix (#134), the Mon/Wed/Fri cadence (#133) | no | only after those merge |
-| Live-loaded modules that differ from `R` | **10 changed, 2 new** (`registry`, `contentIntelligence`, `evidence/contract`, `evidence/pack`, `imageQc`, `orchestrator`, `packageMap`, `sdk`, `state`, `fal/models`; new `modelPolicy`, `payloadContract`) | 11 changed, 2 new (adds `approvedFacts`) |
+| Carries the image incidental-text fix (#134), the Mon/Wed/Fri cadence (#133) | **no** | **yes** — both merged 2026-10-28 |
+| Live-loaded modules that differ from `R` | **10 changed, 2 new** (`registry`, `contentIntelligence`, `evidence/contract`, `evidence/pack`, `imageQc`, `orchestrator`, `packageMap`, `sdk`, `state`, `fal/models`; new `modelPolicy`, `payloadContract`) | 13 changed, 2 new (adds `approvedFacts`, and now `contentCalendar` and `daily` from #133; `orchestrator` and `fal/models` also carry #134) |
 | Already running in production? | **Yes, as the API, since 2026-09-17** (the worker and scheduler entry points have not been run at `A`) | no |
 | Needs a monitor change (`API_ARTIFACT_A`) | **no — the API is not redeployed** | only if the API is redeployed |
 | Needs the owner to accept a model change | no | **yes** — and that Anthropic access to `claude-sonnet-5` works for the production key (UNVERIFIED) |
@@ -55,7 +55,7 @@ Nothing below may be inferred from this document. Record each answer, with the o
 
 **Recommendation: `A`, worker and scheduler only.** It is the smallest reconciliation that exists: it contains the fixes already asked for, it adds no model change, it is the artifact the API has served for six weeks, and it needs no edit to the monitor or the manifest. It also ends the `PARTIAL_RELEASE_STATE` that blocks the deployment controller, so everything after it — the cadence, the image-text fix, the Sonnet 5 migration — can then go out as ordinary releases, one decision at a time, instead of all arriving in a single reconciliation. **Caveat, not a reason to avoid it:** the worker and scheduler have never *run* at `A` in production, so §6's observation is what establishes it. Releasing `main` instead is the larger change and is not recommended as the closing step.
 
-If the owner chooses `main` (D3), this checklist changes in four places: Gate 1 runs against that exact SHA with its CI run; the model change in the table above is acknowledged (D4); `scripts/ci/live-path-manifest.json`'s `LR12` pin and the Studio release checklist's manifest rule must be settled first (the two open PRs edit the same manifest — the second to merge must re-hash and re-pin); and the API question below (Gate 3) must be answered for the API as well.
+If the owner chooses `main` (D3), this checklist changes in four places: Gate 1 runs against that exact SHA with its CI run; the model change in the table above is acknowledged (D4); `scripts/ci/live-path-manifest.json`'s `LR12` pin and the Studio release checklist's manifest rule must be settled first (settled for the merged work: #134 merged first and #133 then re-hashed and re-pinned `LR12`; any later manifest edit re-pins it again); and the API question below (Gate 3) must be answered for the API as well.
 
 ## 4. Gate 1 — repository preconditions, checkable offline by any session
 
@@ -118,7 +118,7 @@ Per the binding documentation rule ([`AGENTS.md`](../AGENTS.md)); none of this i
 
 - [ ] [Roadmap](ROADMAP.md) completed-phase record (fields required by `AGENTS.md`), recorded with the `DEPLOYED` state only when the release is live and `PRODUCTION-VALIDATED` only after §7 step 6's observation. [Status](STATUS.md) service table rows for the worker and the scheduler. [Deployment control](DEPLOYMENT.md)'s "current status" and "current cutover status" tables, which still say worker and scheduler "remain at `R`". The root [README](../README.md) handoff.
 - [ ] **The interval record**: closed, with the date, who, the evidence, and what happened to the bound. The monitor's interval constants (`INTERVAL_EXPIRY`, `SCHEDULER_MAX_AGE_HOURS`, `API_ARTIFACT_A`) and its suite change only if the monitor is retired or re-scoped — decide, and record, which. With the API unredeployed, `API_ARTIFACT_A` stays correct.
-- [ ] **The cursor.** The next releases, in the order the owner chooses, each its own decision and each now eligible for the deployment controller *only if* its separate cutover (Deployment control steps 8–10) has been authorized — otherwise manual again: (1) the image incidental-text fix and the posting cadence (PRs #134 and #133; merge order and the `LR12` re-pin as recorded in their own entries); (2) the Sonnet 5 migration, with its model-access check; (3) the design's M2 proper, when and if P1–P7 exist.
+- [ ] **The cursor.** The next releases, in the order the owner chooses, each its own decision and each now eligible for the deployment controller *only if* its separate cutover (Deployment control steps 8–10) has been authorized — otherwise manual again: (1) the image incidental-text fix and the posting cadence — **both now `MERGED` on `main` (2026-10-28), not in `A`**, so they reach production only with a release of `main` (or a later one after the reconciliation); (2) the Sonnet 5 migration, with its model-access check; (3) the design's M2 proper, when and if P1–P7 exist.
 
 ## 10. What is unknown or unresolved
 

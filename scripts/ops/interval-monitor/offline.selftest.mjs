@@ -5,7 +5,7 @@
  * No network, no database, no container. The HTTP boundary is a stub, the
  * database boundary is never reached, and every drift state the monitor exists
  * to catch is fabricated here — migration `008` applied, a successful
- * `deploy-production` run, a scheduler that stopped two days ago, the API
+ * `deploy-production` run, a scheduler that missed a posting-day run, the API
  * serving a commit that is not artifact `A`. None of those can be produced on
  * demand in production, and a monitor whose failure paths have never executed
  * is a monitor nobody has tested.
@@ -463,12 +463,79 @@ check(
   `a brief exactly ${SCHEDULER_MAX_AGE_HOURS} hours old is still inside the bound`,
   evaluateSchedulerLiveness({ latest: hoursAgo(SCHEDULER_MAX_AGE_HOURS), now: dbNow }).status === STATUS.PASS,
 );
-const stopped = evaluateSchedulerLiveness({ latest: hoursAgo(49), now: dbNow });
 check(
   "drift",
-  "a scheduler that missed two days is drift, and the age is stated",
-  stopped.status === STATUS.DRIFT && stopped.detail.includes("49.0 hours old"),
+  "a Friday run seen on Sunday afternoon, 49 hours old, is the longest healthy gap and passes",
+  evaluateSchedulerLiveness({ latest: hoursAgo(49), now: dbNow }).status === STATUS.PASS,
 );
+const stopped = evaluateSchedulerLiveness({ latest: hoursAgo(73), now: dbNow });
+check(
+  "drift",
+  "a scheduler that missed a posting-day run is drift, and the age is stated",
+  stopped.status === STATUS.DRIFT && stopped.detail.includes("73.0 hours old"),
+);
+
+// The cadence is Monday, Wednesday and Friday. The weekdays live in code, so the
+// simulation below restates them and the next check pins them to the calendar.
+const SIMULATED_POSTING_WEEKDAYS = [1, 3, 5];
+const calendarWeekdays = /POSTING_WEEKDAYS: readonly number\[\] = \[([^\]]*)\]/.exec(
+  read("src/harness/contentCalendar.ts"),
+);
+check(
+  "status",
+  "the posting weekdays simulated for the liveness bound are the calendar's POSTING_WEEKDAYS",
+  calendarWeekdays !== null
+    && calendarWeekdays[1].split(",").map((n) => Number(n.trim())).join()
+      === SIMULATED_POSTING_WEEKDAYS.join(),
+);
+{
+  const DAY_MS = 86_400_000;
+  const HOUR_MS = 3_600_000;
+  const monday = Date.UTC(2026, 8, 21); // Monday 2026-09-21, a Monday
+  const dayCount = 8 * 7;
+  // The cron's run on every posting day, a minute late, and the monitor at 14:00 UTC every day.
+  const runs = [];
+  const monitorAt = [];
+  for (let day = 0; day < dayCount; day++) {
+    const start = monday + day * DAY_MS;
+    if (SIMULATED_POSTING_WEEKDAYS.includes(new Date(start).getUTCDay())) {
+      runs.push(new Date(start + 13 * HOUR_MS + 60_000));
+    }
+    monitorAt.push(new Date(start + 14 * HOUR_MS));
+  }
+  const newest = (liveRuns, now) => {
+    const before = liveRuns.filter((run) => run <= now);
+    return before.length === 0 ? null : before[before.length - 1];
+  };
+  const verdict = (liveRuns, now) => evaluateSchedulerLiveness({ latest: newest(liveRuns, now), now }).status;
+
+  const healthyAges = monitorAt.map((now) => (now - newest(runs, now)) / HOUR_MS);
+  check(
+    "drift",
+    `eight healthy weeks of Monday, Wednesday and Friday runs never trip the liveness check (${monitorAt.length} monitor runs)`,
+    monitorAt.every((now) => verdict(runs, now) === STATUS.PASS),
+  );
+  const worstHealthy = Math.max(...healthyAges);
+  check(
+    "drift",
+    `the longest healthy gap at monitor time is Sunday's, about 49 hours (${worstHealthy.toFixed(2)}), and sits inside the ${SCHEDULER_MAX_AGE_HOURS}-hour bound`,
+    worstHealthy > 48 && worstHealthy <= SCHEDULER_MAX_AGE_HOURS,
+  );
+
+  let undetected = 0;
+  let slowest = 0;
+  runs.forEach((missed, index) => {
+    const without = runs.filter((_, i) => i !== index);
+    const caughtAt = monitorAt.find((now) => now >= missed && verdict(without, now) === STATUS.DRIFT);
+    if (caughtAt === undefined) undetected += 1;
+    else slowest = Math.max(slowest, (caughtAt - missed) / HOUR_MS);
+  });
+  check(
+    `drift`,
+    `every one of the ${runs.length} single missed runs is caught by a monitor run within 26 hours (slowest ${slowest.toFixed(1)}), as a missed day was under the daily cadence`,
+    undetected === 0 && slowest <= 26,
+  );
+}
 check(
   "drift",
   "an empty brief_queue is drift, not a pass by absence of evidence",

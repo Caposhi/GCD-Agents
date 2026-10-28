@@ -78,7 +78,7 @@ flowchart LR
 
 - `src/api/`: health, authenticated triggers/diagnostics/console, approval review/actions, and public content-addressed media.
 - `src/worker/`: queue consumption, deterministic orchestration, human approval wait, and the only publication handoff.
-- `src/scheduler/`: daily `0 13 * * *` enqueue; it does not publish.
+- `src/scheduler/`: cron `0 13 * * *` fires daily, but a brief is enqueued only on Monday, Wednesday and Friday (UTC; the posting days live in `src/harness/contentCalendar.ts`); it does not publish.
 - `src/harness/`: configuration, state, orchestration, approval, image QC, dry runs, and self-tests. `src/harness/evidence/` and `src/harness/agents/` are the Phase 0B.0 foundation — merged, deployed on all three services, and executing no reasoning stage.
 - `src/mcp/`: imported provider libraries, not standalone MCP servers or model tools.
 - `state/migrations/`: forward-only PostgreSQL schema authority. **`001–006` were observed applied in production on 2026-08-28** — `006` as of that date. **`007` is now production `APPLIED`**, via M1, independently verified 2026-09-18; see [Status](docs/STATUS.md) for the current applied set (`001`–`007`, no `008`).

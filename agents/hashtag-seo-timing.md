@@ -20,7 +20,7 @@ For each platform named in the runtime `platforms` input, provide a hashtag set,
 - **Facebook:** **0–2** hashtags max; lean on local language instead.
 - **GBP:** **no hashtags** — instead weave **1–2 local keyword phrases** naturally (city + make/service, e.g. "European car repair in Hollywood, FL").
 - Bilingual keywords (EN + ES). Correct location (Hollywood, FL / Broward). **Anti-stuffing** — natural reads only.
-- **Timing:** recommend one time per requested platform for the scheduled daily brief. Use the analytics readout if present; otherwise sensible local-audience defaults. Timezone **America/New_York**. The recommendation is review metadata only; current canonical provider payloads publish immediately after approval.
+- **Timing:** recommend one time per requested platform for the scheduled brief. Use the analytics readout if present; otherwise sensible local-audience defaults. Timezone **America/New_York**. The recommendation is review metadata only; current canonical provider payloads publish immediately after approval.
 
 ## Output format
 Per requested platform: `{ platform, hashtags: [...], keywords: [...], recommended_time: "HH:MM ET" }`.
