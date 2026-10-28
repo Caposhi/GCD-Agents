@@ -70,6 +70,16 @@ The current partial-release interval, bound `2026-10-22T18:52Z`, prohibits every
 
 See [Roadmap](ROADMAP.md).
 
+### The M1→M2 interval's bound has passed with no recorded decision; the reconciliation release preflight checklist — repository only
+
+**`IMPLEMENTED` (documentation), not merged.** Branch `claude/m2-preflight-checklist`, based on `282fe54…`. Recorded 2026-10-28.
+
+- **REVIEWER-VERIFIED in GitHub, 2026-10-28:** the bound `2026-10-22T18:52Z` passed; **no decision is recorded in the repository**; `origin/main` is unchanged at `282fe54…`; the `Interval monitor` runs #31–#37 (2026-10-21 to 2026-10-27) all concluded `success` — a pass says the API artifact, migration set, scheduler freshness and deployment gate still match, and **does not say a decision was made** (expiry is reported, never gated). PRs #133 and #134 are open.
+- **Still NOT OBSERVED:** the exact latest deploy commits of `gcd-social-worker` and `gcd-social-scheduler`, which the interval record lists as owed.
+- **Finding (LOCAL):** `A` already contains the four image/QC fixes and is on `main`; a release of the worker and scheduler at `A` would carry them with no migration and no model change. The checklist — [M2 preflight checklist](M2_PREFLIGHT_CHECKLIST.md) — sets out the decisions, preflight, sequence and rollback. **It authorizes nothing and nothing in it has been performed.**
+
+See [Roadmap](ROADMAP.md).
+
 ### Roadmap split — completed history relocated to `docs/COMPLETED_ROADMAP_PHASES.md`; PR #129 reconciled — repository only
 
 **`IMPLEMENTED`, not merged.** Based directly on `2cd98e163ac2296ad3d08d09af2286d35e2a0c6e`, the merge of PR #129 (the S8.8 records change). Recorded 2026-10-16. **Documentation, plus comment text in three source files:** only `docs/**`, `README.md`, one paragraph of `AGENTS.md` and four source comments change; the 246 tracked files outside them, `.DS_Store`, `src/harness/agents/modelPolicy.ts` and `scripts/ci/live-path-manifest.json` among them, are byte-identical. *(Corrected after inspection: first recorded as documentation only, with 249 files outside.)* It performed nothing on Render, Google or Anthropic; no model was called.
