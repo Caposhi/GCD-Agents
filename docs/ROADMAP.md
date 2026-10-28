@@ -23,6 +23,34 @@ These are not interchangeable and must not be collapsed into "done". `MERGED` in
 
 ## Implemented repository change awaiting merge
 
+### Image incidental-text fix — screens, signs and reflections; a text rule on every image attempt; per-surface retries — `IMPLEMENTED`
+
+**State:** `IMPLEMENTED` on branch `claude/image-incidental-text-fix`, based on `origin/main` at `282fe54`. **Not `MERGED`, not `DEPLOYED`, not `ENABLED`.** **PR:** none opened. **Merge SHA:** not yet known — recording it is a blocking follow-up. **Authorization:** the owner's request of 2026-10-21 — "Yes, write the screens, signs and reflections fix" (code, tests and documents on a branch). **Not authorized:** pushing, merging or deploying. This is outside the Content Studio sequence and does not move its cursor.
+
+**Delivered scope.** `src/harness/orchestrator.ts`: `INCIDENTAL_TEXT_GUARD`, `isIncidentalTextIssue` and `imagePromptFor`, which now build every image attempt's prompt (the loop's inline retry text is gone). `src/mcp/image-tool/fal/models.ts`: the Ideogram negative prompt extended. `agents/image.md`: rule 5 extended from the vehicle to every text-bearing surface. Tests: `IT1`–`IT12` in `test:orchestrator`, `N2a`–`N2c` in `test:image`. `scripts/ci/live-path-manifest.json` declares the two live-loaded edits and `LR12`'s pin moves with it.
+
+**Migrations / schema impact:** none. QC, the approval payload, models and limits are unchanged.
+
+**Material design decisions.** (1) *Take the surfaces out of the picture instead of asking the model to render them correctly* — repeated "render it correctly" asks failed in production (`LANDO ROVER`); the retry and the standing rule change the composition. (2) *The standing rule goes on every attempt, including the first* — two of the last three failures were on screens and reflections the old rules never mentioned, and a retry-only rule would spend an attempt first. (3) *Classify the inspector's free-text findings with broad words,* with `display` matched as a whole word so a headline finding is not taken for a screen. (4) *The third attempt after an incidental-text failure drops the vehicle exterior* for a close shot of a mechanical part — the last resort that gives the loop a different shot to try. (5) *QC is not loosened:* the inspector is working; the generator is what fails.
+
+**Material rejected alternatives.** (1) *Relaxing QC for screens or reflections* — publishing a scrambled screen or a readable plate is the harm the gate exists to stop. (2) *A standing rule on retries only* — see (2) above. (3) *Hand-tuning the negative prompt alone* — the provider's own docs say the positive prompt takes precedence over it. (4) *Editing the image prompt in a new, non-live module* — the loop lives in a live-loaded module either way; declaring the edit is the honest path.
+
+**Automated validation** *(this container, Node 22.22.0)*: typecheck and build; `test:orchestrator` **131** (was 119); `test:image` **21** (was 18); `test:content-intelligence` ALL PASS, including `CS3` and `LR12`; `test:offline` **2,167** across twelve suites (was 2,152); the simulated dry run; the deployment-controller fixtures; `check:mutation-shards`; `npm audit --omit=dev` (0 vulnerabilities); four in-place mutations, each caught and restored. `check:markdown-links` (69 files); `check:env-coverage` (45 variables); `scan:sensitive` (260 files, matched values never printed); `git diff --check`; AgentShield 1.4.0 **B/85, exit 0** — `main` alone scores B/86, and the one new finding is medium and size-only: `agents/image.md` is now 5,927 characters against the scanner's 5,000 threshold (it was 4,917, so no meaningful rule fit under it). **Not run:** the Studio PostgreSQL suites (no Studio code changed) and anything against a live environment — no image, model or provider call was made.
+
+**Production evidence:** none. Whether Ideogram obeys the new rule is **unverified**. The Oct 19 and Oct 21 escalations are the baseline; the evidence is the share of real runs that reach approval after the worker is released.
+
+**Rollback / recovery:** revert the commit. Nothing is deployed.
+
+**Security and privacy:** no credential or URL added; the approval gate and the payload hash are untouched; fewer plates in generated images reduces the privacy risk the QC guards against.
+
+**Accepted limitations.** (1) The model may ignore the rule; the third attempt and QC remain the backstops, and a run can still escalate. (2) A misspelled headline (`SAMOOTH MILE`) is not fixed — it may need a shorter headline from the image agent. (3) The four earlier plate/badge fixes are themselves not deployed, and the worker's actual commit is unconfirmed. (4) `agents/image.md` now trips AgentShield's size threshold (see validation); the runtime appends the rule itself, so the file's copy could be shortened later if the score matters. (5) `README.md` and the other handoff documents were left unchanged where they do not describe image prompts.
+
+**Unresolved follow-ups / gates.** (1) **The release:** the owner's decision of 2026-10-14 holds the worker release for the M1→M2 reconciliation after `2026-10-22T18:52Z`; this change joins that bundle, with its own authorization. (2) **Manifest merge order:** this branch and `claude/posting-cadence-mwf` both edit `scripts/ci/live-path-manifest.json`; the second to merge must re-hash and re-pin `LR12`. The Studio release checklist also refuses a deploy whose diff changes the manifest. (3) **After release:** inspect the first runs and compare the escalation rate with the baseline above. (4) **Merge SHA** (mutable-identifier exception) and its `main` CI run.
+
+**Documents updated:** this file; [Status](STATUS.md); [Testing](TESTING.md); [Architecture](ARCHITECTURE.md) (the image-attempt paragraph in the orchestration lifecycle); `agents/image.md`; `scripts/ci/live-path-manifest.json`; `src/harness/contentIntelligence.selftest.ts` (`LR12`'s pin).
+
+**Checked and deliberately left unchanged:** `render.yaml`; `.github/workflows/*`; [Operations](OPERATIONS.md), [Deployment control](DEPLOYMENT.md), [Environment](ENVIRONMENT.md) and `.env.example` (no variable or procedure changed); [Data model](DATA_MODEL.md); `src/harness/imageQc.ts` (QC unchanged); the Content Intelligence stages and their fingerprints.
+
 ### Dependency fix — the `zod` advisory (GHSA-mrhx-c7xc-m3w5) cleared by an npm override; `npm audit --omit=dev` back to 0 — `IMPLEMENTED`
 
 **State:** `IMPLEMENTED` on branch `claude/zod-advisory-fix`, based on `origin/main` at `282fe54…`. **Not `MERGED`, not `DEPLOYED`.** **PR:** none opened. **Authorization:** the owner's 2026-10-28 message, "Yes, push it and look into the zod advisory". **Not authorized:** pushing this branch, merging, deploying.
