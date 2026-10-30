@@ -70,6 +70,14 @@ The current partial-release interval, bound `2026-10-22T18:52Z`, prohibits every
 
 See [Roadmap](ROADMAP.md).
 
+### The M1→M2 interval's bound has passed with no recorded decision; the reconciliation release preflight checklist — repository only
+
+**`IMPLEMENTED` (documentation), not merged.** Branch `claude/m2-preflight-checklist`, based on `282fe54…`. Recorded 2026-10-28.
+
+- **REVIEWER-VERIFIED in GitHub, 2026-10-28:** the bound `2026-10-22T18:52Z` passed; **no decision is recorded in the repository**; `origin/main` is unchanged at `282fe54…`; the `Interval monitor` runs #31–#37 (2026-10-21 to 2026-10-27) all concluded `success` — a pass says the API artifact, migration set, scheduler freshness and deployment gate still match, and **does not say a decision was made** (expiry is reported, never gated). PRs #133 and #134 are open.
+- **Still NOT OBSERVED:** the exact latest deploy commits of `gcd-social-worker` and `gcd-social-scheduler`, which the interval record lists as owed.
+- **Finding (LOCAL):** `A` already contains the four image/QC fixes and is on `main`; a release of the worker and scheduler at `A` would carry them with no migration and no model change. The checklist — [M2 preflight checklist](M2_PREFLIGHT_CHECKLIST.md) — sets out the decisions, preflight, sequence and rollback. **It authorizes nothing and nothing in it has been performed.**
+
 ### Posting cadence — three posts a week, Monday / Wednesday / Friday — repository only
 
 **`MERGED`** through [PR #133](https://github.com/Caposhi/GCD-Agents/pull/133) at `516cf63e1de25e9b48499827265b6404ce8559de` (2026-10-28; all 15 checks `success` on its head; `main` CI run #319 `success`; `deploy-production` run 100 refused at *Refuse while production automation is disabled*); **not deployed.** Branch `claude/posting-cadence-mwf`, based on `680468b…` (main merged 2026-10-28, after PR #134; first built on `89e798a…`). Recorded 2026-10-13. The owner approved Monday/Wednesday/Friday, the code-level approach and the monthly brand post, and asked for a prepared branch; **no push, merge or deploy is authorized.**
