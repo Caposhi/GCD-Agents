@@ -169,8 +169,17 @@ export const WORKFLOW_REFUSAL_SINCE = "2026-09-17T18:52:47Z";
  * (outcome (b)), superseding the original `2026-09-24T18:52Z`; `docs/STATUS.md`
  * keeps that superseded bound as history. The offline suite binds this constant
  * to the current bound Status records, not to any date appearing in the file.
+ *
+ * The owner re-authorized the interval again on 2026-10-30 (outcome (b) once
+ * more), superseding `2026-10-22T18:52Z` and nothing else. That decision was
+ * made EIGHT DAYS AFTER the bound it replaces, not before it: the interval ran
+ * from 2026-10-22T18:52Z to this record with no recorded decision. The expiry
+ * authorized nothing by itself, so nothing lapsed into permission — this
+ * monitor reported `EXPIRED` every day of that gap (runs #32 through #39, all
+ * `success`) and correctly declined to decide. Every superseded bound stays in
+ * Status as history; only this constant moves.
  */
-export const INTERVAL_EXPIRY = "2026-10-22T18:52Z";
+export const INTERVAL_EXPIRY = "2026-11-29T18:52Z";
 
 /** The GitHub environment holding the read-only database secret. */
 export const MONITOR_ENVIRONMENT = "monitoring";
