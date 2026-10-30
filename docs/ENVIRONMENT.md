@@ -103,7 +103,7 @@ Before model work, the orchestrator derives each active non-secret destination f
 | `GOOGLE_REFRESH_TOKEN`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Preferred refresh flow |
 | `GBP_ACCOUNT_ID`, `GBP_LOCATION_ID` | Approval-bound target account/location; API host/version are fixed to `mybusiness.googleapis.com/v4` |
 
-`scripts/ops/gbp-search-demand/` (read-only; [Operations](OPERATIONS.md#gbp-search-demand-report-read-only-implemented-not-merged-not-deployed)) reads the same four credential variables and `GBP_LOCATION_ID` **only with `--live`**, from the shell it runs in; it adds no variable and is not run by any service.
+`scripts/ops/gbp-search-demand/` (read-only; [Operations](OPERATIONS.md#gbp-search-demand-report-read-only-merged-not-deployed)) reads the same four credential variables and `GBP_LOCATION_ID` **only with `--live`**, from the shell it runs in; it adds no variable and is not run by any service.
 
 Use provider-approved test accounts/locations for validation. Never put real IDs, tokens, webhook URLs, or approval links in `.env.example`, docs, tests, or logs.
 
