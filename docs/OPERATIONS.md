@@ -75,7 +75,7 @@ The job summary on the run page names the failing check, the expected value and 
 
 Because the job declares an environment, each run appears in that environment's GitHub deployment history. **That is GitHub bookkeeping for environment usage, not a release**: nothing is deployed to Render or anywhere else by this workflow.
 
-## GBP search-demand report (read-only; `IMPLEMENTED`, not merged; not deployed)
+## GBP search-demand report (read-only; `MERGED`, not deployed)
 
 `scripts/ops/gbp-search-demand/` shows which words people typed when they found the Business Profile — the **Searches breakdown** in the profile's Performance view — bucketed so the useful ones stand out. **It is a report for the owner. It changes no post, brief, approved fact, profile or database row, writes no file, and is not part of the posting pipeline.** Nothing reads its output automatically; feeding it to the analytics step is a separate, later change.
 
