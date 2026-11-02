@@ -151,7 +151,8 @@ among the rejected alternatives.
    Studio service holding a credential for the live one, keeps Studio users, sessions, uploads and run
    history away from that token and from that exposure.
 3. **The live services do not change.** The live path is inside the M1→M2 partial-release interval
-   (bound `2026-10-22T18:52Z`). Its M2–M7 sequence is gated, milestone by milestone, and its
+   (bound `2026-11-29T18:52Z` since the owner's second re-authorization of 2026-10-30, which
+   superseded `2026-10-22T18:52Z`). Its M2–M7 sequence is gated, milestone by milestone, and its
    standing prohibition reads "no unrelated release may occur, of any service, for any reason" (see
    §10 for the Studio's freeze gate). The Studio needs no live release, no live
    migration (008 or later) and no change to any live control.
@@ -1695,7 +1696,8 @@ because they describe current reality:
 | **O6** | **The first live run:** one full run, confirmed at its displayed ceiling, its actual cost compared with a local run's | After O5; its own authorization |
 
 **The release-freeze gate — owner decision of 2026-09-29: the freeze covers new services.**
-**VERIFIED:** the M1→M2 partial-release interval is bound at `2026-10-22T18:52Z`. Its standing
+**VERIFIED:** the M1→M2 partial-release interval is bound at `2026-11-29T18:52Z` — the owner's
+second re-authorization of 2026-10-30, superseding `2026-10-22T18:52Z`. Its standing
 prohibition reads "no unrelated release may occur, of any service, for any reason"
 ([Status](STATUS.md)).
 

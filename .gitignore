@@ -20,3 +20,7 @@ agentshield-report.json
 # operator-supplied real automotive facts and per-run output; never committed
 config/automotive-facts.local.json
 local-output/
+
+# agent worktrees — transient checkouts created by background implementers
+# (git worktree add); removed when the agent finishes, never part of a change
+.claude/worktrees/
