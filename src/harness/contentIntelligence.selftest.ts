@@ -599,7 +599,7 @@ async function run(): Promise<void> {
     "approved-facts:engineoils",
   ];
   check("J1. adaptation is deterministic", JSON.stringify(first.records) === JSON.stringify(second.records));
-  check("J2. adaptation produces the expected 30 records", first.records.length === 30);
+  check("J2. adaptation produces the expected 31 records", first.records.length === 31);
   check("J3. every adapted record validates", first.records.every((r) => validateEvidenceRecord(r).ok));
   check("J4. adapted ids are derived from the field path",
     first.records.some((r) => r.id === approvedFactEvidenceId("warranty")));

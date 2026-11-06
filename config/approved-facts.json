@@ -1,11 +1,12 @@
 {
-  "_note": "Approved facts = the ONLY source the copywriter may cite and the critic checks claims against. No invented prices/hours/offers. Sourced from germancardepot.com except oilChangeRecommendation, nextOilChangeAppointment, serviceRecords, vehicleHistoryReview, and engineOils, which were attested by the GCD CTO on 2026-09-23 and are not sourced from the website, and oilChangeRationale, oilChangeTimeLimit, and drivingConditionsView, which were attested by Michael Capote, GCD CTO, on 2026-09-26, are not sourced from the website, and are stated as GCD's professional judgment rather than measured data. Public business info (incl. the public booking-widget link) — NO secrets/API tokens here.",
+  "_note": "Approved facts = the ONLY source the copywriter may cite and the critic checks claims against. No invented prices/hours/offers. Sourced from germancardepot.com except oilChangeRecommendation, nextOilChangeAppointment, serviceRecords, vehicleHistoryReview, and engineOils, which were attested by the GCD CTO on 2026-09-23 and are not sourced from the website, and oilChangeRationale, oilChangeTimeLimit, and drivingConditionsView, which were attested by Michael Capote, GCD CTO, on 2026-09-26, are not sourced from the website, and are stated as GCD's professional judgment rather than measured data. Public business info (incl. the public booking-widget link) — NO secrets/API tokens here. Owner corrections 2026-11-06 (relayed via the gcd-seo-audit Phase 7 brief): hours corrected to a 5:30 PM weekday close (matches the Google Business Profile); bookingUrl: the Steer widget is obsolete because booking moved to AutoOps, and the value stays a TODO until the owner supplies the AutoOps marketing link 'SEO – Areas We Serve' (aops.cc), so contact lines that need it fail closed before any paid call; warranty wording changed to the nationwide 3-Year / 36,000-Mile wording used in the Google Business Profile description, PENDING OWNER CONFIRMATION versus the previous 'on qualifying parts & labor' wording; credentials added from the owner answers of 2026-11-04 (ASE-certified technicians; licensed auto repair facility in Broward County); serviceArea expanded to the owner-approved Areas We Serve town list. Do not merge before the owner confirms the warranty wording and supplies the AutoOps link.",
 
   "shop": "German Car Depot",
   "legalName": "German Car Depot LLC",
   "since": 1992,
   "ownership": "Family-owned and operated (the Gelfand family) since 1992",
   "founder": "Alan \"Ollie\" Gelfand — founder; Bosch Certified & ASE Master Technician with 30+ years of German-auto expertise; oversees operations personally",
+  "credentials": ["ASE-certified technicians", "Licensed auto repair facility (Broward County)"],
   "funFact": "Founder Alan \"Ollie\" Gelfand is also widely known as the inventor of the skateboarding \"Ollie\"",
   "positioning": "The Dealership Alternative — dealer-level expertise on European/German cars without dealer pricing or pressure",
   "tagline": "POMG — Peace of Mind Guaranteed (the Gelfand family motto since the 1960s)",
@@ -22,16 +23,16 @@
   "serviceRecords": "GCD provides customers their service records on request.",
   "vehicleHistoryReview": "Before recommending maintenance, GCD reviews the vehicle's available service-history report by VIN.",
   "engineOils": "GCD's bulk engine oils are Liqui Moly Top Tec 6200 SAE 0W-20, Liqui Moly Special Tec LL SAE 5W-30 and Liqui Moly Leichtlauf High Tech SAE 5W-40, kept in gravity tanks refilled by GCD's Liqui Moly supplier. When a vehicle calls for a specification these three do not cover, GCD special-orders an oil for that specification from its parts distributors, choosing the Liqui Moly product for that specification where Liqui Moly offers one, in the quantity the vehicle needs.",
-  "warranty": "3-Year / 36,000-Mile warranty on qualifying parts & labor",
+  "warranty": "3-Year / 36,000-Mile nationwide warranty on eligible repairs (whichever comes first)",
   "perks": ["free rideshare on approved repairs", "loaner vehicles available (ask when booking)", "financing available — apply at the counter", "same-week appointments often available", "written estimate approved by you before any work begins"],
   "experience": "30+ years in Hollywood, FL; 25,000+ German & European vehicles repaired",
   "googleRating": "4.8-star average Google rating (verify current before citing a number)",
 
   "website": "https://www.germancardepot.com/",
-  "bookingUrl": "https://widget.app.steercrm.com/book-appointment?token=2bueU-8rj0uJJ-l0oVCQjg",
+  "bookingUrl": "TODO: owner to supply the AutoOps marketing link 'SEO – Areas We Serve' (aops.cc). The Steer widget is obsolete.",
   "phone": "(954) 921-1515",
-  "hours": "Monday–Friday 8:00 AM – 6:00 PM; Saturday & Sunday closed",
+  "hours": "Monday–Friday 8:00 AM – 5:30 PM; Saturday & Sunday closed",
   "address": "2130 Fillmore Street, Hollywood, FL 33020",
-  "serviceArea": "Hollywood, FL and nearby Aventura, Hallandale, and the greater Broward / South Florida area",
+  "serviceArea": "One shop in Hollywood, FL, serving customers from Hollywood, Hallandale Beach, Dania Beach, Aventura, Sunny Isles Beach, Golden Beach, Bal Harbour, Surfside, North Miami Beach, North Miami, Miami Shores, Miami Beach, Pembroke Park, West Park, Pembroke Pines, Miramar, Cooper City, Davie, Weston, Southwest Ranches, Plantation and Fort Lauderdale",
   "currentPromos": []
 }
