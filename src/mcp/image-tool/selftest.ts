@@ -47,6 +47,27 @@ check("N2. jpeg is still requested (advisory; provider may return png)", r.body?
     !("negative_prompt" in (photo.body ?? {})),
   );
   check("N2c. prompt expansion stays off so the authored composition rule reaches the model", r.body?.expand_prompt === false);
+  // Text-free publication images (2026-11-10): every term main carried is kept,
+  // and generic text terms are appended. This list is main's at 4fe527f, verbatim.
+  const MAIN_TERMS = [
+    "visible license plate", "readable license plate", "license plate characters", "license plate numbers",
+    "close-up of a license plate", "legible plate text", "readable brand badge", "legible vehicle emblem",
+    "sharp badge lettering on car body", "close-up of car badge text", "laptop screen with text",
+    "readable computer screen", "scan tool display with numbers", "readable dashboard display", "shop signage",
+    "storefront sign", "readable poster", "readable sticker or label", "reflection of a license plate", "mirrored lettering",
+  ];
+  const TEXT_TERMS = ["text", "words", "letters", "numbers", "typography", "caption", "headline", "logo", "wordmark", "watermark", "call-to-action button"];
+  const negTerms = neg.split(",").map((t) => t.trim());
+  check(
+    "N2d. the negative prompt keeps every one of main's 20 terms, in order, and appends the generic text terms",
+    JSON.stringify(negTerms.slice(0, MAIN_TERMS.length)) === JSON.stringify(MAIN_TERMS)
+      && JSON.stringify(negTerms.slice(MAIN_TERMS.length)) === JSON.stringify(TEXT_TERMS),
+  );
+  check(
+    "N2e. the text-graphic request adds no new field: exactly main's keys",
+    JSON.stringify(Object.keys(r.body ?? {}).sort())
+      === JSON.stringify(["expand_prompt", "image_size", "negative_prompt", "num_images", "output_format", "prompt", "rendering_speed"]),
+  );
 }
 
 // Every reviewed source size must have EXACTLY its target's aspect ratio,

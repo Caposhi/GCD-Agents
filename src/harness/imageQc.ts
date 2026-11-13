@@ -45,6 +45,24 @@ The issues array holds ONLY the specific reasons behind a true garbled or unsafe
 Respond with ONLY this JSON, no prose:
 {"readText": ["...each distinct text element..."], "garbled": true|false, "unsafe": true|false, "issues": ["short reason", "..."]}`;
 
+/**
+ * The strict variant used when NO text is expected — every publication image
+ * since the text-free change (owner-authorized 2026-11-10). It is QC_SYSTEM
+ * with the cosmetic-difference leniency and the wordmark/URL allowance replaced
+ * by a rule that ANY visible text is a defect. The privacy and safety rules are
+ * the same text, unchanged.
+ */
+const QC_SYSTEM_NO_TEXT = QC_SYSTEM.slice(0, QC_SYSTEM.indexOf("Do NOT fail the image for purely cosmetic differences"))
+  + `This image must contain NO text at all. Set garbled=true if ANY visible text is present — garbled OR correctly spelled — including the brand wordmark ("German Car Depot"), the URL ("GermanCarDepot.com"), a logo with letters, a watermark, a caption, a button label, signage, a screen showing characters, or lettering on the vehicle. Add one issue naming each piece of text and where it is. If no text is visible, readText MUST be [].
+
+`
+  + QC_SYSTEM.slice(QC_SYSTEM.indexOf("The issues array holds ONLY"));
+
+/** Inspector readText entries that are real transcriptions, not blanks. */
+function visibleText(readText: readonly string[]): string[] {
+  return readText.map((t) => t.trim()).filter((t) => t.length > 0);
+}
+
 export interface ImageQcResult {
   ok: boolean;
   garbled: boolean;
@@ -58,7 +76,10 @@ export type VisionQcRunner = typeof runVision;
 
 /**
  * Inspect a rendered JPEG for publication safety and legible text. `expected` is the exact
- * set of short strings the image agent intended to render (image.in_image_text).
+ * set of short strings the image is meant to carry. The orchestrator always passes []
+ * (publication images are text-free), which selects the strict mode: any visible text,
+ * the wordmark and URL included, is a defect. A non-empty list keeps the earlier
+ * behavior (the expected strings plus the wordmark and URL are allowed).
  *
  * QC is safety-critical. Infrastructure failure, malformed inspector output,
  * or a detected defect all FAIL CLOSED; a human approval is not a substitute
@@ -66,7 +87,7 @@ export type VisionQcRunner = typeof runVision;
  */
 export async function inspectImageText(
   jpegBase64: string,
-  expected: string[] = [],
+  expected: readonly string[] = [],
   visionRunner: VisionQcRunner = runVision,
 ): Promise<ImageQcResult> {
   if (config.nodeEnv === "production" && visionRunner !== runVision) {
@@ -74,13 +95,19 @@ export async function inspectImageText(
     console.warn(`[image-qc] ${issue} (failing closed)`);
     return { ok: false, garbled: true, unsafe: true, issues: [issue], readText: [], errored: true };
   }
-  const prompt =
-    `Expected text — ONLY these short strings (plus the brand wordmark and URL) should appear in the image:\n` +
-    `${JSON.stringify(expected)}\n\n` +
-    `Transcribe ALL visible text. Check for garbled/scrambled letters, misspellings, nonsensical words, placeholder gibberish, broken/duplicate CTAs, and changed meaning. ` +
-    `Also inspect for faces/identifying features, readable plates/VINs/contact details/customer documents, unsafe repair practices, and materially misleading imagery. ` +
-    `Do NOT flag differences that are only capitalization or minor punctuation when the letters are correct. ` +
-    `If garbled=false and unsafe=false, issues MUST be []. Return JSON only.`;
+  const textFree = expected.length === 0;
+  const prompt = textFree
+    ? `Expected text: NONE. This image must contain no text at all — no words, letters, numbers, logos, wordmarks, watermarks, captions, buttons or signage. ` +
+      `The brand wordmark ("German Car Depot") and the URL ("GermanCarDepot.com") are NOT allowed either.\n\n` +
+      `Transcribe ALL visible text, garbled or correctly spelled. If ANY text is visible, set garbled=true and add an issue naming it. ` +
+      `Also inspect for faces/identifying features, readable plates/VINs/contact details/customer documents, unsafe repair practices, and materially misleading imagery. ` +
+      `If garbled=false and unsafe=false, issues MUST be []. Return JSON only.`
+    : `Expected text — ONLY these short strings (plus the brand wordmark and URL) should appear in the image:\n` +
+      `${JSON.stringify(expected)}\n\n` +
+      `Transcribe ALL visible text. Check for garbled/scrambled letters, misspellings, nonsensical words, placeholder gibberish, broken/duplicate CTAs, and changed meaning. ` +
+      `Also inspect for faces/identifying features, readable plates/VINs/contact details/customer documents, unsafe repair practices, and materially misleading imagery. ` +
+      `Do NOT flag differences that are only capitalization or minor punctuation when the letters are correct. ` +
+      `If garbled=false and unsafe=false, issues MUST be []. Return JSON only.`;
   try {
     // Thinking is pinned off explicitly. `maxTokens: 900` is a hard ceiling on
     // total output, and thinking tokens would come out of it before a single
@@ -88,7 +115,7 @@ export async function inspectImageText(
     // closed and blocks the run. The inspector is also tool-free and returns a
     // fixed four-key object, so there is nothing here for thinking to improve.
     const res = await visionRunner({
-      systemPrompt: QC_SYSTEM,
+      systemPrompt: textFree ? QC_SYSTEM_NO_TEXT : QC_SYSTEM,
       prompt,
       jpegBase64,
       model: "claude-sonnet-5",
@@ -107,9 +134,16 @@ export async function inspectImageText(
       return { ok: false, garbled: true, unsafe: true, issues: [issue], readText: [], errored: true };
     }
     const issues: string[] = Array.isArray(json?.issues) ? json.issues.map(String) : [];
-    const garbled = json.garbled === true;
+    let garbled = json.garbled === true;
     const unsafe = json.unsafe === true;
     const readText: string[] = Array.isArray(json?.readText) ? json.readText.map(String) : [];
+    // Text-free mode does not rely on the inspector's verdict alone: any text it
+    // transcribed is a defect, even if it called the image clean.
+    const seen = textFree ? visibleText(readText) : [];
+    if (seen.length > 0) {
+      garbled = true;
+      issues.push(`visible text in a text-free image: ${seen.map((t) => JSON.stringify(t)).join(", ")}`);
+    }
     return { ok: !garbled && !unsafe && issues.length === 0, garbled, unsafe, issues, readText };
   } catch (err) {
     console.warn(`[image-qc] inspector error (failing closed): ${(err as Error).message}`);

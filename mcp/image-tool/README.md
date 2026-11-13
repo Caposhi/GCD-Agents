@@ -7,9 +7,11 @@ aggregator key, **routed by content type**:
 
 | Content type | Model (fal.ai) | Use |
 |---|---|---|
-| `text-graphic` | Ideogram v3 | offer cards, tips/CTA graphics (legible in-image text) |
-| `photoreal` | Flux Pro | shop, cars, hands-on service |
-| `graphic-vector` | Recraft v3 | flat branded graphics, logos, icons |
+| `text-graphic` | Ideogram v3 | **the only route the publication pipeline uses** — every publication image, which is text-free; the orchestrator forces it whatever the image agent returns (the name is historical) |
+| `photoreal` | Flux Pro | not used by the publication pipeline; its request schema is unverified (no negative prompt) |
+| `graphic-vector` | Recraft v3 | not used by the publication pipeline |
+
+Publication images carry **no text** (owner-authorized 2026-11-10): every attempt's prompt carries a standing no-text rule, the Ideogram `negative_prompt` lists generic text terms, and QC fails any visible text. See [`image-brief`](../../skills/image-brief/SKILL.md).
 
 Provider-agnostic interface, so a direct model API could be swapped in later
 without changing the agents.

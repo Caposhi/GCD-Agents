@@ -1,6 +1,8 @@
 /**
  * fal.ai model routing + pure request builder. Routes by content type:
- *   text-graphic  → Ideogram (best legible in-image text)
+ *   text-graphic  → Ideogram (the only route the publication pipeline uses:
+ *                   the orchestrator forces it for every image, which is now
+ *                   text-free — the key keeps its historical name)
  *   photoreal     → Flux (top photorealism)
  *   graphic-vector→ Recraft (logos/flat brand design)
  *
@@ -44,9 +46,13 @@ const MODEL_EXTRAS: Record<ImageContentType, Record<string, unknown>> = {
     // production — the same incidental-text failure mode as the plate, on a
     // different body panel. Extended 2026-10-21 after production escalations
     // for a laptop/diagnostic screen showing scrambled digits, signage, and a
-    // plate reflected in the paint.
+    // plate reflected in the paint. Extended 2026-11-10 with generic text terms
+    // when publication images became text-free (the orchestrator forces this
+    // route for every image and its prompt carries a no-text rule); every
+    // earlier term is kept.
     negative_prompt:
-      "visible license plate, readable license plate, license plate characters, license plate numbers, close-up of a license plate, legible plate text, readable brand badge, legible vehicle emblem, sharp badge lettering on car body, close-up of car badge text, laptop screen with text, readable computer screen, scan tool display with numbers, readable dashboard display, shop signage, storefront sign, readable poster, readable sticker or label, reflection of a license plate, mirrored lettering",
+      "visible license plate, readable license plate, license plate characters, license plate numbers, close-up of a license plate, legible plate text, readable brand badge, legible vehicle emblem, sharp badge lettering on car body, close-up of car badge text, laptop screen with text, readable computer screen, scan tool display with numbers, readable dashboard display, shop signage, storefront sign, readable poster, readable sticker or label, reflection of a license plate, mirrored lettering, "
+      + "text, words, letters, numbers, typography, caption, headline, logo, wordmark, watermark, call-to-action button",
   },
   // Not extended to photoreal (Flux) — its request schema has not been
   // verified against these exact field names; do not guess on a live API.

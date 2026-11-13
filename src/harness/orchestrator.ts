@@ -22,7 +22,8 @@ import { withRetry } from "./retry.js";
 import { saveSessionState, saveMedia, recordEvent } from "./state.js";
 import { buildFinalPackage, FinalPackage, validateFinalPackage } from "./packageMap.js";
 import { generateImage } from "../mcp/image-tool/index.js";
-import { inspectImageText } from "./imageQc.js";
+import { inspectImageText, type ImageQcResult } from "./imageQc.js";
+import type { ImageRequest, ImageResult } from "../mcp/image-tool/types.js";
 import type { PublicationTarget } from "../mcp/posting-tool/index.js";
 import {
   mediaUrlMatchesContentSha256,
@@ -308,6 +309,33 @@ function makeSdkRunner(cost: CostTracker, runId?: string): AgentRunner {
 const MAX_IMAGE_ATTEMPTS = 3;
 
 /**
+ * Standing no-text rule, sent with EVERY image attempt ahead of the composition
+ * rule below (owner-authorized 2026-11-10). The owner's authorization reports
+ * production runs failing publication QC on in-image words the model drew
+ * badly ("Germaan Depot//", "LANDE ROVER", "SPOCIALST"), and QC fails closed,
+ * so nothing posted. Publication images now carry NO text at all; the caption
+ * carries the message. The runtime enforces this — the agent's `in_image_text`
+ * is never sent to the generator or to QC (see NO_IN_IMAGE_TEXT).
+ */
+export const NO_TEXT_RULE =
+  "Text rule: the image contains no text of any kind: no words, letters, numbers, logos, wordmarks, watermarks, "
+  + "captions, buttons or signage. Allowed text: none.";
+
+/**
+ * The expected in-image text for every publication image: none. Passed to both
+ * imagePromptFor and inspectImageText, whatever the image agent returned.
+ */
+export const NO_IN_IMAGE_TEXT: readonly string[] = Object.freeze([]);
+
+/**
+ * The only generation route publication images use: Ideogram, the one route
+ * whose `negative_prompt` and `expand_prompt: false` were verified against the
+ * live provider schema. Forced whatever `contentType` the agent picks — the key
+ * keeps its historical name; the image it requests is now text-free.
+ */
+export const PUBLICATION_IMAGE_ROUTE = "text-graphic" as const;
+
+/**
  * Standing composition rule sent with EVERY image attempt, the first included.
  * Production data (2026-09 to 2026-10) shows publication QC rejecting
  * photoreal hero shots for text nobody asked for — a license plate, a vehicle
@@ -337,7 +365,7 @@ export function isIncidentalTextIssue(issues: readonly string[]): boolean {
 
 /**
  * The prompt for one image attempt. Attempt 1 is the agent's prompt plus the
- * standing rule. A retry additionally names the previous QC findings and
+ * standing no-text and composition rules. A retry additionally names the previous QC findings and
  * forces a COMPOSITIONAL change for each kind of surface that failed, because
  * repeating "render it correctly" does not fix text the model keeps garbling
  * (e.g. a "LAND ROVER" badge rendered "LANDO ROVER"). From the third attempt, a
@@ -350,7 +378,10 @@ export function imagePromptFor(
   lastIssues: readonly string[],
   expected: readonly string[],
 ): string {
-  const guarded = `${basePrompt}\n\n${INCIDENTAL_TEXT_GUARD}`;
+  // Publication images are text-free: no caller may ask for in-image words.
+  // Fails closed rather than silently dropping a non-empty list.
+  if (expected.length > 0) throw new Error("image prompts are text-free: expected in-image text must be empty");
+  const guarded = `${basePrompt}\n\n${NO_TEXT_RULE}\n\n${INCIDENTAL_TEXT_GUARD}`;
   if (attempt <= 1) return guarded;
   const joined = lastIssues.join(" ");
   const fixes: string[] = [];
@@ -380,19 +411,46 @@ export function imagePromptFor(
       + "with no full vehicle exterior, no screens, no signage and no plate anywhere in frame.",
     );
   }
-  const allowed = expected.length
-    ? expected.map((t) => `"${t}"`).join(", ")
-    : "the kicker, the headline, one CTA button, the wordmark, and the URL only";
   return (
     `${guarded}\n\nCRITICAL FIX: the previous render failed publication QC (${lastIssues.join("; ") || "visual inspection failure"}). `
-    + `Remove every reported privacy, safety, or misleading element. Render ONLY these exact words — large, sharp, and perfectly legible — with NO other text: no body paragraphs, no second call-to-action. `
-    + `${fixes.join(" ")} Allowed text: ${allowed}.`
+    + `Remove every reported privacy, safety, or misleading element, and every piece of text: no words, letters, numbers, logos or wordmarks anywhere in the image. `
+    + `${fixes.join(" ")} Allowed text: none.`
   );
 }
 
 export type ImageResolver = (imageSpecification: any, runId?: string) => Promise<any>;
 
-async function resolveImage(image: any, runId?: string): Promise<any> {
+/**
+ * The image loop's collaborators. Production uses the defaults; an offline
+ * self-test may inject stand-ins to observe exactly what reaches the generator
+ * and the inspector. Any injection is refused in production (fail closed), the
+ * same rule `inspectImageText` applies to an injected vision runner.
+ */
+export interface ImageResolverDeps {
+  generate: (req: ImageRequest, apiKey: string) => Promise<ImageResult>;
+  fetchJpeg: (url: string, target: { width: number; height: number }) => Promise<Buffer>;
+  inspect: (jpegBase64: string, expected: string[]) => Promise<ImageQcResult>;
+  host: (jpeg: Buffer) => Promise<{ url: string; contentSha256: string }>;
+  emit: (runId: string | undefined, kind: string, message: string, extra?: { agent?: string; data?: unknown }) => void;
+}
+
+/** Builds the image resolver; with no overrides it is exactly the production one. */
+export function createImageResolver(overrides: Partial<ImageResolverDeps> = {}): ImageResolver {
+  const injected = Object.keys(overrides).length > 0;
+  const deps: ImageResolverDeps = {
+    generate: generateImage,
+    fetchJpeg: fetchGeneratedJpeg,
+    inspect: (jpegBase64, expected) => inspectImageText(jpegBase64, expected),
+    host: hostInspectedJpeg,
+    emit,
+    ...overrides,
+  };
+  return (image, runId) => resolveImageWith(deps, injected, image, runId);
+}
+
+const resolveImage: ImageResolver = createImageResolver();
+
+async function resolveImageWith(deps: ImageResolverDeps, injected: boolean, image: any, runId?: string): Promise<any> {
   // The model authors a specification only. Never trust URL/QC/provenance
   // fields returned in model JSON; construct the resolved object from an
   // explicit allowlist and from inspection results produced in this function.
@@ -401,11 +459,9 @@ async function resolveImage(image: any, runId?: string): Promise<any> {
     prompt: textValue(image?.prompt ?? image?.image_prompt ?? image?.description),
     width: publicationImageDimensions(image?.width, image?.height).width,
     height: publicationImageDimensions(image?.width, image?.height).height,
-    in_image_text: Array.isArray(image?.in_image_text)
-      ? image.in_image_text.map(String)
-      : Array.isArray(image?.inImageText)
-        ? image.inImageText.map(String)
-        : [],
+    // Publication images are text-free; the record never carries agent-authored
+    // in-image text, whatever the specification said (see specTextCount below).
+    in_image_text: [] as string[],
     alt_text_en: textValue(image?.alt_text_en ?? image?.altEn),
     alt_text_es: textValue(image?.alt_text_es ?? image?.altEs),
   };
@@ -416,7 +472,25 @@ async function resolveImage(image: any, runId?: string): Promise<any> {
     qc: { ok: false, issues: [issue], readText: [], attempts, errored: true },
   });
 
+  if (injected && config.nodeEnv === "production") {
+    return fail("injected image resolver dependencies are disabled in production");
+  }
   if (!image) return fail("image agent returned no image specification");
+  // The agent's in-image text is ignored for generation and QC: the expected
+  // text is always none, and the route is always the verified Ideogram one,
+  // whatever contentType the agent picked. A non-empty list is recorded as an
+  // event (its length only) so the agent's drift stays visible.
+  const specTextCount = Array.isArray(image?.in_image_text)
+    ? image.in_image_text.length
+    : Array.isArray(image?.inImageText)
+      ? image.inImageText.length
+      : 0;
+  if (specTextCount > 0) {
+    deps.emit(runId, "image:spec_text_ignored", `image specification listed ${specTextCount} in-image text string(s); ignored — publication images are text-free`, {
+      agent: "image",
+      data: { count: specTextCount },
+    });
+  }
   const basePrompt = safe.prompt;
   if (!basePrompt) {
     const issue = image?.url
@@ -431,8 +505,8 @@ async function resolveImage(image: any, runId?: string): Promise<any> {
   } catch {
     return fail("PUBLIC_BASE_URL is invalid; generated media cannot be hosted");
   }
-  const expected = safe.in_image_text;
-  const ct = image.contentType === "photoreal" || image.contentType === "graphic-vector" ? image.contentType : "text-graphic";
+  const expected = NO_IN_IMAGE_TEXT;
+  const ct = PUBLICATION_IMAGE_ROUTE;
   const { width, height } = publicationImageDimensions(safe.width, safe.height);
 
   let lastIssues: string[] = [];
@@ -442,7 +516,7 @@ async function resolveImage(image: any, runId?: string): Promise<any> {
     const prompt = imagePromptFor(basePrompt, attempt, lastIssues, expected);
     try {
       console.log(`[image] generating via fal (${ct})… attempt ${attempt}/${MAX_IMAGE_ATTEMPTS}`);
-      const gen = await generateImage({ contentType: ct, prompt, width, height }, config.imagegenApiKey);
+      const gen = await deps.generate({ contentType: ct, prompt, width, height }, config.imagegenApiKey);
       if (!gen.ok || !gen.url) {
         console.warn(`[image] generation failed: ${gen.error}`);
         break;
@@ -455,11 +529,11 @@ async function resolveImage(image: any, runId?: string): Promise<any> {
           + `${gen.metadata.fileSize ? `, ${gen.metadata.fileSize} bytes` : ""}`,
         );
       }
-      const jpeg = await fetchGeneratedJpeg(gen.url, { width, height });
-      const qc = await inspectImageText(jpeg.toString("base64"), expected);
+      const jpeg = await deps.fetchJpeg(gen.url, { width, height });
+      const qc = await deps.inspect(jpeg.toString("base64"), [...expected]);
       if (qc.ok) {
-        const hosted = await hostInspectedJpeg(jpeg);
-        emit(runId, "image:qc", `image publication QC passed (attempt ${attempt})`, { agent: "image" });
+        const hosted = await deps.host(jpeg);
+        deps.emit(runId, "image:qc", `image publication QC passed (attempt ${attempt})`, { agent: "image" });
         console.log(`[image] ✓ ${gen.model} → ${hosted.url} (inspected + transcoded JPEG)`);
         return {
           ...safe,
@@ -473,7 +547,7 @@ async function resolveImage(image: any, runId?: string): Promise<any> {
       }
       lastIssues = qc.issues;
       console.warn(`[image] publication QC FAILED attempt ${attempt}: ${qc.issues.join("; ")}`);
-      emit(runId, "image:qc", `image publication QC FAILED (attempt ${attempt}): ${qc.issues.join("; ")}`, {
+      deps.emit(runId, "image:qc", `image publication QC FAILED (attempt ${attempt}): ${qc.issues.join("; ")}`, {
         agent: "image",
         data: { issues: qc.issues },
       });
@@ -491,7 +565,7 @@ async function resolveImage(image: any, runId?: string): Promise<any> {
       );
       // Only a genuine media-contract breach carries that label; a transport or
       // decode failure logged under it would make the telemetry misleading.
-      emit(runId, deterministic ? "image:media_contract" : "image:error", issue, {
+      deps.emit(runId, deterministic ? "image:media_contract" : "image:error", issue, {
         agent: "image",
         data: { deterministic, attempts: attempt },
       });

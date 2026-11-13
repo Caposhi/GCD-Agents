@@ -95,7 +95,9 @@
  *    with the classified, pack-bound projection that is supposed to be the
  *    sole factual input.
  *
- * All three assets are preserved byte-for-byte. `agents/brand-compliance-critic.md`
+ * All three assets were preserved byte-for-byte when this stage was built (2026-11-11:
+ * the text-free image change edits the critic's and the checklist's image rules for
+ * the orchestrator's call site). `agents/brand-compliance-critic.md`
  * and `skills/compliance-checklist/SKILL.md` are removed from this registry
  * entry only; the orchestrator's existing call site is untouched, and no
  * other registered stage references either file.

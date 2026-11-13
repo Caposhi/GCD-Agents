@@ -30,7 +30,7 @@ Return **`verdict: "FAIL"` only if there is at least one BLOCKING issue.** Other
 **Blocking (these FAIL):**
 - A specific factual claim (price, hours, stat, capability, warranty terms, address/city) **not supported** by `brief.approvedFacts`, or that **contradicts** it.
 - A banned absolute claim ("best", "#1", "guaranteed" outside the exact POMG slogan).
-- Garbled/misleading in-image text, or an image that misrepresents the business.
+- **Any in-image text** — publication images are text-free, so a non-empty image `inspection.readText`, or alt text that quotes words shown in the image (a headline, CTA, wordmark or URL), is blocking whether garbled or correctly spelled; or an image that misrepresents the business.
 - Missing EN/ES package alt source or missing Instagram provider alt text; hashtags on a GBP post; copy that exceeds a platform limit and drops a required claim.
 
 **NOT blocking (do NOT fail — note at most):**
