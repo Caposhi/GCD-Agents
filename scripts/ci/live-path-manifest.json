@@ -81,8 +81,8 @@
     },
     {
       "path": "src/harness/dryrun.ts",
-      "sha256": "737b714e88d927997bbb1f806a42b938d2cd83bca620e12e77bb7a313920cab5",
-      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+      "sha256": "3be3430b005d6eb0009343860125505268022a17dd64d3f9e924454220287287",
+      "declared": "declared edit (text-free publication images, owner-authorized 2026-11-10): the simulated image fixture is a text-free photographic specification with in_image_text []; the dry run's checks are unchanged; IMPLEMENTED is not MERGED or DEPLOYED"
     },
     {
       "path": "src/harness/dryrunEnv.ts",
@@ -126,8 +126,8 @@
     },
     {
       "path": "src/harness/imageQc.ts",
-      "sha256": "530e984e4624e9f73257c474590fc4cd259e5943fd64c051534b68d4f3e04420",
-      "declared": "baseline (Content Studio S1): every module the six live entry points load, unchanged from main at 4664515"
+      "sha256": "fa370bce8ad7bd1b4b563413d8450d297252f6ee2a607dd81797efb1d27342e9",
+      "declared": "declared edit (text-free publication images, owner-authorized 2026-11-10): with no expected text the inspector is told the image must carry no text at all and any transcribed text, the wordmark and URL included, fails QC (garbled=true with an issue naming it); a non-empty expected list keeps the earlier instructions byte-for-byte; every fail-closed path and the privacy and safety rules are unchanged; IMPLEMENTED is not MERGED or DEPLOYED \u2014 the worker is released only under a separate owner authorization"
     },
     {
       "path": "src/harness/mediaNormalize.ts",
@@ -141,8 +141,8 @@
     },
     {
       "path": "src/harness/orchestrator.ts",
-      "sha256": "02e7a7c5013b497f83a50835a8fb9bf19d5ed54fd2d25e5bf56c9a358d3245c2",
-      "declared": "declared edit (image incidental-text fix, owner-requested 2026-10-21): the image attempt prompt is built by imagePromptFor with a standing text rule on every attempt, and a retry names the failed surface (plate/badge, screen, signage, reflection) and forces a recomposition; MERGED is not DEPLOYED — the worker is released only under the M1→M2 owner decision"
+      "sha256": "0dedf659aab2a21ff56c826c1fd476b7bd94d2627c86a8b8db3a87138e843fe1",
+      "declared": "declared edit (text-free publication images, owner-authorized 2026-11-10): resolveImage always passes no expected text to imagePromptFor and to QC and always uses the verified Ideogram route, whatever the image agent returns; a non-empty agent list is kept out of the record and emitted as image:spec_text_ignored (count only); every attempt carries a standing no-text rule and retries say 'Allowed text: none'; the image loop's collaborators are injectable for offline tests and refused in production. Earlier declared edit kept: the image incidental-text fix (2026-10-21) \u2014 the composition rule on every attempt, the per-surface retries and the final-attempt close-up are unchanged; IMPLEMENTED is not MERGED or DEPLOYED \u2014 the worker is released only under a separate owner authorization"
     },
     {
       "path": "src/harness/packageMap.ts",
@@ -186,8 +186,8 @@
     },
     {
       "path": "src/mcp/image-tool/fal/models.ts",
-      "sha256": "b8cd018456dd2aa7ea5aff02511246e8eed271c61d26eb3243a8bd9a4e9d53b8",
-      "declared": "declared edit (image incidental-text fix, owner-requested 2026-10-21): the Ideogram negative prompt gains screen, signage and reflected-plate terms; MERGED is not DEPLOYED — the worker is released only under the M1→M2 owner decision"
+      "sha256": "22c77e175d85f18b66b52319f8f6ca2f05d5c8804d6b00fe37334c2d1223e713",
+      "declared": "declared edit (text-free publication images, owner-authorized 2026-11-10): the verified Ideogram negative_prompt string gains generic text terms appended after every earlier term; no new request field on any route. Earlier declared edit kept: the image incidental-text fix (2026-10-21) added the screen, signage and reflected-plate terms; IMPLEMENTED is not MERGED or DEPLOYED \u2014 the worker is released only under a separate owner authorization"
     },
     {
       "path": "src/mcp/image-tool/fal/provider.ts",

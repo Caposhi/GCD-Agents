@@ -29,8 +29,12 @@ import {
   ImageResolver,
   isTrustedGeneratedImageUrl,
   imageAttemptFailurePolicy,
+  createImageResolver,
   imagePromptFor,
   INCIDENTAL_TEXT_GUARD,
+  NO_IN_IMAGE_TEXT,
+  NO_TEXT_RULE,
+  PUBLICATION_IMAGE_ROUTE,
   isIncidentalTextIssue,
   loadAgent,
   MediaContractError,
@@ -410,6 +414,73 @@ async function run(): Promise<void> {
     }));
     check("QC privacy/safety finding blocks publication", !privacyBlock.ok && privacyBlock.unsafe);
 
+    // QC. Text-free mode (2026-11-10): with no expected text, ANY visible text
+    // is a defect — the wordmark and URL included. A non-empty list keeps the
+    // earlier inspector instructions byte-for-byte.
+    const qcCall = async (expected: string[], reply: Record<string, unknown> | string) => {
+      let seen: { systemPrompt?: string; prompt?: string } = {};
+      const result = await inspectImageText("offline-bytes", expected, async (opts) => {
+        seen = { systemPrompt: (opts as any).systemPrompt, prompt: (opts as any).prompt };
+        return { text: typeof reply === "string" ? reply : JSON.stringify(reply), totalCostUsd: 0, usage: undefined };
+      });
+      return { result, ...seen };
+    };
+    const sha = (text: string | undefined) => createHash("sha256").update(text ?? "").digest("hex");
+    const cleanReply = { readText: [], garbled: false, unsafe: false, issues: [] };
+    const strict = await qcCall([], cleanReply);
+    const legacy = await qcCall(["BRAKE SERVICE", "GermanCarDepot.com"], cleanReply);
+    check(
+      "QC1. with no expected text the inspector is told the image must contain no text at all, and the wordmark/URL allowance is absent",
+      /This image must contain NO text at all/.test(strict.systemPrompt ?? "")
+        && /garbled OR correctly spelled/.test(strict.systemPrompt ?? "")
+        && !/are allowed even if not in the expected list/.test(strict.systemPrompt ?? "")
+        && !/Do NOT fail the image for purely cosmetic differences/.test(strict.systemPrompt ?? "")
+        && /Expected text: NONE/.test(strict.prompt ?? "") && /are NOT allowed either/.test(strict.prompt ?? "")
+        && !/plus the brand wordmark and URL/.test(strict.prompt ?? "")
+        && strict.result.ok,
+    );
+    const wordmarkPassedByInspector = await qcCall([], { readText: ["German Car Depot", "GermanCarDepot.com"], garbled: false, unsafe: false, issues: [] });
+    const wordmarkFlagged = await qcCall([], { readText: ["GermanCarDepot.com"], garbled: true, unsafe: false, issues: ["URL 'GermanCarDepot.com' is visible"] });
+    check(
+      "QC2. with no expected text a correctly spelled wordmark or URL fails (garbled=true, an issue naming it), even when the inspector itself called the image clean",
+      !wordmarkPassedByInspector.result.ok && wordmarkPassedByInspector.result.garbled
+        && wordmarkPassedByInspector.result.issues.some((i) => i.includes('"German Car Depot"') && i.includes('"GermanCarDepot.com"'))
+        && !wordmarkFlagged.result.ok && wordmarkFlagged.result.garbled && wordmarkFlagged.result.issues.length >= 1,
+    );
+    const blanks = await qcCall([], { readText: ["", "   "], garbled: false, unsafe: false, issues: [] });
+    check("QC3. with no expected text, blank transcription entries are not text: a clean image still passes", blanks.result.ok && !blanks.result.garbled);
+    const legacyWordmark = await qcCall(["BRAKE SERVICE"], { readText: ["BRAKE SERVICE", "GermanCarDepot.com"], garbled: false, unsafe: false, issues: [] });
+    check(
+      "QC4. with a non-empty expected list the inspector instructions are byte-identical to main's, and the wordmark/URL allowance still applies",
+      sha(legacy.systemPrompt) === "e2109aba069bcaee11865b0fe8194df7aeb2545bb747f1e03721f7cff8dbe31b"
+        && sha(legacy.prompt) === "e91ef2bdecb2037d84ff47d1af4fa8d6e660083f7f6825cfdf6139d49d78009a"
+        && legacyWordmark.result.ok,
+    );
+    const privacySection = (text: string | undefined) => {
+      const t = text ?? "";
+      return t.slice(t.indexOf("Separately mark unsafe=true"), t.indexOf("Do not infer identity"));
+    };
+    check(
+      "QC5. the privacy and safety rules are the same text in both modes",
+      privacySection(strict.systemPrompt).length > 200 && privacySection(strict.systemPrompt) === privacySection(legacy.systemPrompt)
+        && /readable plates\/VINs\/contact details\/customer documents, unsafe repair practices/.test(strict.prompt ?? ""),
+    );
+    const strictThrow = await inspectImageText("offline-bytes", [], async () => { throw new Error("offline inspector outage"); });
+    const strictMalformed = await qcCall([], "{}");
+    const strictUnsafe = await qcCall([], { readText: [], garbled: false, unsafe: true, issues: ["readable license plate"] });
+    const legacyThrow = await inspectImageText("offline-bytes", ["BRAKE SERVICE"], async () => { throw new Error("offline inspector outage"); });
+    const legacyMalformed = await qcCall(["BRAKE SERVICE"], { garbled: false });
+    const legacyUnsafe = await qcCall(["BRAKE SERVICE"], { readText: ["BRAKE SERVICE"], garbled: false, unsafe: true, issues: ["readable license plate"] });
+    check(
+      "QC6. every fail-closed path still fails closed in both modes: inspector error, invalid contract, and a privacy finding",
+      !strictThrow.ok && strictThrow.errored === true && strictThrow.garbled && strictThrow.unsafe
+        && !strictMalformed.result.ok && strictMalformed.result.errored === true
+        && !strictUnsafe.result.ok && strictUnsafe.result.unsafe
+        && !legacyThrow.ok && legacyThrow.errored === true
+        && !legacyMalformed.result.ok && legacyMalformed.result.errored === true
+        && !legacyUnsafe.result.ok && legacyUnsafe.result.unsafe,
+    );
+
     const originalNodeEnv = config.nodeEnv;
     config.nodeEnv = "production";
     try {
@@ -419,6 +490,12 @@ async function run(): Promise<void> {
         usage: undefined,
       }));
       check("production QC rejects injected inspector runners", !injected.ok && injected.errored === true);
+      const injectedLegacy = await inspectImageText("offline-bytes", ["BRAKE SERVICE"], async () => ({
+        text: JSON.stringify({ readText: [], garbled: false, unsafe: false, issues: [] }),
+        totalCostUsd: 0,
+        usage: undefined,
+      }));
+      check("QC7. production QC rejects injected inspector runners in both modes", !injected.ok && injected.errored === true && !injectedLegacy.ok && injectedLegacy.errored === true);
     } finally {
       config.nodeEnv = originalNodeEnv;
     }
@@ -923,7 +1000,10 @@ async function run(): Promise<void> {
   // plate reflected in the paint. These are the inspector's real findings.
   {
     const BASE = "Hero shot of a BMW in a bright service bay. Headline \"SMOOTH MILE\".";
-    const EXPECTED = ["SMOOTH MILE", "GermanCarDepot.com"];
+    // Publication images are text-free (2026-11-10): the runtime always passes
+    // no expected text, so these checks run with exactly what production sends.
+    // (Until then this list was ["SMOOTH MILE", "GermanCarDepot.com"].)
+    const EXPECTED: string[] = [];
     const oct19 = [
       "License plate on vehicle reads 'BC0C800' - appears to be a readable/garbled plate string that could constitute a real or fabricated plate",
       "Laptop screen shows numeric strings '6340000', '689000', '8870000' which appear to be garbled/nonsensical diagnostic data rendered as placeholder gibberish",
@@ -949,10 +1029,10 @@ async function run(): Promise<void> {
 
     const r19 = imagePromptFor(BASE, 2, oct19, EXPECTED);
     check(
-      "IT3. the Oct 19 findings (plate + laptop screen) get a plate recomposition AND a screen instruction, with the findings, the allowed text and the standing rule",
-      r19.includes("CRITICAL FIX") && r19.includes("BC0C800") && r19.includes(INCIDENTAL_TEXT_GUARD)
+      "IT3. the Oct 19 findings (plate + laptop screen) get a plate recomposition AND a screen instruction, with the findings, 'Allowed text: none' and both standing rules",
+      r19.includes("CRITICAL FIX") && r19.includes("BC0C800") && r19.includes(INCIDENTAL_TEXT_GUARD) && r19.includes(NO_TEXT_RULE)
         && /NO plate-shaped area/.test(r19) && /switched off, dark and blank/.test(r19)
-        && r19.includes('"SMOOTH MILE", "GermanCarDepot.com"') && !r19.includes("FINAL ATTEMPT"),
+        && r19.endsWith("Allowed text: none.") && !r19.includes("FINAL ATTEMPT"),
     );
     const r21 = imagePromptFor(BASE, 2, oct21, EXPECTED);
     check(
@@ -987,8 +1067,9 @@ async function run(): Promise<void> {
         && !imagePromptFor(BASE, 2, oct19, EXPECTED).includes("FINAL ATTEMPT"),
     );
     check(
-      "IT9. with no listed allowed text the retry falls back to the default list, and an empty finding list still produces a valid retry",
-      /the kicker, the headline, one CTA button, the wordmark, and the URL only/.test(imagePromptFor(BASE, 2, [], []))
+      "IT9. with no allowed text the retry says 'Allowed text: none' — never the old kicker/headline/CTA/wordmark/URL list — and an empty finding list still produces a valid retry",
+      imagePromptFor(BASE, 2, [], []).endsWith("Allowed text: none.")
+        && !/the kicker, the headline, one CTA button, the wordmark, and the URL only/.test(imagePromptFor(BASE, 2, [], []))
         && imagePromptFor(BASE, 2, [], []).includes("visual inspection failure"),
     );
     check(
@@ -1005,6 +1086,142 @@ async function run(): Promise<void> {
       source.includes("const prompt = imagePromptFor(basePrompt, attempt, lastIssues, expected);")
         && !/const prompt =\s*\n?\s*attempt === 1/.test(source),
     );
+  }
+
+  // --- TF. Text-free publication images (owner-authorized 2026-11-10) -------
+  //
+  // The owner's authorization reports production runs failing QC on in-image
+  // words the model drew badly. The image now carries no text at all; the
+  // runtime enforces that whatever the image agent returns.
+  {
+    const BASE = "Hero shot of a BMW in a bright service bay.";
+    const oct19 = [
+      "License plate on vehicle reads 'BC0C800' - appears to be a readable/garbled plate string",
+      "Laptop screen shows numeric strings which appear to be garbled placeholder gibberish",
+    ];
+    const findingSets: string[][] = [[], oct19, ["License plate reflection 'H KE8801' is partially readable"],
+      ["Shop sign reads gibberish"], ["An identifiable person's face is visible"],
+      ["'Germaan Depot//' is a garbled wordmark"]];
+    check(
+      "TF1. the standing no-text rule names words, letters, numbers, logos, wordmarks, watermarks, captions, buttons and signage, and says 'Allowed text: none'",
+      ["no text of any kind", "words", "letters", "numbers", "logos", "wordmarks", "watermarks", "captions", "buttons", "signage", "Allowed text: none."]
+        .every((w) => NO_TEXT_RULE.includes(w)),
+    );
+    check(
+      "TF2. attempts 1, 2 and 3 all carry the no-text rule, for every kind of finding, and attempt 1 still carries the composition rule",
+      [1, 2, 3].every((attempt) => findingSets.every((issues) => {
+        const p = imagePromptFor(BASE, attempt, issues, []);
+        return p.startsWith(BASE) && p.includes(NO_TEXT_RULE) && p.includes(INCIDENTAL_TEXT_GUARD);
+      })),
+    );
+    check(
+      "TF3. every retry says 'Allowed text: none' and none says 'Render ONLY these exact words'",
+      [2, 3].every((attempt) => findingSets.every((issues) => {
+        const p = imagePromptFor(BASE, attempt, issues, []);
+        return p.endsWith("Allowed text: none.") && !p.includes("Render ONLY these exact words") && !/large, sharp, and perfectly legible/.test(p);
+      })) && !imagePromptFor(BASE, 1, [], []).includes("Render ONLY these exact words"),
+    );
+    check(
+      "TF4. a caller that asks for in-image text is refused (fails closed) rather than silently dropped",
+      throws(() => imagePromptFor(BASE, 1, [], ["BRAKE SERVICE"])) && throws(() => imagePromptFor(BASE, 2, oct19, ["GermanCarDepot.com"])),
+    );
+    check(
+      "TF5. the surface fixes still appear with no expected text: plate recomposition, screen, signage and reflection instructions, and the third attempt's close-up only after an incidental-text finding",
+      /NO plate-shaped area/.test(imagePromptFor(BASE, 2, oct19, []))
+        && /switched off, dark and blank/.test(imagePromptFor(BASE, 2, oct19, []))
+        && /Signage, labels or lettering in the scene/.test(imagePromptFor(BASE, 2, ["Shop sign reads gibberish"], []))
+        && /reflection is showing/.test(imagePromptFor(BASE, 2, ["License plate reflection 'H KE8801' is partially readable"], []))
+        && imagePromptFor(BASE, 3, oct19, []).includes("FINAL ATTEMPT")
+        && !imagePromptFor(BASE, 2, oct19, []).includes("FINAL ATTEMPT")
+        && !imagePromptFor(BASE, 3, ["An identifiable person's face is visible"], []).includes("FINAL ATTEMPT"),
+    );
+    check(
+      "TF6. the runtime's expected text is a frozen empty list and its route is the verified Ideogram one",
+      NO_IN_IMAGE_TEXT.length === 0 && Object.isFrozen(NO_IN_IMAGE_TEXT) && PUBLICATION_IMAGE_ROUTE === "text-graphic",
+    );
+
+    // Drive the real image loop with stand-ins for the network, the inspector
+    // and the host, to observe exactly what reaches the generator and QC.
+    const originalKey = config.imagegenApiKey;
+    const originalBase = config.publicBaseUrl;
+    const originalNodeEnv = config.nodeEnv;
+    config.imagegenApiKey = "offline-placeholder";
+    config.publicBaseUrl = "https://img.gcd.example/";
+    try {
+      const drive = async (spec: any, qcIssuesByAttempt: string[][]) => {
+        const generated: Array<{ contentType: string; prompt: string }> = [];
+        const inspected: string[][] = [];
+        const events: Array<{ kind: string; data: any }> = [];
+        const resolver = createImageResolver({
+          generate: async (req) => {
+            generated.push({ contentType: req.contentType, prompt: req.prompt });
+            return { ok: true, url: "https://v3.fal.media/files/offline.jpg", model: "offline-ideogram" } as any;
+          },
+          fetchJpeg: async () => Buffer.from("offline-jpeg"),
+          inspect: async (_b64, expected) => {
+            inspected.push([...expected]);
+            const issues = qcIssuesByAttempt[inspected.length - 1] ?? [];
+            return { ok: issues.length === 0, garbled: issues.length > 0, unsafe: false, issues, readText: [] };
+          },
+          host: async () => ({ url: MEDIA_URL, contentSha256: CONTENT_SHA }),
+          emit: (_runId, kind, _message, extra) => { events.push({ kind, data: extra?.data }); },
+        });
+        const out = await resolver(spec, "offline-run");
+        return { out, generated, inspected, events };
+      };
+
+      const agentSpec = {
+        contentType: "photoreal",
+        prompt: BASE,
+        width: 1080,
+        height: 1350,
+        in_image_text: ["BRAKE SERVICE", "BOOK ONLINE TODAY", "German Car Depot", "GermanCarDepot.com"],
+        alt_text_en: "A BMW in a bright service bay.",
+        alt_text_es: "Un BMW en un taller luminoso.",
+      };
+      const run1 = await drive(agentSpec, [oct19, oct19, []]);
+      check(
+        "TF7. a 'photoreal' spec listing four in-image strings still reaches the generator on the Ideogram route, three times, with QC told to expect no text every time",
+        run1.generated.length === 3 && run1.generated.every((g) => g.contentType === "text-graphic")
+          && run1.inspected.length === 3 && run1.inspected.every((e) => e.length === 0),
+      );
+      check(
+        "TF8. through the live loop, attempts 1, 2 and 3 carry the no-text rule; the retries say 'Allowed text: none', keep the plate and screen fixes, and the third adds the final close-up",
+        run1.generated.every((g) => g.prompt.includes(NO_TEXT_RULE) && !g.prompt.includes("BRAKE SERVICE") && !g.prompt.includes("Render ONLY these exact words"))
+          && run1.generated.slice(1).every((g) => g.prompt.endsWith("Allowed text: none.") && /NO plate-shaped area/.test(g.prompt) && /switched off, dark and blank/.test(g.prompt))
+          && !run1.generated[1]!.prompt.includes("FINAL ATTEMPT") && run1.generated[2]!.prompt.includes("FINAL ATTEMPT"),
+      );
+      check(
+        "TF9. the publication record carries no agent-authored in-image text, and the ignored list is recorded as one image:spec_text_ignored event with its count only",
+        run1.out.qcFailed === false && run1.out.inspection?.status === "passed" && Array.isArray(run1.out.in_image_text) && run1.out.in_image_text.length === 0
+          && run1.events.filter((e) => e.kind === "image:spec_text_ignored").length === 1
+          && JSON.stringify(run1.events.find((e) => e.kind === "image:spec_text_ignored")?.data) === JSON.stringify({ count: 4 }),
+      );
+      const run2 = await drive({ ...agentSpec, contentType: "graphic-vector", in_image_text: [] }, [[]]);
+      const run3 = await drive({ ...agentSpec, contentType: undefined, in_image_text: undefined, inImageText: ["X"] }, [[]]);
+      check(
+        "TF10. a 'graphic-vector' or missing contentType is forced to the Ideogram route too; an empty list emits no event, and the camelCase alias is counted the same way",
+        run2.generated.every((g) => g.contentType === "text-graphic") && !run2.events.some((e) => e.kind === "image:spec_text_ignored")
+          && run3.generated.every((g) => g.contentType === "text-graphic")
+          && run3.events.filter((e) => e.kind === "image:spec_text_ignored").length === 1,
+      );
+      const run4 = await drive(agentSpec, [["visible text in a text-free image: \"German Car Depot\""], ["wordmark visible"], ["wordmark visible"]]);
+      check(
+        "TF11. QC stays fail-closed through the loop: three text failures escalate as qcFailed and nothing is hosted",
+        run4.out.qcFailed === true && run4.out.url === undefined && run4.generated.length === 3,
+      );
+      config.nodeEnv = "production";
+      const run5 = await drive(agentSpec, [[]]);
+      check(
+        "TF12. injected resolver dependencies are refused in production before any generation",
+        run5.out.qcFailed === true && run5.generated.length === 0 && run5.inspected.length === 0
+          && /disabled in production/.test(String(run5.out.qc?.issues?.[0])),
+      );
+    } finally {
+      config.imagegenApiKey = originalKey;
+      config.publicBaseUrl = originalBase;
+      config.nodeEnv = originalNodeEnv;
+    }
   }
 
   console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURE(S)`);
