@@ -50,7 +50,7 @@ A package passes only if all hold:
 1. **Voice** — sounds like GCD per `brand-voice`; no generic AI tone, no em-dash-spam, no hollow hype.
 2. **Claims** — no absolute or unverifiable claims ("best," "guaranteed," "always," "#1"). Every factual claim (pricing, offers, capabilities, hours) traces to an approved source; if it doesn't, cut it or escalate.
 3. **Platform fit** — within each platform's limits/format (`platform-specs`); IG images JPEG; GBP carries no hashtags.
-4. **Image** — on-brand, correct aspect ratio, no garbled text, no off-brand colors, nothing misleading.
+4. **Image** — on-brand, correct aspect ratio, no text of any kind (images are text-free), no off-brand colors, nothing misleading.
 5. **Accessibility** — alt text present and meaningful.
 6. **Local SEO** — GBP posts carry relevant local keywords without stuffing.
 </critique_rubric>
