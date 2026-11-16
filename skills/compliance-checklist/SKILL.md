@@ -31,15 +31,15 @@ The independent model gate every package must clear before it reaches the human 
 - [ ] Review destination/text/language/media/digest/CTA and supported metadata match the exact provider payload; GBP is at most 1,500 characters, has explicit language code/topic type, and uses only an approved HTTPS CTA URL.
 
 ## 4. Image (→ image)
-- [ ] On-brand palette (navy/royal + lemondrop); logo used per `image-brief` (not recolored/distorted/upscaled past native).
+- [ ] On-brand palette (navy/royal + lemondrop) carried by color and light; the generated image carries no logo or wordmark (publication images are text-free — `image-brief`).
 - [ ] The shared artifact is an inspected quality-90 JPEG no larger than 5 MiB. Runtime normalizes the request to an approved feed profile (`1080x1350`, `1080x1080`, `1200x900`, or `1200x630`; default `1080x1350`) and requires both the returned PNG/JPEG input header and transcoded JPEG output header to match it exactly before storage/hash binding. The broader safety ceilings are 4,096 pixels per side/16 million pixels. Do not claim separate platform-specific crops/renditions; the one passing artifact is shared.
 - [ ] Runtime inspection has passed its strict response contract for the initial artifact and any critic-requested revision; infrastructure errors or malformed output are blocking, not review fallbacks.
-- [ ] In-image text is transcribed, correct, and legible (no garbled letters); contrast-safe (no small yellow text on white).
+- [ ] **No in-image text.** Publication images are text-free: any word, letter, number, logo, wordmark, URL, watermark, caption, button or sign in the image is a **defect**, garbled or correctly spelled — not something to transcribe or approve. In the package, a non-empty image `inspection.readText`, or alt text that quotes words shown in the image, is blocking.
 - [ ] Nothing misleading or unsafe: no identifiable people/features, readable plates/VIN/contact/customer documents, unsafe shop practice, fake before/after, or invented promo.
 
 ## 5. Accessibility
 - [ ] Meaningful EN/ES alt-text source is present for every image and Instagram's exact provider payload carries the applicable alt text. Do not require unsupported alt/disclosure fields in current Facebook/GBP payloads.
-- [ ] Text contrast meets WCAG AA (4.5:1 body, 3:1 large).
+- [ ] Text contrast meets WCAG AA (4.5:1 body, 3:1 large) wherever text is set on a brand asset by hand; generated publication images carry no text.
 
 ## 6. Local SEO (GBP especially) (→ hashtag-seo-timing)
 - [ ] GBP posts carry relevant local keywords (city/neighborhood + make + service) **without stuffing** (`local-seo`).
