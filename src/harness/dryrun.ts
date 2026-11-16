@@ -147,7 +147,7 @@ const SIM: Record<string, any> = {
     { platform: "facebook", lang: "en", body: "Dealer-level care for your European car, without the dealer markup. Book your next service with our team.", cta: "Book online", char_count: 105 },
     { platform: "gbp", lang: "en", body: "European car repair in Doral done the right way. Oil, brakes, and diagnostics by specialists who know your BMW, Mercedes, or Audi.", cta: "Book", char_count: 130 },
   ],
-  image: { contentType: "text-graphic", prompt: "A premium German Car Depot brake-service graphic.", width: 1080, height: 1350, in_image_text: ["BRAKE SERVICE", "BOOK ONLINE", "German Car Depot", "GermanCarDepot.com"], alt_text_en: "Navy graphic: 'Brake service — book online' with the German Car Depot logo.", alt_text_es: "Gráfico azul marino: 'Servicio de frenos — reserva en línea'." },
+  image: { contentType: "text-graphic", prompt: "A premium, text-free photograph: a technician's gloved hands fitting a new brake caliper on a BMW wheel hub in a clean, softly lit service bay with navy walls and a lemondrop accent light.", width: 1080, height: 1350, in_image_text: [], alt_text_en: "A technician's gloved hands fit a new brake caliper on a BMW wheel hub in a clean service bay.", alt_text_es: "Las manos enguantadas de un técnico instalan una pinza de freno nueva en el buje de una rueda de BMW en un taller limpio." },
   "hashtag-seo-timing": [
     { platform: "instagram", hashtags: ["#bmwrepair", "#hollywoodfl", "#europeancarservice", "#germancar", "#brakeservice", "#autocare", "#broward", "#germancardepot"], keywords: ["BMW service Hollywood"], recommended_time: "09:00 ET" },
     { platform: "facebook", hashtags: [], keywords: ["European car repair Miami"], recommended_time: "12:00 ET" },

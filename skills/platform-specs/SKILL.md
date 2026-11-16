@@ -26,7 +26,7 @@ Per-platform format conventions plus the deterministic rules the canonical build
 - **No hashtags.** Plain, local, useful language (`local-seo`).
 - Length at most 1,500 chars; front-load the offer/tip.
 - Use GBP CTA buttons (Book / Call / Learn more), not "link in bio."
-- Feed image 1200×900 (4:3) is an exact runtime-supported profile; keep it clean and literal with minimal text overlay. Runtime does not make a separate GBP rendition.
+- Feed image 1200×900 (4:3) is an exact runtime-supported profile; keep it clean and literal with no text overlay (publication images are text-free — `image-brief`). Runtime does not make a separate GBP rendition.
 - One clear topic per post; tie to a real service/event.
 
 ## Cross-platform assembly rules
