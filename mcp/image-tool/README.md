@@ -11,7 +11,7 @@ aggregator key, **routed by content type**:
 | `photoreal` | Flux Pro | not used by the publication pipeline; its request schema is unverified (no negative prompt) |
 | `graphic-vector` | Recraft v3 | not used by the publication pipeline |
 
-Publication images carry **no text** (owner-authorized 2026-11-10): every attempt's prompt carries a standing no-text rule, the Ideogram `negative_prompt` lists generic text terms, and QC fails any visible text. See [`image-brief`](../../skills/image-brief/SKILL.md).
+Publication images carry **no text** (owner-authorized 2026-11-10): every attempt's prompt carries a standing no-text rule, the Ideogram `negative_prompt` lists generic text terms, Ideogram's MagicPrompt rewriting is turned off with `enable_prompt_expansion: false` (the name in fal's published schema, read 2026-11-11 and 2026-11-13; fix round 1, 2026-11-13; the earlier `expand_prompt` is not in it), and QC fails any visible text. See [`image-brief`](../../skills/image-brief/SKILL.md).
 
 Provider-agnostic interface, so a direct model API could be swapped in later
 without changing the agents.

@@ -46,7 +46,13 @@ check("N2. jpeg is still requested (advisory; provider may return png)", r.body?
     "N2b. the negative prompt is sent only on the verified Ideogram route, never on the unverified photoreal or vector routes",
     !("negative_prompt" in (photo.body ?? {})),
   );
-  check("N2c. prompt expansion stays off so the authored composition rule reaches the model", r.body?.expand_prompt === false);
+  // Fix round 1 (2026-11-13, owner-authorized 2026-11-11): fal's published fal-ai/ideogram/v3 schema names the MagicPrompt switch
+  // `enable_prompt_expansion` (default true) and lists no `expand_prompt`; N2c now asserts the real field.
+  check("N2c. prompt expansion stays off so the authored composition rule reaches the model (enable_prompt_expansion: false)", r.body?.enable_prompt_expansion === false);
+  check(
+    "N2f. the Ideogram request no longer sends the unlisted `expand_prompt` field (only the schema's name is sent)",
+    !("expand_prompt" in (r.body ?? {})),
+  );
   // Text-free publication images (2026-11-10): every term main carried is kept,
   // and generic text terms are appended. This list is main's at 4fe527f, verbatim.
   const MAIN_TERMS = [
@@ -64,9 +70,19 @@ check("N2. jpeg is still requested (advisory; provider may return png)", r.body?
       && JSON.stringify(negTerms.slice(MAIN_TERMS.length)) === JSON.stringify(TEXT_TERMS),
   );
   check(
-    "N2e. the text-graphic request adds no new field: exactly main's keys",
+    "N2e. the text-graphic request adds no new field: main's keys, with the prompt-expansion switch under the schema's name (enable_prompt_expansion, fix round 1)",
     JSON.stringify(Object.keys(r.body ?? {}).sort())
-      === JSON.stringify(["expand_prompt", "image_size", "negative_prompt", "num_images", "output_format", "prompt", "rendering_speed"]),
+      === JSON.stringify(["enable_prompt_expansion", "image_size", "negative_prompt", "num_images", "output_format", "prompt", "rendering_speed"]),
+  );
+  // Fix round 1: renaming the switch changes no other field's value.
+  check(
+    "N2g. every other text-graphic request field is unchanged by the rename: prompt, image_size 1024x1280, num_images 1, output_format jpeg, rendering_speed QUALITY, and the 31-term negative prompt",
+    r.body?.prompt === "Brake fluid flush — book online"
+      && JSON.stringify(r.body?.image_size) === JSON.stringify({ width: 1024, height: 1280 })
+      && r.body?.num_images === 1
+      && r.body?.output_format === "jpeg"
+      && r.body?.rendering_speed === "QUALITY"
+      && neg === [...MAIN_TERMS, ...TEXT_TERMS].join(", "),
   );
 }
 

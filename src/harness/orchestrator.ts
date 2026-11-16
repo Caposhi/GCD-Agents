@@ -329,9 +329,12 @@ export const NO_IN_IMAGE_TEXT: readonly string[] = Object.freeze([]);
 
 /**
  * The only generation route publication images use: Ideogram, the one route
- * whose `negative_prompt` and `expand_prompt: false` were verified against the
- * live provider schema. Forced whatever `contentType` the agent picks — the key
- * keeps its historical name; the image it requests is now text-free.
+ * whose `negative_prompt` was verified against the live provider schema, with
+ * MagicPrompt switched off by `enable_prompt_expansion: false`. Forced whatever
+ * `contentType` the agent picks — the key keeps its historical name; the image
+ * it requests is now text-free. (2026-11-13, fix round 1: the switch was sent
+ * as `expand_prompt: false`, a name fal's published fal-ai/ideogram/v3 schema
+ * does not list — see src/mcp/image-tool/fal/models.ts.)
  */
 export const PUBLICATION_IMAGE_ROUTE = "text-graphic" as const;
 

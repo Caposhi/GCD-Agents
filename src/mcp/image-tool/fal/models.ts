@@ -36,8 +36,15 @@ const MODEL_EXTRAS: Record<ImageContentType, Record<string, unknown>> = {
     // that can silently dilute or drop explicit composition instructions (e.g.
     // license-plate avoidance). Disable it so the exact prompt we author is
     // what the model actually sees. (Verified against the live fal-ai/
-    // ideogram/v3 input schema, 2026-09-14.)
-    expand_prompt: false,
+    // ideogram/v3 input schema, 2026-09-14 — sent then as `expand_prompt`.)
+    // Corrected 2026-11-13 (fix round 1, owner-authorized 2026-11-11): fal's published schema for fal-ai/ideogram/v3
+    // (https://fal.ai/models/fal-ai/ideogram/v3/llms.txt, read 2026-11-11 and
+    // again 2026-11-13) names the switch `enable_prompt_expansion` ("Determine
+    // if MagicPrompt should be used in generating the request or not. Default
+    // value: `true`") and lists no `expand_prompt`, so the old name was most
+    // likely ignored and MagicPrompt left on (NOT OBSERVED: no live call made).
+    // Only the corrected name is sent.
+    enable_prompt_expansion: false,
     // Verified field on fal-ai/ideogram/v3 (2026-09-14 schema check) — fal's
     // own docs note the positive prompt still takes precedence over this, so
     // it reinforces (not replaces) the plate/badge-avoidance composition

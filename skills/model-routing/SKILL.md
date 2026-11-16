@@ -36,7 +36,7 @@ Match model power to the job. Judgment runs on Opus; mechanical work runs on Son
 - Never escalate more than one tier without manager note; never escalate the **posting** agent.
 
 ## Image-model routing (see `image-brief`)
-- Every publication image is a **text-free** photographic composition on **one route: Ideogram** (`text-graphic`, a historical name) — the only route whose negative prompt and prompt-expansion setting were verified against the live provider schema. Runtime forces it whatever `contentType` the image agent returns.
+- Every publication image is a **text-free** photographic composition on **one route: Ideogram** (`text-graphic`, a historical name) — the only route whose negative prompt was verified against the live provider schema, with prompt rewriting switched off by `enable_prompt_expansion: false` *(2026-11-13: the switch was earlier sent as `expand_prompt`, a name fal's published schema does not list)*. Runtime forces it whatever `contentType` the image agent returns.
 - No image carries words: offer cards and tips-with-words graphics are not produced; the caption carries the message. The Flux (`photoreal`) and Recraft (`graphic-vector`) routes exist in the image tool but the publication pipeline does not use them.
 - Prefer **one strong image** over multiple drafts. Re-generate only on a concrete critic finding.
 
