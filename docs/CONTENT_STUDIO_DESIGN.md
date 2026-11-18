@@ -1545,6 +1545,8 @@ business content. The contact line copies it into Facebook text and the Google B
 call to action (**VERIFIED**, `contactLine.ts`). The Studio therefore stores it inside run artifacts
 and shows it to signed-in users, because the owner must paste it.
 
+*(2026-11-16, PR #144 fix round 2: with PR #144's owner fact corrections, `IMPLEMENTED` on `claude/pensive-planck-ld53ca` and not merged, `bookingUrl` is the public homepage `https://www.germancardepot.com/` and carries **no token**; the Steer widget link is obsolete because booking moved to AutoOps (owner decisions of 2026-11-06 and 2026-11-16; `config/approved-facts.json:32` at `284e048`, LOCAL). The **VERIFIED** statement above was true of the file before that change. The proposals below still apply to whatever link the file holds.)*
+
 **PROPOSED:**
 
 - the Studio never logs it;

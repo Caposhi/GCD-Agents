@@ -167,7 +167,7 @@ The controller blocks migration-bearing releases before any service or migration
 
 ## Sensitive tracked content
 
-`config/approved-facts.json`, brand/agent/skill content, and the master prompt intentionally contain public business identity, service, address, phone, claims, and a public booking capability URL. These are executable content inputs, not credentials. Their continued publication and accuracy require business-owner review; do not mechanically redact them and silently change marketing behavior. Personal contact fallbacks and production platform numeric IDs do not belong in current setup documentation.
+`config/approved-facts.json`, brand/agent/skill content, and the master prompt intentionally contain public business identity, service, address, phone, claims, and a public booking capability URL. *(2026-11-16, PR #144 fix round 2: with PR #144's owner fact corrections, `IMPLEMENTED` on `claude/pensive-planck-ld53ca` and not merged, the booking link is the public homepage `https://www.germancardepot.com/`, with no token; the capability URL is obsolete and leaves the current file with that change (`config/approved-facts.json:32` at `284e048`, LOCAL). It remains in Git history, where it was always recorded as public business content.)* These are executable content inputs, not credentials. Their continued publication and accuracy require business-owner review; do not mechanically redact them and silently change marketing behavior. Personal contact fallbacks and production platform numeric IDs do not belong in current setup documentation.
 
 The credential-history pattern scan matched an embedded raster inside a brand SVG, not a provider credential, after manual triage. Pattern scans remain incomplete evidence.
 
