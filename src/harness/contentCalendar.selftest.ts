@@ -209,7 +209,51 @@ check(
   );
 }
 
+// --- the wording the scheduler feeds its agents (owner corrections of 2026-11-24) ---------------
+{
+  // Wording the owner corrected on 2026-11-24: Alan "Ollie" Gelfand is the sole owner; "ISTA", not
+  // "ISTA/D"; no factory, dealer or manufacturer certification claim; ASE-certified technicians (Alan
+  // is the ASE Master Technician); and the approved warranty wording replaced "qualifying parts".
+  const FORBIDDEN = [/family[- ]owned/i, /family[- ]run/i, /family shop/i, /ISTA\/D/i, /factory[- ]grade/i, /factory[- ]trained/i, /master[- ]level/i, /qualifying parts/i];
+  const texts = [...SERVICES.map((s) => `${s.key}: ${s.angle}`), ...BRAND_THEMES.map((t) => `${t.key}: ${t.goal}`)];
+  const hits = texts.filter((t) => FORBIDDEN.some((re) => re.test(t)));
+  check(
+    `CAL21. no service angle or brand goal says family-owned, family-run, family shop, ISTA/D, factory-grade, factory-trained, Master-level or "qualifying parts" (${texts.length} strings checked${hits.length ? `; hits: ${hits.join(" | ")}` : ""})`,
+    texts.length === SERVICES.length + BRAND_THEMES.length && texts.length === 14 && hits.length === 0,
+  );
+  // Every brief the scheduler can enqueue, not just the source strings: one whole year of posting days.
+  const briefHits = days(utc(2027, 1, 1), utc(2027, 12, 31))
+    .map((d) => briefForDate(d))
+    .filter((b) => b !== null && FORBIDDEN.some((re) => re.test(b.goal)));
+  check("CAL22. no brief enqueued on any posting day of 2027 carries that wording either", briefHits.length === 0);
+  const warranty = BRAND_THEMES.find((t) => t.key === "brand-warranty");
+  const feb = briefForDate(utc(2027, 2, 1));
+  check(
+    "CAL23. the brand-warranty goal carries the approved warranty wording verbatim, and is the brief enqueued on Monday 2027-02-01",
+    warranty !== undefined
+      && warranty.goal.includes("3-Year / 36,000-Mile nationwide warranty on eligible repairs (whichever comes first)")
+      && feb !== null && feb.kind === "brand" && feb.theme === "brand-warranty" && feb.goal.startsWith(warranty.goal),
+  );
+  check(
+    "CAL24. keys, labels and order are unchanged, so the rotation and theme history stay stable",
+    JSON.stringify(MAKES) === JSON.stringify(["BMW", "Mercedes-Benz", "Audi", "Porsche", "Volkswagen", "Mini Cooper", "Land Rover"])
+      && JSON.stringify(SERVICES.map((s) => [s.key, s.label])) === JSON.stringify([
+        ["oil-change", "Oil & Filter Change"], ["brakes", "Brake Service"], ["diagnostics", "Check-Engine Diagnostics"],
+        ["cooling", "Cooling System Service"], ["steering-suspension", "Steering & Suspension"], ["transmission", "Transmission Service"],
+        ["engine-repair", "Engine Repair"], ["oil-leak", "Oil-Leak Repair"], ["maintenance", "Scheduled Maintenance"],
+        ["ppi", "Pre-Purchase Inspection"],
+      ])
+      && JSON.stringify(BRAND_THEMES.map((t) => t.key)) === JSON.stringify(["brand-family", "brand-warranty", "brand-dealership-alternative", "brand-ollie"])
+      && TOTAL_VARIATIONS === 70
+      // Two fixed rotation points: Wed 2026-10-14 is slot 436 (436 % 7 = 2, Audi; 436 % 10 = 6, engine-repair),
+      // and Mon 2026-11-02 is November's brand post (month index 10, 10 % 4 = 2).
+      && postingSlot(utc(2026, 10, 14)) === 436
+      && briefForDate(utc(2026, 10, 14))!.theme === "Audi:engine-repair"
+      && briefForDate(utc(2026, 11, 2))!.theme === BRAND_THEMES[10 % 4]!.key,
+  );
+}
+
 console.log(failures.length === 0
-  ? `content calendar self-test: ALL PASS (${checks} checks — Mon/Wed/Fri cadence, post-count rotation, brand post, --force)`
+  ? `content calendar self-test: ALL PASS (${checks} checks — Mon/Wed/Fri cadence, post-count rotation, brand post, --force, brief wording)`
   : `content calendar self-test: ${failures.length} FAILED of ${checks}`);
 if (failures.length > 0) process.exit(1);
