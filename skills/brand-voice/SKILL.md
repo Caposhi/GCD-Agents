@@ -60,7 +60,7 @@ GCD's motto is **"POMG — Peace of Mind Guaranteed."** The word "Guaranteed" is
 
 ## Lexicon
 **Lean in:** peace of mind, European specialists, dealer alternative, honest, the right way, our team, your car, since 1992, no surprises.
-**Avoid:** cheap (use "fair" / "honest pricing"), guys (use "team"), stealership / dealer insults, generic "vehicle" when "car" is warmer, hype adjectives, "family-owned" / "family-run" (Alan "Ollie" Gelfand is the sole owner; "POMG, the Gelfand family motto" is still fine), "factory-trained" / "factory-grade" / "factory-certified" (no factory, dealer or manufacturer certification claims; say "ASE-certified technicians").
+**Avoid:** cheap (use "fair" / "honest pricing"), guys (use "team"), stealership / dealer insults, generic "vehicle" when "car" is warmer, hype adjectives, "family-owned" / "family-run" (Alan "Ollie" Gelfand is the sole owner; "POMG, the Gelfand family motto" is still fine), "factory-trained" / "factory-grade" / "factory-certified" (no factory, dealer or manufacturer certification claims; say "ASE-certified technicians"; one stated exception, like POMG: Alan "Ollie" Gelfand's own "Bosch Certified" credential may be named as his personal credential, never as the shop's or the technicians').
 
 ## Calls to action (pick one, keep it light)
 - "Book online" / "Schedule a visit"

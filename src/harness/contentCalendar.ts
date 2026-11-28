@@ -32,7 +32,11 @@
  * is the sole owner (never "family-owned" or "family-run"; "the Gelfand family
  * motto" for POMG stays), "ISTA" not "ISTA/D", no factory, dealer or
  * manufacturer certification claim, ASE-certified technicians (Alan is the ASE
- * Master Technician), and the approved warranty wording verbatim.
+ * Master Technician), and the approved warranty wording verbatim. One stated
+ * exception (owner decision 2026-11-28): Alan's own "Bosch Certified" credential,
+ * from the `founder` fact, may be named as his personal credential, never as a
+ * shop or technician certification. brand-ollie says "widely known as the
+ * inventor", the `funFact`'s words (2026-11-28).
  * `contentCalendar.selftest.ts` (CAL21–CAL24) enforces it. Keys and labels are
  * unchanged so the rotation, the tests and the theme history stay stable.
  */
@@ -78,7 +82,7 @@ export const BRAND_THEMES: CalendarTheme[] = [
   { key: "brand-family", goal: "Brand story: founder and sole owner Alan 'Ollie' Gelfand has run German Car Depot in Hollywood, FL since 1992; a Bosch Certified & ASE Master Technician who still oversees the shop. POMG — Peace of Mind Guaranteed, the Gelfand family motto." },
   { key: "brand-warranty", goal: "Brand story: the 3-Year / 36,000-Mile nationwide warranty on eligible repairs (whichever comes first), and the peace of mind behind every repair." },
   { key: "brand-dealership-alternative", goal: "Brand story: The Dealership Alternative — dealer-level expertise on European cars without dealer pricing or pressure." },
-  { key: "brand-ollie", goal: "Fun brand story: founder Alan 'Ollie' Gelfand is credited as the inventor of the skateboarding 'Ollie' — tie that precision and innovation to how the shop cares for European cars." },
+  { key: "brand-ollie", goal: "Fun brand story: founder Alan 'Ollie' Gelfand is widely known as the inventor of the skateboarding 'Ollie' — tie that precision and innovation to how the shop cares for European cars." },
 ];
 
 /** Total make×service combinations — this is the recycle window (in posts). */

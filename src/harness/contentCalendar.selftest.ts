@@ -214,11 +214,11 @@ check(
   // Wording the owner corrected on 2026-11-24: Alan "Ollie" Gelfand is the sole owner; "ISTA", not
   // "ISTA/D"; no factory, dealer or manufacturer certification claim; ASE-certified technicians (Alan
   // is the ASE Master Technician); and the approved warranty wording replaced "qualifying parts".
-  const FORBIDDEN = [/family[- ]owned/i, /family[- ]run/i, /ISTA\/D/i, /factory[- ]grade/i, /factory[- ]trained/i, /master[- ]level/i, /qualifying parts/i];
+  const FORBIDDEN = [/family[- ]owned/i, /family[- ]run/i, /family shop/i, /ISTA\/D/i, /factory[- ]grade/i, /factory[- ]trained/i, /master[- ]level/i, /qualifying parts/i];
   const texts = [...SERVICES.map((s) => `${s.key}: ${s.angle}`), ...BRAND_THEMES.map((t) => `${t.key}: ${t.goal}`)];
   const hits = texts.filter((t) => FORBIDDEN.some((re) => re.test(t)));
   check(
-    `CAL21. no service angle or brand goal says family-owned, family-run, ISTA/D, factory-grade, factory-trained, Master-level or "qualifying parts" (${texts.length} strings checked${hits.length ? `; hits: ${hits.join(" | ")}` : ""})`,
+    `CAL21. no service angle or brand goal says family-owned, family-run, family shop, ISTA/D, factory-grade, factory-trained, Master-level or "qualifying parts" (${texts.length} strings checked${hits.length ? `; hits: ${hits.join(" | ")}` : ""})`,
     texts.length === SERVICES.length + BRAND_THEMES.length && texts.length === 14 && hits.length === 0,
   );
   // Every brief the scheduler can enqueue, not just the source strings: one whole year of posting days.
