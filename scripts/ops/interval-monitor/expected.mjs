@@ -178,8 +178,15 @@ export const WORKFLOW_REFUSAL_SINCE = "2026-09-17T18:52:47Z";
  * monitor reported `EXPIRED` every day of that gap (runs #32 through #39, all
  * `success`) and correctly declined to decide. Every superseded bound stays in
  * Status as history; only this constant moves.
+ *
+ * The owner re-authorized the interval a third time on 2026-11-28 (outcome (b)
+ * again), superseding `2026-11-29T18:52Z` and nothing else. Unlike 2026-10-30's,
+ * this decision was made BEFORE the bound it replaces. The reason is unchanged:
+ * reconciliation is a controlled release, not work compressed to a calendar
+ * date. Every superseded bound stays in Status as history; only this constant
+ * moves.
  */
-export const INTERVAL_EXPIRY = "2026-11-29T18:52Z";
+export const INTERVAL_EXPIRY = "2026-12-27T18:52Z";
 
 /** The GitHub environment holding the read-only database secret. */
 export const MONITOR_ENVIRONMENT = "monitoring";
