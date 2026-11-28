@@ -346,16 +346,28 @@ export const PUBLICATION_IMAGE_ROUTE = "text-graphic" as const;
  * mirrored in glossy paint or glass. The image model cannot be trusted to spell
  * or to leave text-shaped surfaces blank, so the prompt takes the surfaces out
  * of the picture instead of asking for them to be rendered correctly.
+ *
+ * Extended 2026-11-25 (owner-authorized): on the "Land Rover Steering &
+ * Suspension" brief all three attempts failed the text-free QC on vehicle
+ * branding — partial hood/grille lettering, a wheel center-cap emblem reading
+ * "LAND ROVER", and a small illegible center-cap emblem. The rule now says, on
+ * every attempt, that vehicles carry no badge, emblem, logo or lettering at all.
  */
 export const INCIDENTAL_TEXT_GUARD =
   "Composition rule: the only readable text in the image is the allowed text. "
   + "Any screen — laptop, tablet, scan tool, dashboard display or gauge — is switched off and dark, or shown from behind, "
   + "never with characters on it. No storefront, wall or shop signage, posters, calendars, stickers, or tool and box labels. "
-  + "No license plate in frame, and no mirror-finish paint, glass or chrome positioned to reflect a plate or lettering.";
+  + "No license plate in frame, and no mirror-finish paint, glass or chrome positioned to reflect a plate or lettering. "
+  + "Every vehicle is unbranded: no badge, emblem, logo or lettering anywhere on it — plain, unbranded wheel center caps, "
+  + "and no lettering on the hood, grille, tailgate or body.";
 
 // What a QC finding says is wrong. The findings are the inspector's free text,
-// so these are deliberately broad words, not exact phrases.
-const VEHICLE_TEXT_ISSUE = /plate|badge|emblem/i;
+// so these are deliberately broad words, not exact phrases. VEHICLE_TEXT_ISSUE
+// was widened 2026-11-25: "partial text/lettering visible on the front
+// hood/grille area" named no plate, badge or emblem, so it drew only the
+// signage fix; a logo, a hub or center cap, or a hood, grille or tailgate now
+// draw the vehicle fix too.
+const VEHICLE_TEXT_ISSUE = /plate|badge|emblem|logo|\bhub\b|center[- ]?cap|\bhood\b|grille|tailgate/i;
 const SCREEN_TEXT_ISSUE = /screen|\bdisplays?\b|monitor|laptop|tablet|scan[- ]?tool|scanner|dashboard|infotainment|gauge|readout|odometer/i;
 const SIGN_TEXT_ISSUE = /\bsigns?\b|signage|banner|poster|calendar|sticker|label|storefront|whiteboard|lettering/i;
 const REFLECTION_TEXT_ISSUE = /reflect|mirror/i;
@@ -391,7 +403,10 @@ export function imagePromptFor(
   if (VEHICLE_TEXT_ISSUE.test(joined)) {
     fixes.push(
       "The vehicle's license plate and/or brand badge/emblem keeps rendering with visible or garbled characters — stop trying to render them correctly, that keeps failing. "
-      + "Recompose the shot so NO plate-shaped area and NO sharp, readable badge/emblem is in frame at all: crop the hero shot just above the bumper/plate line, use a rear 3/4 angle, or frame a tight shot on the headlight/front fascia that keeps badges soft, distant, or out of frame.",
+      + "Recompose the shot so NO plate-shaped area and NO badge, emblem, logo or lettering is in frame at all, not even blurred, small or illegible — "
+      + "that includes wheel center caps and any lettering on the hood, grille or tailgate. "
+      + "Crop the hero shot just above the bumper/plate line with the wheels out of frame or their center caps plain and unbranded, "
+      + "use a rear 3/4 angle with no tailgate lettering, or frame a tight shot on one headlight that leaves the grille and hood badge out of frame.",
     );
   }
   if (SCREEN_TEXT_ISSUE.test(joined)) {
@@ -410,8 +425,8 @@ export function imagePromptFor(
   if (fixes.length === 0) fixes.push("no license-plate or badge text.");
   if (attempt >= 3 && isIncidentalTextIssue(lastIssues)) {
     fixes.push(
-      "FINAL ATTEMPT — simplest possible composition: a close-up of one mechanical component (a brake rotor and caliper, a suspension arm, an engine-bay detail, a tire and wheel) on a plain workshop background, "
-      + "with no full vehicle exterior, no screens, no signage and no plate anywhere in frame.",
+      "FINAL ATTEMPT — simplest possible composition: a close-up of one mechanical component (a brake rotor and caliper, a suspension arm, an engine-bay detail, a tire tread with the wheel hub out of frame) on a plain workshop background, "
+      + "with no full vehicle exterior, no screens, no signage, no plate and no badge, emblem or wheel center cap anywhere in frame.",
     );
   }
   return (
