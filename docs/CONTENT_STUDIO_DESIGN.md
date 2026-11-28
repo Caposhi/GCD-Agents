@@ -156,6 +156,9 @@ among the rejected alternatives.
    standing prohibition reads "no unrelated release may occur, of any service, for any reason" (see
    §10 for the Studio's freeze gate). The Studio needs no live release, no live
    migration (008 or later) and no change to any live control.
+   *(Dated note, 2026-11-28: the owner's third re-authorization, decided before
+   `2026-11-29T18:52Z` passed, moved the bound to `2026-12-27T18:52Z` and superseded nothing else;
+   see [Status](STATUS.md#m1m2-interval--third-re-authorization-decided-before-the-bound-recorded-2026-11-28).)*
    *(Dated note, owner decision of 2026-10-10, recorded by Content Studio S8.3: that prohibition
    is narrowed so that it no longer covers the Studio's own new resources; the live services
    stay frozen exactly as before. See §10's freeze gate.)*
@@ -1701,7 +1704,9 @@ because they describe current reality:
 **VERIFIED:** the M1→M2 partial-release interval is bound at `2026-11-29T18:52Z` — the owner's
 second re-authorization of 2026-10-30, superseding `2026-10-22T18:52Z`. Its standing
 prohibition reads "no unrelated release may occur, of any service, for any reason"
-([Status](STATUS.md)).
+([Status](STATUS.md)). *(Dated note, 2026-11-28: the bound is now `2026-12-27T18:52Z`, the
+owner's third re-authorization, decided before `2026-11-29T18:52Z` passed; the prohibition is
+unchanged — [Status](STATUS.md#m1m2-interval--third-re-authorization-decided-before-the-bound-recorded-2026-11-28).)*
 
 - **The rule:** no Studio service is created (O3) until the M1→M2 interval is **closed**, or under
   whatever terms are then in force. The interval may be extended again, so "after the bound" alone
