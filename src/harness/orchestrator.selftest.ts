@@ -1154,6 +1154,20 @@ async function run(): Promise<void> {
         && /reflection is showing/.test(imagePromptFor(BASE, 2, ["License plate reflection 'H KE8801' is partially readable"], []))
         && /Signage, labels or lettering in the scene/.test(imagePromptFor(BASE, 2, [nov25[0]!], [])),
     );
+    // PR #148 fix round 1: on 2026-11-25 the model drew an emblem on a center
+    // cap it was told nothing about, and QC failed it even when illegible, so
+    // no retry may offer "plain and unbranded" center caps in place of keeping
+    // the wheels out of frame. Attempt 1's standing rule keeps "plain,
+    // unbranded wheel center caps" (IB1); only the CRITICAL FIX text is checked.
+    check(
+      "IB8. no retry offers plain, unbranded center caps as an alternative to wheels out of frame; the vehicle retry says wheels out of frame",
+      [2, 3].every((attempt) => [nov25, [nov25[1]!], ["Vehicle badge reads 'LANDO ROVER'"], ["License plate reads 'BC0C800'"]].every((issues) => {
+        const fix = imagePromptFor(BASE, attempt, issues, []).split("CRITICAL FIX")[1] ?? "";
+        return fix.includes("just above the bumper/plate line with the wheels out of frame, ")
+          && !/plain,? and unbranded/i.test(fix) && !/\bor (?:their|its|the) (?:wheel )?center caps?\b/i.test(fix)
+          && !/center caps? plain/i.test(fix);
+      })),
+    );
   }
 
   // --- TF. Text-free publication images (owner-authorized 2026-11-10) -------

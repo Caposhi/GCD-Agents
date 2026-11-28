@@ -405,7 +405,7 @@ export function imagePromptFor(
       "The vehicle's license plate and/or brand badge/emblem keeps rendering with visible or garbled characters — stop trying to render them correctly, that keeps failing. "
       + "Recompose the shot so NO plate-shaped area and NO badge, emblem, logo or lettering is in frame at all, not even blurred, small or illegible — "
       + "that includes wheel center caps and any lettering on the hood, grille or tailgate. "
-      + "Crop the hero shot just above the bumper/plate line with the wheels out of frame or their center caps plain and unbranded, "
+      + "Crop the hero shot just above the bumper/plate line with the wheels out of frame, "
       + "use a rear 3/4 angle with no tailgate lettering, or frame a tight shot on one headlight that leaves the grille and hood badge out of frame.",
     );
   }
