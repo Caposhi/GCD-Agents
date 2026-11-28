@@ -1088,6 +1088,88 @@ async function run(): Promise<void> {
     );
   }
 
+  // --- IB. Vehicle badges, emblems and lettering (owner-authorized 2026-11-25)
+  //
+  // On the 2026-11-25 "Land Rover Steering & Suspension" brief all three image
+  // attempts failed the strict text-free QC on vehicle branding. These are the
+  // three findings as relayed (REVIEWER-VERIFIED log text), elisions kept.
+  {
+    const BASE = "Hero shot of a Land Rover in a bright service bay.";
+    const nov25 = [
+      "Partial text/lettering visible on the front hood/grille area … '...OVER'",
+      "Text/logo visible on wheel hub cap center cap … 'LAND ROVER (wheel hub cap emblem)'",
+      "Small circular logo/emblem visible on the wheel hub center … (illegible emblem)",
+    ];
+    const NO_BADGE_FIX = /NO badge, emblem, logo or lettering is in frame at all, not even blurred, small or illegible/;
+    const first = imagePromptFor(BASE, 1, [], []);
+    check(
+      "IB1. attempt 1 says every vehicle is unbranded — no badge, emblem, logo or lettering, plain wheel center caps, no hood, grille, tailgate or body lettering",
+      first.includes(INCIDENTAL_TEXT_GUARD)
+        && ["no badge, emblem, logo or lettering anywhere on it", "plain, unbranded wheel center caps", "no lettering on the hood, grille, tailgate or body"]
+          .every((w) => INCIDENTAL_TEXT_GUARD.includes(w)),
+    );
+    check(
+      "IB2. the standing rule keeps every earlier clause: only readable text, screens dark, no signage or labels, no plate, no reflection of a plate",
+      ["the only readable text in the image is the allowed text", "is switched off and dark, or shown from behind",
+        "No storefront, wall or shop signage, posters, calendars, stickers, or tool and box labels",
+        "No license plate in frame", "no mirror-finish paint, glass or chrome positioned to reflect a plate or lettering"]
+        .every((w) => INCIDENTAL_TEXT_GUARD.includes(w)),
+    );
+    check(
+      "IB3. each of the 2026-11-25 findings, alone and together, draws the vehicle fix (no badge or emblem even blurred or small, center caps, hood/grille/tailgate) and never 'soft, distant'",
+      [...nov25.map((f) => [f]), nov25].every((issues) => {
+        const p = imagePromptFor(BASE, 2, issues, []);
+        return NO_BADGE_FIX.test(p) && /wheel center caps and any lettering on the hood, grille or tailgate/.test(p)
+          && /NO plate-shaped area/.test(p) && !/soft, distant/.test(p) && p.endsWith("Allowed text: none.");
+      }),
+    );
+    check(
+      "IB4. the vehicle fix keeps its compositions, none inviting a badge: above the bumper/plate line, rear 3/4 with no tailgate lettering, one headlight with grille and hood badge out of frame",
+      (() => {
+        const p = imagePromptFor(BASE, 2, ["Vehicle badge reads 'LANDO ROVER' - misspelled brand name"], []);
+        return /just above the bumper\/plate line/.test(p) && /rear 3\/4 angle with no tailgate lettering/.test(p)
+          && /tight shot on one headlight that leaves the grille and hood badge out of frame/.test(p);
+      })(),
+    );
+    check(
+      "IB5. no attempt ever offers an unqualified 'tire and wheel'; the final attempt's close-up keeps the wheel hub out of frame and still names its other subjects",
+      [1, 2, 3].every((attempt) => [[], nov25, ["License plate reads 'BC0C800'"]].every((issues) => !/tire and wheel/.test(imagePromptFor(BASE, attempt, issues, []))))
+        && (() => {
+          const p = imagePromptFor(BASE, 3, nov25, []);
+          return p.includes("FINAL ATTEMPT") && p.includes("a tire tread with the wheel hub out of frame")
+            && ["a brake rotor and caliper", "a suspension arm", "an engine-bay detail"].every((w) => p.includes(w))
+            && /no badge, emblem or wheel center cap anywhere in frame/.test(p) && /no screens, no signage, no plate/.test(p);
+        })(),
+    );
+    check(
+      "IB6. the classifier names the new vehicle surfaces (logo, hub, center cap, hood, grille, tailgate), and the headline, face and 'neighborhood' findings stay unmatched",
+      ["logo", "hub cap", "center cap", "center-cap", "hood", "grille", "tailgate"].every((w) => isIncidentalTextIssue([`${w} is garbled`]))
+        && !isIncidentalTextIssue(["'SMOOTH MILE' is misspelled as 'SAMOOTH MILE' - wrong letter inserted, garbled word", "headline text displayed with an extra letter"])
+        && !isIncidentalTextIssue(["An identifiable person's face is visible", "the neighborhood looks residential", "a hubbub of shoppers"]),
+    );
+    check(
+      "IB7. every existing surface fix still appears for its finding: screen, signage, reflection — and the hood/grille finding still draws the signage fix as well",
+      /switched off, dark and blank/.test(imagePromptFor(BASE, 2, ["Laptop screen body text is unreadable"], []))
+        && /Signage, labels or lettering in the scene/.test(imagePromptFor(BASE, 2, ["Shop sign reads gibberish"], []))
+        && /reflection is showing/.test(imagePromptFor(BASE, 2, ["License plate reflection 'H KE8801' is partially readable"], []))
+        && /Signage, labels or lettering in the scene/.test(imagePromptFor(BASE, 2, [nov25[0]!], [])),
+    );
+    // PR #148 fix round 1: on 2026-11-25 the model drew an emblem on a center
+    // cap it was told nothing about, and QC failed it even when illegible, so
+    // no retry may offer "plain and unbranded" center caps in place of keeping
+    // the wheels out of frame. Attempt 1's standing rule keeps "plain,
+    // unbranded wheel center caps" (IB1); only the CRITICAL FIX text is checked.
+    check(
+      "IB8. no retry offers plain, unbranded center caps as an alternative to wheels out of frame; the vehicle retry says wheels out of frame",
+      [2, 3].every((attempt) => [nov25, [nov25[1]!], ["Vehicle badge reads 'LANDO ROVER'"], ["License plate reads 'BC0C800'"]].every((issues) => {
+        const fix = imagePromptFor(BASE, attempt, issues, []).split("CRITICAL FIX")[1] ?? "";
+        return fix.includes("just above the bumper/plate line with the wheels out of frame, ")
+          && !/plain,? and unbranded/i.test(fix) && !/\bor (?:their|its|the) (?:wheel )?center caps?\b/i.test(fix)
+          && !/center caps? plain/i.test(fix);
+      })),
+    );
+  }
+
   // --- TF. Text-free publication images (owner-authorized 2026-11-10) -------
   //
   // The owner's authorization reports production runs failing QC on in-image

@@ -56,10 +56,14 @@ const MODEL_EXTRAS: Record<ImageContentType, Record<string, unknown>> = {
     // plate reflected in the paint. Extended 2026-11-10 with generic text terms
     // when publication images became text-free (the orchestrator forces this
     // route for every image and its prompt carries a no-text rule); every
-    // earlier term is kept.
+    // earlier term is kept. Extended 2026-11-25 with vehicle-branding terms
+    // after a wheel center-cap emblem and hood/grille lettering failed the
+    // text-free QC on all three attempts of one brief; every earlier term is
+    // kept, in order.
     negative_prompt:
       "visible license plate, readable license plate, license plate characters, license plate numbers, close-up of a license plate, legible plate text, readable brand badge, legible vehicle emblem, sharp badge lettering on car body, close-up of car badge text, laptop screen with text, readable computer screen, scan tool display with numbers, readable dashboard display, shop signage, storefront sign, readable poster, readable sticker or label, reflection of a license plate, mirrored lettering, "
-      + "text, words, letters, numbers, typography, caption, headline, logo, wordmark, watermark, call-to-action button",
+      + "text, words, letters, numbers, typography, caption, headline, logo, wordmark, watermark, call-to-action button, "
+      + "wheel center cap logo, hub cap emblem, hood lettering, grille badge, tailgate lettering, car brand logo",
   },
   // Not extended to photoreal (Flux) — its request schema has not been
   // verified against these exact field names; do not guess on a live API.

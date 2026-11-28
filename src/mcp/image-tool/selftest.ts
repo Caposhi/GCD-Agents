@@ -63,11 +63,20 @@ check("N2. jpeg is still requested (advisory; provider may return png)", r.body?
     "storefront sign", "readable poster", "readable sticker or label", "reflection of a license plate", "mirrored lettering",
   ];
   const TEXT_TERMS = ["text", "words", "letters", "numbers", "typography", "caption", "headline", "logo", "wordmark", "watermark", "call-to-action button"];
+  // Vehicle-branding terms (owner-authorized 2026-11-25), appended after the
+  // text terms once a wheel center-cap emblem and hood/grille lettering failed
+  // the text-free QC on all three attempts of one brief.
+  const BADGE_TERMS = ["wheel center cap logo", "hub cap emblem", "hood lettering", "grille badge", "tailgate lettering", "car brand logo"];
   const negTerms = neg.split(",").map((t) => t.trim());
   check(
-    "N2d. the negative prompt keeps every one of main's 20 terms, in order, and appends the generic text terms",
+    "N2d. the negative prompt keeps every one of main's 20 terms, in order, and then the generic text terms, in order",
     JSON.stringify(negTerms.slice(0, MAIN_TERMS.length)) === JSON.stringify(MAIN_TERMS)
-      && JSON.stringify(negTerms.slice(MAIN_TERMS.length)) === JSON.stringify(TEXT_TERMS),
+      && JSON.stringify(negTerms.slice(MAIN_TERMS.length, MAIN_TERMS.length + TEXT_TERMS.length)) === JSON.stringify(TEXT_TERMS),
+  );
+  check(
+    "N2h. the vehicle-branding terms (center cap, hub cap, hood, grille, tailgate, brand logo) are appended after every earlier term, and nothing else is",
+    JSON.stringify(negTerms.slice(MAIN_TERMS.length + TEXT_TERMS.length)) === JSON.stringify(BADGE_TERMS)
+      && negTerms.length === MAIN_TERMS.length + TEXT_TERMS.length + BADGE_TERMS.length && negTerms.length === 37,
   );
   check(
     "N2e. the text-graphic request adds no new field: main's keys, with the prompt-expansion switch under the schema's name (enable_prompt_expansion, fix round 1)",
@@ -76,13 +85,13 @@ check("N2. jpeg is still requested (advisory; provider may return png)", r.body?
   );
   // Fix round 1: renaming the switch changes no other field's value.
   check(
-    "N2g. every other text-graphic request field is unchanged by the rename: prompt, image_size 1024x1280, num_images 1, output_format jpeg, rendering_speed QUALITY, and the 31-term negative prompt",
+    "N2g. every other text-graphic request field is unchanged by the rename: prompt, image_size 1024x1280, num_images 1, output_format jpeg, rendering_speed QUALITY, and the negative prompt (31 terms then; 37 since the 2026-11-25 vehicle-branding terms)",
     r.body?.prompt === "Brake fluid flush — book online"
       && JSON.stringify(r.body?.image_size) === JSON.stringify({ width: 1024, height: 1280 })
       && r.body?.num_images === 1
       && r.body?.output_format === "jpeg"
       && r.body?.rendering_speed === "QUALITY"
-      && neg === [...MAIN_TERMS, ...TEXT_TERMS].join(", "),
+      && neg === [...MAIN_TERMS, ...TEXT_TERMS, ...BADGE_TERMS].join(", "),
   );
 }
 

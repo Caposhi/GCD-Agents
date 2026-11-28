@@ -13701,13 +13701,14 @@ async function run(): Promise<void> {
     // contentCalendar.ts and daily.ts — S8.6's own bytes were 322943ad…; 2026-11-11: text-free publication images
     // declared orchestrator.ts, imageQc.ts, dryrun.ts and models.ts — the pin before it was aa460d35…; 2026-11-13, its fix
     // round 1, re-declared models.ts and orchestrator.ts for the Ideogram enable_prompt_expansion rename — the pin before
-    // it was e0f770c4…).
-    const S86_MANIFEST_SHA256 = "92df43ad6f05697fc0ff4f5c1aebda06838e2abe0b8bf86f64a257e908bb509d";
+    // it was e0f770c4…; 2026-11-25, the image badge guard, re-declared orchestrator.ts and models.ts — the pin before it
+    // was 92df43ad…; 2026-11-28, its fix round 1 (PR #148), re-declared orchestrator.ts — the pin before it was 7ee463d6…).
+    const S86_MANIFEST_SHA256 = "d870dd2e0529c5abbc861e909518c8110a8e2e0acc0efad3750810c6b13fc801";
     const S86_FILES = [
       "src/harness/contentRun/legalReview.ts", "agents/legal-review.md", "skills/legal-risk/SKILL.md",
       "studio/migrations/0005_studio_legal_review.sql",
     ];
-    check("LR12. the live-path manifest is byte-identical to its pin (sha256 92df43ad…: main's at the S8.6 base plus the declared image-fix, posting-cadence and text-free-image edits, and the latter's prompt-expansion rename), every module it "
+    check("LR12. the live-path manifest is byte-identical to its pin (sha256 d870dd2e…: main's at the S8.6 base plus the declared image-fix, posting-cadence and text-free-image edits, the latter's prompt-expansion rename, and the image badge guard with its fix round 1), every module it "
       + "pins is byte-identical to its pin — payloadContract.ts, registry.ts and modelPolicy.ts among them — and no S8.6 "
       + "file is live-loaded",
       createHash("sha256").update(readFileSync(resolve(REPO_ROOT, LIVE_PATH_MANIFEST))).digest("hex") === S86_MANIFEST_SHA256
