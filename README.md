@@ -138,8 +138,16 @@ Two policies are now distinct: **decode safety** governs bytes we will process, 
 
 - **Two programs read the file from their own commit:** the live worker and the Content Studio worker. Each sees the change only in a release that carries it, and each release needs its own owner authorization; production keeps the old facts until then ([Production state](docs/STATUS.md#production-state)).
 - **Open owner decision:** a Studio release carrying the new file makes the Studio refuse a revise of any run recorded against the old one, including the next step's revise of run `46f5bf15…`. Revise first, or accept a fresh run.
-- **BLOCKING follow-up, due before Monday 2027-02-01:** the scheduler's `brand-warranty` brief (`src/harness/contentCalendar.ts:70`) still asks for the old "qualifying parts & labor" wording. Fixing it is a live-path change (manifest re-pin) and needs a scheduler release.
+- **BLOCKING follow-up, due before Monday 2027-02-01:** the scheduler's `brand-warranty` brief (`src/harness/contentCalendar.ts:70`) still asks for the old "qualifying parts & labor" wording. Fixing it is a live-path change (manifest re-pin) and needs a scheduler release. *(2026-11-25: fixed on `claude/live-wording-2026-11-25`, not merged — discharged on merge; see the next section.)*
 - Full record: [Status](docs/STATUS.md#owner-fact-corrections-for-hours-booking-warranty-credentials-and-service-area--implemented-not-merged-2026-11-06-merge-blockers-resolved-2026-11-16) and [Roadmap](docs/ROADMAP.md).
+
+## Agent-facing wording follows the owner corrections of 2026-11-24
+
+**`IMPLEMENTED` on branch `claude/live-wording-2026-11-25` (2026-11-25), not merged, not deployed** — owner-authorized; a live-path change. The text the system feeds its agents now matches `config/approved-facts.json`: Alan "Ollie" Gelfand is the **sole owner** (no "family-owned" or "family-run"; "POMG, the Gelfand family motto" stays), **ISTA** not "ISTA/D", **no factory, dealer or manufacturer certification claims**, **ASE-certified technicians**, and the warranty is "3-Year / 36,000-Mile nationwide warranty on eligible repairs (whichever comes first)".
+
+- **Where:** the scheduler's brief angles and brand goals (`src/harness/contentCalendar.ts`; keys, labels and rotation unchanged), the brand-voice skill (`skills/brand-voice/SKILL.md`, whose *Avoid* list now bans those words) and the copywriter prompt (`agents/copywriter.md`). Tests `CAL21`–`CAL24` and `AI4`–`AI5` keep the wording out.
+- **Discharges PR #144's BLOCKING warranty-brief follow-up on merge.** It holds in production only after a **scheduler release** before Monday 2027-02-01.
+- **Not live.** It needs a worker release and a scheduler release ("Release 3"), and the Content Studio worker also loads brand-voice; each needs its own owner authorization. See [Status](docs/STATUS.md#agent-facing-wording-follows-the-owner-corrections-of-2026-11-24--implemented-not-merged-2026-11-25) and [Roadmap](docs/ROADMAP.md).
 
 ## Worker ownership and recovery
 

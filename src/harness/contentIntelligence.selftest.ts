@@ -1349,6 +1349,20 @@ async function run(): Promise<void> {
       !/two locations/i.test(brandVoice));
     check("AI3. the skill defers to approved facts as the factual authority",
       /config\/approved-facts\.json/.test(brandVoice));
+    // Owner corrections of 2026-11-24: the sole owner (no "family-owned"/"family-run"), "ISTA" not "ISTA/D", no
+    // factory/dealer/manufacturer certification claim, ASE-certified technicians (not "Master-level"), and the
+    // approved warranty wording. The brand-voice *Avoid* line names the banned terms on purpose, so it is exempt.
+    const corrected = [/family[- ]owned/i, /family[- ]run/i, /family shop/i, /ISTA\/D/i, /factory[- ]grade/i,
+      /factory[- ]trained/i, /master[- ]level/i, /qualifying parts/i];
+    const copywriterPrompt = await readFile(resolve(REPO_ROOT, "agents/copywriter.md"), "utf8");
+    const voiceLines = brandVoice.split("\n").filter((line) => !line.startsWith("**Avoid:**"));
+    check("AI4. brand-voice asserts none of the wording the owner corrected on 2026-11-24 outside its Avoid list, "
+      + "and that list bans family-owned, family-run and factory-trained",
+      voiceLines.every((line) => corrected.every((re) => !re.test(line)))
+        && /^\*\*Avoid:\*\*.*family-owned.*family-run.*factory-trained/m.test(brandVoice)
+        && /Gelfand family motto/.test(brandVoice));
+    check("AI5. the copywriter prompt asserts none of the wording the owner corrected on 2026-11-24",
+      corrected.every((re) => !re.test(copywriterPrompt)) && /brand-specific diagnostics/.test(copywriterPrompt));
   }
 
   // --- AG. payload bounds ----------------------------------------------------
@@ -13701,13 +13715,14 @@ async function run(): Promise<void> {
     // contentCalendar.ts and daily.ts — S8.6's own bytes were 322943ad…; 2026-11-11: text-free publication images
     // declared orchestrator.ts, imageQc.ts, dryrun.ts and models.ts — the pin before it was aa460d35…; 2026-11-13, its fix
     // round 1, re-declared models.ts and orchestrator.ts for the Ideogram enable_prompt_expansion rename — the pin before
-    // it was e0f770c4…).
-    const S86_MANIFEST_SHA256 = "92df43ad6f05697fc0ff4f5c1aebda06838e2abe0b8bf86f64a257e908bb509d";
+    // it was e0f770c4…; 2026-11-25, the brief-wording change re-declared contentCalendar.ts for the owner corrections of
+    // 2026-11-24 — the pin before it was 92df43ad…).
+    const S86_MANIFEST_SHA256 = "1b065930dccbda56c0041125d5dd3142ca454b535e14f8830de798cb3183d6eb";
     const S86_FILES = [
       "src/harness/contentRun/legalReview.ts", "agents/legal-review.md", "skills/legal-risk/SKILL.md",
       "studio/migrations/0005_studio_legal_review.sql",
     ];
-    check("LR12. the live-path manifest is byte-identical to its pin (sha256 92df43ad…: main's at the S8.6 base plus the declared image-fix, posting-cadence and text-free-image edits, and the latter's prompt-expansion rename), every module it "
+    check("LR12. the live-path manifest is byte-identical to its pin (sha256 1b065930…: main's at the S8.6 base plus the declared image-fix, posting-cadence and text-free-image edits, the latter's prompt-expansion rename, and the brief-wording edit), every module it "
       + "pins is byte-identical to its pin — payloadContract.ts, registry.ts and modelPolicy.ts among them — and no S8.6 "
       + "file is live-loaded",
       createHash("sha256").update(readFileSync(resolve(REPO_ROOT, LIVE_PATH_MANIFEST))).digest("hex") === S86_MANIFEST_SHA256

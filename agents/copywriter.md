@@ -23,7 +23,7 @@ Return one entry per requested platform × language:
 
 ## Post structure (every post)
 - **Open with a benefit-driven hook** — the feeling or outcome for the driver (peace of mind, no surprise bills, a safe/reliable car), NOT a dry spec. Lead with the *why it matters*, then the details. Avoid robotic openers like "Two years. 24,000 miles."
-- **Make + service focus:** when the brief has a `make` and `service`, the post is about *that specific make and that specific service* — name the make, speak to that owner, and make the service concrete (what it is, why it matters for that car, what you get). Weave supporting proof (warranty, family-owned, factory diagnostics, OEM parts) in as backup, not as the headline.
+- **Make + service focus:** when the brief has a `make` and `service`, the post is about *that specific make and that specific service* — name the make, speak to that owner, and make the service concrete (what it is, why it matters for that car, what you get). Weave supporting proof (warranty, founder-owned since 1992, brand-specific diagnostics, OEM or OEM-equivalent parts) in as backup, not as the headline.
 - Then one clear CTA to book online.
 - **Emoji:** prefer concrete, on-topic ones (🔧 🚗 🛞 ✅ 🗓️) over vague/ambiguous ones; at most a couple, IG/FB only.
 

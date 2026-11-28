@@ -26,6 +26,15 @@
  * writes fresh copy every time and the brand-compliance critic verifies every
  * claim against config/approved-facts.json, so the calendar can't introduce an
  * unsourced claim. All services below map to approved-facts "services".
+ *
+ * Wording (2026-11-25, owner corrections of 2026-11-24): every angle and goal
+ * asserts only what config/approved-facts.json supports — Alan "Ollie" Gelfand
+ * is the sole owner (never "family-owned" or "family-run"; "the Gelfand family
+ * motto" for POMG stays), "ISTA" not "ISTA/D", no factory, dealer or
+ * manufacturer certification claim, ASE-certified technicians (Alan is the ASE
+ * Master Technician), and the approved warranty wording verbatim.
+ * `contentCalendar.selftest.ts` (CAL21–CAL24) enforces it. Keys and labels are
+ * unchanged so the rotation, the tests and the theme history stay stable.
  */
 
 export interface CalendarTheme {
@@ -54,11 +63,11 @@ export interface ServiceDef {
 export const SERVICES: ServiceDef[] = [
   { key: "oil-change", label: "Oil & Filter Change", angle: "on-time oil service protects the engine; the correct oil and filter for this make" },
   { key: "brakes", label: "Brake Service", angle: "safety first; catching pad wear before it scores the rotors" },
-  { key: "diagnostics", label: "Check-Engine Diagnostics", angle: "factory-grade diagnostics (ISTA/D for BMW, XENTRY for Mercedes); test first, fix once" },
+  { key: "diagnostics", label: "Check-Engine Diagnostics", angle: "brand-specific diagnostics (ISTA for BMW and MINI, XENTRY for Mercedes-Benz); test first, fix once" },
   { key: "cooling", label: "Cooling System Service", angle: "South Florida heat is brutal on cooling systems; prevent an overheating breakdown" },
   { key: "steering-suspension", label: "Steering & Suspension", angle: "a smoother, safer ride and even tire wear" },
   { key: "transmission", label: "Transmission Service", angle: "smooth shifting and long transmission life" },
-  { key: "engine-repair", label: "Engine Repair", angle: "trustworthy diagnosis and repair of engine issues by ASE Master-level techs" },
+  { key: "engine-repair", label: "Engine Repair", angle: "trustworthy diagnosis and repair of engine issues by ASE-certified technicians" },
   { key: "oil-leak", label: "Oil-Leak Repair", angle: "spotting and fixing leaks early protects the engine and keeps the driveway clean" },
   { key: "maintenance", label: "Scheduled Maintenance", angle: "staying on the manufacturer's service schedule keeps repair costs predictable" },
   { key: "ppi", label: "Pre-Purchase Inspection", angle: "buying a used one? know exactly what you're getting before you sign" },
@@ -66,8 +75,8 @@ export const SERVICES: ServiceDef[] = [
 
 /** One brand-story post per month (the first posting day of the month), rotating. */
 export const BRAND_THEMES: CalendarTheme[] = [
-  { key: "brand-family", goal: "Brand story: family-owned by the Gelfand family in Hollywood, FL since 1992; founder Alan 'Ollie' Gelfand is a Bosch Certified & ASE Master Technician who still oversees the shop. POMG — Peace of Mind Guaranteed." },
-  { key: "brand-warranty", goal: "Brand story: the 3-Year / 36,000-Mile warranty on qualifying parts & labor, and the peace of mind that stands behind every repair." },
+  { key: "brand-family", goal: "Brand story: founder and sole owner Alan 'Ollie' Gelfand has run German Car Depot in Hollywood, FL since 1992; a Bosch Certified & ASE Master Technician who still oversees the shop. POMG — Peace of Mind Guaranteed, the Gelfand family motto." },
+  { key: "brand-warranty", goal: "Brand story: the 3-Year / 36,000-Mile nationwide warranty on eligible repairs (whichever comes first), and the peace of mind behind every repair." },
   { key: "brand-dealership-alternative", goal: "Brand story: The Dealership Alternative — dealer-level expertise on European cars without dealer pricing or pressure." },
   { key: "brand-ollie", goal: "Fun brand story: founder Alan 'Ollie' Gelfand is credited as the inventor of the skateboarding 'Ollie' — tie that precision and innovation to how the shop cares for European cars." },
 ];
